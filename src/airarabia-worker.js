@@ -2,6 +2,7 @@
 
 const { chromium } = require('playwright');
 const { waitForVerificationCode } = require('./operator-verification');
+const { verificationFormAction } = require('./portal-verification-form');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -113,6 +114,25 @@ class AirArabiaPortalAdapter {
     return null;
   }
 
+  async verificationFormReady(frame) {
+    try {
+      if (await frame.locator?.('#userOtp:visible').isVisible()) return 'locator';
+    } catch (error) {
+      if (!this.verificationLocatorFailureReported) {
+        this.verificationLocatorFailureReported = true;
+        this.report(safeFailureCode(error, 'VERIFICATION'));
+      }
+    }
+    if (!frame.evaluate) return null;
+    const state = await frame.evaluate(verificationFormAction, { operation: 'inspect' }).catch(() => null);
+    if (state && !this.verificationDOMReported && /\/sendOTP(?:\.action)?$/.test(new URL(frame.url()).pathname)) {
+      this.verificationDOMReported = true;
+      this.report(`PORTAL_VERIFICATION_FORM_STATE_${JSON.stringify(state)}`);
+    }
+    if (state?.ready) return 'dom';
+    return null;
+  }
+
   async findVerificationFrame() {
     const pages = this.page.context ? this.page.context().pages() : [this.page];
     let pendingRoute = null;
@@ -124,7 +144,7 @@ class AirArabiaPortalAdapter {
           if (url.origin !== new URL(LOGIN_URL).origin) continue;
           // A wrapper frame can share the OTP route. Prefer the frame that
           // actually owns a visible input over an earlier route-only match.
-          if (await frame.locator?.('#userOtp:visible').isVisible().catch(() => false)) return frame;
+          if (await this.verificationFormReady(frame)) return frame;
           if (/\/sendOTP(?:\.action)?$/.test(url.pathname)) pendingRoute = frame;
         } catch {}
       }
@@ -150,7 +170,7 @@ class AirArabiaPortalAdapter {
         if (!operatorVerification) throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
         // Reacquire frames while the supplier replaces its login document.
         // A route alone can be present before the OTP form is ready.
-        const ready = await verification.locator('#userOtp:visible').isVisible().catch(() => false);
+        const ready = await this.verificationFormReady(verification);
         if (!ready) {
           await new Promise(resolve => setTimeout(resolve, 250));
           continue;
@@ -160,9 +180,15 @@ class AirArabiaPortalAdapter {
         try {
           code = await this.verificationProvider({ requestedAt: Date.now() });
           this.verificationAttempted = true;
-          await verification.locator('#userOtp:visible').fill(code);
-          code = null;
-          await verification.locator('#btnSubmit').click({ noWaitAfter: true });
+          if (ready === 'dom') {
+            const result = await verification.evaluate(verificationFormAction, { operation: 'submit', code });
+            code = null;
+            if (!result?.submitted) throw new PortalError('VERIFICATION', 'VERIFICATION_FORM_UNAVAILABLE');
+          } else {
+            await verification.locator('#userOtp:visible').fill(code);
+            code = null;
+            await verification.locator('#btnSubmit').click({ noWaitAfter: true });
+          }
           this.report('PORTAL_VERIFICATION_SUBMITTED');
         } catch (error) {
           code = null;
