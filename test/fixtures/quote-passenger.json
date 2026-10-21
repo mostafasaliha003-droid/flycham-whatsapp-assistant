@@ -1,0 +1,12 @@
+{
+  "purpose": "synthetic-quote-test-only",
+  "liveSubmissionAllowed": false,
+  "firstName": "TEST",
+  "lastName": "QUOTE",
+  "dateOfBirth": "1990-01-01",
+  "email": "quote-test@example.invalid",
+  "phone": null,
+  "nationality": null,
+  "travelDocumentNumber": null,
+  "note": "No real identity or valid travel document. Complete required fields only in an approved supplier test flow."
+}

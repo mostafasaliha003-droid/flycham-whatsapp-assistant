@@ -1,24 +1,6 @@
 'use strict';
 
-const MAX_FILS = BigInt(Number.MAX_SAFE_INTEGER);
-
-function toFils(value, label) {
-  if (typeof value !== 'string' && typeof value !== 'number') {
-    throw new TypeError(`${label} must be an AED decimal amount`);
-  }
-  const text = String(value);
-  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) {
-    throw new RangeError(`${label} must have at most two decimal places`);
-  }
-  const [whole, fraction = ''] = text.split('.');
-  const fils = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
-  if (fils > MAX_FILS) throw new RangeError(`${label} is too large`);
-  return fils;
-}
-
-function formatAED(fils) {
-  return `${fils / 100n}.${String(fils % 100n).padStart(2, '0')}`;
-}
+const { MAX_FILS, toFils, formatAED } = require('./money');
 
 // Every passenger/segment needs a verified seat and meal result. Missing results
 // must never be interpreted as free. includedInBase prevents double charging
@@ -52,10 +34,11 @@ function priceAncillaries({ passengerCount, segmentIds, ancillaries }, seatMargi
       throw new RangeError('Ancillary availability and inclusion must be verified');
     }
     const cost = toFils(item.cost, 'Ancillary cost');
-    if ((item.freeOptionAvailable && cost !== 0n) || (!item.freeOptionAvailable && cost === 0n)) {
+    if ((item.freeOptionAvailable && cost !== 0n && !(item.type === 'seat' && item.customerRequested === true)) || (!item.freeOptionAvailable && cost === 0n)) {
       throw new RangeError('Choose the verified free option, or provide its paid alternative cost');
     }
-    const markup = item.freeOptionAvailable ? 0n : (item.type === 'seat' ? seatMargin : mealMargin);
+    const markup = item.type === 'seat' && item.customerRequested === true
+      ? seatMargin : cost === 0n ? 0n : (item.type === 'seat' ? seatMargin : mealMargin);
     const costToAdd = item.includedInBase ? 0n : cost;
     addedCost += costToAdd;
     if (item.type === 'seat') seatMarkup += markup;
