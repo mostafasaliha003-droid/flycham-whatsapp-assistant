@@ -1,12 +1,15 @@
 'use strict';
 
 const http = require('node:http');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { handleMessage } = require('./conversation');
 const { sendTextMessage } = require('./graph-api');
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_BODY_BYTES = 1024 * 1024;
+const PRIVACY_PAGE = readFileSync(join(__dirname, 'privacy.html'));
 
 function readBody(request) {
   return new Promise((resolve, reject) => {
@@ -56,6 +59,17 @@ async function handleWebhookPost(request, response) {
 function createServer() {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/privacy') {
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': PRIVACY_PAGE.length,
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        'Cache-Control': 'public, max-age=300'
+      });
+      response.end(request.method === 'HEAD' ? undefined : PRIVACY_PAGE);
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/health') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
