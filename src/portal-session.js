@@ -2,15 +2,26 @@
 
 // Hosting/adapter wiring is deliberately separate: this class cannot keep a
 // ChatGPT browser alive and does not store credentials or perform sign-in itself.
+const HEARTBEAT_IDLE_MS = 15 * 60 * 1000;
+const HEARTBEAT_CHECK_MS = 60 * 1000;
+
+function randomHeartbeatDate(now = Date.now, random = Math.random) {
+  const daysAhead = 30 + Math.floor(random() * 61); // 30–90 days ahead
+  const date = new Date(now() + daysAhead * 24 * 60 * 60 * 1000);
+  return `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+}
+
 class PortalSession {
-  constructor(adapter, { now = Date.now, idleMs = 120000, retryMs = 60000 } = {}) {
-    for (const method of ['isAuthenticated', 'signIn', 'openSearch']) {
+  constructor(adapter, { now = Date.now, random = Math.random, idleMs = HEARTBEAT_IDLE_MS, checkMs = HEARTBEAT_CHECK_MS, retryMs = 60000 } = {}) {
+    for (const method of ['isAuthenticated', 'signIn', 'searchFlightsForHeartbeat']) {
       if (typeof adapter?.[method] !== 'function') throw new TypeError(`Missing adapter.${method}`);
     }
-    if (!Number.isSafeInteger(idleMs) || idleMs < 1000 || !Number.isSafeInteger(retryMs) || retryMs < 1000) throw new RangeError('Invalid session interval');
+    if (!Number.isSafeInteger(idleMs) || idleMs < 1000 || !Number.isSafeInteger(checkMs) || checkMs < 1000 || !Number.isSafeInteger(retryMs) || retryMs < 1000) throw new RangeError('Invalid session interval');
     this.adapter = adapter;
     this.now = now;
+    this.random = random;
     this.idleMs = idleMs;
+    this.checkMs = checkMs;
     this.retryMs = retryMs;
     this.lastActivity = now();
     this.retryAt = 0;
@@ -50,15 +61,17 @@ class PortalSession {
   heartbeat() {
     if (this.closed || this.pending || this.now() - this.lastActivity < this.idleMs) return Promise.resolve(false);
     return this.run(async adapter => {
-      // Idle only. Never click a booking-flow button during a customer quote.
-      await adapter.openSearch();
+      // Idle only. Search a bounded, synthetic date; never select a result or book.
+      await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate(this.now, this.random) });
       if (!await adapter.isAuthenticated()) throw new Error('Portal expired during heartbeat');
       return true;
     });
   }
   start(onError) {
     if (this.closed || typeof onError !== 'function') throw new TypeError('A session error handler is required');
-    if (!this.timer) this.timer = setInterval(() => { this.heartbeat().catch(() => onError('PORTAL_SESSION_UNAVAILABLE')); }, this.idleMs);
+    // Check often enough to run near the 15-minute idle target even after a
+    // customer request resets lastActivity just after a previous check.
+    if (!this.timer) this.timer = setInterval(() => { this.heartbeat().catch(() => onError('PORTAL_SESSION_UNAVAILABLE')); }, this.checkMs);
   }
   async stop() {
     this.closed = true;
@@ -67,4 +80,4 @@ class PortalSession {
     await this.tail;
   }
 }
-module.exports = { PortalSession };
+module.exports = { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS };

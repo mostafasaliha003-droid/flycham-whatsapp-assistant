@@ -1,14 +1,14 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PortalSession } = require('../src/portal-session');
+const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS } = require('../src/portal-session');
 function fixture() {
   let now = 0, authenticated = true, logins = 0, heartbeats = 0;
-  const adapter = { isAuthenticated: async () => authenticated, signIn: async () => { logins++; authenticated = true; }, openSearch: async () => { heartbeats++; } };
-  const session = new PortalSession(adapter, { now: () => now });
+  const adapter = { isAuthenticated: async () => authenticated, signIn: async () => { logins++; authenticated = true; }, searchFlightsForHeartbeat: async ({ departureDate }) => { assert.equal(departureDate.split('/').length, 3); heartbeats++; } };
+  const session = new PortalSession(adapter, { now: () => now, random: () => 0, idleMs: 120000, checkMs: 1000 });
   return { session, adapter, advance: n => { now += n; }, expire: () => { authenticated = false; }, stats: () => ({ logins, heartbeats }) };
 }
-test('performs idle heartbeat after two minutes and not after recent activity', async () => {
+test('searches on an idle heartbeat and not after recent activity', async () => {
   const f = fixture();
   assert.equal(await f.session.heartbeat(), false);
   f.advance(120000);
@@ -17,6 +17,15 @@ test('performs idle heartbeat after two minutes and not after recent activity', 
   assert.equal(await f.session.heartbeat(), false);
   assert.deepEqual(f.stats(), { logins: 0, heartbeats: 1 });
   await f.session.stop();
+});
+test('uses a randomized date 30 to 90 days in the future and defaults to a 15-minute interval', () => {
+  assert.equal(HEARTBEAT_IDLE_MS, 15 * 60 * 1000);
+  const now = () => Date.UTC(2026, 0, 1);
+  const earliest = new Date(now() + 30 * 86400000);
+  const latest = new Date(now() + 90 * 86400000);
+  const toDate = value => { const [day, month, year] = value.split('/').map(Number); return Date.UTC(year, month - 1, day); };
+  assert.equal(toDate(randomHeartbeatDate(now, () => 0)), Date.UTC(earliest.getUTCFullYear(), earliest.getUTCMonth(), earliest.getUTCDate()));
+  assert.equal(toDate(randomHeartbeatDate(now, () => 0.999999)), Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth(), latest.getUTCDate()));
 });
 test('serializes quotes and does not reset the search during an active quote', async () => {
   const f = fixture();

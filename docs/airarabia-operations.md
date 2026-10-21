@@ -12,10 +12,10 @@ A final quote requires complete options and actual availability for every passen
 
 - selection.js: complete option catalogs, cheapest defaults, explicit seat requests, seat uniqueness, real-food filtering, baggage disclosure and final-total reconciliation.
 - pricing.js / money.js: integer-fils base, supplier-service costs, and independent ticket/seat/meal margins.
-- portal-session.js: a single serialized session; idle-only openSearch after 120 seconds; pre-job authentication verification; one sign-in attempt on expiry; sign-in failure requires operator review; no concurrent heartbeat during a quote; graceful stop.
+- portal-session.js: a single serialized session; after 15 idle minutes it requests one low-impact one-way search using a randomized departure date 30–90 days ahead; checks once per minute so the threshold is not missed; pre-job authentication verification; one sign-in attempt on expiry; sign-in failure requires operator review; no concurrent heartbeat during a quote; graceful stop. The live portal must confirm that this search resets its 25-minute idle timer, and the adapter must use an approved fixed route. Neither is implemented or verified yet.
 - test fixture: synthetic names and date of birth only, reserved invalid email, no real contact, nationality or passport. It is deliberately not a live-submittable passenger record.
 
-A portal adapter must implement isAuthenticated, signIn and openSearch with UI-grounded selectors and sanitized failures. It must stop at site challenges and never log credentials. It must detect all seat-map pages, quote expiry, unavailable extras and the actual booking-commit boundary. No unobserved ancillary selectors or raw private endpoints have been invented.
+A portal adapter must implement isAuthenticated, signIn and searchFlightsForHeartbeat with UI-grounded selectors and sanitized failures. The heartbeat search must stop after results appear; it must not select a fare or continue to booking. It must stop at site challenges and never log credentials. It must detect all seat-map pages, quote expiry, unavailable extras and the actual booking-commit boundary. No unobserved ancillary selectors or raw private endpoints have been invented.
 
 ## Continuous operation on Render
 
