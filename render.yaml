@@ -30,3 +30,24 @@ services:
         sync: false
       - key: WHATSAPP_GRAPH_API_VERSION
         value: v23.0
+
+  # Proposed always-on browser worker; not deployed by this draft.
+  - type: worker
+    name: airarabia-portal-keepalive
+    runtime: docker
+    plan: 1c-2g
+    dockerfilePath: ./Dockerfile.worker
+    dockerContext: .
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: AIR_ARABIA_KEEPALIVE_ENABLED
+        value: "false"
+      - key: AIR_ARABIA_KEEPALIVE_ORIGIN
+        value: SHJ
+      - key: AIR_ARABIA_KEEPALIVE_DESTINATION
+        value: DAM
+      - key: AIR_ARABIA_AGENT_USERNAME
+        sync: false
+      - key: AIR_ARABIA_AGENT_PASSWORD
+        sync: false
