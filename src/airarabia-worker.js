@@ -91,7 +91,11 @@ class AirArabiaPortalAdapter {
 
 async function run() {
   if (process.env.AIR_ARABIA_KEEPALIVE_ENABLED !== 'true') {
-    throw new Error('Keepalive is disabled; set AIR_ARABIA_KEEPALIVE_ENABLED=true only after approved setup');
+    console.log('Keepalive is disabled; worker is idle until AIR_ARABIA_KEEPALIVE_ENABLED=true');
+    // Keep the worker healthy without opening a browser or repeatedly exiting.
+    // Render will stop this timer normally when the service is suspended or redeployed.
+    await new Promise(() => setInterval(() => {}, 60_000));
+    return;
   }
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
