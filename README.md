@@ -7,9 +7,12 @@ Independent quote-request intake MVP. This folder is separate from the hotel boo
 - Receives WhatsApp Cloud API webhook verification and inbound text messages.
 - Verifies `X-Hub-Signature-256` when `WHATSAPP_APP_SECRET` is configured; production mode refuses unsigned webhook requests if the secret is missing.
 - Collects origin, destination, departure date, one-way or return, return date when needed, passenger counts, and child/infant ages.
-- Responds with a recap and says a fare will be checked. It does **not** connect to the Fly Cham portal, check a live fare, book, issue a ticket, or collect payment.
+- Accepts Arabic and Western numerals for dates and passenger counts, rejects invalid or past dates and return dates before departure, and supports greeting and cancellation commands.
+- Responds with a recap and clearly says that a fare still needs a staff member to check the Fly Cham portal. It does **not** connect to the portal, check a live fare, route a staff handoff, book, issue a ticket, or collect payment.
 - Outbound WhatsApp messages are in dry-run mode by default. In dry-run, replies are logged to the server console only.
 - Conversation state is held in memory. Restarting the process clears unfinished conversations.
+
+Completed requests are not saved to a database or automatically forwarded to staff yet. The assistant must not be presented as a live fare checker until an authorized portal workflow or Fly Cham API and a staff handoff are implemented.
 
 ## Run locally
 
@@ -47,6 +50,12 @@ Only after a deliberate live test, set `DRY_RUN=false` and provide `WHATSAPP_ACC
 ## Quote margin configuration
 
 `.env.example` includes `QUOTE_CURRENCY`, `QUOTE_MARGIN_TYPE`, and `QUOTE_MARGIN_VALUE` as placeholders for the later quote workflow. They are not applied yet because the MVP has no fare source. Do not quote a price until the fare has actually been read from the authorized Fly Cham agent portal and the margin rule is agreed and implemented.
+
+Air Arabia has a separate agreed margin of **AED 25 per passenger**, applied once to the complete itinerary total (including a return leg when applicable). `AIR_ARABIA_MARGIN_AED=25` is included in `.env.example` and the proposed Render configuration. It does not define the FlyCham margin or use the generic margin placeholders above.
+
+`src/pricing.js` exports `priceAirArabiaQuote({ currency, baseTotal, passengerCount }, env)`. Supply the exact itemized total for all passengers, in AED, after verifying the portal quote and itinerary. The helper returns separate base, margin and selling totals as two-decimal strings and rejects zero/malformed totals, unsupported currencies, invalid passenger counts and arithmetic overflow. It uses integer fils to preserve precision.
+
+For example, an AED 695.01 portal total for one passenger becomes **AED 720.01**. Three passengers incur a total margin of AED 75. This calculation helper is prepared for the future portal adapter; it is not called by the current webhook, does not fetch fares, and does not send automatic price replies. No live environment setting or deployment is changed by this proposal.
 
 ## Next implementation stage
 
