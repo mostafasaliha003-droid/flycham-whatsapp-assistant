@@ -1,0 +1,14 @@
+{
+  "name": "flycham-whatsapp-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent WhatsApp intake assistant for Fly Cham fare requests. Quote-only MVP.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
