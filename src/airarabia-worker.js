@@ -14,7 +14,7 @@ const AIRPORTS = {
 };
 
 const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION']);
-const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);
 
 class PortalError extends Error {
   constructor(stage, reason) {
@@ -115,16 +115,21 @@ class AirArabiaPortalAdapter {
 
   async findVerificationFrame() {
     const pages = this.page.context ? this.page.context().pages() : [this.page];
+    let pendingRoute = null;
     for (const candidate of pages) {
+      if (candidate.isClosed?.()) continue;
       for (const frame of candidate.frames()) {
         try {
           const url = new URL(frame.url());
           if (url.origin !== new URL(LOGIN_URL).origin) continue;
-          if (/\/sendOTP(?:\.action)?$/.test(url.pathname) || await frame.locator?.('#userOtp').isVisible().catch(() => false)) return frame;
+          // A wrapper frame can share the OTP route. Prefer the frame that
+          // actually owns a visible input over an earlier route-only match.
+          if (await frame.locator?.('#userOtp:visible').isVisible().catch(() => false)) return frame;
+          if (/\/sendOTP(?:\.action)?$/.test(url.pathname)) pendingRoute = frame;
         } catch {}
       }
     }
-    return null;
+    return pendingRoute;
   }
 
   async isAuthenticated() {
@@ -145,7 +150,7 @@ class AirArabiaPortalAdapter {
         if (!operatorVerification) throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
         // Reacquire frames while the supplier replaces its login document.
         // A route alone can be present before the OTP form is ready.
-        const ready = await verification.locator('#userOtp').isVisible().catch(() => false);
+        const ready = await verification.locator('#userOtp:visible').isVisible().catch(() => false);
         if (!ready) {
           await new Promise(resolve => setTimeout(resolve, 250));
           continue;
@@ -155,7 +160,7 @@ class AirArabiaPortalAdapter {
         try {
           code = await this.verificationProvider({ requestedAt: Date.now() });
           this.verificationAttempted = true;
-          await verification.locator('#userOtp').fill(code);
+          await verification.locator('#userOtp:visible').fill(code);
           code = null;
           await verification.locator('#btnSubmit').click({ noWaitAfter: true });
           this.report('PORTAL_VERIFICATION_SUBMITTED');
@@ -169,7 +174,10 @@ class AirArabiaPortalAdapter {
       if (Date.now() >= deadline) break;
       await new Promise(resolve => setTimeout(resolve, 250));
     } while (Date.now() < deadline);
-    if (await this.findVerificationFrame()) throw new PortalError('VERIFICATION', 'VERIFICATION_REJECTED');
+    if (await this.findVerificationFrame()) {
+      await this.inspectSearchUI();
+      throw new PortalError('VERIFICATION', this.verificationAttempted ? 'VERIFICATION_REJECTED' : 'VERIFICATION_FORM_UNAVAILABLE');
+    }
     return false;
   }
 
@@ -347,7 +355,7 @@ class AirArabiaPortalAdapter {
   async searchFlightsForHeartbeat({ departureDate }) {
     if (!await this.isAuthenticated()) throw new Error('Portal session expired before heartbeat search');
 
-    if (!this.reservationControl) {
+    if (process.env.AIR_ARABIA_VERIFIED_SEARCH_ENABLED !== 'true') {
       // The authenticated main page is a safe supplier request. Reloading it
       // refreshes both server activity and the portal's client idle timer.
       // Do not manufacture a reservation-menu selector when none is observed.

@@ -220,7 +220,7 @@ test('operator verification submits one supplied code and only then confirms acc
   const verification = {
     url: () => pending ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/verified.action',
     locator: selector => ({
-      waitFor: async () => {}, isVisible: async () => pending && selector === '#userOtp',
+      waitFor: async () => {}, isVisible: async () => pending && selector.startsWith('#userOtp'),
       fill: async value => fills.push({ selector, value }),
       click: async () => { submitted++; pending = false; },
     }),
@@ -231,7 +231,7 @@ test('operator verification submits one supplied code and only then confirms acc
   const adapter = new AirArabiaPortalAdapter(page, { username: 'test-user', password: 'test-only', origin: 'SHJ', destination: 'DAM', report: code => codes.push(code), verificationProvider: async () => { supplied++; return '123456'; } });
   assert.equal(await adapter.waitForAuthentication(50, { operatorVerification: true }), true);
   assert.equal(supplied, 1); assert.equal(submitted, 1);
-  assert.deepEqual(fills, [{ selector: '#userOtp', value: '123456' }]);
+  assert.deepEqual(fills, [{ selector: '#userOtp:visible', value: '123456' }]);
   assert.ok(!codes.join(' ').includes('123456'));
 });
 
@@ -256,7 +256,7 @@ test('reacquires an OTP frame replaced during the login transition', async () =>
   const liveFrame = {
     url: () => pending ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/verified.action',
     locator: selector => ({
-      isVisible: async () => pending && selector === '#userOtp',
+      isVisible: async () => pending && selector.startsWith('#userOtp'),
       fill: async () => {},
       click: async () => { pending = false; },
     }),
@@ -267,4 +267,13 @@ test('reacquires an OTP frame replaced during the login transition', async () =>
   adapter.verificationProvider = async () => { supplied++; return '123456'; };
   assert.equal(await adapter.waitForAuthentication(1000, { operatorVerification: true }), true);
   assert.equal(supplied, 1);
+});
+
+
+test('prefers the visible OTP input over a route-only wrapper frame', async () => {
+  const page = fakePage();
+  const wrapper = { url: () => 'https://agents.airarabia.com/xbe/private/sendOTP.action', locator: () => ({ isVisible: async () => false }) };
+  const form = { url: () => 'https://agents.airarabia.com/xbe/private/otpForm.action', locator: () => ({ isVisible: async () => true }) };
+  page.frames = () => [wrapper, form];
+  assert.equal(await adapterFor(page).findVerificationFrame(), form);
 });
