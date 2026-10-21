@@ -9,22 +9,53 @@ const AIRPORTS = {
   DAM: 'DAM - Damascus',
 };
 
+const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'SESSION']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED']);
+
+class PortalError extends Error {
+  constructor(stage, reason) {
+    super(`PORTAL_${stage}_${reason}`);
+    this.stage = stage;
+    this.reason = reason;
+  }
+}
+
+function safeFailureCode(error, stage = 'SESSION') {
+  if (error instanceof PortalError && STAGES.has(error.stage) && REASONS.has(error.reason)) return `PORTAL_${error.stage}_${error.reason}`;
+  const message = String(error?.message || '');
+  const reason = error?.name === 'TimeoutError' ? 'TIMEOUT'
+    : /ERR_CERT_|ERR_SSL_/i.test(message) ? 'TLS'
+    : /ERR_(NAME_NOT_RESOLVED|CONNECTION_|INTERNET_|NETWORK_|PROXY_|TIMED_OUT)|ECONN|ENOTFOUND/i.test(message) ? 'NETWORK'
+    : 'UNEXPECTED';
+  return `PORTAL_${STAGES.has(stage) ? stage : 'SESSION'}_${reason}`;
+}
+
+async function atStage(stage, action) {
+  try { return await action(); }
+  catch (error) {
+    if (error instanceof PortalError) throw error;
+    const code = safeFailureCode(error, stage);
+    throw new PortalError(stage, code.slice(`PORTAL_${stage}_`.length));
+  }
+}
+
 function requiredEnv(name) {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing required configuration: ${name}`);
+  if (!value?.trim()) throw new PortalError('CONFIGURATION', name.endsWith('USERNAME') ? 'MISSING_USERNAME' : 'MISSING_PASSWORD');
   return value;
 }
 
 class AirArabiaPortalAdapter {
-  constructor(page, { username, password, origin, destination }) {
+  constructor(page, { username, password, origin, destination, report = () => {} }) {
     if (!AIRPORTS[origin] || !AIRPORTS[destination] || origin === destination) {
-      throw new Error('Unsupported keepalive route configuration');
+      throw new PortalError('CONFIGURATION', 'UNSUPPORTED_ROUTE');
     }
     this.page = page;
     this.username = username;
     this.password = password;
     this.origin = origin;
     this.destination = destination;
+    this.report = report;
   }
 
   async isAuthenticated() {
@@ -38,22 +69,46 @@ class AirArabiaPortalAdapter {
   }
 
   async signIn() {
-    await this.page.goto(LOGIN_URL);
-    await this.page.locator('#username_txt').waitFor({ state: 'visible', timeout: 20000 });
-    await this.page.locator('#username_txt').fill(this.username);
-    await this.page.locator('#j_password').fill(this.password);
-    await this.page.locator('#btnLogin').click();
+    this.report('PORTAL_STAGE_OPEN_LOGIN_PAGE');
+    await atStage('OPEN_LOGIN_PAGE', async () => {
+      // Third-party frames can keep the full load event pending. Wait for the
+      // document, then explicitly verify the actual form instead.
+      const response = await this.page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      if (response && response.status() >= 400) throw new PortalError('OPEN_LOGIN_PAGE', 'HTTP_ERROR');
+    });
+    this.report('PORTAL_STAGE_LOGIN_FORM');
+    await atStage('LOGIN_FORM', async () => {
+      await this.page.locator('#username_txt').waitFor({ state: 'visible', timeout: 30000 });
+      await this.page.locator('#j_password').waitFor({ state: 'visible', timeout: 30000 });
+      await this.assertNoChallenge();
+      await this.page.locator('#username_txt').fill(this.username);
+      await this.page.locator('#j_password').fill(this.password);
+    });
+    this.report('PORTAL_STAGE_LOGIN_SUBMIT');
+    await atStage('LOGIN_SUBMIT', () => this.page.locator('#btnLogin').click({ noWaitAfter: true }));
+    this.report('PORTAL_STAGE_LOGIN_CONFIRM');
+    await atStage('LOGIN_CONFIRM', async () => {
+      try {
+        // An attached frame is not yet an authenticated session. Wait for the
+        // observed sign-out control inside it before declaring login successful.
+        const signOut = this.page.frameLocator('iframe[src="showTop"]').getByText('SignOut', { exact: true });
+        await signOut.waitFor({ state: 'visible', timeout: 30000 });
+      } catch (error) {
+        await this.assertNoChallenge();
+        if (error.name === 'TimeoutError') throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
+        throw error;
+      }
+      if (!await this.isAuthenticated()) throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
+    });
+    this.report('PORTAL_AUTHENTICATED');
+  }
 
-    try {
-      await this.page.locator('iframe[src="showTop"]').waitFor({ state: 'attached', timeout: 30000 });
-      if (await this.isAuthenticated()) return;
-    } catch {}
-
-    const visibleText = await this.page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
-    if (/captcha|verify|verification|one[- ]time|otp|security code/i.test(visibleText)) {
-      throw new Error('Portal requires manual verification');
+  async assertNoChallenge() {
+    const captcha = await this.page.locator('#captcha_txt').isVisible().catch(() => false);
+    const text = await this.page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+    if (captcha || /captcha|verify you are human|verification|one[- ]time|\botp\b|security code|looked like a bot/i.test(text)) {
+      throw new PortalError('LOGIN_CONFIRM', 'MANUAL_VERIFICATION');
     }
-    throw new Error('Portal login could not be verified');
   }
 
   async selectAirport(frame, selector, code) {
@@ -86,65 +141,84 @@ class AirArabiaPortalAdapter {
     await search.locator('#btnSearch').click();
     await search.locator('#btnBook').first().waitFor({ state: 'visible', timeout: 45000 });
     if (!await this.isAuthenticated()) throw new Error('Session was not retained after heartbeat search');
+    this.report('PORTAL_HEARTBEAT_SEARCH_COMPLETED');
   }
 }
 
-async function run() {
+function waitForShutdown() {
+  return new Promise(resolve => {
+    const timer = setInterval(() => {}, 60_000);
+    const stop = () => {
+      clearInterval(timer);
+      process.removeListener('SIGTERM', stop);
+      process.removeListener('SIGINT', stop);
+      resolve();
+    };
+    process.once('SIGTERM', stop);
+    process.once('SIGINT', stop);
+  });
+}
+
+async function run({ launch = options => chromium.launch(options), park = waitForShutdown, log = console } = {}) {
   if (process.env.AIR_ARABIA_KEEPALIVE_ENABLED !== 'true') {
-    console.log('Keepalive is disabled; worker is idle until AIR_ARABIA_KEEPALIVE_ENABLED=true');
-    // Keep the worker healthy without opening a browser or repeatedly exiting.
-    // Render will stop this timer normally when the service is suspended or redeployed.
-    await new Promise(() => setInterval(() => {}, 60_000));
+    log.log('Keepalive is disabled; worker is idle until AIR_ARABIA_KEEPALIVE_ENABLED=true');
+    await park();
     return;
   }
 
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  let browser;
   let session;
+  let failed = false;
   const shutdown = async () => {
     if (session) await session.stop().catch(() => {});
-    await browser.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
   };
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
-
   try {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(15000);
-    const adapter = new AirArabiaPortalAdapter(page, {
+    // Validate secrets before opening any connection. Values are never logged.
+    const config = {
       username: requiredEnv('AIR_ARABIA_AGENT_USERNAME'),
       password: requiredEnv('AIR_ARABIA_AGENT_PASSWORD'),
       origin: process.env.AIR_ARABIA_KEEPALIVE_ORIGIN || 'SHJ',
       destination: process.env.AIR_ARABIA_KEEPALIVE_DESTINATION || 'DAM',
-    });
+      report: code => log.log(code),
+    };
+    log.log('PORTAL_STAGE_BROWSER_START');
+    browser = await atStage('BROWSER_START', () => launch({ headless: true, args: ['--no-sandbox'] }));
+    const page = await atStage('BROWSER_START', () => browser.newPage());
+    page.setDefaultTimeout(15000);
+    const adapter = new AirArabiaPortalAdapter(page, config);
     await adapter.signIn();
-    session = new PortalSession(adapter, {
-      idleMs: HEARTBEAT_IDLE_MS,
-      checkMs: HEARTBEAT_CHECK_MS,
-    });
+    session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
 
     let errorReported = false;
     session.start(code => {
       if (!errorReported) {
         errorReported = true;
-        // Do not log page contents, credentials, customer data, or supplier URLs.
-        console.error(code);
+        log.error(code);
+        // A failed authentication/search must not start an automatic retry loop.
+        shutdown().catch(() => {});
+        log.error('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY');
       }
     });
-    console.log('Air Arabia keepalive worker started; idle search interval is 15 minutes.');
-    await new Promise(() => {});
+    log.log('Air Arabia keepalive worker started; idle search interval is 15 minutes.');
+    await park();
+  } catch (error) {
+    failed = true;
+    log.error(safeFailureCode(error));
+    log.error('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY');
   } finally {
     await shutdown();
   }
+  // Stay idle after a failure instead of exiting and having the host repeat
+  // login on every process restart. Only an operator's redeploy can retry.
+  if (failed) await park();
 }
 
 if (require.main === module) {
-  run().catch(error => {
-    const message = /Missing required configuration|disabled|verification|could not be verified|Unsupported keepalive route/.test(error.message)
-      ? error.message
-      : 'Air Arabia keepalive worker failed safely';
-    console.error(message);
+  run().catch(() => {
+    console.error('PORTAL_SESSION_UNEXPECTED');
     process.exitCode = 1;
   });
 }
 
-module.exports = { AirArabiaPortalAdapter, AIRPORTS };
+module.exports = { AirArabiaPortalAdapter, AIRPORTS, PortalError, safeFailureCode, run };

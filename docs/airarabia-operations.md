@@ -1,5 +1,17 @@
 # Air Arabia quote selection and continuous-operation preparation
 
+## Incident update — 21 October 2026
+
+A separate Render worker now exists: `airarabia-portal-keepalive` (`srv-dbcjdhfb9u1s73bsm1s0`), Frankfurt, 1c-2g, on branch `codex/airarabia-fixed-margin`, with auto-deploy off. It is suspended while startup is being diagnosed. Do not modify hotel services.
+
+The previous version logged only a generic startup failure, then exited and could be restarted by Render, repeating login. The patched version validates configuration first, uses `domcontentloaded` plus explicit form checks instead of waiting for every page resource, waits for the visible authenticated sign-out control, and reports only allowlisted stage/error codes. It stops before any visible CAPTCHA/verification challenge. Startup or session failure closes the browser and parks without automatic retries. Shutdown remains supported while parked.
+
+Safe diagnostics include `PORTAL_OPEN_LOGIN_PAGE_TIMEOUT`, `PORTAL_LOGIN_FORM_TIMEOUT`, `PORTAL_LOGIN_CONFIRM_MANUAL_VERIFICATION`, `PORTAL_LOGIN_CONFIRM_LOGIN_NOT_CONFIRMED`, `PORTAL_AUTHENTICATED`, and `PORTAL_HEARTBEAT_SEARCH_COMPLETED`. Never print raw browser errors, credentials, page contents, supplier URLs, cookies, or customer data. A successful Render deploy is not proof of portal login or session retention.
+
+The patched version passes 37 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
+
+The preparation notes below describe the earlier draft and are retained as historical context; their statements that no worker exists are superseded by this incident update.
+
 ## Agreed customer policy
 
 Default requests: inspect the whole seat map and all available meal/baggage options. Choose an eligible free seat first, otherwise the cheapest available paid seat. Choose real free food first, otherwise the cheapest available meal; a no-food option is not a free meal. Confirm the checked and cabin baggage allowance; default to the cheapest weight option or provide separately rechecked weight quotes. Do not ask for a special seat unless the customer requests one. Honor an exact requested number or feature, without silently substituting a different preference.
