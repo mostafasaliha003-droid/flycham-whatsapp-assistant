@@ -22,6 +22,7 @@ function fakePage({ captcha = false, navigationError, confirmError, popup = null
   const signOut = {
     count: async () => 1, isVisible: async () => !confirmError,
     first() { return this; },
+    nth() { return this; },
     waitFor: async options => { calls.push(['waitForSignOut', options]); if (confirmError) throw confirmError; },
   };
   const frame = { url: () => 'https://agents.airarabia.com/xbe/private/showTop', getByText: () => signOut };
@@ -127,8 +128,8 @@ test('recognizes authentication in a legacy same-origin frame with both navigati
   assert.equal(await adapterFor(page).isAuthenticated(), true);
 });
 
-test('authentication requires both visible controls in the same trusted frame', async () => {
-  const control = visible => ({ first() { return this; }, count: async () => 1, isVisible: async () => visible });
+test('authentication rejects partial navigation and foreign-origin frames', async () => {
+  const control = visible => ({ first() { return this; }, nth() { return this; }, count: async () => 1, isVisible: async () => visible });
   const page = fakePage();
   page.frames = () => [{ url: () => 'https://agents.airarabia.com/xbe/private/showTop', getByText: pattern => control(pattern.test('Sign Out')) }];
   assert.equal(await adapterFor(page).isAuthenticated(), false);
@@ -153,4 +154,28 @@ test('starts with the protected portal route to initialize the supplier saved re
   const navigation = page.calls.find(([op]) => op === 'goto');
   assert.equal(navigation[2], 'https://agents.airarabia.com/xbe/private/showXBEMain.action');
   assert.ok(!navigation[2].includes('/public/showLogin.action'));
+});
+
+
+test('recognizes named image controls split across header and menu frames', async () => {
+  const control = visible => ({ count: async () => visible ? 1 : 0, nth() { return this; }, isVisible: async () => visible });
+  const frame = label => ({
+    url: () => 'https://agents.airarabia.com/xbe/private/navigation',
+    getByRole: (role, { name }) => control(role === 'img' && name.test(label)),
+    getByText: () => control(false),
+  });
+  const header = frame('SignOut'), menu = frame('Make Reservation');
+  const page = fakePage();
+  page.frames = () => [header, menu];
+  const adapter = adapterFor(page);
+  assert.equal(await adapter.isAuthenticated(), true);
+  assert.equal(adapter.navigationFrame, menu);
+});
+
+test('does not combine partial navigation from unrelated browser windows', async () => {
+  const control = visible => ({ count: async () => visible ? 1 : 0, nth() { return this; }, isVisible: async () => visible });
+  const pageWith = label => ({ frames: () => [{ url: () => 'https://agents.airarabia.com/xbe/private/navigation', getByText: pattern => control(pattern.test(label)) }] });
+  const first = pageWith('SignOut'), second = pageWith('Make Reservation');
+  first.context = () => ({ pages: () => [first, second] });
+  assert.equal(await adapterFor(first).isAuthenticated(), false);
 });

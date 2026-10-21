@@ -2,6 +2,8 @@
 
 ## Incident update — 21 October 2026
 
+Live verification of the protected-entry fix: the supplier login returned HTTP 302, not 400, and reached private portal pages with multiple frames. Authentication markers were still not confirmed by the old text-only checks. The current patch recognizes accessible names on links, buttons and images, and allows the header sign-out and reservation menu to be in separate trusted frames within the same browser window. It must not combine partial markers across unrelated windows. This recognition patch awaits a live check. Neither a completed login workflow nor a heartbeat search has yet been confirmed.
+
 A concrete login-flow defect was identified after reviewing the code: it navigated directly to the public form-login action. FORM container authentication may return HTTP 400 when there is no saved protected request. See IBM's primary support explanation: https://www.ibm.com/support/pages/http-status-400-invalid-direct-reference-form-login-page . This is a supported hypothesis for the supplier failure, not confirmation of the supplier's internal implementation or the exact HTTP 400 cause.
 
 The adapter now starts at the protected portal route previously supplied by the user (`/xbe/private/showXBEMain.action`), allowing the supplier to initialize the session and redirect/forward to its own login normally. It retains the supplier popup handling and never fabricates session tokens or submits a raw login POST. This entry-route correction passes a regression test but awaits live verification. Render remains suspended; do not report login or heartbeat success until observed.
@@ -16,7 +18,7 @@ Safe diagnostics include `PORTAL_OPEN_LOGIN_PAGE_TIMEOUT`, `PORTAL_LOGIN_FORM_TI
 
 Manual portal login was reported successful by the operator. The popup fix reached the login-submit stage but the old literal iframe/sign-out check did not confirm authentication. The adapter now checks actual same-origin frames and requires both visible Sign Out and Make Reservation controls in the same frame. It records only fixed result categories on failure, without raw supplier messages or page content. This correction is awaiting live verification.
 
-The patched version passes 43 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
+The patched version passes 45 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
 
 The preparation notes below describe the earlier draft and are retained as historical context; their statements that no worker exists are superseded by this incident update.
 

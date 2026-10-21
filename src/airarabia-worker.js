@@ -61,24 +61,43 @@ class AirArabiaPortalAdapter {
     this.report = report;
   }
 
+  async findVisibleControl(frame, pattern) {
+    // Supplier controls may be images with alt/title names or form buttons.
+    const candidates = ['link', 'button', 'img', 'menuitem'].map(role => frame.getByRole?.(role, { name: pattern })).filter(Boolean);
+    candidates.push(frame.getByText(pattern));
+    for (const locator of candidates) {
+      try {
+        const count = await locator.count();
+        for (let index = 0; index < Math.min(count, 20); index++) {
+          const element = locator.nth(index);
+          if (await element.isVisible()) return element;
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   async findNavigationFrame() {
-    // A legacy frameset can use <frame> as well as <iframe>, and src attributes
-    // may be absolute or include an action suffix. Inspect actual same-origin
-    // frames rather than depending on one literal DOM attribute.
+    // Both authenticated controls must belong to one trusted portal window;
+    // legacy headers and reservation menus may occupy different child frames.
     const pages = this.page.context ? this.page.context().pages() : [this.page];
     for (const candidate of pages) {
       if (candidate.isClosed?.()) continue;
+      let signOutFound = false;
+      let reservationFrame = null;
+      let reservationControl = null;
       for (const frame of candidate.frames()) {
-      try {
-        if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
-        const signOut = frame.getByText(/^sign\s*out$/i).first();
-        const reservation = frame.getByText(/^make\s+reservation$/i).first();
-        if (await signOut.count() && await reservation.count()
-            && await signOut.isVisible() && await reservation.isVisible()) {
-          this.page = candidate;
-          return frame;
-        }
-      } catch {}
+        try {
+          if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
+          if (await this.findVisibleControl(frame, /^(?:sign|log)\s*out$/i)) signOutFound = true;
+          const reservation = await this.findVisibleControl(frame, /^make\s+reservation$/i);
+          if (reservation) { reservationFrame = frame; reservationControl = reservation; }
+        } catch {}
+      }
+      if (signOutFound && reservationFrame) {
+        this.page = candidate;
+        this.reservationControl = reservationControl;
+        return reservationFrame;
       }
     }
     return null;
@@ -146,6 +165,8 @@ class AirArabiaPortalAdapter {
             passwordInput: Boolean(document.querySelector('input[type="password"]')),
             signOutText: /sign\s*out/i.test(text),
             reservationText: /make\s+reservation/i.test(text),
+            signOutNamedControl: Array.from(document.querySelectorAll('[alt],[title],input[value],[aria-label]')).some(el => visible(el) && ['alt','title','value','aria-label'].some(name => /^(?:sign|log)\s*out$/i.test(el.getAttribute(name) || ''))),
+            reservationNamedControl: Array.from(document.querySelectorAll('[alt],[title],input[value],[aria-label]')).some(el => visible(el) && ['alt','title','value','aria-label'].some(name => /^make\s+reservation$/i.test(el.getAttribute(name) || ''))),
             verification: /captcha|verify (you|that you) are human|looked like a bot|security challenge/i.test(text),
             accessDenied: /access denied|request (was )?(blocked|rejected)|forbidden|not authorized/i.test(text),
             invalidCredentials: /invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),
@@ -236,7 +257,7 @@ class AirArabiaPortalAdapter {
   async searchFlightsForHeartbeat({ departureDate }) {
     if (!await this.isAuthenticated()) throw new Error('Portal session expired before heartbeat search');
 
-    await this.navigationFrame.getByText(/^make\s+reservation$/i).first().click();
+    await this.reservationControl.click();
     const search = this.page.frameLocator('iframe#mainFrame');
     await search.locator('#btnSearch').waitFor({ state: 'visible', timeout: 15000 });
     await this.selectAirport(search, '#fAirport', this.origin);
