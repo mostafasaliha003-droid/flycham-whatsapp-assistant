@@ -71,10 +71,24 @@ class AirArabiaPortalAdapter {
   async signIn() {
     this.report('PORTAL_STAGE_OPEN_LOGIN_PAGE');
     await atStage('OPEN_LOGIN_PAGE', async () => {
+      // The supplier's fullScreen2() opens its real login in a named winCC
+      // popup and deliberately leaves the launcher document hidden.
+      const popupReady = this.page.waitForEvent('popup', { timeout: 8000 }).catch(() => null);
       // Third-party frames can keep the full load event pending. Wait for the
       // document, then explicitly verify the actual form instead.
       const response = await this.page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
       if (response && response.status() >= 400) throw new PortalError('OPEN_LOGIN_PAGE', 'HTTP_ERROR');
+      const popup = await popupReady;
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded', { timeout: 45000 });
+        const target = new URL(popup.url());
+        if (target.origin !== new URL(LOGIN_URL).origin || target.pathname !== new URL(LOGIN_URL).pathname) {
+          throw new PortalError('OPEN_LOGIN_PAGE', 'UNEXPECTED');
+        }
+        this.page = popup;
+        this.page.setDefaultTimeout(15000);
+        this.report('PORTAL_LOGIN_WINDOW_SELECTED');
+      }
     });
     this.report('PORTAL_STAGE_LOGIN_FORM');
     await atStage('LOGIN_FORM', async () => {
@@ -105,7 +119,11 @@ class AirArabiaPortalAdapter {
 
   async assertNoChallenge() {
     const captcha = await this.page.locator('#captcha_txt').isVisible().catch(() => false);
-    const text = await this.page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+    // Supplier Browser.js overrides innerText with textContent, including hidden
+    // scripts/error catalogs. Read only the supplier's visible error element.
+    const errorMessage = this.page.locator('#errorMSG');
+    const text = await errorMessage.isVisible().catch(() => false)
+      ? await errorMessage.textContent({ timeout: 5000 }).catch(() => '') : '';
     if (captcha || /captcha|verify you are human|verification|one[- ]time|\botp\b|security code|looked like a bot/i.test(text)) {
       throw new PortalError('LOGIN_CONFIRM', 'MANUAL_VERIFICATION');
     }

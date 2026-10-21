@@ -4,11 +4,13 @@
 
 A separate Render worker now exists: `airarabia-portal-keepalive` (`srv-dbcjdhfb9u1s73bsm1s0`), Frankfurt, 1c-2g, on branch `codex/airarabia-fixed-margin`, with auto-deploy off. It is suspended while startup is being diagnosed. Do not modify hotel services.
 
+The live diagnostic deployment reached the login page but timed out waiting for the username field. Public supplier Login.js confirms fullScreen2() opens a named winCC popup and keeps the launcher body hidden. The adapter now follows that popup only when its origin and path match the expected login page. It also avoids the supplier Browser.js innerText override, which includes hidden script/error catalogs, by checking only visible captcha/error elements.
+
 The previous version logged only a generic startup failure, then exited and could be restarted by Render, repeating login. The patched version validates configuration first, uses `domcontentloaded` plus explicit form checks instead of waiting for every page resource, waits for the visible authenticated sign-out control, and reports only allowlisted stage/error codes. It stops before any visible CAPTCHA/verification challenge. Startup or session failure closes the browser and parks without automatic retries. Shutdown remains supported while parked.
 
 Safe diagnostics include `PORTAL_OPEN_LOGIN_PAGE_TIMEOUT`, `PORTAL_LOGIN_FORM_TIMEOUT`, `PORTAL_LOGIN_CONFIRM_MANUAL_VERIFICATION`, `PORTAL_LOGIN_CONFIRM_LOGIN_NOT_CONFIRMED`, `PORTAL_AUTHENTICATED`, and `PORTAL_HEARTBEAT_SEARCH_COMPLETED`. Never print raw browser errors, credentials, page contents, supplier URLs, cookies, or customer data. A successful Render deploy is not proof of portal login or session retention.
 
-The patched version passes 37 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
+The patched version passes 39 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
 
 The preparation notes below describe the earlier draft and are retained as historical context; their statements that no worker exists are superseded by this incident update.
 

@@ -17,7 +17,7 @@ test('keepalive adapter permits only the explicitly configured verified airport 
 
 const { PortalError, safeFailureCode, run } = require('../src/airarabia-worker');
 
-function fakePage({ captcha = false, navigationError, confirmError } = {}) {
+function fakePage({ captcha = false, navigationError, confirmError, popup = null } = {}) {
   const calls = [];
   const signOut = {
     count: async () => 1, isVisible: async () => true,
@@ -26,13 +26,17 @@ function fakePage({ captcha = false, navigationError, confirmError } = {}) {
   return {
     calls,
     setDefaultTimeout() {},
+    waitForEvent: async () => popup,
+    waitForLoadState: async () => {},
+    url: () => 'https://agents.airarabia.com/xbe/public/showLogin.action',
     goto: async (url, options) => { calls.push(['goto', options]); if (navigationError) throw navigationError; return { status: () => 200 }; },
     locator: selector => ({
       waitFor: async () => {},
       fill: async () => { calls.push(['fill', selector]); },
       click: async () => { calls.push(['click', selector]); },
       isVisible: async () => selector === '#captcha_txt' && captcha,
-      innerText: async () => '',
+      innerText: async () => 'hidden script says captcha and looked like a bot',
+      textContent: async () => '',
     }),
     frameLocator: () => ({ getByText: () => signOut }),
   };
@@ -88,4 +92,25 @@ test('startup failure closes the browser and parks without repeating login or ex
   assert.ok(logs.includes('PORTAL_OPEN_LOGIN_PAGE_TIMEOUT'));
   assert.ok(logs.includes('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY'));
   assert.ok(!logs.join(' ').includes('secret-test-only'));
+});
+
+
+test('follows the supplier login popup rather than filling the hidden launcher', async () => {
+  const popup = fakePage();
+  const launcher = fakePage({ popup });
+  const codes = [];
+  const adapter = adapterFor(launcher, code => codes.push(code));
+  await adapter.signIn();
+  assert.equal(adapter.page, popup);
+  assert.equal(launcher.calls.filter(([op]) => op === 'fill' || op === 'click').length, 0);
+  assert.equal(popup.calls.filter(([op]) => op === 'fill').length, 2);
+  assert.ok(codes.includes('PORTAL_LOGIN_WINDOW_SELECTED'));
+  assert.ok(codes.includes('PORTAL_AUTHENTICATED'));
+});
+
+test('refuses an unexpected popup origin before entering any credentials', async () => {
+  const popup = fakePage();
+  popup.url = () => 'https://untrusted.example/login';
+  await assert.rejects(adapterFor(fakePage({ popup })).signIn(), /PORTAL_OPEN_LOGIN_PAGE_UNEXPECTED/);
+  assert.equal(popup.calls.filter(([op]) => op === 'fill' || op === 'click').length, 0);
 });
