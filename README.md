@@ -7,9 +7,12 @@ Independent quote-request intake MVP. This folder is separate from the hotel boo
 - Receives WhatsApp Cloud API webhook verification and inbound text messages.
 - Verifies `X-Hub-Signature-256` when `WHATSAPP_APP_SECRET` is configured; production mode refuses unsigned webhook requests if the secret is missing.
 - Collects origin, destination, departure date, one-way or return, return date when needed, passenger counts, and child/infant ages.
-- Responds with a recap and says a fare will be checked. It does **not** connect to the Fly Cham portal, check a live fare, book, issue a ticket, or collect payment.
+- Accepts Arabic and Western numerals for dates and passenger counts, rejects invalid or past dates and return dates before departure, and supports greeting and cancellation commands.
+- Responds with a recap and clearly says that a fare still needs a staff member to check the Fly Cham portal. It does **not** connect to the portal, check a live fare, route a staff handoff, book, issue a ticket, or collect payment.
 - Outbound WhatsApp messages are in dry-run mode by default. In dry-run, replies are logged to the server console only.
 - Conversation state is held in memory. Restarting the process clears unfinished conversations.
+
+Completed requests are not saved to a database or automatically forwarded to staff yet. The assistant must not be presented as a live fare checker until an authorized portal workflow or Fly Cham API and a staff handoff are implemented.
 
 ## Run locally
 
