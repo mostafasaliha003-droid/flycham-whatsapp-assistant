@@ -12,6 +12,8 @@ services:
         value: production
       - key: DRY_RUN
         value: "true"
+      - key: AIR_ARABIA_MARGIN_AED
+        value: "25"
       - key: PORT
         value: "3000"
       - key: WHATSAPP_VERIFY_TOKEN
