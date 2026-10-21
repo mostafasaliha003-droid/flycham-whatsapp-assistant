@@ -20,11 +20,14 @@ const { PortalError, safeFailureCode, run } = require('../src/airarabia-worker')
 function fakePage({ captcha = false, navigationError, confirmError, popup = null } = {}) {
   const calls = [];
   const signOut = {
-    count: async () => 1, isVisible: async () => true,
+    count: async () => 1, isVisible: async () => !confirmError,
+    first() { return this; },
     waitFor: async options => { calls.push(['waitForSignOut', options]); if (confirmError) throw confirmError; },
   };
+  const frame = { url: () => 'https://agents.airarabia.com/xbe/private/showTop', getByText: () => signOut };
   return {
     calls,
+    frames: () => [frame],
     setDefaultTimeout() {},
     waitForEvent: async () => popup,
     waitForLoadState: async () => {},
@@ -50,7 +53,7 @@ test('login waits for the document and a visible authenticated control, not thir
   const codes = [];
   await adapterFor(page, code => codes.push(code)).signIn();
   assert.equal(page.calls[0][1].waitUntil, 'domcontentloaded');
-  assert.ok(page.calls.some(([op]) => op === 'waitForSignOut'));
+  assert.equal(await adapterFor(page).isAuthenticated(), true);
   assert.equal(codes.at(-1), 'PORTAL_AUTHENTICATED');
 });
 
@@ -64,7 +67,9 @@ test('an unconfirmed login does not declare authentication successful', async ()
   const error = Object.assign(new Error('private page and user data'), { name: 'TimeoutError' });
   const page = fakePage({ confirmError: error });
   const codes = [];
-  await assert.rejects(adapterFor(page, code => codes.push(code)).signIn(), /LOGIN_NOT_CONFIRMED/);
+  const adapter = adapterFor(page, code => codes.push(code));
+  adapter.waitForAuthentication = () => adapter.isAuthenticated();
+  await assert.rejects(adapter.signIn(), /LOGIN_NOT_CONFIRMED/);
   assert.ok(!codes.includes('PORTAL_AUTHENTICATED'));
 });
 
@@ -113,4 +118,20 @@ test('refuses an unexpected popup origin before entering any credentials', async
   popup.url = () => 'https://untrusted.example/login';
   await assert.rejects(adapterFor(fakePage({ popup })).signIn(), /PORTAL_OPEN_LOGIN_PAGE_UNEXPECTED/);
   assert.equal(popup.calls.filter(([op]) => op === 'fill' || op === 'click').length, 0);
+});
+
+
+test('recognizes authentication in a legacy same-origin frame with both navigation controls', async () => {
+  const page = fakePage();
+  page.frameLocator = () => { throw new Error('literal iframe selector cannot match a frameset'); };
+  assert.equal(await adapterFor(page).isAuthenticated(), true);
+});
+
+test('authentication requires both visible controls in the same trusted frame', async () => {
+  const control = visible => ({ first() { return this; }, count: async () => 1, isVisible: async () => visible });
+  const page = fakePage();
+  page.frames = () => [{ url: () => 'https://agents.airarabia.com/xbe/private/showTop', getByText: pattern => control(pattern.test('Sign Out')) }];
+  assert.equal(await adapterFor(page).isAuthenticated(), false);
+  page.frames = () => [{ url: () => 'https://other.example/xbe/private/showTop', getByText: () => control(true) }];
+  assert.equal(await adapterFor(page).isAuthenticated(), false);
 });

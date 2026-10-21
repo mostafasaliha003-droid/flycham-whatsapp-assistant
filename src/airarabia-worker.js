@@ -58,14 +58,56 @@ class AirArabiaPortalAdapter {
     this.report = report;
   }
 
-  async isAuthenticated() {
-    try {
-      const top = this.page.frameLocator('iframe[src="showTop"]');
-      const signOut = top.getByText('SignOut', { exact: true });
-      return await signOut.count() > 0 && await signOut.isVisible();
-    } catch {
-      return false;
+  async findNavigationFrame() {
+    // A legacy frameset can use <frame> as well as <iframe>, and src attributes
+    // may be absolute or include an action suffix. Inspect actual same-origin
+    // frames rather than depending on one literal DOM attribute.
+    for (const frame of this.page.frames()) {
+      try {
+        if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
+        const signOut = frame.getByText(/^sign\s*out$/i).first();
+        const reservation = frame.getByText(/^make\s+reservation$/i).first();
+        if (await signOut.count() && await reservation.count()
+            && await signOut.isVisible() && await reservation.isVisible()) return frame;
+      } catch {}
     }
+    return null;
+  }
+
+  async isAuthenticated() {
+    this.navigationFrame = await this.findNavigationFrame();
+    return Boolean(this.navigationFrame);
+  }
+
+  async waitForAuthentication(timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.isAuthenticated()) return true;
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    } while (Date.now() < deadline);
+    return false;
+  }
+
+  async reportLoginResult() {
+    // Only fixed classifications are logged; never page text, URLs or account data.
+    const username = this.page.locator('#username_txt');
+    if (await username.isVisible().catch(() => false)) this.report('PORTAL_LOGIN_RESULT_LOGIN_FORM_VISIBLE');
+    try {
+      const url = new URL(this.page.url());
+      if (url.origin === new URL(LOGIN_URL).origin && url.pathname.startsWith('/xbe/private/')) {
+        this.report('PORTAL_LOGIN_RESULT_PRIVATE_PAGE');
+      }
+    } catch {}
+    const errorElement = this.page.locator('#errorMSG');
+    if (await errorElement.isVisible().catch(() => false)) {
+      const message = await errorElement.textContent({ timeout: 5000 }).catch(() => '');
+      const reason = /inactive|disabled|locked/i.test(message) ? 'ACCOUNT_REVIEW'
+        : /invalid|user.*password|password.*user/i.test(message) ? 'CREDENTIALS_REJECTED'
+        : 'SUPPLIER_MESSAGE';
+      this.report(`PORTAL_LOGIN_RESULT_${reason}`);
+    }
+    this.report('PORTAL_LOGIN_RESULT_AUTHENTICATION_MARKERS_NOT_CONFIRMED');
   }
 
   async signIn() {
@@ -102,17 +144,11 @@ class AirArabiaPortalAdapter {
     await atStage('LOGIN_SUBMIT', () => this.page.locator('#btnLogin').click({ noWaitAfter: true }));
     this.report('PORTAL_STAGE_LOGIN_CONFIRM');
     await atStage('LOGIN_CONFIRM', async () => {
-      try {
-        // An attached frame is not yet an authenticated session. Wait for the
-        // observed sign-out control inside it before declaring login successful.
-        const signOut = this.page.frameLocator('iframe[src="showTop"]').getByText('SignOut', { exact: true });
-        await signOut.waitFor({ state: 'visible', timeout: 30000 });
-      } catch (error) {
+      if (!await this.waitForAuthentication()) {
         await this.assertNoChallenge();
-        if (error.name === 'TimeoutError') throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
-        throw error;
+        await this.reportLoginResult();
+        throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
       }
-      if (!await this.isAuthenticated()) throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
     });
     this.report('PORTAL_AUTHENTICATED');
   }
@@ -139,8 +175,7 @@ class AirArabiaPortalAdapter {
   async searchFlightsForHeartbeat({ departureDate }) {
     if (!await this.isAuthenticated()) throw new Error('Portal session expired before heartbeat search');
 
-    const top = this.page.frameLocator('iframe[src="showTop"]');
-    await top.getByText('Make Reservation', { exact: true }).click();
+    await this.navigationFrame.getByText(/^make\s+reservation$/i).first().click();
     const search = this.page.frameLocator('iframe#mainFrame');
     await search.locator('#btnSearch').waitFor({ state: 'visible', timeout: 15000 });
     await this.selectAirport(search, '#fAirport', this.origin);
