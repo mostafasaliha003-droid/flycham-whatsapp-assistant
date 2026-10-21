@@ -32,7 +32,7 @@ function fakePage({ captcha = false, navigationError, confirmError, popup = null
     waitForEvent: async () => popup,
     waitForLoadState: async () => {},
     url: () => 'https://agents.airarabia.com/xbe/public/showLogin.action',
-    goto: async (url, options) => { calls.push(['goto', options]); if (navigationError) throw navigationError; return { status: () => 200 }; },
+    goto: async (url, options) => { calls.push(['goto', options, url]); if (navigationError) throw navigationError; return { status: () => 200 }; },
     locator: selector => ({
       waitFor: async () => {},
       fill: async () => { calls.push(['fill', selector]); },
@@ -144,4 +144,13 @@ test('finds the authenticated portal when login leaves its handler in an older w
   const adapter = adapterFor(handler);
   assert.equal(await adapter.isAuthenticated(), true);
   assert.equal(adapter.page, portal);
+});
+
+
+test('starts with the protected portal route to initialize the supplier saved request', async () => {
+  const page = fakePage();
+  await adapterFor(page).signIn();
+  const navigation = page.calls.find(([op]) => op === 'goto');
+  assert.equal(navigation[2], 'https://agents.airarabia.com/xbe/private/showXBEMain.action');
+  assert.ok(!navigation[2].includes('/public/showLogin.action'));
 });

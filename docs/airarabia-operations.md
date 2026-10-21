@@ -2,8 +2,9 @@
 
 ## Incident update — 21 October 2026
 
-Latest live finding (22:51 UTC): the login POST from the Render worker receives HTTP 400 at the supplier login handler. Both browser windows were inspected using only safe boolean classifications; neither contained authenticated navigation. There was no visible login form, explicit credential-rejection classification, or verification classification in the handler result. The cause of HTTP 400 is not established. Manual login was reported working by the user. Do not assume an IP block, bad password, or successful login from this evidence. Keepalive was set to false and redeployed; the service must also be suspended in Render to stop billing. Do not repeat login until the HTTP 400 has been explained or a concrete request issue has been identified.
+A concrete login-flow defect was identified after reviewing the code: it navigated directly to the public form-login action. FORM container authentication may return HTTP 400 when there is no saved protected request. See IBM's primary support explanation: https://www.ibm.com/support/pages/http-status-400-invalid-direct-reference-form-login-page . This is a supported hypothesis for the supplier failure, not confirmation of the supplier's internal implementation or the exact HTTP 400 cause.
 
+The adapter now starts at the protected portal route previously supplied by the user (`/xbe/private/showXBEMain.action`), allowing the supplier to initialize the session and redirect/forward to its own login normally. It retains the supplier popup handling and never fabricates session tokens or submits a raw login POST. This entry-route correction passes a regression test but awaits live verification. Render remains suspended; do not report login or heartbeat success until observed.
 
 A separate Render worker now exists: `airarabia-portal-keepalive` (`srv-dbcjdhfb9u1s73bsm1s0`), Frankfurt, 1c-2g, on branch `codex/airarabia-fixed-margin`, with auto-deploy off. It is suspended while startup is being diagnosed. Do not modify hotel services.
 
@@ -15,7 +16,7 @@ Safe diagnostics include `PORTAL_OPEN_LOGIN_PAGE_TIMEOUT`, `PORTAL_LOGIN_FORM_TI
 
 Manual portal login was reported successful by the operator. The popup fix reached the login-submit stage but the old literal iframe/sign-out check did not confirm authentication. The adapter now checks actual same-origin frames and requires both visible Sign Out and Make Reservation controls in the same frame. It records only fixed result categories on failure, without raw supplier messages or page content. This correction is awaiting live verification.
 
-The patched version passes 41 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
+The patched version passes 43 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
 
 The preparation notes below describe the earlier draft and are retained as historical context; their statements that no worker exists are superseded by this incident update.
 

@@ -4,6 +4,9 @@ const { chromium } = require('playwright');
 const { PortalSession, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
+// Enter through the user-supplied protected portal route so the supplier can
+// save the requested destination before displaying its FORM login page.
+const LOGIN_ENTRY_URL = 'https://agents.airarabia.com/xbe/private/showXBEMain.action';
 const AIRPORTS = {
   SHJ: 'SHJ - Sharjah',
   DAM: 'DAM - Damascus',
@@ -168,7 +171,7 @@ class AirArabiaPortalAdapter {
       const popupReady = this.page.waitForEvent('popup', { timeout: 8000 }).catch(() => null);
       // Third-party frames can keep the full load event pending. Wait for the
       // document, then explicitly verify the actual form instead.
-      const response = await this.page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
       if (response && response.status() >= 400) throw new PortalError('OPEN_LOGIN_PAGE', 'HTTP_ERROR');
       const popup = await popupReady;
       if (popup) {
@@ -332,4 +335,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { AirArabiaPortalAdapter, AIRPORTS, PortalError, safeFailureCode, run };
+module.exports = { AirArabiaPortalAdapter, AIRPORTS, LOGIN_ENTRY_URL, PortalError, safeFailureCode, run };
