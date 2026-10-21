@@ -2,6 +2,9 @@
 
 ## Incident update — 21 October 2026
 
+Latest live finding (22:51 UTC): the login POST from the Render worker receives HTTP 400 at the supplier login handler. Both browser windows were inspected using only safe boolean classifications; neither contained authenticated navigation. There was no visible login form, explicit credential-rejection classification, or verification classification in the handler result. The cause of HTTP 400 is not established. Manual login was reported working by the user. Do not assume an IP block, bad password, or successful login from this evidence. Keepalive was set to false and redeployed; the service must also be suspended in Render to stop billing. Do not repeat login until the HTTP 400 has been explained or a concrete request issue has been identified.
+
+
 A separate Render worker now exists: `airarabia-portal-keepalive` (`srv-dbcjdhfb9u1s73bsm1s0`), Frankfurt, 1c-2g, on branch `codex/airarabia-fixed-margin`, with auto-deploy off. It is suspended while startup is being diagnosed. Do not modify hotel services.
 
 The live diagnostic deployment reached the login page but timed out waiting for the username field. Public supplier Login.js confirms fullScreen2() opens a named winCC popup and keeps the launcher body hidden. The adapter now follows that popup only when its origin and path match the expected login page. It also avoids the supplier Browser.js innerText override, which includes hidden script/error catalogs, by checking only visible captcha/error elements.
