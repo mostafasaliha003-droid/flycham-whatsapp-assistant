@@ -181,11 +181,11 @@ test('does not combine partial navigation from unrelated login windows', async (
 });
 
 
-test('confirms a private portal using a visible title-based sign-out control', async () => {
+test('confirms title-based navigation and can refresh an authenticated private portal', async () => {
   const control = visible => ({ count: async () => visible ? 1 : 0, nth() { return this; }, isVisible: async () => visible });
   const frame = {
     url: () => 'https://agents.airarabia.com/xbe/private/showTop',
-    getByTitle: pattern => control(pattern.test('SignOut')),
+    getByTitle: pattern => control(pattern.test('SignOut') || pattern.test('Make Reservation')),
     getByText: () => control(false),
     locator: () => ({ isVisible: async () => false }),
   };
@@ -194,11 +194,53 @@ test('confirms a private portal using a visible title-based sign-out control', a
   page.frames = () => [frame];
   const adapter = adapterFor(page);
   assert.equal(await adapter.isAuthenticated(), true);
-  assert.equal(adapter.reservationControl, null);
+  adapter.reservationControl = null;
+  adapter.isAuthenticated = async () => true;
   const codes = [];
   adapter.report = code => codes.push(code);
   await adapter.searchFlightsForHeartbeat({ departureDate: '01/12/2026' });
   assert.ok(page.calls.some(([op, , url]) => op === 'goto' && url.endsWith('/private/showXBEMain.action')));
   assert.ok(codes.includes('PORTAL_HEARTBEAT_REFRESH_COMPLETED'));
   assert.ok(!page.calls.some(([op]) => op === 'click'));
+});
+
+
+test('an OTP frame blocks authentication even if the portal already shows sign-out', async () => {
+  const page = fakePage();
+  const verification = { url: () => 'https://agents.airarabia.com/xbe/private/sendOTP.action' };
+  const frames = page.frames();
+  page.frames = () => [...frames, verification];
+  assert.equal(await adapterFor(page).isAuthenticated(), false);
+});
+
+test('operator verification submits one supplied code and only then confirms access', async () => {
+  const page = fakePage();
+  let pending = true, supplied = 0, submitted = 0;
+  const fills = [];
+  const verification = {
+    url: () => pending ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/verified.action',
+    locator: selector => ({
+      waitFor: async () => {}, isVisible: async () => pending && selector === '#userOtp',
+      fill: async value => fills.push({ selector, value }),
+      click: async () => { submitted++; pending = false; },
+    }),
+  };
+  const frames = page.frames();
+  page.frames = () => [...frames, verification];
+  const codes = [];
+  const adapter = new AirArabiaPortalAdapter(page, { username: 'test-user', password: 'test-only', origin: 'SHJ', destination: 'DAM', report: code => codes.push(code), verificationProvider: async () => { supplied++; return '123456'; } });
+  assert.equal(await adapter.waitForAuthentication(50, { operatorVerification: true }), true);
+  assert.equal(supplied, 1); assert.equal(submitted, 1);
+  assert.deepEqual(fills, [{ selector: '#userOtp', value: '123456' }]);
+  assert.ok(!codes.join(' ').includes('123456'));
+});
+
+test('heartbeat cannot submit a code or continue through a verification challenge', async () => {
+  const page = fakePage();
+  page.frames = () => [{ url: () => 'https://agents.airarabia.com/xbe/private/sendOTP.action' }];
+  let supplied = 0;
+  const adapter = adapterFor(page);
+  adapter.verificationProvider = async () => { supplied++; return '123456'; };
+  await assert.rejects(adapter.waitForAuthentication(0), /PORTAL_VERIFICATION_MANUAL_VERIFICATION/);
+  assert.equal(supplied, 0);
 });

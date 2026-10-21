@@ -2,7 +2,17 @@
 
 ## Incident update — 21 October 2026
 
-Latest verified runtime status: commit 85cba6763d2078813db0ac024e200d9496b57d0a is live. PORTAL_AUTHENTICATED was observed at 2026-10-21T23:12:01Z. PORTAL_HEARTBEAT_REFRESH_COMPLETED was observed at 23:12:11Z, followed by the worker-started message. This proves initial login and an authenticated main-page refresh; it does not prove a flight search or indefinite session retention. The worker is active on the authorized paid plan, with 15-minute idle heartbeat scheduling. A one-time read-only follow-up was scheduled for 2026-10-22 03:30 Dubai time to check the first later heartbeat. WhatsApp fare lookup integration remains separate and incomplete. Earlier incident findings below are historical and superseded where applicable.
+CORRECTION — search-UI inspection found the private sendOTP.action frame with a visible userOtp field. Earlier sign-out-based login and main-page-refresh success events proved only a partial session; they did not establish completion of OTP or access to reservation search. The scheduled refresh check also confirmed refresh of that partial session only. Do not describe this as a fully authenticated fare-search workflow.
+
+The corrected adapter rejects authentication while any same-origin OTP frame is present and requires usable reservation navigation in addition to sign-out. On initial login it waits for operator-provided verification, submits at most one code to the observed userOtp / btnSubmit form, and stops on failure or expiry. No CAPTCHA/verification is bypassed, no codes are fetched from email, and no automatic resend is clicked.
+
+Operator handoff: open the existing worker's Render Shell while PORTAL_VERIFICATION_WAITING_FOR_OPERATOR is logged. Enter the OTP directly in that terminal with a masked read, then write it atomically to /tmp/airarabia-verification-code with mode 0600. It must be newer than the current challenge and is deleted when consumed. Do not put an OTP into chat, source, logs, or a Render variable that restarts the process. The operator may use:
+
+```bash
+read -r -s -p 'OTP: ' AA_CODE && AA_CODE_FILE=$(mktemp /tmp/aa-otp.XXXXXX) && printf '%s' "$AA_CODE" > "$AA_CODE_FILE" && mv "$AA_CODE_FILE" /tmp/airarabia-verification-code; unset AA_CODE AA_CODE_FILE
+```
+
+The worker holds the same browser session for up to ten minutes awaiting this handoff. An expired/rejected code stops the attempt. The current patch passes 53 local tests; live operator verification and flight search remain pending. No quote search is connected to WhatsApp yet. A host restart can require new OTP; 24/7 recovery without an operator is not established.
 
 Live diagnostics show a visible SignOut title/alt control in a private portal frame after login HTTP 302. The adapter now explicitly checks title and alt locators. A private portal window with a visible sign-out control and no visible password form can confirm authentication without requiring a reservation menu to be on the current screen. If the Make Reservation action is absent, heartbeat navigates the existing authenticated window to the known protected portal main page, then re-verifies sign-out. This is read-only session refresh, not a flight search. It emits PORTAL_HEARTBEAT_REFRESH_COMPLETED; search success retains its distinct event. Startup performs an initial heartbeat before enabling the 15-minute idle timer. No booking controls are clicked.
 

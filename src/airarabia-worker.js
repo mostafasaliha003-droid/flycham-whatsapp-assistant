@@ -1,6 +1,7 @@
 'use strict';
 
 const { chromium } = require('playwright');
+const { waitForVerificationCode } = require('./operator-verification');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -12,8 +13,8 @@ const AIRPORTS = {
   DAM: 'DAM - Damascus',
 };
 
-const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'SESSION']);
-const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED']);
+const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED']);
 
 class PortalError extends Error {
   constructor(stage, reason) {
@@ -49,7 +50,7 @@ function requiredEnv(name) {
 }
 
 class AirArabiaPortalAdapter {
-  constructor(page, { username, password, origin, destination, report = () => {} }) {
+  constructor(page, { username, password, origin, destination, report = () => {}, verificationProvider = waitForVerificationCode }) {
     if (!AIRPORTS[origin] || !AIRPORTS[destination] || origin === destination) {
       throw new PortalError('CONFIGURATION', 'UNSUPPORTED_ROUTE');
     }
@@ -59,6 +60,8 @@ class AirArabiaPortalAdapter {
     this.origin = origin;
     this.destination = destination;
     this.report = report;
+    this.verificationProvider = verificationProvider;
+    this.verificationAttempted = false;
   }
 
   async findVisibleControl(frame, pattern) {
@@ -98,8 +101,7 @@ class AirArabiaPortalAdapter {
           if (reservation) { reservationFrame = frame; reservationControl = reservation; }
         } catch {}
       }
-      const privateWindow = new URL(candidate.url()).origin === new URL(LOGIN_URL).origin && new URL(candidate.url()).pathname.startsWith('/xbe/private/');
-      if (signOutFrame && !loginFormVisible && (reservationFrame || privateWindow)) {
+      if (signOutFrame && !loginFormVisible && reservationFrame) {
         this.page = candidate;
         this.reservationControl = reservationControl;
         return reservationFrame || signOutFrame;
@@ -108,18 +110,57 @@ class AirArabiaPortalAdapter {
     return null;
   }
 
+  async findVerificationFrame() {
+    const pages = this.page.context ? this.page.context().pages() : [this.page];
+    for (const candidate of pages) {
+      for (const frame of candidate.frames()) {
+        try {
+          const url = new URL(frame.url());
+          if (url.origin !== new URL(LOGIN_URL).origin) continue;
+          if (/\/sendOTP(?:\.action)?$/.test(url.pathname) || await frame.locator?.('#userOtp').isVisible().catch(() => false)) return frame;
+        } catch {}
+      }
+    }
+    return null;
+  }
+
   async isAuthenticated() {
+    if (await this.findVerificationFrame()) {
+      this.navigationFrame = null;
+      this.reservationControl = null;
+      return false;
+    }
     this.navigationFrame = await this.findNavigationFrame();
     return Boolean(this.navigationFrame);
   }
 
-  async waitForAuthentication(timeoutMs = 30000) {
-    const deadline = Date.now() + timeoutMs;
+  async waitForAuthentication(timeoutMs = 30000, { operatorVerification = false } = {}) {
+    let deadline = Date.now() + timeoutMs;
     do {
+      const verification = await this.findVerificationFrame();
+      if (verification && !this.verificationAttempted) {
+        if (!operatorVerification) throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
+        await verification.locator('#userOtp').waitFor({ state: 'visible', timeout: 30000 });
+        this.report('PORTAL_VERIFICATION_WAITING_FOR_OPERATOR');
+        let code;
+        try {
+          code = await this.verificationProvider({ requestedAt: Date.now() });
+          this.verificationAttempted = true;
+          await verification.locator('#userOtp').fill(code);
+          code = null;
+          await verification.locator('#btnSubmit').click({ noWaitAfter: true });
+          this.report('PORTAL_VERIFICATION_SUBMITTED');
+        } catch (error) {
+          code = null;
+          throw new PortalError('VERIFICATION', error.code === 'VERIFICATION_TIMEOUT' ? 'VERIFICATION_TIMEOUT' : 'MANUAL_VERIFICATION');
+        }
+        deadline = Date.now() + timeoutMs;
+      }
       if (await this.isAuthenticated()) return true;
       if (Date.now() >= deadline) break;
       await new Promise(resolve => setTimeout(resolve, 250));
     } while (Date.now() < deadline);
+    if (await this.findVerificationFrame()) throw new PortalError('VERIFICATION', 'VERIFICATION_REJECTED');
     return false;
   }
 
@@ -231,7 +272,7 @@ class AirArabiaPortalAdapter {
     await atStage('LOGIN_SUBMIT', () => this.page.locator('#btnLogin').click({ noWaitAfter: true }));
     this.report('PORTAL_STAGE_LOGIN_CONFIRM');
     await atStage('LOGIN_CONFIRM', async () => {
-      if (!await this.waitForAuthentication()) {
+      if (!await this.waitForAuthentication(30000, { operatorVerification: true })) {
         await this.assertNoChallenge();
         await this.reportLoginResult();
         throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
