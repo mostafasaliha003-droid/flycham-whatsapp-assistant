@@ -172,10 +172,33 @@ test('recognizes named image controls split across header and menu frames', asyn
   assert.equal(adapter.navigationFrame, menu);
 });
 
-test('does not combine partial navigation from unrelated browser windows', async () => {
+test('does not combine partial navigation from unrelated login windows', async () => {
   const control = visible => ({ count: async () => visible ? 1 : 0, nth() { return this; }, isVisible: async () => visible });
-  const pageWith = label => ({ frames: () => [{ url: () => 'https://agents.airarabia.com/xbe/private/navigation', getByText: pattern => control(pattern.test(label)) }] });
+  const pageWith = label => ({ url: () => 'https://agents.airarabia.com/xbe/public/showLogin.action', frames: () => [{ url: () => 'https://agents.airarabia.com/xbe/private/navigation', getByText: pattern => control(pattern.test(label)) }] });
   const first = pageWith('SignOut'), second = pageWith('Make Reservation');
   first.context = () => ({ pages: () => [first, second] });
   assert.equal(await adapterFor(first).isAuthenticated(), false);
+});
+
+
+test('confirms a private portal using a visible title-based sign-out control', async () => {
+  const control = visible => ({ count: async () => visible ? 1 : 0, nth() { return this; }, isVisible: async () => visible });
+  const frame = {
+    url: () => 'https://agents.airarabia.com/xbe/private/showTop',
+    getByTitle: pattern => control(pattern.test('SignOut')),
+    getByText: () => control(false),
+    locator: () => ({ isVisible: async () => false }),
+  };
+  const page = fakePage();
+  page.url = () => 'https://agents.airarabia.com/xbe/private/showXBEMain.action';
+  page.frames = () => [frame];
+  const adapter = adapterFor(page);
+  assert.equal(await adapter.isAuthenticated(), true);
+  assert.equal(adapter.reservationControl, null);
+  const codes = [];
+  adapter.report = code => codes.push(code);
+  await adapter.searchFlightsForHeartbeat({ departureDate: '01/12/2026' });
+  assert.ok(page.calls.some(([op, , url]) => op === 'goto' && url.endsWith('/private/showXBEMain.action')));
+  assert.ok(codes.includes('PORTAL_HEARTBEAT_REFRESH_COMPLETED'));
+  assert.ok(!page.calls.some(([op]) => op === 'click'));
 });

@@ -1,7 +1,7 @@
 'use strict';
 
 const { chromium } = require('playwright');
-const { PortalSession, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
+const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
 // Enter through the user-supplied protected portal route so the supplier can
@@ -64,6 +64,8 @@ class AirArabiaPortalAdapter {
   async findVisibleControl(frame, pattern) {
     // Supplier controls may be images with alt/title names or form buttons.
     const candidates = ['link', 'button', 'img', 'menuitem'].map(role => frame.getByRole?.(role, { name: pattern })).filter(Boolean);
+    if (frame.getByTitle) candidates.push(frame.getByTitle(pattern));
+    if (frame.getByAltText) candidates.push(frame.getByAltText(pattern));
     candidates.push(frame.getByText(pattern));
     for (const locator of candidates) {
       try {
@@ -83,21 +85,24 @@ class AirArabiaPortalAdapter {
     const pages = this.page.context ? this.page.context().pages() : [this.page];
     for (const candidate of pages) {
       if (candidate.isClosed?.()) continue;
-      let signOutFound = false;
+      let signOutFrame = null;
+      let loginFormVisible = false;
       let reservationFrame = null;
       let reservationControl = null;
       for (const frame of candidate.frames()) {
         try {
           if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
-          if (await this.findVisibleControl(frame, /^(?:sign|log)\s*out$/i)) signOutFound = true;
-          const reservation = await this.findVisibleControl(frame, /^make\s+reservation$/i);
+          if (await this.findVisibleControl(frame, /^(?:sign|log)\s*out$/i)) signOutFrame = frame;
+          if (await frame.locator?.('#j_password').isVisible().catch(() => false)) loginFormVisible = true;
+          const reservation = await this.findVisibleControl(frame, /^make\s*reservation$/i);
           if (reservation) { reservationFrame = frame; reservationControl = reservation; }
         } catch {}
       }
-      if (signOutFound && reservationFrame) {
+      const privateWindow = new URL(candidate.url()).origin === new URL(LOGIN_URL).origin && new URL(candidate.url()).pathname.startsWith('/xbe/private/');
+      if (signOutFrame && !loginFormVisible && (reservationFrame || privateWindow)) {
         this.page = candidate;
         this.reservationControl = reservationControl;
-        return reservationFrame;
+        return reservationFrame || signOutFrame;
       }
     }
     return null;
@@ -166,7 +171,7 @@ class AirArabiaPortalAdapter {
             signOutText: /sign\s*out/i.test(text),
             reservationText: /make\s+reservation/i.test(text),
             signOutNamedControl: Array.from(document.querySelectorAll('[alt],[title],input[value],[aria-label]')).some(el => visible(el) && ['alt','title','value','aria-label'].some(name => /^(?:sign|log)\s*out$/i.test(el.getAttribute(name) || ''))),
-            reservationNamedControl: Array.from(document.querySelectorAll('[alt],[title],input[value],[aria-label]')).some(el => visible(el) && ['alt','title','value','aria-label'].some(name => /^make\s+reservation$/i.test(el.getAttribute(name) || ''))),
+            reservationNamedControl: Array.from(document.querySelectorAll('[alt],[title],input[value],[aria-label]')).some(el => visible(el) && ['alt','title','value','aria-label'].some(name => /^make\s*reservation$/i.test(el.getAttribute(name) || ''))),
             verification: /captcha|verify (you|that you) are human|looked like a bot|security challenge/i.test(text),
             accessDenied: /access denied|request (was )?(blocked|rejected)|forbidden|not authorized/i.test(text),
             invalidCredentials: /invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),
@@ -257,6 +262,16 @@ class AirArabiaPortalAdapter {
   async searchFlightsForHeartbeat({ departureDate }) {
     if (!await this.isAuthenticated()) throw new Error('Portal session expired before heartbeat search');
 
+    if (!this.reservationControl) {
+      // The authenticated main page is a safe supplier request. Reloading it
+      // refreshes both server activity and the portal's client idle timer.
+      // Do not manufacture a reservation-menu selector when none is observed.
+      const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      if (response && response.status() >= 400) throw new PortalError('SESSION', 'HTTP_ERROR');
+      if (!await this.waitForAuthentication()) throw new Error('Portal session was not retained after refresh');
+      this.report('PORTAL_HEARTBEAT_REFRESH_COMPLETED');
+      return;
+    }
     await this.reservationControl.click();
     const search = this.page.frameLocator('iframe#mainFrame');
     await search.locator('#btnSearch').waitFor({ state: 'visible', timeout: 15000 });
@@ -323,6 +338,8 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     page.setDefaultTimeout(15000);
     const adapter = new AirArabiaPortalAdapter(page, config);
     await adapter.signIn();
+    log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
+    await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate() });
     session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
 
     let errorReported = false;
