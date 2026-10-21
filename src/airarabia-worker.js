@@ -252,6 +252,41 @@ class AirArabiaPortalAdapter {
     }
   }
 
+  async inspectSearchUI() {
+    // Navigation/form metadata only: no input values, account text, cookies,
+    // passenger rows, scripts, query strings or full URLs are returned.
+    for (const frame of this.page.frames()) {
+      try {
+        const url = new URL(frame.url());
+        if (url.origin !== new URL(LOGIN_URL).origin) continue;
+        const resource = url.pathname.split('/').pop();
+        if (!/^[A-Za-z][A-Za-z0-9_.-]{0,70}$/.test(resource)) continue;
+        const metadata = await frame.evaluate(() => {
+          const staticName = value => /^[A-Za-z_][A-Za-z0-9_.-]{0,60}$/.test(value || '') ? value : null;
+          const visible = el => getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+          const menuName = /^(?:(?:make|new|create|modify|manage|view|search|find|book)\s*)?(?:reservations?|bookings?|flights?|search)(?:\s*(?:search|reservations?|flights?))?$/i;
+          const controls = [];
+          for (const el of document.querySelectorAll('a,button,input[type="button"],input[type="submit"],img,[onclick]')) {
+            const labels = ['aria-label','title','alt','value'].map(name => el.getAttribute(name) || '');
+            if (['A','BUTTON','SPAN','TD'].includes(el.tagName) && el.children.length < 4) labels.push(el.textContent || '');
+            const label = labels.map(value => value.replace(/\s+/g, ' ').trim()).find(value => value.length < 65 && menuName.test(value));
+            const action = (el.getAttribute('onclick') || '').match(/^\s*([A-Za-z_][A-Za-z0-9_]{0,60})\s*\(/)?.[1] || null;
+            if (!label && !(action && /reserv|booking|search|flight/i.test(action))) continue;
+            controls.push({ tag: el.tagName, id: staticName(el.id), label: label || null, action, visible: visible(el) });
+          }
+          const fields = [];
+          if (document.querySelector('form') && !document.querySelector('#j_password')) {
+            for (const el of document.querySelectorAll('input,select,button')) {
+              fields.push({ tag: el.tagName, id: staticName(el.id), name: staticName(el.name), type: staticName(el.type), visible: visible(el) });
+            }
+          }
+          return { controls: controls.slice(0,30), fields: fields.slice(0,50), frameCount: document.querySelectorAll('frame,iframe').length };
+        });
+        this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
+      } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
+    }
+  }
+
   async selectAirport(frame, selector, code) {
     const field = frame.locator(selector);
     await field.fill(code);
@@ -340,6 +375,7 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     await adapter.signIn();
     log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
     await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate() });
+    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') await adapter.inspectSearchUI();
     session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
 
     let errorReported = false;
