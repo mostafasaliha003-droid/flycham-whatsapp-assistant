@@ -244,3 +244,27 @@ test('heartbeat cannot submit a code or continue through a verification challeng
   await assert.rejects(adapter.waitForAuthentication(0), /PORTAL_VERIFICATION_MANUAL_VERIFICATION/);
   assert.equal(supplied, 0);
 });
+
+
+test('reacquires an OTP frame replaced during the login transition', async () => {
+  const page = fakePage();
+  let scans = 0, pending = true, supplied = 0;
+  const oldFrame = {
+    url: () => 'https://agents.airarabia.com/xbe/private/sendOTP.action',
+    locator: () => ({ isVisible: async () => { throw new Error('Frame was detached'); } }),
+  };
+  const liveFrame = {
+    url: () => pending ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/verified.action',
+    locator: selector => ({
+      isVisible: async () => pending && selector === '#userOtp',
+      fill: async () => {},
+      click: async () => { pending = false; },
+    }),
+  };
+  const navigation = page.frames();
+  page.frames = () => [...navigation, ++scans === 1 ? oldFrame : liveFrame];
+  const adapter = adapterFor(page);
+  adapter.verificationProvider = async () => { supplied++; return '123456'; };
+  assert.equal(await adapter.waitForAuthentication(1000, { operatorVerification: true }), true);
+  assert.equal(supplied, 1);
+});

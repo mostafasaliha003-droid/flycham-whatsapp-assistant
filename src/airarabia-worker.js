@@ -14,7 +14,7 @@ const AIRPORTS = {
 };
 
 const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION']);
-const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR']);
 
 class PortalError extends Error {
   constructor(stage, reason) {
@@ -27,7 +27,10 @@ class PortalError extends Error {
 function safeFailureCode(error, stage = 'SESSION') {
   if (error instanceof PortalError && STAGES.has(error.stage) && REASONS.has(error.reason)) return `PORTAL_${error.stage}_${error.reason}`;
   const message = String(error?.message || '');
-  const reason = error?.name === 'TimeoutError' ? 'TIMEOUT'
+  const reason = /frame was detached|execution context was destroyed|cannot find context/i.test(message) ? 'FRAME_CHANGED'
+    : /strict mode violation/i.test(message) ? 'SELECTOR_AMBIGUOUS'
+    : error?.name === 'TypeError' ? 'TYPE_ERROR'
+    : error?.name === 'TimeoutError' ? 'TIMEOUT'
     : /ERR_CERT_|ERR_SSL_/i.test(message) ? 'TLS'
     : /ERR_(NAME_NOT_RESOLVED|CONNECTION_|INTERNET_|NETWORK_|PROXY_|TIMED_OUT)|ECONN|ENOTFOUND/i.test(message) ? 'NETWORK'
     : 'UNEXPECTED';
@@ -140,7 +143,13 @@ class AirArabiaPortalAdapter {
       const verification = await this.findVerificationFrame();
       if (verification && !this.verificationAttempted) {
         if (!operatorVerification) throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
-        await verification.locator('#userOtp').waitFor({ state: 'visible', timeout: 30000 });
+        // Reacquire frames while the supplier replaces its login document.
+        // A route alone can be present before the OTP form is ready.
+        const ready = await verification.locator('#userOtp').isVisible().catch(() => false);
+        if (!ready) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          continue;
+        }
         this.report('PORTAL_VERIFICATION_WAITING_FOR_OPERATOR');
         let code;
         try {
