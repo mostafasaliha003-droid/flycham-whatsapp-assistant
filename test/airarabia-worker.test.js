@@ -135,3 +135,13 @@ test('authentication requires both visible controls in the same trusted frame', 
   page.frames = () => [{ url: () => 'https://other.example/xbe/private/showTop', getByText: () => control(true) }];
   assert.equal(await adapterFor(page).isAuthenticated(), false);
 });
+
+
+test('finds the authenticated portal when login leaves its handler in an older window', async () => {
+  const handler = fakePage({ confirmError: new Error('no navigation in handler') });
+  const portal = fakePage();
+  handler.context = () => ({ pages: () => [handler, portal] });
+  const adapter = adapterFor(handler);
+  assert.equal(await adapter.isAuthenticated(), true);
+  assert.equal(adapter.page, portal);
+});

@@ -62,14 +62,21 @@ class AirArabiaPortalAdapter {
     // A legacy frameset can use <frame> as well as <iframe>, and src attributes
     // may be absolute or include an action suffix. Inspect actual same-origin
     // frames rather than depending on one literal DOM attribute.
-    for (const frame of this.page.frames()) {
+    const pages = this.page.context ? this.page.context().pages() : [this.page];
+    for (const candidate of pages) {
+      if (candidate.isClosed?.()) continue;
+      for (const frame of candidate.frames()) {
       try {
         if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
         const signOut = frame.getByText(/^sign\s*out$/i).first();
         const reservation = frame.getByText(/^make\s+reservation$/i).first();
         if (await signOut.count() && await reservation.count()
-            && await signOut.isVisible() && await reservation.isVisible()) return frame;
+            && await signOut.isVisible() && await reservation.isVisible()) {
+          this.page = candidate;
+          return frame;
+        }
       } catch {}
+      }
     }
     return null;
   }
@@ -107,7 +114,10 @@ class AirArabiaPortalAdapter {
         : 'SUPPLIER_MESSAGE';
       this.report(`PORTAL_LOGIN_RESULT_${reason}`);
     }
-    for (const frame of this.page.frames()) {
+    const pages = this.page.context ? this.page.context().pages() : [this.page];
+    this.report(`PORTAL_LOGIN_DIAGNOSTIC_WINDOW_COUNT_${pages.length}`);
+    for (const candidate of pages) {
+      for (const frame of candidate.frames()) {
       try {
         const url = new URL(frame.url());
         if (url.origin !== new URL(LOGIN_URL).origin) continue;
@@ -145,6 +155,7 @@ class AirArabiaPortalAdapter {
           : url.pathname.startsWith('/xbe/private/') ? 'PRIVATE' : 'OTHER';
         this.report(`PORTAL_LOGIN_DIAGNOSTIC_${JSON.stringify({ route, ...state })}`);
       } catch { this.report('PORTAL_LOGIN_DIAGNOSTIC_FRAME_UNAVAILABLE'); }
+      }
     }
     this.report('PORTAL_LOGIN_RESULT_AUTHENTICATION_MARKERS_NOT_CONFIRMED');
   }
@@ -178,6 +189,14 @@ class AirArabiaPortalAdapter {
       await this.assertNoChallenge();
       await this.page.locator('#username_txt').fill(this.username);
       await this.page.locator('#j_password').fill(this.password);
+    });
+    this.page.on?.('response', response => {
+      try {
+        const url = new URL(response.url());
+        if (url.origin === new URL(LOGIN_URL).origin && /\/j_security_check$/.test(url.pathname)) {
+          this.report(`PORTAL_LOGIN_RESPONSE_HTTP_${response.status()}`);
+        }
+      } catch {}
     });
     this.report('PORTAL_STAGE_LOGIN_SUBMIT');
     await atStage('LOGIN_SUBMIT', () => this.page.locator('#btnLogin').click({ noWaitAfter: true }));
