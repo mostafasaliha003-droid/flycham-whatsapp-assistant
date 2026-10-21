@@ -42,7 +42,7 @@ One-way DXB → DAM, 11 November 2026, one adult, no children/infants, AED. The 
 
 The Economy card displayed two different monetary figures. Selecting the Economy radio expanded a fare-family table (FLY LIGHT / FLY SMART / FLY ELITE), with hand baggage, checked baggage, seat and fee rows.
 
-Selecting the Economy radio produced `Invalid rights`. Selecting the enabled FLY SMART fare button produced the same error. No further fare-selection attempts were made. The summary total never became a valid nonzero total.
+Selecting the Economy radio produced `Invalid rights`. Selecting the enabled FLY SMART fare button produced the same error. A later user-requested retry repeated the search and selected the enabled FLY LIGHT 633 AED fare; it again returned `Invalid rights`, with the total still at zero. The summary total never became a valid nonzero total.
 
 ## Required quote safeguards
 
