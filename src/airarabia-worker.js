@@ -107,6 +107,45 @@ class AirArabiaPortalAdapter {
         : 'SUPPLIER_MESSAGE';
       this.report(`PORTAL_LOGIN_RESULT_${reason}`);
     }
+    for (const frame of this.page.frames()) {
+      try {
+        const url = new URL(frame.url());
+        if (url.origin !== new URL(LOGIN_URL).origin) continue;
+        // Return classifications only from the browser, never raw visible text.
+        const state = await frame.evaluate(() => {
+          const visible = el => {
+            const style = getComputedStyle(el);
+            return style.visibility !== 'hidden' && style.display !== 'none' && el.getClientRects().length > 0;
+          };
+          const chunks = [];
+          if (document.body) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const parent = walker.currentNode.parentElement;
+              if (parent && !parent.closest('script,style,noscript') && visible(parent)) chunks.push(walker.currentNode.textContent);
+            }
+          }
+          const text = chunks.join(' ').replace(/\s+/g, ' ');
+          return {
+            bodyHidden: Boolean(document.body && !visible(document.body)),
+            frames: document.querySelectorAll('frame,iframe').length,
+            loginInput: Boolean(document.querySelector('#username_txt')),
+            passwordInput: Boolean(document.querySelector('input[type="password"]')),
+            signOutText: /sign\s*out/i.test(text),
+            reservationText: /make\s+reservation/i.test(text),
+            verification: /captcha|verify (you|that you) are human|looked like a bot|security challenge/i.test(text),
+            accessDenied: /access denied|request (was )?(blocked|rejected)|forbidden|not authorized/i.test(text),
+            invalidCredentials: /invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),
+            passwordChange: /change (your )?password|password.{0,20}expir/i.test(text),
+            sessionNotice: /already logged|active session|another session|concurrent session/i.test(text),
+          };
+        });
+        const route = url.pathname === new URL(LOGIN_URL).pathname ? 'LOGIN'
+          : /j_security_check$/.test(url.pathname) ? 'LOGIN_HANDLER'
+          : url.pathname.startsWith('/xbe/private/') ? 'PRIVATE' : 'OTHER';
+        this.report(`PORTAL_LOGIN_DIAGNOSTIC_${JSON.stringify({ route, ...state })}`);
+      } catch { this.report('PORTAL_LOGIN_DIAGNOSTIC_FRAME_UNAVAILABLE'); }
+    }
     this.report('PORTAL_LOGIN_RESULT_AUTHENTICATION_MARKERS_NOT_CONFIRMED');
   }
 
