@@ -8,7 +8,8 @@ const { openPassengerOptions } = require('./portal-options-probe');
 const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
 const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
-const { validateLiveRequest, quoteFromScans, formatLiveQuote } = require('./live-quote');
+const { validateLiveRequest, quoteFromScans, expandLiveRequests, formatQuoteOptions } = require('./live-quote');
+const { readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
 const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
@@ -480,6 +481,29 @@ class AirArabiaPortalAdapter {
   }
 
   async runCustomerQuote(request) {
+    const dates=expandLiveRequests(request),results=[];
+    const deadline=Date.now()+8*60*1000;
+    let complete=true,attempted=0;
+    for(const dated of dates){
+      if(Date.now()>=deadline || results.length>=12){complete=false;break;}
+      let first;
+      attempted++;
+      try{first=await this.runCustomerQuoteVariant(dated);results.push(first);}
+      catch{complete=false;this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
+      for(const choice of flightPairs(first.choices)){
+        if(choice.out.row===first.timing.out.row&&choice.back.row===first.timing.back.row)continue;
+        if(Date.now()>=deadline || results.length>=12){complete=false;break;}
+        attempted++;
+        try{results.push(await this.runCustomerQuoteVariant(dated,choice));}
+        catch{complete=false;this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');}
+      }
+    }
+    this.report(complete?'PORTAL_TIMING_COMPARISON_COMPLETE':'PORTAL_TIMING_COMPARISON_PARTIAL');
+    if(!results.length)throw Error('NO_TIMING_PRICE_VERIFIED');
+    return formatQuoteOptions(request,results,{complete,attempted,totalDates:dates.length});
+  }
+
+  async runCustomerQuoteVariant(request,choice) {
     const config=validateLiveRequest(request);
     // New protected page for every request, serialized by PortalSession.run.
     await this.searchFlightsForHeartbeat();
@@ -487,13 +511,18 @@ class AirArabiaPortalAdapter {
     const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:'round_trip',report:this.report});
     if(prepared.tripKind!=='return')throw Error('TRIP_NOT_CONFIRMED');
     await this.searchFrame.locator('button#btnBook:visible').first().waitFor({state:'visible',timeout:45000});
+    const choices=await readFlightTimes(this.searchFrame);
+    const timing=choice?await selectFlightTimes(this.searchFrame,choice):{
+      out:choices.out.find(f=>f.selected),back:choices.back.find(f=>f.selected)};
+    if(!timing.out||!timing.back)throw Error('FLIGHT_TIMES_UNCONFIRMED');
+    if(!choice)await selectFlightTimes(this.searchFrame,timing);
     const safe=await this.searchFrame.evaluate(()=>typeof DATA_ResPro!=='undefined' && DATA_ResPro.initialParams?.seatBlock===false);
     if(!safe)throw Error('TEMPORARY_BLOCK_NOT_DISABLED');
     await openPassengerOptions(this.searchFrame,this.page,this.report);
     await continueWithTestPassenger(this.searchFrame,this.report);
     const seats=await scanSeatPrices(this.searchFrame,this.page,this.report);
     const catalogs=await scanAncillaryCatalogs(this.searchFrame,this.page,this.report);
-    return formatLiveQuote(request,quoteFromScans(request,seats,catalogs));
+    return {request,choices,timing,price:quoteFromScans(request,seats,catalogs)};
   }
 
   async runSearchProbe({ departureDate }) {

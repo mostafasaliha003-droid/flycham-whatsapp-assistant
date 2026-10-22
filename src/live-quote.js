@@ -1,5 +1,6 @@
 'use strict';
 const {toFils,formatAED,MAX_FILS}=require('./money');
+const {addDays,iso}=require('./arabic-dates');
 const airports=new Map([['SHJ','SHJ'],['الشارقة','SHJ'],['الشارقه','SHJ'],['Sharjah','SHJ'],['DAM','DAM'],['دمشق','DAM'],['Damascus','DAM']].map(([a,b])=>[a.toLowerCase(),b]));
 function validateLiveRequest(r,now=Date.now()){
   const origin=airports.get(String(r?.origin||'').trim().toLowerCase()),destination=airports.get(String(r?.destination||'').trim().toLowerCase());
@@ -46,4 +47,24 @@ function quoteFromScans(request,seats,catalogs){
   return{currency:'AED',sellingTotal:formatAED(supplier+margin),weights};
 }
 function formatLiveQuote(request,price){return `السعر المتاح لشخص بالغ واحد من ${request.origin} إلى ${request.destination}، ذهابًا وعودة:\nالذهاب: ${request.departureDate}\nالعودة: ${request.returnDate}\nالإجمالي: ${price.sellingTotal} درهم، شامل الرسوم وعمولة الخدمة.\nالوزن المسجل: ${price.weights.map(w=>w.kg+' كغ').join(' / ')} حسب اتجاه الرحلة.\nوزن اليد غير مؤكد في هذا العرض. السعر والتوفر قابلان للتغير حتى إصدار التذكرة. لم يتم إجراء حجز.`;}
-module.exports={validateLiveRequest,quoteFromScans,formatLiveQuote};
+function expandLiveRequests(request){
+ if(!request.departureRange){validateLiveRequest(request);return [request];}
+ const {start,end}=request.departureRange;
+ const first=new Date(start+'T00:00:00Z'),last=new Date(end+'T00:00:00Z');
+ if(!Number.isFinite(+first)||!Number.isFinite(+last)||iso(first)!==start||iso(last)!==end||last<first||last-first>31*86400000)throw Error('LIVE_SCOPE_UNSUPPORTED');
+ const dates=[];
+ for(let d=first;d<=last;d=addDays(d,1)){
+  const candidate={...request,departureDate:iso(d),departureRange:null,returnDate:request.stayNights?iso(addDays(d,request.stayNights)):request.returnDate};
+  validateLiveRequest(candidate);dates.push(candidate);
+ }
+ return dates;
+}
+function formatQuoteOptions(request,results,{complete,attempted,totalDates}={}){
+ if(!results.length)return 'تعذر تأكيد أسعار التواقيت المطلوبة. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء حجز.';
+ const sorted=results.slice().sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+ const shown=request.departureRange||request.searchMode==='cheapest'?sorted.slice(0,3):results;
+ const title=request.departureRange?`نتائج المقارنة ضمن ${request.departureRange.start} إلى ${request.departureRange.end}`:'أسعار خيارات الذهاب والعودة التي تم فحصها';
+ return `${title} — لشخص بالغ واحد:\n`+shown.map((q,i)=>`${i+1}) الذهاب ${q.timing.out.flight}: ${q.timing.out.departure} ← الوصول ${q.timing.out.arrival}\nالعودة ${q.timing.back.flight}: ${q.timing.back.departure} ← الوصول ${q.timing.back.arrival}\nالإجمالي ${q.price.sellingTotal} درهم؛ الوزن ${q.price.weights.map(w=>w.kg+' كغ').join(' / ')}`).join('\n\n')
+  +`\n\n${complete?'اكتمل فحص التواقيت المتاحة في نتائج البحث.':'الفحص جزئي؛ لا نؤكد أن هذه أرخص أسعار كامل الفترة أو أن جميع التواقيت فُحصت.'}\nتمت محاولة فحص ${attempted} خيارًا؛ فترة الطلب تضم ${totalDates} تاريخًا. الأسعار تشمل الرسوم والعمولة. المواعيد كما تظهر في البوابة. وزن اليد غير مؤكد. السعر والتوفر قابلان للتغير؛ لم يتم حجز أي تذكرة.`;
+}
+module.exports={validateLiveRequest,quoteFromScans,formatLiveQuote,expandLiveRequests,formatQuoteOptions};

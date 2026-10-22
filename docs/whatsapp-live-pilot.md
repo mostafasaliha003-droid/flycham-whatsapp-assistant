@@ -41,3 +41,26 @@ web service active only while the authenticated worker is running.
 No browser credentials or WhatsApp access token are copied between services.
 The worker may require operator OTP after deployment. A deploy marked live is
 not proof of a working supplier session or a completed WhatsApp fare lookup.
+
+## Conversational dates and timing comparisons
+
+Arabic relative dates use Asia/Dubai calendar days. Next weekday means the next
+occurrence strictly after today. Calendar weeks start Monday; the bot states
+explicit range boundaries. This/next month and week remain ranges rather than
+being replaced with an arbitrary departure date. Round-trip ranges require an
+explicit stay duration or return date. Missing origin, destination city, trip
+type and passenger count are requested individually without assuming them.
+
+Flight clocks are read from the supplier's actual outbound/inbound jqGrid
+columns. A different timing is selected through the ordinary flight radio
+controls and its fare reference must match the requested selected flights
+before inspecting ancillaries. Each round-trip pair is priced independently.
+No price is copied from the default flight to other departure times.
+
+Comparisons are bounded to eight minutes and twelve successfully priced
+options per customer job. Week/month searches can therefore be partial. Any
+failure or exhausted budget is explicitly disclosed; the bot never claims
+to have found the minimum for the whole month if coverage is incomplete.
+For cheapest/range intents it shows up to three cheapest verified options;
+for an exact date it shows all verified timing pairs within the stated limit.
+The adapter still supports the pilot route, round trips and one adult only.
