@@ -95,3 +95,15 @@ The reader records the visible ancillary-stage total separately. This is not
 an all-charges-checked final price. It never selects/applies a meal or baggage,
 clicks ancillary Continue, blocks seats, confirms a reservation, pays or issues
 a ticket. Customer quotation and WhatsApp live fare delivery remain unverified.
+
+### Legacy grid compatibility
+
+The supplier uses jqGrid 3.5 without aria-describedby cells. The catalog reader
+uses table.p.colModel column order and fillGridData source-array row IDs. Meal
+bundle and additional grids retain separate identities, so repeated names are
+not conflated. Missing or duplicate row identity still blocks verification.
+Baggage with no availableQty is classified as an active displayed supplier offer
+only when it matches one visible row and is not inactive; the availability basis
+is logged explicitly rather than claiming an inventory count was returned.
+A label such as 30 Kg Total In 2 Pieces means 30 kg total, while per-piece weight
+without a stated total remains unresolved. Hand baggage is still not inferred.

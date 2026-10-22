@@ -24,17 +24,18 @@ test('unknown prices, inventory and weight alternatives never become complete qu
   }
   assert.equal(checkedWeight('Baggage 30 KG'), 30);
   assert.equal(checkedWeight('20 KG + 10 KG'), null);
+  assert.equal(checkedWeight('30 Kg Total In 2 Pieces Discounted'), 30);
   assert.equal(checkedWeight('No checked baggage'), 0);
 });
 
-function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassenger = false, disabledMealSegment = false } = {}) {
+function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassenger = false, disabledMealSegment = false, multiMeal = false, absentBaggageQuantity = false } = {}) {
   const calls = [], events = [];
   const state = {
     location:{ origin:'https://agents.airarabia.com' }, UI_commonSystem:{ strPGMode:'' }, DATA_ResPro:{ initialParams:{ baseCurrencyCode:'AED' } },
     UI_tabAnci:{ currAnciSrv:'SEAT', currSegRow:0, dataStatus:{}, jsonFareQuoteSummary:{ currency:'AED' }, focMealEnabled:false },
     jsonPaxAdults:[{ displayAdultFirstName:wrongPassenger ? 'REAL' : 'TEST', displayAdultLastName:'QUOTE' }], jsonPaxInfants:[],
     jsAnciSeg:[{ fltRefNo:'seg0', flightNumber:'G9363' },{ fltRefNo:'seg1', flightNumber:'G9434' }],
-    jsMealList:[], jsBaggageList:[], jsMealModel:[], jsBaggageModel:[],
+    jsMealList:[], jsBaggageList:[], jsMealModel:[], jsBaggageModel:[], isMultiMealEnabled:multiMeal,
     getBaggageONDGrpId:() => sharedBaggage ? 'one-group' : null,
     getComputedStyle:() => ({ display:'block' }),
   };
@@ -48,6 +49,11 @@ function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassen
     { baggageDisplayName:'30 KG', baggageCharge:'50.00', availableQty:-1 },
     { baggageDisplayName:'40 KG', baggageCharge:'80.00', availableQty:-1 },
   ]);
+  if (multiMeal) meals.forEach(items => {
+    items.forEach(item => { item.optionServedFromBundle=true; });
+    items.push({ mealName:'Chicken Rice', mealCharge:'25.00', availableMeals:15, optionServedFromBundle:false });
+  });
+  if (absentBaggageQuantity) baggage.forEach(items => items.forEach(item => { delete item.availableQty; }));
   state.jsMealModel = meals.map(items => ({ meals:items }));
   state.jsBaggageModel = baggage.map(items => ({ baggages:items }));
   const segments = () => (sharedBaggage && state.UI_tabAnci.currAnciSrv === 'BAGGAGE' ? [0] : [0,1]).map(index => ({
@@ -55,14 +61,18 @@ function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassen
       && name === (state.UI_tabAnci.currAnciSrv === 'MEAL' ? 'cursorPointerMEALS' : 'cursorPointerBAGGAGES') },
   }));
   const table = id => {
-    const meal = id === 'tblAnciMealBundle' && state.UI_tabAnci.currAnciSrv === 'MEAL';
+    const meal = ['tblAnciMealBundle','tblAnciMealAdditional'].includes(id) && state.UI_tabAnci.currAnciSrv === 'MEAL';
     const bag = id === 'tblAnciBaggage' && state.UI_tabAnci.currAnciSrv === 'BAGGAGE';
     if (!meal && !bag) return null;
-    let items = meal ? meals[state.UI_tabAnci.currSegRow] : baggage[state.UI_tabAnci.currSegRow];
+    if (meal && id === 'tblAnciMealAdditional' && !multiMeal) return null;
+    let items = (meal ? meals[state.UI_tabAnci.currSegRow] : baggage[state.UI_tabAnci.currSegRow]).map((item,index) => ({item,rowId:index+1}));
+    if (meal && multiMeal) items=items.filter(({item}) => id === 'tblAnciMealBundle' ? item.optionServedFromBundle : !item.optionServedFromBundle);
     if (duplicatePriceRow) items = items.concat(items[0]);
-    return { getClientRects:() => [1], querySelectorAll:() => items.map(item => ({ querySelector:selector => ({
-      textContent:selector.includes(meal ? '_mealName' : '_baggageDisplayName') ? item[meal ? 'mealName' : 'baggageDisplayName'] : item[meal ? 'mealCharge' : 'baggageCharge'],
-    }) })) };
+    return { getClientRects:() => [1], p:{ colModel:[{ name:meal ? 'mealName' : 'baggageDisplayName' },{ name:meal ? 'mealCharge' : 'baggageCharge' }] },
+      querySelectorAll:() => items.map(({item,rowId}) => ({
+        id:String(rowId),
+        cells:[{ textContent:item[meal ? 'mealName' : 'baggageDisplayName'] },{ textContent:item[meal ? 'mealCharge' : 'baggageCharge'] }],
+      })) };
   };
   state.document = { querySelectorAll:segments, getElementById:table };
   function setLists() {
@@ -128,4 +138,14 @@ test('disabled supplier segments stay unavailable; service-specific CSS is not f
   assert.equal(result.results[0].catalogs[1].unavailable,true);
   assert.ok(f.events.includes('PORTAL_CATALOG_MEAL_SEGMENT_UNAVAILABLE_1'));
   assert.equal(result.results[1].complete,true);
+});
+
+test('legacy colModel and sparse source row IDs distinguish repeated bundle and paid meal names', async () => {
+  const f=fixture({ multiMeal:true, absentBaggageQuantity:true });
+  const result=await scanAncillaryCatalogs(f.frame,f.page,f.report);
+  assert.equal(result.complete,true);
+  const offers=result.results[0].catalogs[0].options.filter(o => o.name === 'Chicken Rice');
+  assert.deepEqual(offers.map(o => o.price.amount),[0,25]);
+  assert.ok(result.results[1].catalogs.every(c => c.options.every(o => o.available && o.availabilityBasis === 'displayed-active-baggage-offer')));
+  assert.equal(result.provisionalTotal.allChargesChecked,false);
 });

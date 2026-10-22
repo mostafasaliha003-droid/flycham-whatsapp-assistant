@@ -4,13 +4,13 @@ const { parseSeatPrice, seatRequestPolicy } = require('./portal-seat-prices');
 function foodKind(name) {
   if (/^(?:(?:no|without)\s*(?:meal|food)\b|none\b|بدون\s*(?:وجبة|طعام))/i.test(name.trim())) return 'none';
   if (/^(?:\w+\s+)?(?:water|tea|coffee|juice|cola|soft drink|ماء|شاي|قهوة|عصير)(?:\s+\d+\s*(?:ml|l))?$/i.test(name.trim())) return 'drink';
-  if (/chicken|beef|fish|rice|biryani|pasta|sandwich|breakfast|omelette|vegetarian|meal|snack|salad|دجاج|لحم|سمك|أرز|رز|ساندويش|وجبة|فطور/i.test(name)) return 'food';
+  if (/chicken|beef|fish|rice|biryani|pasta|sandwich|breakfast|omelette|vegetarian|meal|snack|salad|paratha|yogurt|egg|pie|noodles|croissant|cheese|panini|lasagna|munchkins|دجاج|لحم|سمك|أرز|رز|ساندويش|وجبة|فطور/i.test(name)) return 'food';
   return 'unconfirmed';
 }
 
 function checkedWeight(name) {
   if (/^(?:no checked baggage|no baggage|without baggage)$/i.test(name.trim())) return 0;
-  if (/[2-9]\s*(?:pc|piece)/i.test(name)) return null;
+  if (/[2-9]\s*(?:pc|piece)/i.test(name) && !/\btotal\b/i.test(name)) return null;
   const values = [...name.matchAll(/\b(\d+(?:\.\d+)?)\s*(?:kg|kilograms?)\b/ig)];
   return values.length === 1 && Number(values[0][1]) <= 100 ? Number(values[0][1]) : null;
 }
@@ -18,6 +18,7 @@ function checkedWeight(name) {
 function summarizeCatalog(snapshot, type) {
   const options = snapshot.options.map((o, index) => ({
     id: index + 1, name: o.name, price: parseSeatPrice(o.priceText, snapshot.currency), available: o.available,
+    availabilityBasis: o.availabilityBasis || null,
     ...(type === 'meal' ? { foodKind: foodKind(o.name) } : { checkedWeightKg: checkedWeight(o.name), handWeightKg: null }),
   }));
   const complete = snapshot.expected > 0 && options.length === snapshot.expected && options.every(o => o.price !== null && typeof o.available === 'boolean')
@@ -88,10 +89,18 @@ async function scanAncillaryCatalogs(frame, page, report = () => {}) {
           for (const id of tableIds) {
             const table = document.getElementById(id);
             if (!table || !table.getClientRects().length || getComputedStyle(table).display === 'none') continue;
-            for (const row of table.querySelectorAll('tr.jqgrow')) rows.push({
-              name:clean(row.querySelector('[aria-describedby="'+id+'_'+nameField+'"]')?.textContent),
-              price:row.querySelector('[aria-describedby="'+id+'_'+chargeField+'"]')?.textContent?.trim() || null,
-            });
+            // Supplier jqGrid 3.5 has no aria-describedby on grid cells.
+            // Its public colModel order is the DOM cell order (no multiselect
+            // or row-number columns in these two supplier grids).
+            const columns = table.p?.colModel;
+            if (!Array.isArray(columns)) continue;
+            const nameIndex = columns.findIndex(c => c.name === nameField);
+            const priceIndex = columns.findIndex(c => c.name === chargeField);
+            for (const row of table.querySelectorAll('tr.jqgrow')) {
+              if (!/^\d+$/.test(row.id || '') || row.cells.length !== columns.length || nameIndex < 0) continue;
+              rows.push({ table:id, rowId:Number(row.id), name:clean(row.cells[nameIndex]?.textContent),
+                price:priceIndex >= 0 ? row.cells[priceIndex]?.textContent?.trim() || null : null });
+            }
           }
           const index = UI_tabAnci.currSegRow;
           const segment = jsAnciSeg[index];
@@ -102,20 +111,33 @@ async function scanAncillaryCatalogs(frame, page, report = () => {}) {
           }
           let currency = UI_tabAnci.jsonFareQuoteSummary.currency;
           if (!/^[A-Z]{3}$/.test(currency || '')) currency = DATA_ResPro.initialParams.baseCurrencyCode;
-          const options = list.map(item => {
+          const options = list.map((item,listIndex) => {
             const name = clean(item[nameField]);
-            const matched = name ? rows.filter(r => r.name === name) : [];
+            const raw = isMeal ? jsMealModel[item.mmSGI]?.meals?.[item.mmI] : jsBaggageModel[item.mmSGI]?.baggages?.[item.mmI];
+            // fillGridData uses source-array index + 1, including sparse meal
+            // arrays. Repeated names are different offers and must stay distinct.
+            const rowId = isMeal ? item.mmI + 1 : listIndex + 1;
+            const mealTable = typeof isMultiMealEnabled !== 'undefined' && isMultiMealEnabled && !raw?.optionServedFromBundle
+              ? 'tblAnciMealAdditional' : 'tblAnciMealBundle';
+            const expectedTable = isMeal ? mealTable : 'tblAnciBaggage';
+            const matched = name ? rows.filter(r => r.table === expectedTable && r.rowId === rowId && r.name === name) : [];
             let priceText = matched.length === 1 ? matched[0].price : null;
             // Supplier hides the charge column for its explicit FOC meal mode.
             if (isMeal && UI_tabAnci.focMealEnabled === true && matched.length === 1) priceText = 'Free';
-            const raw = isMeal ? jsMealModel[item.mmSGI]?.meals?.[item.mmI] : jsBaggageModel[item.mmSGI]?.baggages?.[item.mmI];
             const count = Number(isMeal ? raw?.availableMeals : raw?.availableQty);
             let available = null;
+            let availabilityBasis = null;
             const rawCount = isMeal ? raw?.availableMeals : raw?.availableQty;
             if (raw && rawCount !== null && rawCount !== undefined && String(rawCount).trim() !== '' && Number.isInteger(count) && (count >= 0 || (!isMeal && count === -1))) {
               available = count > 0 || (!isMeal && count === -1);
+              availabilityBasis = 'supplier-quantity';
+            } else if (!isMeal && raw && !raw.inactiveSelectedBaggage && matched.length === 1 && rawCount === undefined) {
+              // Supplier filters inactive baggage before displaying selectable
+              // rows and imposes no quantity cap when availableQty is absent.
+              available = true;
+              availabilityBasis = 'displayed-active-baggage-offer';
             }
-            return { name, priceText, available };
+            return { name, priceText, available, availabilityBasis };
           }).filter(o => o.name !== null);
           return { currency:/^[A-Z]{3}$/.test(currency || '') ? currency : null, expected:list.length, options, coveredSegments,
             flight:/^[A-Z0-9]{2}\s?\d{1,4}$/.test(segment.flightNumber || '') ? segment.flightNumber : null };
