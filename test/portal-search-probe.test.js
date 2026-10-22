@@ -11,12 +11,15 @@ function fixture({ wrongAirport = false, missingOneWay = false, missingOption = 
     evaluate: async (fn, args) => {
       if (!args) return missingOneWay ? -1 : 0;
       if (args.operation === 'default-return') return defaultReturn;
+      if (args.operation === 'inspect') return { status: 'READY' };
+      if (args.operation === 'click') return { status: 'CLICKED' };
       if (args.pattern) { optionReads++; return missingOption ? null : args.id === 'selectedCurrency' ? 'AED' : 'observed-option'; }
       return true;
     },
     locator: selector => {
       const field = {
         fill: async value => { values[selector] = value; calls.push(['fill', selector]); },
+        pressSequentially: async value => { values[selector] = value; calls.push(['type', selector]); },
         nth: () => field,
         check: async () => calls.push(['check', selector]),
         selectOption: async () => calls.push(['select', selector]),

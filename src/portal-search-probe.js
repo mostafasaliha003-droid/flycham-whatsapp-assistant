@@ -1,16 +1,42 @@
 'use strict';
+const { airportSuggestionAction } = require('./airport-suggestions');
 
 // A bounded synthetic search only; this module has no booking/passenger actions.
-async function chooseAirport(frame, inputId, hiddenId, code) {
+async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {} } = {}) {
+  const names = { SHJ: 'Sharjah', DAM: 'Damascus' };
+  if (!names[code] || !['fAirport', 'tAirport'].includes(inputId) || hiddenId !== (inputId === 'fAirport' ? 'fromAirport' : 'toAirport')) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
   const field = frame.locator(`#${inputId}`);
-  await field.fill(code);
-  const options = frame.locator('ul.ui-autocomplete:visible li').filter({ hasText: new RegExp('\\b' + code + '\\b', 'i') });
-  await options.first().waitFor({ state: 'visible', timeout: 15000 });
-  if (await options.count() !== 1) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
-  await options.click();
-  // The supplier's autocomplete, rather than our code, must set its hidden ID.
-  const selected = await frame.locator(`#${hiddenId}`).inputValue();
-  if (selected !== code) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+  // Key events are needed by legacy autocomplete widgets. Two bounded queries:
+  // exact IATA code, then city name if the supplier does not search by code.
+  for (const query of [code, names[code]]) {
+    await field.fill('');
+    await field.pressSequentially(query, { delay: 120 });
+    const deadline = now() + lookupMs;
+    let lastState;
+    do {
+      const state = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'inspect' });
+      if (['READY','NONE','AMBIGUOUS','INPUT_UNAVAILABLE'].includes(state?.status) && state.status !== lastState) {
+        lastState = state.status;
+        report(`PORTAL_AIRPORT_MENU_${state.status}`);
+      }
+      if (state?.status === 'AMBIGUOUS') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+      if (state?.status === 'READY') {
+        const selected = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'click' });
+        if (selected?.status !== 'CLICKED') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+        const confirmDeadline = now() + Math.min(lookupMs, 5000);
+        do {
+          if (await frame.locator(`#${hiddenId}`).inputValue() === code) return;
+          if (now() >= confirmDeadline) break;
+          await pause(100);
+        } while (now() < confirmDeadline);
+        throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+      }
+      if (state?.status && !['NONE'].includes(state.status)) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+      if (now() >= deadline) break;
+      await pause(200);
+    } while (now() < deadline);
+  }
+  throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
 }
 
 async function prepareSearch(frame, { origin, destination, departureDate, report = () => {} }) {
@@ -67,9 +93,9 @@ async function prepareSearch(frame, { origin, destination, departureDate, report
     returnDate = `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
   }
   report('PORTAL_PROBE_STAGE_ORIGIN');
-  await chooseAirport(frame, 'fAirport', 'fromAirport', origin);
+  await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report });
   report('PORTAL_PROBE_STAGE_DESTINATION');
-  await chooseAirport(frame, 'tAirport', 'toAirport', destination);
+  await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report });
   report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
   await frame.locator('#departureDate').fill(departureDate);
   if (returnDate) await frame.locator('#returnDate').fill(returnDate);

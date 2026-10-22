@@ -15,7 +15,7 @@ const AIRPORTS = {
   DAM: 'DAM - Damascus',
 };
 
-const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION']);
+const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION', 'PROBE']);
 const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);
 
 class PortalError extends Error {
@@ -376,7 +376,9 @@ class AirArabiaPortalAdapter {
             })) });
           }
           const trips = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]')).map(radio => ({ value: staticName(radio.value), labels: Array.from(radio.labels || []).map(label => label.textContent.replace(/\s+/g,' ').trim()).filter(label => /^(?:one\s*way|round\s*trip|return|multi[ -]?(?:city|destination))$/i.test(label)) }));
-          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, frameCount: document.querySelectorAll('frame,iframe').length };
+          const resultContainers = Array.from(document.querySelectorAll('[id]')).filter(element => visible(element) && /flight|fare|avail|outbound|inbound|segment|searchResult/i.test(element.id)).map(element => ({ tag: element.tagName, id: staticName(element.id), children: element.children.length })).filter(element => element.id).slice(0,40);
+          const flightRows = Array.from(document.querySelectorAll('tr')).filter(row => visible(row) && /\bG9[ -]?\d{1,4}\b/i.test(row.textContent || '')).map(row => ({ id: staticName(row.id), cells: row.cells.length, routeCodesPresent: /\bSHJ\b/.test(row.textContent || '') && /\bDAM\b/.test(row.textContent || '') })).slice(0,20);
+          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, frameCount: document.querySelectorAll('frame,iframe').length };
         });
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
@@ -434,14 +436,14 @@ class AirArabiaPortalAdapter {
       const probe = await submitProbe(this.searchFrame, { origin: this.origin, destination: this.destination, departureDate, report: this.report });
       this.report(probe.tripKind === 'return' ? 'PORTAL_PROBE_TRIP_RETURN' : 'PORTAL_PROBE_TRIP_ONE_WAY');
       this.report('PORTAL_PROBE_SEARCH_SUBMITTED');
-      await this.searchFrame.locator('button#btnBook:visible').waitFor({ state: 'visible', timeout: 45000 });
+      await this.searchFrame.locator('button#btnBook:visible').first().waitFor({ state: 'visible', timeout: 45000 });
       this.report('PORTAL_PROBE_RESULTS_CONTROL_VISIBLE');
       await this.inspectSearchUI();
       // Reaching a result page is not a final ancillary-inclusive quote.
       return true;
     } catch (error) {
       const known = new Set(['AIRPORT_SELECTION_NOT_CONFIRMED', 'UNSUPPORTED_PROBE_ROUTE', 'INVALID_PROBE_DATE', 'ONE_WAY_CONTROL_NOT_CONFIRMED', 'SEARCH_OPTION_NOT_CONFIRMED', 'SEARCH_INPUTS_NOT_CONFIRMED']);
-      this.report(known.has(error.message) ? `PORTAL_PROBE_${error.message}` : safeFailureCode(error));
+      this.report(known.has(error.message) ? `PORTAL_PROBE_${error.message}` : safeFailureCode(error, 'PROBE'));
       this.report('PORTAL_PROBE_NOT_VERIFIED_NO_CUSTOMER_PRICE');
       await this.inspectSearchUI();
       return false;
