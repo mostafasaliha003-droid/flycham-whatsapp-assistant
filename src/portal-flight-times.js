@@ -25,7 +25,17 @@ async function selectFlightTimes(frame,choice){
  for(const [leg,name]of [['out','depatureSelection'],['back','returnSelection']]){
   const wanted=choice[leg],found=current[leg].find(f=>f.row===wanted.row);
   if(!found || ['flight','departure','arrival'].some(k=>found[k]!==wanted[k]))throw Error('FLIGHT_OPTION_CHANGED');
+  if(found.selected)continue;
+  const visible=frame.locator('input[name="'+name+'"][value="'+wanted.row+'"]:visible');
+  if(await visible.count()===0){
+    const summary=leg==='out'?'smrySlctionOutgoing':'smrySlctionReturn';
+    const change=frame.locator('#'+summary+' button[onclick*="changeFlightSectionClick"]:visible');
+    if(await change.count()!==1)throw Error('FLIGHT_CHANGE_CONTROL_UNCONFIRMED');
+    await change.click({timeout:15000});
+  }
   await frame.locator('input[name="'+name+'"][value="'+wanted.row+'"]:visible').check({timeout:15000});
+  const confirm=frame.locator('#'+(leg==='out'?'outbound':'inbound')+'ConfirmSelectionAnchor:visible');
+  if(await confirm.count()===1)await confirm.click({timeout:15000});
  }
  await frame.waitForFunction(()=>typeof jQuery!=='undefined'&&jQuery.active===0,null,{timeout:45000});
  const fq=frame.locator('#btnFQ:visible');if(await fq.count()===1)await fq.click({timeout:15000});
