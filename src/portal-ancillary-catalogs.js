@@ -1,5 +1,6 @@
 'use strict';
 const { parseSeatPrice, seatRequestPolicy } = require('./portal-seat-prices');
+const { readPortalFeeAudit } = require('./portal-fee-audit');
 
 function foodKind(name) {
   if (/^(?:(?:no|without)\s*(?:meal|food)\b|none\b|بدون\s*(?:وجبة|طعام))/i.test(name.trim())) return 'none';
@@ -164,8 +165,10 @@ async function scanAncillaryCatalogs(frame, page, report = () => {}) {
     const provisionalTotal = { base:parseSeatPrice(displayed?.baseAmount, displayed?.baseCurrency),
       selected:parseSeatPrice(displayed?.selectedAmount, displayed?.selectedCurrency), allChargesChecked:false, selectedServicesVerified:false };
     report('PORTAL_ANCILLARY_DISPLAYED_TOTAL_' + JSON.stringify(provisionalTotal));
+    const feeAudit = await readPortalFeeAudit(frame);
+    report('PORTAL_FEE_AUDIT_' + JSON.stringify(feeAudit));
     report(complete ? 'PORTAL_ANCILLARY_CATALOGS_READ' : 'PORTAL_ANCILLARY_CATALOGS_INCOMPLETE_NO_CUSTOMER_PRICE');
-    return { complete, customerQuoteReady:false, results, provisionalTotal };
+    return { complete, customerQuoteReady:false, results, provisionalTotal, feeAudit };
   } catch (error) {
     report(error?.name === 'TimeoutError' ? 'PORTAL_CATALOG_SCAN_TIMEOUT' : 'PORTAL_CATALOG_SCAN_UNCONFIRMED');
     const diagnostic = await frame.evaluate(() => ({
