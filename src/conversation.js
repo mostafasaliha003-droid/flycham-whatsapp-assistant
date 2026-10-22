@@ -107,6 +107,10 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   if(/^(?:شخصين|نحن شخصين|اتنين|اثنين|2)$/.test(plain)&&awaiting==='passengers')passengers={adults:2,children:0,infants:0,ages:[]};
   if(awaiting==='passengers'&&/^\d+$/.test(plain)&&Number(plain)>=1&&Number(plain)<=9)passengers={adults:Number(plain),children:0,infants:0,ages:[]};
   if (passengers) request.passengers = passengers;
+  if(request.departureRange){
+    if(!request.tripType){request.tripType='one_way';request.comparisonTripDefault=true;}
+    if(!request.passengers){request.passengers={adults:1,children:0,infants:0,ages:[]};request.comparisonPassengerDefault=true;}
+  }
   if(request.stayNights&&request.departureDate&&request.departureDate!==previousDepartureDate&&dates.length<=1&&awaiting!=='returnDate')request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),request.stayNights));
   if(request.departureDate&&request.returnDate&&request.returnDate<request.departureDate)invalidDate=true;
   return invalidDate;

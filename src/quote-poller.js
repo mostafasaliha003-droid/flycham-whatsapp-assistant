@@ -10,7 +10,8 @@ function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console}
       if(job?.id){
         log.log('PORTAL_CUSTOMER_QUOTE_STARTED');
         let reply;
-        try{reply=await session.run(p=>p.runCustomerQuote(job.request));log.log('PORTAL_CUSTOMER_QUOTE_PRICED');}
+        let seq=0;
+        try{reply=await session.run(p=>p.runCustomerQuote(job.request,reply=>call('/progress',{id:job.id,lease:job.lease,seq:++seq,reply})));log.log('PORTAL_CUSTOMER_QUOTE_PRICED');}
         catch{reply='تعذر التحقق من السعر لهذا الطلب حاليًا. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء أي حجز.';log.log('PORTAL_CUSTOMER_QUOTE_UNCONFIRMED');}
         // One completion attempt: never duplicate a WhatsApp reply after an
         // ambiguous network failure. The server consumes each lease once.

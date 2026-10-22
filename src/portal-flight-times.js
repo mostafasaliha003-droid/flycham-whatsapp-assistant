@@ -1,6 +1,6 @@
 'use strict';
-async function readFlightTimes(frame){
- return frame.evaluate(()=>{
+async function readFlightTimes(frame,oneWay=false){
+ return frame.evaluate(oneWay=>{
   if(location.origin!=='https://agents.airarabia.com')throw Error('UNTRUSTED');
   const clean=v=>{const s=String(v||'').replace(/\s+/g,' ').trim();return s.length<=120&&/^[\p{L}\p{N}\s:.,/+()-]+$/u.test(s)?s:null;};
   const read=(id,name)=>{
@@ -17,13 +17,14 @@ async function readFlightTimes(frame){
       return [{row:Number(radio.value),flight:cells[0],departure:cells[1],arrival:cells[2],selected:radio.checked}];
     });
   };
-  return {out:read('tblOutboundFlights','depatureSelection'),back:read('tblInboundFlights','returnSelection')};
- });
+  return {out:read('tblOutboundFlights','depatureSelection'),back:oneWay?[]:read('tblInboundFlights','returnSelection')};
+ },oneWay);
 }
 async function selectFlightTimes(frame,choice){
- const current=await readFlightTimes(frame);
+ const current=await readFlightTimes(frame,!choice.back);
  for(const [leg,name]of [['out','depatureSelection'],['back','returnSelection']]){
-  const wanted=choice[leg],found=current[leg].find(f=>f.row===wanted.row);
+  const wanted=choice[leg];if(!wanted)continue;
+  const found=current[leg].find(f=>f.row===wanted.row);
   if(!found || ['flight','departure','arrival'].some(k=>found[k]!==wanted[k]))throw Error('FLIGHT_OPTION_CHANGED');
   if(found.selected)continue;
   const visible=frame.locator('input[name="'+name+'"][value="'+wanted.row+'"]:visible');
@@ -41,13 +42,13 @@ async function selectFlightTimes(frame,choice){
  const fq=frame.locator('#btnFQ:visible');if(await fq.count()===1)await fq.click({timeout:15000});
  await frame.locator('button#btnBook:visible').waitFor({state:'visible',timeout:45000});
  await frame.waitForFunction(({out,back})=>{
-  const o=jsonOutFlts[out-1],r=jsonRetFlts[back-1],info=UI_tabSearchFlights.flightInfo;
+  const o=jsonOutFlts[out-1],r=back?jsonRetFlts[back-1]:null,info=UI_tabSearchFlights.flightInfo;
   const refs=o?.flightRPHList?.concat(r?.flightRPHList||[]);
   return Array.isArray(refs)&&Array.isArray(info)&&refs.length===info.length&&info.every(f=>refs.includes(f.flightRefNumber))
     && document.querySelector('input[name="depatureSelection"]:checked')?.value===String(out)
-    && document.querySelector('input[name="returnSelection"]:checked')?.value===String(back);
- },{out:choice.out.row,back:choice.back.row},{timeout:45000});
+    && (!back || document.querySelector('input[name="returnSelection"]:checked')?.value===String(back));
+ },{out:choice.out.row,back:choice.back?.row||null},{timeout:45000});
  return choice;
 }
-function flightPairs(times){return times.out.flatMap(out=>times.back.map(back=>({out,back})));}
+function flightPairs(times){return times.out.flatMap(out=>times.back.length?times.back.map(back=>({out,back})):[{out,back:null}]);}
 module.exports={readFlightTimes,selectFlightTimes,flightPairs};

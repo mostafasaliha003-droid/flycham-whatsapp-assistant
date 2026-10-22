@@ -109,8 +109,8 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     if (defaultReturn !== true) throw new Error('ONE_WAY_CONTROL_NOT_CONFIRMED');
     const [day, month, year] = departureDate.split('/').map(Number);
     const date = new Date(Date.UTC(year, month - 1, day + 7));
-    returnDate = requestedReturnDate || `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
-    if (requestTripType && (!/^\d{2}\/\d{2}\/\d{4}$/.test(requestedReturnDate || '') || requestTripType !== 'round_trip')) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
+    returnDate = requestTripType==='one_way'?'':requestedReturnDate || `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+    if (requestTripType==='round_trip' && !/^\d{2}\/\d{2}\/\d{4}$/.test(requestedReturnDate || '')) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   }
   report('PORTAL_PROBE_STAGE_ORIGIN');
   await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report });
@@ -118,7 +118,7 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
   await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report });
   report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
   await frame.locator('#departureDate').fill(departureDate);
-  if (returnDate) await frame.locator('#returnDate').fill(returnDate);
+  if (returnDate!==null) await frame.locator('#returnDate').fill(returnDate);
   await frame.locator('#adultCount').fill('1');
   await frame.locator('#childCount').fill('0');
   await frame.locator('#infantCount').fill('0');
@@ -152,7 +152,7 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     return hasCode(value('fromAirport'), origin) && hasCode(value('toAirport'), destination)
       && value('departureDate') === departureDate && value('adultCount') === '1'
       && value('childCount') === '0' && value('infantCount') === '0'
-      && value('selectedCurrency') === 'AED' && (!returnDate || value('returnDate') === returnDate);
+      && value('selectedCurrency') === 'AED' && (returnDate===null || value('returnDate') === returnDate);
   }, { origin, destination, departureDate, returnDate });
   if (validation !== true) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   return { tripKind: returnDate ? 'return' : 'one-way' };

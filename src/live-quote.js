@@ -5,11 +5,11 @@ const airports=new Map([['SHJ','SHJ'],['الشارقة','SHJ'],['الشارقه'
 function validateLiveRequest(r,now=Date.now()){
   const origin=airports.get(String(r?.origin||'').trim().toLowerCase()),destination=airports.get(String(r?.destination||'').trim().toLowerCase());
   const validDate=d=>/^\d{4}-\d{2}-\d{2}$/.test(d||'') && new Date(d+'T00:00:00Z').toISOString().slice(0,10)===d;
-  if(!origin || !destination || origin===destination || r.tripType!=='round_trip' || !validDate(r.departureDate) || !validDate(r.returnDate)
-    || r.departureDate<new Date(now).toISOString().slice(0,10) || r.returnDate<r.departureDate
+  if(!origin || !destination || origin===destination || !['round_trip','one_way'].includes(r.tripType) || !validDate(r.departureDate) || (r.tripType==='round_trip'&&!validDate(r.returnDate))
+    || r.departureDate<new Date(now).toISOString().slice(0,10) || (r.tripType==='round_trip'&&r.returnDate<r.departureDate)
     || r.passengers?.adults!==1 || r.passengers.children!==0 || r.passengers.infants!==0)throw Error('LIVE_SCOPE_UNSUPPORTED');
   if(r.baggageRequest && (!Number.isFinite(r.baggageRequest.checkedWeightKg)||r.baggageRequest.checkedWeightKg<=0||r.baggageRequest.checkedWeightKg>100||r.baggageRequest.requestedByCustomer!==true))throw Error('LIVE_SCOPE_UNSUPPORTED');
-  return{origin,destination,departureDate:r.departureDate.split('-').reverse().join('/'),returnDate:r.returnDate.split('-').reverse().join('/')};
+  return{origin,destination,departureDate:r.departureDate.split('-').reverse().join('/'),returnDate:r.tripType==='round_trip'?r.returnDate.split('-').reverse().join('/'):null};
 }
 function quoteFromScans(request,seats,catalogs){
   validateLiveRequest(request);
@@ -54,7 +54,7 @@ function expandLiveRequests(request){
  if(!Number.isFinite(+first)||!Number.isFinite(+last)||iso(first)!==start||iso(last)!==end||last<first||last-first>31*86400000)throw Error('LIVE_SCOPE_UNSUPPORTED');
  const dates=[];
  for(let d=first;d<=last;d=addDays(d,1)){
-  const candidate={...request,departureDate:iso(d),departureRange:null,returnDate:request.stayNights?iso(addDays(d,request.stayNights)):request.returnDate};
+  const candidate={...request,departureDate:iso(d),departureRange:null,returnDate:request.tripType==='one_way'?null:request.stayNights?iso(addDays(d,request.stayNights)):request.returnDate};
   validateLiveRequest(candidate);dates.push(candidate);
  }
  return dates;
@@ -62,9 +62,9 @@ function expandLiveRequests(request){
 function formatQuoteOptions(request,results,{complete,attempted,totalDates}={}){
  if(!results.length)return 'تعذر تأكيد أسعار التواقيت المطلوبة. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء حجز.';
  const sorted=results.slice().sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
- const shown=request.departureRange||request.searchMode==='cheapest'?sorted.slice(0,3):results;
- const title=request.departureRange?`نتائج المقارنة ضمن ${request.departureRange.start} إلى ${request.departureRange.end}`:'أسعار خيارات الذهاب والعودة التي تم فحصها';
- return `${title} — لشخص بالغ واحد:\n`+shown.map((q,i)=>`${i+1}) الذهاب ${q.timing.out.flight}: ${q.timing.out.departure} ← الوصول ${q.timing.out.arrival}\nالعودة ${q.timing.back.flight}: ${q.timing.back.departure} ← الوصول ${q.timing.back.arrival}\nالإجمالي ${q.price.sellingTotal} درهم؛ الوزن ${q.price.weights.map(w=>w.kg+' كغ').join(' / ')}`).join('\n\n')
+ const shown=request.resultsMode==='summary'?sorted.slice(0,3):results;
+ const title=request.departureRange?`نتائج المقارنة ضمن ${request.departureRange.start} إلى ${request.departureRange.end}`:'أسعار الرحلات التي تم فحصها';
+ return `${title} — لشخص بالغ واحد، ${request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}:\n`+shown.map((q,i)=>`${i+1}) الذهاب ${q.request?.departureDate||request.departureDate||''} — ${q.timing.out.flight}: ${q.timing.out.departure} ← الوصول ${q.timing.out.arrival}${q.timing.back?`\nالعودة ${q.request?.returnDate||request.returnDate||''} — ${q.timing.back.flight}: ${q.timing.back.departure} ← الوصول ${q.timing.back.arrival}`:''}\nالإجمالي ${q.price.sellingTotal} درهم؛ الوزن ${q.price.weights.map(w=>w.kg+' كغ').join(' / ')}${q.price.sellingTotal===sorted[0].price.sellingTotal?' — الأقل بين النتائج المعروضة':''}`).join('\n\n')
   +`\n\n${complete?'اكتمل فحص التواقيت المتاحة في نتائج البحث.':'الفحص جزئي؛ لا نؤكد أن هذه أرخص أسعار كامل الفترة أو أن جميع التواقيت فُحصت.'}\nتمت محاولة فحص ${attempted} خيارًا؛ فترة الطلب تضم ${totalDates} تاريخًا. الأسعار تشمل الرسوم والعمولة. المواعيد كما تظهر في البوابة. وزن اليد غير مؤكد. السعر والتوفر قابلان للتغير؛ لم يتم حجز أي تذكرة.`;
 }
 module.exports={validateLiveRequest,quoteFromScans,formatLiveQuote,expandLiveRequests,formatQuoteOptions};

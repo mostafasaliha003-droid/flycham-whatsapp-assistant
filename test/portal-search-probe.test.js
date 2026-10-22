@@ -56,6 +56,10 @@ test('customer return search uses the exact requested return date without a synt
   await assert.rejects(submitProbe(bad.frame,{...config,requestTripType:'round_trip',requestedReturnDate:'29/11/2026'}));
   assert.ok(!bad.calls.some(([action,selector])=>action==='click'&&selector.includes('btnSearch')));
 });
+test('customer one-way search clears the optional return field instead of fabricating a seven-day return',async()=>{
+ const f=fixture({missingOneWay:true,defaultReturn:true});const result=await submitProbe(f.frame,{...config,requestTripType:'one_way'});
+ assert.equal(result.tripKind,'one-way');assert.equal(f.values['#returnDate'],'');
+});
 
 test('probe fills observed text passenger counts and clicks only the search control', async () => {
   const f = fixture();
