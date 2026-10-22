@@ -31,3 +31,10 @@ test('queue authenticates, deduplicates, isolates recipients, expires jobs and c
  assert.equal(q.takeResult(j.id,'wrong'),null);assert.deepEqual(q.takeResult(j.id,j.lease),{recipient:'private'});assert.equal(q.takeResult(j.id,j.lease),null);
  q.finish(j.id);q.enqueue('private',request());now+=1001;assert.equal(q.claim(),null);
 });
+
+test('an in-flight weight amendment replaces only that customer job and suppresses old fare replies',()=>{
+ let now=100;const q=new QuoteJobs({now:()=>now});q.claim();q.enqueue('customer-A',request());const old=q.claim();
+ now+=30000;const changed={...request(),baggageRequest:{checkedWeightKg:30,requestedByCustomer:true}};
+ q.enqueue('customer-A',changed);assert.equal(q.current(old.id,old.lease),false);assert.equal(q.takeResult(old.id,old.lease),null);assert.equal(q.takeProgress(old.id,old.lease,1),null);
+ const next=q.claim();assert.equal(next.request.baggageRequest.checkedWeightKg,30);assert.equal(q.current(next.id,next.lease),true);
+});

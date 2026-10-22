@@ -8,7 +8,14 @@ class QuoteJobs {
   prune(){for(const [id,j] of this.jobs)if(j.expires<=this.now())this.jobs.delete(id);for(const [id,t]of this.seen)if(t<=this.now())this.seen.delete(id);}
   ready(){return this.workerAt>0 && this.now()-this.workerAt<20000;}
   acceptMessage(id){this.prune();if(!id || this.seen.has(id))return false;this.seen.set(id,this.now()+this.ttl);return true;}
-  enqueue(recipient,request){this.prune();if(!this.ready() || this.jobs.size>=100)throw Error('QUEUE_UNAVAILABLE');const id=randomUUID();this.jobs.set(id,{recipient,request:structuredClone(request),expires:this.now()+this.ttl,state:'pending'});return id;}
+  enqueue(recipient,request){
+    this.prune();
+    const previous=[...this.jobs.entries()].filter(([,j])=>j.recipient===recipient&&['pending','claimed'].includes(j.state));
+    if((!this.ready()&&!previous.length)||this.jobs.size>=100)throw Error('QUEUE_UNAVAILABLE');
+    for(const [id]of previous)this.jobs.delete(id);
+    const id=randomUUID();this.jobs.set(id,{recipient,request:structuredClone(request),expires:this.now()+this.ttl,state:'pending'});return id;
+  }
+  current(id,lease){this.prune();this.workerAt=this.now();const j=this.jobs.get(id);return Boolean(j&&j.state==='claimed'&&j.lease===lease);}
   claim(){this.prune();this.workerAt=this.now();for(const [id,j]of this.jobs)if(j.state==='pending'){j.state='claimed';j.lease=randomUUID();return{id,lease:j.lease,request:j.request};}return null;}
   takeResult(id,lease){this.prune();const j=this.jobs.get(id);if(!j || j.state!=='claimed' || lease!==j.lease)return null;j.state='sending';return {recipient:j.recipient};}
   takeProgress(id,lease,seq){this.prune();const j=this.jobs.get(id);if(!j||j.state!=='claimed'||lease!==j.lease||!Number.isInteger(seq)||seq!==(j.progress||0)+1)return null;j.progress=seq;return{recipient:j.recipient};}

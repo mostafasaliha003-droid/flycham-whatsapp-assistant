@@ -56,7 +56,7 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   text = normalizeDigits(text);
   const plain=normalize(text);
   if(/ارخص|اقل سعر/.test(plain))request.searchMode='cheapest';
-  const weight=text.match(/(?:وزن(?:\s+إضافي|\s+اضافي)?|بدي|أريد|اريد)\s*(\d{1,3})\s*(?:كيلو|كغ|kg)/i);
+  const weight=text.match(/(?:وزن(?:\s+إضافي|\s+اضافي)?|بدي|أريد|اريد)\s*(\d{1,3})\s*(?:كيلو|كغ|kg)/i)||text.match(/(?:^|\s)(\d{1,3})\s*(?:كيلو|كغ|kg)(?:\s|$|[،,.])/i);
   if (weight && Number(weight[1]) > 0 && Number(weight[1]) <= 100) request.baggageRequest={checkedWeightKg:Number(weight[1]),requestedByCustomer:true};
   let invalidDate = false;
   const route = parseRoute(text);
@@ -183,10 +183,12 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
     return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. الربط الحالي يفحص الشارقة فقط، لذلك المقارنة لا تشمل باقي مطارات الإمارات. ':''}${understood}${prompt}` };
   }
   if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};
+  const amendment=state.submitted&&before!==JSON.stringify(request);
   state.submitted=true;state.awaiting=null;
   return {
     complete: true,
     request: structuredClone(request),
+    amendment,
     reply: `وصلتني تفاصيل طلب الاستعلام:\n${summarize(request)}\nالتحقق من السعر غير متاح تلقائيًا حاليًا؛ يحتاج الطلب إلى مراجعة موظف على بوابة الطيران قبل تأكيد أي سعر. لا يتم حجز أو إصدار تذكرة تلقائيًا.`
   };
 }

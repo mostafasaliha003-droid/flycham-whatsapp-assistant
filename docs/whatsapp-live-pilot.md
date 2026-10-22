@@ -61,3 +61,7 @@ options per customer job. Week/month searches can therefore be partial. Any
 failure or exhausted budget is explicitly disclosed; the bot never claims
 to have found the minimum for the whole month if coverage is incomplete.
 Every successfully priced date/timing is sent as a progress message. The final summary highlights three cheapest results already sent. Incomplete coverage is disclosed. Progress uses a sequential, lease-protected at-most-once endpoint. The adapter supports the pilot route and one adult only. One-way search clears the optional return field and verifies that the supplier search has no return date.
+
+## Weight amendments
+
+Bare weight replies such as `30 كيلو` update the stored trip without resetting dates. A new request replaces pending or claimed work for the same recipient. Old leases cannot deliver progress or completion. The worker checks the lease between flight/date scans and suppresses obsolete completion; it does not interrupt a browser operation midway. Results use a readable branded WhatsApp layout and disclose partial comparison coverage. The queue remains in-memory and a restart loses conversational and queued state.
