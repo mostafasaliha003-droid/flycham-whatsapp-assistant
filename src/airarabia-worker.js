@@ -5,6 +5,7 @@ const { waitForVerificationCode } = require('./operator-verification');
 const { verificationFormAction } = require('./portal-verification-form');
 const { submitProbe } = require('./portal-search-probe');
 const { openPassengerOptions } = require('./portal-options-probe');
+const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -467,6 +468,8 @@ class AirArabiaPortalAdapter {
       this.report('PORTAL_PROBE_RESULTS_CONTROL_VISIBLE');
       await this.inspectSearchUI();
       await openPassengerOptions(this.searchFrame, this.page, this.report);
+      await this.inspectSearchUI();
+      await continueWithTestPassenger(this.searchFrame, this.report);
       await this.inspectSearchUI();
       // Reaching a result page is not a final ancillary-inclusive quote.
       return true;
