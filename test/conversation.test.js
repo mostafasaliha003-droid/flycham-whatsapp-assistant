@@ -81,3 +81,18 @@ test('bare ambiguous multiple cities do not silently choose an airport',()=>{
  resetSessions();handleMessage('ambiguous-user','بدي ارخص تاريخ بهل اسبوع');
  assert.match(handleMessage('ambiguous-user','الشارقة او دبي').reply,/من أي مدينة أو مطار/);
 });
+
+test('colloquial airport aliases preserve route direction',()=>{
+ for(const city of ['شارق','شارقه','شارجه','الشارقه','الشارقة','شارقة','شارجة']){
+  resetSessions();const r=handleMessage('alias','من '+city+' على الشام، بدي ارخص تاريخ بهل اسبوع');
+  assert.equal(r.complete,true);assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
+ }
+ for(const [name,expected]of [['الشام','دمشق'],['شام','دمشق'],['دمشق','دمشق'],['حلب','حلب'],['حلاب','حلب']]){
+  resetSessions();handleMessage('alias-d','من الشارقة بدي ارخص تاريخ بهل اسبوع');
+  const r=handleMessage('alias-d',name);assert.equal(r.complete,true);assert.equal(r.request.destination,expected);
+ }
+});
+test('any UAE airport intent discloses limited coverage instead of asking the same airport question',()=>{
+ resetSessions();const r=handleMessage('any-uae','اي مطار بالامارات ما بتفرق بدي الارخص على الشام بهل اسبوع');
+ assert.equal(r.complete,true);assert.equal(r.request.originScope,'any_uae');assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
+});

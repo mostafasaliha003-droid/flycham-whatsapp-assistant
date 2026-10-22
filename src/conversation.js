@@ -70,9 +70,17 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   }
   // A reply to a city question may include airport names, fillers or IATA codes.
   // Match known names only; never assign a vague country to an airport.
-  const airportNames=[['الشارقة',/الشارق[ةه]|\bsharjah\b|\bshj\b/i],['دمشق',/دمشق|\bdamascus\b|\bdam\b/i],['دبي',/دبي|\bdubai\b|\bdxb\b/i],['حلب',/حلب|\baleppo\b|\balp\b/i],['اللاذقية',/اللاذقي[ةه]|\blatakia\b|\bltk\b/i]];
+  const airportNames=[['الشارقة',/(?:ال)?شار(?:ق[ةه]?|ج[ةه])|\bsharjah\b|\bshj\b/i],['دمشق',/دمشق|(?:ال)?شام|\bdamascus\b|\bdam\b/i],['دبي',/دبي|\bdubai\b|\bdxb\b/i],['حلب',/حلا?ب|\baleppo\b|\balp\b/i],['اللاذقية',/اللاذقي[ةه]|\blatakia\b|\bltk\b/i]];
+  for(const [city,pattern]of airportNames){
+    const match=plain.match(pattern);if(!match)continue;
+    const prefix=plain.slice(0,match.index);
+    if(/(?:من|from)\s*(?:مطار\s*)?$/.test(prefix))request.origin=city;
+    if(/(?:الى|علي|على|ع|to)\s*(?:مطار\s*)?$/.test(prefix))request.destination=city;
+  }
+  const anyUae=/(?:اي|ايا|كل|جميع)\s*(?:مطار|مطارات)(?:\s+ب?الامارات|\s+في\s+الامارات)|(?:ما\s*(?:بتفرق|بيفرق)|مو\s*مهم).*مطار/.test(plain);
+  if(anyUae){request.origin='الشارقة';request.originScope='any_uae';}
   const mentioned=airportNames.filter(([,pattern])=>pattern.test(plain));
-  if(mentioned.length===1&&(awaiting==='origin'||awaiting==='destination')){
+  if(!anyUae&&mentioned.length===1&&(awaiting==='origin'||awaiting==='destination')){
     const city=mentioned[0][0];
     if(!/(?:من|from)\s/.test(plain)&&!/(?:الى|علي|على|to)\s/.test(plain))request[awaiting]=city;
     else if(awaiting==='origin'&&/(?:من|from)\s/.test(plain))request.origin=city;
@@ -168,7 +176,7 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
     state.awaiting=missing[0];
     const prompt=missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
     const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، فهمت تاريخ الذهاب ${request.departureDate}. `:'';
-    return { complete: false, reply: `${understood}${prompt}` };
+    return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. الربط الحالي يفحص الشارقة فقط، لذلك المقارنة لا تشمل باقي مطارات الإمارات. ':''}${understood}${prompt}` };
   }
   if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};
   state.submitted=true;state.awaiting=null;
