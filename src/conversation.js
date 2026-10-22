@@ -42,12 +42,12 @@ function parsePassengerCount(text) {
   const infant = text.match(/رضع?\s*[:：]?\s*(\d+)/i);
   const generic = text.match(/(?:نحن|عددنا|لـ|for)?\s*(\d+)\s*(?:مسافرين|مسافر|أشخاص|شخص)/i);
   if (!adult && !child && !infant && !generic) return null;
-  const adults = adult ? Number(adult[1] || adult[2]) : (generic ? Number(generic[1]) : 1);
+  const adults = adult ? Number(adult[1] || adult[2]) : (generic ? Number(generic[1]) : null);
   const children = child ? Number(child[1]) : 0;
   const infants = infant ? Number(infant[1]) : 0;
   const ages = [...text.matchAll(/(?:عمر|أعمار|عمره|عمرها)\s*(\d{1,2})/g)].map((m) => Number(m[1]));
   if (adults + children + infants < 1 || adults + children + infants > 9) return null;
-  if (children + infants > 0 && ages.length < children + infants) return null;
+  // Preserve the stated count and ask for missing ages instead of losing it.
   return { adults, children, infants, ages };
 }
 
@@ -127,10 +127,12 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   if(/^(?:لحالي|انا لحالي|انا بس|شخص واحد|واحد|1)$/.test(plain)&&awaiting==='passengers')passengers={adults:1,children:0,infants:0,ages:[]};
   if(/^(?:شخصين|نحن شخصين|اتنين|اثنين|2)$/.test(plain)&&awaiting==='passengers')passengers={adults:2,children:0,infants:0,ages:[]};
   if(awaiting==='passengers'&&/^\d+$/.test(plain)&&Number(plain)>=1&&Number(plain)<=9)passengers={adults:Number(plain),children:0,infants:0,ages:[]};
+  if(/^(?:انا ومرتي|انا وزوجتي|انا وزوجي|انا ورفيقي|شخصين|نحن شخصين)$/.test(plain))passengers={adults:2,children:0,infants:0,ages:[]};
+  if(/^(?:لحالي|انا لحالي|انا بس)$/.test(plain))passengers={adults:1,children:0,infants:0,ages:[]};
   if (passengers) request.passengers = passengers;
   if(request.departureRange){
     if(!request.tripType){request.tripType='one_way';request.comparisonTripDefault=true;}
-    if(!request.passengers){request.passengers={adults:1,children:0,infants:0,ages:[]};request.comparisonPassengerDefault=true;}
+
   }
   if(request.stayNights&&request.departureDate&&request.departureDate!==previousDepartureDate&&dates.length<=1&&awaiting!=='returnDate')request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),request.stayNights));
   if(request.departureDate&&request.returnDate&&request.returnDate<request.departureDate)invalidDate=true;
@@ -139,7 +141,7 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
 
 function missingFields(request) {
   return ['origin', 'destination', ...(!request.departureDate&&!request.departureRange?['departureDate']:[]), 'tripType',
-    ...(request.tripType === 'round_trip'&&!request.returnDate&&!request.stayNights ? ['returnDate'] : []), 'passengers'].filter(field=>!request[field]);
+    ...(request.tripType === 'round_trip'&&!request.returnDate&&!request.stayNights ? ['returnDate'] : []), 'passengers'].filter(field=>!request[field]||(field==='passengers'&&!Number.isInteger(request.passengers?.adults)));
 }
 
 function summarize(request) {
@@ -166,7 +168,7 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
     return { complete: false, reply: 'أهلًا بك في خدمة طلبات الطيران من مجموعة الرمال. أرسل مسار الرحلة وتاريخ الذهاب، مثل: من الشارقة إلى دمشق، 11-11-2026، ذهاب فقط.' };
   }
   const state=sessions.get(sender) ?? {request:emptyRequest(),awaiting:null,submitted:false,at:now};
-  const request=state.request;
+  const request=structuredClone(state.request);
   const before=JSON.stringify(request);
   const follow=normalize(normalized).replace(/[؟?!،,.]+$/g,'');
   if(state.submitted&&/^(?:شفلي|شوفلي|شوف لي|شوف|اي شفلي|اي شوفلي|تابع|كمل|نعم|اي|شفلي بعد بكم يوم|شوفلي بعد بكم يوم|بعد بكم يوم|بعد كم يوم)$/.test(follow)){
@@ -185,6 +187,7 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
   const invalidDate = applyParsed(request, normalized,{now,awaiting:state.awaiting});
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
+  if(!invalidDate)state.request=request;
   state.at=now;sessions.set(sender,state);
 
   if (invalidDate) {
@@ -210,4 +213,6 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
 
 function resetSessions() { sessions.clear(); }
 
-module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits };
+function exportSession(id){return sessions.has(id)?structuredClone(sessions.get(id)):null;}
+function importSession(id,value){if(value)sessions.set(id,structuredClone(value));else sessions.delete(id);}
+module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,exportSession,importSession }; 

@@ -38,3 +38,20 @@ test('an in-flight weight amendment replaces only that customer job and suppress
  q.enqueue('customer-A',changed);assert.equal(q.current(old.id,old.lease),false);assert.equal(q.takeResult(old.id,old.lease),null);assert.equal(q.takeProgress(old.id,old.lease,1),null);
  const next=q.claim();assert.equal(next.request.baggageRequest.checkedWeightKg,30);assert.equal(q.current(next.id,next.lease),true);
 });
+
+test('supplier-confirmed inactive meals and seat selection do not become fictional free services',()=>{
+ const {seats,catalogs}=scans();seats.segments=seats.segments.map(s=>({segment:s.segment,complete:true,notOffered:true,evidence:'supplier-inactive-service'}));
+ catalogs.results[0]={type:'meal',complete:true,notOffered:true,evidence:'supplier-inactive-service',coveredSegments:[0,1],catalogs:[]};
+ const q=quoteFromScans(request(),seats,catalogs);assert.equal(q.sellingTotal,'1025.00');assert.match(q.serviceNotes.join(' '),/غير متاحة/);
+ seats.segments[0].evidence='missing-map';assert.throws(()=>quoteFromScans(request(),seats,catalogs));
+});
+test('paid additional baggage includes supplier cost and margin; free higher weight still carries service margin',()=>{
+ const {seats,catalogs}=scans(),r={...request(),baggageRequest:{checkedWeightKg:30,requestedByCustomer:true}};
+ assert.equal(quoteFromScans(r,seats,catalogs).sellingTotal,'1105.00');
+ for(const c of catalogs.results[1].catalogs)c.options[1].price.amount=0;
+ assert.equal(quoteFromScans(r,seats,catalogs).sellingTotal,'1035.00');
+});
+test('explicit free no-meal choice is preferred to optional paid food for the cheapest quote',()=>{
+ const {seats,catalogs}=scans();for(const c of catalogs.results[0].catalogs)c.options=[{available:true,foodKind:'none',price:{amount:0,currency:'AED'}},{available:true,foodKind:'food',price:{amount:20,currency:'AED'}}];
+ const q=quoteFromScans(request(),seats,catalogs);assert.equal(q.sellingTotal,'1025.00');assert.match(q.serviceNotes.join(' '),/دون وجبة/);
+});

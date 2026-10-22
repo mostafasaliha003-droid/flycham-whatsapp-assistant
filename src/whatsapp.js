@@ -32,6 +32,7 @@ function extractIncomingMessages(payload) {
         const contact = contacts.find((item) => item?.wa_id === message.from);
         messages.push({
           id: message.id ?? null,
+          ...(message.context?.id?{contextId:message.context.id}:{}),
           from: message.from,
           name: contact?.profile?.name ?? null,
           text: message.text.body.trim(),

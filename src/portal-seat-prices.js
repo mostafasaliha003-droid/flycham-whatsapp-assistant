@@ -75,6 +75,8 @@ async function scanSeatPrices(frame, page, report = () => {}) {
   try {
     const available = await frame.evaluate(() => UI_tabAnci.seatMapAvailable === true);
     if (!available) {
+      const inactive=await frame.evaluate(()=>Array.isArray(UI_tabAnci.anciSummary)&&UI_tabAnci.anciSummary.some(s=>s.tab===2&&s.stat==='INA')&&Array.isArray(jsAnciSeg)&&jsAnciSeg.length>0?jsAnciSeg.map((_,segment)=>({segment,complete:true,notOffered:true,evidence:'supplier-inactive-service'})):null);
+      if(inactive){report('PORTAL_SEAT_NOT_OFFERED_CONFIRMED');return{complete:true,segments:inactive,customerQuoteReady:false};}
       report('PORTAL_SEAT_MAP_UNAVAILABLE_NO_PRICE');
       return { complete: false, customerQuoteReady: false, segments: [] };
     }

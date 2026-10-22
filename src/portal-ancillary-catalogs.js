@@ -52,6 +52,8 @@ async function scanAncillaryCatalogs(frame, page, report = () => {}) {
     for (const config of [{ type:'meal', tab:1, code:'MEAL' }, { type:'baggage', tab:5, code:'BAGGAGE' }]) {
       const tab = frame.locator('#imgTab_' + config.tab + ':visible');
       if (await tab.count() !== 1) {
+        const inactive=config.type==='meal'&&await frame.evaluate(()=>Array.isArray(UI_tabAnci.anciSummary)&&UI_tabAnci.anciSummary.some(s=>s.tab===1&&s.stat==='INA')&&Array.isArray(jsAnciSeg)&&jsAnciSeg.length>0?{coveredSegments:jsAnciSeg.map((_,i)=>i)}:null);
+        if(inactive){results.push({type:'meal',complete:true,notOffered:true,evidence:'supplier-inactive-service',...inactive,catalogs:[]});report('PORTAL_MEAL_NOT_OFFERED_CONFIRMED');continue;}
         report('PORTAL_CATALOG_' + config.type.toUpperCase() + '_UNAVAILABLE_NO_PRICE');
         results.push({ type: config.type, complete: false });
         continue;

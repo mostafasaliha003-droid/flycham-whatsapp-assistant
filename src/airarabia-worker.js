@@ -481,34 +481,35 @@ class AirArabiaPortalAdapter {
   }
 
   async runCustomerQuote(request,onProgress,assertCurrent=async()=>{}) {
-    const dates=expandLiveRequests(request),results=[];
-    const deadline=Date.now()+45*60*1000;
-    let complete=true,attempted=0;
+    const dates=expandLiveRequests(request),results=[],coverage=[];
+    const deadline=Date.now()+45*60*1000;let attempted=0,consecutiveDiscoveryFailures=0;
     for(const dated of dates){
-      await assertCurrent();
-      if(Date.now()>=deadline || results.length>=80){complete=false;break;}
-      let first;
-      attempted++;
-      try{first=await this.runCustomerQuoteVariant(dated);results.push(first);}
-      catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
-      if(onProgress)await onProgress('نتيجة متاحة الآن، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[first],{complete:false,attempted:1,totalDates:1,inProgress:true}));
-      for(const choice of flightPairs(first.choices)){
-        await assertCurrent();
-        if(choice.out.row===first.timing.out.row&&choice.back?.row===first.timing.back?.row)continue;
-        if(Date.now()>=deadline || results.length>=80){complete=false;break;}
-        attempted++;
+      await assertCurrent();if(Date.now()>=deadline||results.length>=80)break;
+      const day={date:dated.departureDate,status:'unverified',confirmed:0,failed:0};coverage.push(day);
+      let choices;
+      try{choices=(await this.runCustomerQuoteVariant(dated,null,true)).choices;consecutiveDiscoveryFailures=0;}
+      catch(error){day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(safeFailureCode(error,'PROBE'));if(onProgress)await onProgress('',{coverage});if(++consecutiveDiscoveryFailures>=3)break;continue;}
+      for(const choice of flightPairs(choices)){
+        await assertCurrent();if(Date.now()>=deadline||results.length>=80){day.failed++;break;}attempted++;
         let result;
-        try{result=await this.runCustomerQuoteVariant(dated,choice);results.push(result);}
-        catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');}
-        if(result&&onProgress)await onProgress('نتيجة إضافية، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[result],{complete:false,attempted:1,totalDates:1,inProgress:true}));
+        for(let retry=0;retry<2;retry++){
+          await assertCurrent();
+          try{result=await this.runCustomerQuoteVariant(dated,choice);break;}
+          catch(error){const code=safeFailureCode(error,'PROBE');this.report(code);if(retry===0&&/TIMEOUT|NETWORK|FRAME_CHANGED/.test(code)){this.report('PORTAL_QUOTE_READ_RETRY');continue;}day.failed++;this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');break;}
+        }
+        if(result){result.reference=results.length+1;results.push(result);day.confirmed++;if(onProgress)await onProgress('نتيجة مؤكدة، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[result],{complete:false,attempted,totalDates:dates.length,inProgress:true}),{offer:result,coverage});}
       }
+      day.status=day.failed?'partial':'confirmed';if(onProgress)await onProgress('',{coverage});
     }
+    for(const dated of dates)if(!coverage.some(d=>d.date===dated.departureDate))coverage.push({date:dated.departureDate,status:'unverified',confirmed:0,failed:0});
+    const complete=coverage.every(d=>['confirmed','no_flights'].includes(d.status));
     this.report(complete?'PORTAL_TIMING_COMPARISON_COMPLETE':'PORTAL_TIMING_COMPARISON_PARTIAL');
-    if(!results.length)throw Error('NO_TIMING_PRICE_VERIFIED');
-    return (onProgress?'ملخص المقارنة؛ أُرسلت التواريخ والتواقيت التي تم تسعيرها في الرسائل السابقة:\n':'')+formatQuoteOptions(onProgress?{...request,resultsMode:'summary'}:request,results,{complete,attempted,totalDates:dates.length});
+    const detail='\n\nتغطية التواريخ:\n'+coverage.map(d=>`${d.date}: ${d.status==='confirmed'?'اكتمل فحص الخيارات':d.status==='no_flights'?'لا رحلات متاحة في نتائج المصدر':d.status==='partial'?'تأكدت بعض الخيارات، وبقية الفحص لم يكتمل':'لم يتأكد السعر'}`).join('\n');
+    if(!results.length)return{reply:'لم تتأكد أسعار للطلب حتى الآن. تفاصيلك محفوظة؛ لم يتم حجز أو إصدار تذكرة.'+detail,outcome:'failed',coverage};
+    return{reply:formatQuoteOptions(request,results,{complete,attempted,totalDates:dates.length})+detail,outcome:complete?'done':'partial',coverage};
   }
 
-  async runCustomerQuoteVariant(request,choice) {
+  async runCustomerQuoteVariant(request,choice,discoverOnly=false) {
     const config=validateLiveRequest(request);
     // New protected page for every request, serialized by PortalSession.run.
     await this.searchFlightsForHeartbeat();
@@ -521,6 +522,7 @@ class AirArabiaPortalAdapter {
     this.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');
     if(oneWay&&!await this.searchFrame.evaluate(()=>UI_tabSearchFlights.strRetDate===''))throw Error('ONE_WAY_NOT_CONFIRMED');
     const choices=await readFlightTimes(this.searchFrame,oneWay);
+    if(discoverOnly)return{choices};
     const timing=choice?await selectFlightTimes(this.searchFrame,choice):{
       out:choices.out.find(f=>f.selected)||choices.out[0],back:choices.back.find(f=>f.selected)||choices.back[0]};
     if(!timing.out||(!oneWay&&!timing.back))throw Error('FLIGHT_TIMES_UNCONFIRMED');
