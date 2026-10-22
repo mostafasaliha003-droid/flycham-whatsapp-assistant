@@ -30,12 +30,11 @@ test('a return-date reply never overwrites the departure date',()=>{
 });
 test('cheapest month round-trip intent asks stay length and preserves the date range',()=>{
  resetSessions();const h=t=>handleMessage('range-user',t,{now});
- h('من الشارقة إلى دمشق، أرخص سعر بهل شهر، ذهاب وعودة');
+ h('من الشارقة إلى دمشق، أرخص سعر بهل شهر، ذهاب وعودة، 1 بالغ');
  const r=h('لمدة 7 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.start,'2026-10-23');assert.equal(r.request.stayNights,7);
 });
 
-test('cheapest-week request with a known route proceeds with a declared one-adult one-way comparison basis',()=>{
- resetSessions();const r=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع',{now});
- assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.end,'2026-10-25');
- assert.equal(r.request.tripType,'one_way');assert.equal(r.request.passengers.adults,1);assert.equal(r.request.comparisonTripDefault,true);
+test('cheapest-week request always asks for passenger count before pricing',()=>{
+ resetSessions();const first=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع',{now});assert.equal(first.complete,false);assert.match(first.reply,/كم عدد المسافرين/);
+ const r=handleMessage('week-auto','1 بالغ',{now});assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.end,'2026-10-25');assert.equal(r.request.passengers.adults,1);
 });

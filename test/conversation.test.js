@@ -74,7 +74,7 @@ test('airport replies with airport prefix, fillers and IATA codes advance instea
  for(const answer of ['مطار الشارقة','الشارقه الدولي','من مطار الشارقة','بدي من الشارقة','SHJ','Sharjah airport']){
   resetSessions();handleMessage('airport-user','بدي ارخص تاريخ بهل اسبوع');
   const next=handleMessage('airport-user',answer);assert.match(next.reply,/إلى أي مدينة/);
-  const done=handleMessage('airport-user','مطار دمشق الدولي');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
+  handleMessage('airport-user','مطار دمشق الدولي');const done=handleMessage('airport-user','1 بالغ');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
  }
 });
 test('bare ambiguous multiple cities do not silently choose an airport',()=>{
@@ -84,16 +84,16 @@ test('bare ambiguous multiple cities do not silently choose an airport',()=>{
 
 test('colloquial airport aliases preserve route direction',()=>{
  for(const city of ['شارق','شارقه','شارجه','الشارقه','الشارقة','شارقة','شارجة']){
-  resetSessions();const r=handleMessage('alias','من '+city+' على الشام، بدي ارخص تاريخ بهل اسبوع');
+  resetSessions();const r=handleMessage('alias','من '+city+' على الشام، بدي ارخص تاريخ بهل اسبوع، 1 بالغ');
   assert.equal(r.complete,true);assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
  }
  for(const [name,expected]of [['الشام','دمشق'],['شام','دمشق'],['دمشق','دمشق'],['حلب','حلب'],['حلاب','حلب']]){
   resetSessions();handleMessage('alias-d','من الشارقة بدي ارخص تاريخ بهل اسبوع');
-  const r=handleMessage('alias-d',name);assert.equal(r.complete,true);assert.equal(r.request.destination,expected);
+  handleMessage('alias-d',name);const r=handleMessage('alias-d','1 بالغ');assert.equal(r.complete,true);assert.equal(r.request.destination,expected);
  }
 });
 test('any UAE airport intent discloses limited coverage instead of asking the same airport question',()=>{
- resetSessions();const r=handleMessage('any-uae','اي مطار بالامارات ما بتفرق بدي الارخص على الشام بهل اسبوع');
+ resetSessions();const r=handleMessage('any-uae','اي مطار بالامارات ما بتفرق بدي الارخص على الشام بهل اسبوع، 1 بالغ');
  assert.equal(r.complete,true);assert.equal(r.request.originScope,'any_uae');assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
 });
 
@@ -102,7 +102,7 @@ test('repeating the departure airport while asked for destination never creates 
  h('مرحبا');h('لا لا بدي بهل اسبوع ماكسيموم');
  assert.match(h('من الشارجه').reply,/مطار المغادرة الشارقة واضح/);
  for(const name of ['شارقه','الشارقة','SHJ']){const r=h(name);assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة/);}
- const done=h('الشام');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
+ h('الشام');const done=h('1 بالغ');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
 });
 test('vague Syria request still asks destination city after origin is repeated',()=>{
  resetSessions();const h=t=>handleMessage('country-repro',t);
@@ -112,14 +112,14 @@ test('vague Syria request still asks destination city after origin is repeated',
 
 test('a baggage follow-up amends the same weekly request after submission',()=>{
  for(const weight of ['30 كيلو','بدي 30 كيلو','٣٠ كيلو','30kg']){
-  resetSessions();handleMessage('amend-user','من الشارقة على الشام بدي ارخص سعر بهل اسبوع');
+  resetSessions();handleMessage('amend-user','من الشارقة على الشام بدي ارخص سعر بهل اسبوع، 1 بالغ');
   const r=handleMessage('amend-user',weight);assert.equal(r.complete,true);assert.equal(r.amendment,true);assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.destination,'دمشق');assert.ok(r.request.departureRange);
  }
 });
 
 test('search-expansion replies clarify the window and retain route and requested weight',()=>{
  const now=Date.parse('2026-10-23T08:00:00Z');resetSessions();const h=t=>handleMessage('expansion',t,{now});
- h('من الشارقة على الشام بدي ارخص سعر بهل اسبوع بدي 30 كيلو');
+ h('من الشارقة على الشام بدي ارخص سعر بهل اسبوع بدي 30 كيلو، 1 بالغ');
  assert.equal(h('شفلي').complete,false);assert.match(h('شفلي بعد بكم يوم').reply,/حدد قديش/);
  const r=h('3 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureRange.start,'2026-10-26');assert.equal(r.request.departureRange.end,'2026-10-28');assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.origin,'الشارقة');
  assert.equal(h('حصرا بهل ايام').complete,false);
