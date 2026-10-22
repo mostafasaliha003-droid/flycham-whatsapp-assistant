@@ -56,3 +56,62 @@ test('probe rejects unsupported routes before interacting with the portal', asyn
   await assert.rejects(submitProbe(f.frame, { ...config, origin: 'OTHER' }), /UNSUPPORTED/);
   assert.equal(f.calls.length, 0);
 });
+
+const vm = require('node:vm');
+function radioDOM(labels) {
+  const radios = labels.map(() => ({ id: 'searchType', disabled: false, labels: [], getAttribute: () => null, closest: () => null, form: {} }));
+  const parent = { closest: () => null, getClientRects: () => [1] };
+  return {
+    NodeFilter: { SHOW_ELEMENT: 1, SHOW_TEXT: 4 },
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    document: {
+      body: {},
+      querySelectorAll: () => radios,
+      createTreeWalker: () => {
+        let position = -1, origin;
+        return {
+          get currentNode() { return position === -1 ? origin : position === 0 ? { nodeType: 3, parentElement: parent, textContent: labels[radios.indexOf(origin)] } : { nodeType: 1, tagName: 'INPUT' }; },
+          set currentNode(node) { origin = node; },
+          nextNode() { position++; return position < 2; },
+        };
+      },
+    },
+  };
+}
+
+test('reads a hyphenated loose radio label despite duplicate supplier IDs', async () => {
+  const f = fixture();
+  const original = f.frame.evaluate;
+  f.frame.evaluate = async (fn, args) => args ? original(fn, args) : vm.runInNewContext(`(${fn.toString()})()`, radioDOM(['Round Trip', 'Multi City', 'One-way']));
+  const locator = f.frame.locator;
+  let checkedIndex;
+  f.frame.locator = selector => {
+    const field = locator(selector);
+    const nth = field.nth;
+    field.nth = index => { checkedIndex = index; return nth(index); };
+    return field;
+  };
+  await submitProbe(f.frame, config);
+  assert.equal(checkedIndex, 2);
+});
+
+test('ambiguous adjacent one-way labels stop without a search', async () => {
+  const f = fixture();
+  const original = f.frame.evaluate;
+  f.frame.evaluate = async (fn, args) => args ? original(fn, args) : vm.runInNewContext(`(${fn.toString()})()`, radioDOM(['One-way', 'Multi City', 'One Way']));
+  await assert.rejects(submitProbe(f.frame, config), /ONE_WAY_CONTROL_NOT_CONFIRMED/);
+  assert.equal(f.calls.length, 0);
+});
+
+test('selects the live Search G9 label and actual supplier enum AA', async () => {
+  const f = fixture();
+  const original = f.frame.evaluate;
+  f.frame.evaluate = async (fn, args) => args?.id === 'selSearchOptions'
+    ? vm.runInNewContext(`(${fn.toString()})(args)`, { args, document: { getElementById: () => ({ tagName: 'SELECT', options: [{ value: 'AA', textContent: 'Search G9' }, { value: 'INT', textContent: 'Search All' }] }) } })
+    : original(fn, args);
+  const locator = f.frame.locator;
+  let selected;
+  f.frame.locator = selector => { const field = locator(selector); if (selector === '#selSearchOptions') field.selectOption = async value => { selected = value; }; return field; };
+  await submitProbe(f.frame, config);
+  assert.equal(selected, 'AA');
+});

@@ -19,15 +19,30 @@ async function prepareSearch(frame, { origin, destination, departureDate }) {
   // Use the actual visible radio label, never guess the supplier's enum value.
   const oneWay = await frame.evaluate(() => {
     const radios = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]'));
+    const isOneWay = text => /^one[\s\-\u2010-\u2015]*way$/i.test(text.replace(/\s+/g, ' ').trim());
     const matches = radios.map((radio, index) => {
-      // The supplier repeats the searchType ID across radios, so an HTML
-      // label-for association alone can point to the wrong option.
-      const labels = [radio.parentElement?.textContent || ''];
-      if (radio.nextSibling?.nodeType === 3) labels.push(radio.nextSibling.textContent || '');
-      if (['LABEL','SPAN'].includes(radio.nextElementSibling?.tagName)) labels.push(radio.nextElementSibling.textContent || '');
+      // Legacy pages use loose table/text labels and duplicate IDs. Read the
+      // actual adjacent label, stopping at the next control; do not infer an
+      // enum value from its letter or use a duplicated label-for association.
+      const labels = [radio.getAttribute('aria-label') || '', radio.getAttribute('title') || ''];
+      const wrapped = radio.closest('label');
+      if (wrapped && wrapped.querySelectorAll('input[type="radio"]').length === 1) labels.push(wrapped.textContent || '');
       if (document.querySelectorAll('[id="' + radio.id + '"]').length === 1) labels.push(...Array.from(radio.labels || []).map(label => label.textContent || ''));
-      const matched = labels.some(label => /^one\s*way$/i.test(label.replace(/\s+/g, ' ').trim()));
-      return matched && !radio.disabled ? index : -1;
+      const root = radio.form || document.body;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      walker.currentNode = radio;
+      let nearby = '';
+      for (let visited = 0; visited < 40 && walker.nextNode(); visited++) {
+        const node = walker.currentNode;
+        if (node.nodeType === 1 && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(node.tagName)) break;
+        if (node.nodeType !== 3 || node.parentElement?.closest('script,style,noscript')) continue;
+        const style = getComputedStyle(node.parentElement);
+        if (style.display === 'none' || style.visibility === 'hidden' || !node.parentElement.getClientRects().length) continue;
+        nearby += ' ' + node.textContent;
+        labels.push(nearby);
+        if (nearby.length > 80) break;
+      }
+      return labels.some(isOneWay) && !radio.disabled ? index : -1;
     }).filter(index => index >= 0);
     return matches.length === 1 ? matches[0] : -1;
   });
@@ -43,7 +58,7 @@ async function prepareSearch(frame, { origin, destination, departureDate }) {
   for (const [id, pattern] of [
     ['selectedCurrency', '^AED$'],
     ['classOfService', '^Economy(?:\\s*Class)?$'],
-    ['selSearchOptions', '^(?:Air\\s*Arabia(?:\\s*\\(G9\\))?|G9|SearchG9)$'],
+    ['selSearchOptions', '^(?:Air\\s*Arabia(?:\\s*\\(G9\\))?|G9|Search\\s*G9)$'],
     ['bookingType', '^Normal$'],
   ]) {
     const option = await frame.evaluate(({ id, pattern }) => {
