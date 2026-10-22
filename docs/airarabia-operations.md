@@ -8,15 +8,20 @@ Live runtime evidence (UTC / Dubai UTC+4):
 - Operator verification submitted: 00:01:38 / 04:01:38.
 - Authentication confirmed: 00:02:02 / 04:02:02.
 - Protected-page refresh completed: 00:02:15 / 04:02:15.
+- The next deployment also completed verification at 00:10:15 / 04:10:15, refreshed at 00:10:24 / 04:10:24, and confirmed the makeReservation.action search form at 00:10:29 / 04:10:29.
 - The OTP route was replaced by showMain. This is stronger evidence than the earlier partial-session sign-out events.
 
 A later heartbeat after fifteen idle minutes has not yet been observed for this fully verified session. The implemented heartbeat refreshes a protected page. It is not a flight search. Host uptime alone is never proof of supplier session availability.
 
-## Current inspection change
+## Current search probe change
 
-After authentication and initial refresh, the inspection mode opens only the observed Make Reservation navigation control. It waits up to thirty seconds for the actual search form, inspects same-origin frame metadata and stops there. It does not submit a fare search or click Book. Matrix parameters (including session identifiers) are removed before logging static resource names. Input values, cookies, raw URLs, customer data and raw browser errors must never be logged.
+Inspection now confirmed the actual same-origin makeReservation.action frame and the search controls. Adult/child/infant counts are text inputs, not select menus. The earlier literal iframe selector and selectOption calls for counts were incorrect and have been removed.
 
-Search-form confirmation requires unique enabled visible origin, destination, departure date, adult count and Search controls in one trusted frame. Unconfirmed forms are reported, never inferred as successful. The current change passes 59 local tests and still requires live confirmation. Fare search, ancillaries, booking boundary and WhatsApp quote delivery are not yet verified.
+Inspection mode now performs one bounded synthetic SHJ-DAM adult one-way search, 30-90 days ahead. It requires an unambiguous One Way control, actual supplier autocomplete selection with matching hidden airport codes, confirmed AED/economy/G9/normal supplier options, and final input checks before clicking the observed input#btnSearch button. Unknown controls/options stop before Search. No hidden airport values or provider enum values are manufactured. Repeated radio IDs require the option's own adjacent/parent label, not a duplicated label-for association.
+
+The probe stops before any result selection, Book, passenger, hold, payment or ticket action. It logs only fixed classifications plus non-sensitive control metadata. A visible result booking control is evidence of a results page only; it is never clicked and is not an ancillary-inclusive customer price. Probe failure does not automatically retry or deliberately close the verified session; normal protected-page keepalive can continue. An authentication failure still stops for operator review.
+
+A successful flight search, actual fare amounts, ancillaries and WhatsApp quote delivery still require live verification. This change passes 62 local tests. Idle keepalive remains a protected-page refresh, distinct from the one-time search probe. Session work is serialized.
 
 ## Verification and recovery
 

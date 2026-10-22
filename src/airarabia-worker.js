@@ -3,6 +3,7 @@
 const { chromium } = require('playwright');
 const { waitForVerificationCode } = require('./operator-verification');
 const { verificationFormAction } = require('./portal-verification-form');
+const { submitProbe } = require('./portal-search-probe');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -365,7 +366,17 @@ class AirArabiaPortalAdapter {
               fields.push({ tag: el.tagName, id: staticName(el.id), name: staticName(el.name), type: staticName(el.type), visible: visible(el) });
             }
           }
-          return { controls: controls.slice(0,30), fields: fields.slice(0,50), frameCount: document.querySelectorAll('frame,iframe').length };
+          const choices = [];
+          for (const id of ['classOfService','selectedCurrency','selSearchOptions','bookingType']) {
+            const select = document.getElementById(id);
+            if (select?.tagName !== 'SELECT') continue;
+            choices.push({ id, options: Array.from(select.options).slice(0,20).map(option => ({
+              value: staticName(option.value),
+              label: /^[A-Za-z0-9 ()/._-]{1,50}$/.test(option.textContent.trim()) ? option.textContent.trim() : null,
+            })) });
+          }
+          const trips = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]')).map(radio => ({ value: staticName(radio.value), labels: Array.from(radio.labels || []).map(label => label.textContent.replace(/\s+/g,' ').trim()).filter(label => /^(?:one\s*way|round\s*trip|return|multi[ -]?(?:city|destination))$/i.test(label)) }));
+          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, frameCount: document.querySelectorAll('frame,iframe').length };
         });
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
@@ -413,47 +424,40 @@ class AirArabiaPortalAdapter {
     return false;
   }
 
-  async selectAirport(frame, selector, code) {
-    const field = frame.locator(selector);
-    await field.fill(code);
-    await field.press('ArrowDown');
-    await frame.getByText(AIRPORTS[code], { exact: true }).click({ timeout: 10000 });
-  }
-
-  async searchFlightsForHeartbeat({ departureDate }) {
-    if (!await this.isAuthenticated()) throw new Error('Portal session expired before heartbeat search');
-
-    if (process.env.AIR_ARABIA_VERIFIED_SEARCH_ENABLED !== 'true') {
-      // The authenticated main page is a safe supplier request. Reloading it
-      // refreshes both server activity and the portal's client idle timer.
-      // Do not manufacture a reservation-menu selector when none is observed.
-      const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      if (response && response.status() >= 400) throw new PortalError('SESSION', 'HTTP_ERROR');
-      if (!await this.waitForAuthentication()) throw new Error('Portal session was not retained after refresh');
-      this.report('PORTAL_HEARTBEAT_REFRESH_COMPLETED');
-      return;
+  async runSearchProbe({ departureDate }) {
+    if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
+    if (!this.searchFrame || this.searchFrame.isDetached?.()) {
+      if (!await this.inspectReservationSearch()) return false;
     }
-    await this.reservationControl.click();
-    const search = this.page.frameLocator('iframe#mainFrame');
-    await search.locator('#btnSearch').waitFor({ state: 'visible', timeout: 15000 });
-    await this.selectAirport(search, '#fAirport', this.origin);
-    await this.selectAirport(search, '#tAirport', this.destination);
-    await search.locator('#departureDate').fill(departureDate);
-    await search.locator('#returnDate').fill('');
-    await search.locator('#adultCount').selectOption('1');
-    await search.locator('#childCount').selectOption('0');
-    await search.locator('#infantCount').selectOption('0');
-    await search.locator('#classOfService').selectOption('EconomyClass');
-    await search.locator('#selectedCurrency').selectOption({ label: 'AED' });
-    await search.locator('#selSearchOptions').selectOption('SearchG9');
-    await search.locator('#bookingType').selectOption('NORMAL');
-
-    // This is the search-only button. Never click a result's #btnBook control.
-    await search.locator('#btnSearch').click();
-    await search.locator('#btnBook').first().waitFor({ state: 'visible', timeout: 45000 });
-    if (!await this.isAuthenticated()) throw new Error('Session was not retained after heartbeat search');
-    this.report('PORTAL_HEARTBEAT_SEARCH_COMPLETED');
+    this.report('PORTAL_PROBE_STARTED');
+    try {
+      await submitProbe(this.searchFrame, { origin: this.origin, destination: this.destination, departureDate });
+      this.report('PORTAL_PROBE_SEARCH_SUBMITTED');
+      await this.searchFrame.locator('button#btnBook:visible').waitFor({ state: 'visible', timeout: 45000 });
+      this.report('PORTAL_PROBE_RESULTS_CONTROL_VISIBLE');
+      await this.inspectSearchUI();
+      // Reaching a result page is not a final ancillary-inclusive quote.
+      return true;
+    } catch (error) {
+      const known = new Set(['AIRPORT_SELECTION_NOT_CONFIRMED', 'UNSUPPORTED_PROBE_ROUTE', 'INVALID_PROBE_DATE', 'ONE_WAY_CONTROL_NOT_CONFIRMED', 'SEARCH_OPTION_NOT_CONFIRMED', 'SEARCH_INPUTS_NOT_CONFIRMED']);
+      this.report(known.has(error.message) ? `PORTAL_PROBE_${error.message}` : safeFailureCode(error));
+      this.report('PORTAL_PROBE_NOT_VERIFIED_NO_CUSTOMER_PRICE');
+      await this.inspectSearchUI();
+      return false;
+    }
   }
+
+  async searchFlightsForHeartbeat() {
+    if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
+    // Keepalive always refreshes the protected page. A bounded flight-search
+    // probe is a separate explicitly reported step, never an idle search loop.
+    const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (response && response.status() >= 400) throw new PortalError('SESSION', 'HTTP_ERROR');
+    if (!await this.waitForAuthentication()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
+    this.searchFrame = null;
+    this.report('PORTAL_HEARTBEAT_REFRESH_COMPLETED');
+  }
+
 }
 
 function waitForShutdown() {
@@ -501,8 +505,12 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     await adapter.signIn();
     log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
     await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate() });
-    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') await adapter.inspectReservationSearch();
     session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
+    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') {
+      await session.run(async portal => {
+        if (await portal.inspectReservationSearch()) await portal.runSearchProbe({ departureDate: randomHeartbeatDate() });
+      });
+    }
 
     let errorReported = false;
     session.start(code => {
