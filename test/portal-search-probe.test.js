@@ -48,6 +48,15 @@ function fixture({ wrongAirport = false, missingOneWay = false, missingOption = 
 }
 const config = { origin: 'SHJ', destination: 'DAM', departureDate: '11/11/2026' };
 
+test('customer return search uses the exact requested return date without a synthetic fallback',async()=>{
+  const f=fixture({defaultReturn:true});
+  const result=await submitProbe(f.frame,{...config,requestTripType:'round_trip',requestedReturnDate:'29/11/2026'});
+  assert.equal(result.tripKind,'return');assert.equal(f.values['#returnDate'],'29/11/2026');
+  const bad=fixture({defaultReturn:false});
+  await assert.rejects(submitProbe(bad.frame,{...config,requestTripType:'round_trip',requestedReturnDate:'29/11/2026'}));
+  assert.ok(!bad.calls.some(([action,selector])=>action==='click'&&selector.includes('btnSearch')));
+});
+
 test('probe fills observed text passenger counts and clicks only the search control', async () => {
   const f = fixture();
   assert.equal((await submitProbe(f.frame, config)).submitted, true);

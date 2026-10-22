@@ -58,12 +58,12 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
   throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
 }
 
-async function prepareSearch(frame, { origin, destination, departureDate, report = () => {} }) {
+async function prepareSearch(frame, { origin, destination, departureDate, requestedReturnDate, requestTripType, report = () => {} }) {
   if (!['SHJ', 'DAM'].includes(origin) || !['SHJ', 'DAM'].includes(destination) || origin === destination) throw new Error('UNSUPPORTED_PROBE_ROUTE');
   if (!/^\d{2}\/\d{2}\/\d{4}$/.test(departureDate)) throw new Error('INVALID_PROBE_DATE');
   // Use the actual visible radio label, never guess the supplier's enum value.
   report('PORTAL_PROBE_STAGE_TRIP_MODE');
-  const oneWay = await frame.evaluate(() => {
+  const oneWay = requestTripType === 'round_trip' ? -1 : await frame.evaluate(() => {
     const radios = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]'));
     const isOneWay = text => /^one[\s\-\u2010-\u2015]*way$/i.test(text.replace(/\s+/g, ' ').trim());
     const matches = radios.map((radio, index) => {
@@ -109,7 +109,8 @@ async function prepareSearch(frame, { origin, destination, departureDate, report
     if (defaultReturn !== true) throw new Error('ONE_WAY_CONTROL_NOT_CONFIRMED');
     const [day, month, year] = departureDate.split('/').map(Number);
     const date = new Date(Date.UTC(year, month - 1, day + 7));
-    returnDate = `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+    returnDate = requestedReturnDate || `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+    if (requestTripType && (!/^\d{2}\/\d{2}\/\d{4}$/.test(requestedReturnDate || '') || requestTripType !== 'round_trip')) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   }
   report('PORTAL_PROBE_STAGE_ORIGIN');
   await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report });

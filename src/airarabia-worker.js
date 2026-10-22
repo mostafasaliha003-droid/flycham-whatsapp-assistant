@@ -8,6 +8,8 @@ const { openPassengerOptions } = require('./portal-options-probe');
 const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
 const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
+const { validateLiveRequest, quoteFromScans, formatLiveQuote } = require('./live-quote');
+const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -477,6 +479,23 @@ class AirArabiaPortalAdapter {
     return false;
   }
 
+  async runCustomerQuote(request) {
+    const config=validateLiveRequest(request);
+    // New protected page for every request, serialized by PortalSession.run.
+    await this.searchFlightsForHeartbeat();
+    if(!await this.inspectReservationSearch())throw Error('SEARCH_NOT_READY');
+    const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:'round_trip',report:this.report});
+    if(prepared.tripKind!=='return')throw Error('TRIP_NOT_CONFIRMED');
+    await this.searchFrame.locator('button#btnBook:visible').first().waitFor({state:'visible',timeout:45000});
+    const safe=await this.searchFrame.evaluate(()=>typeof DATA_ResPro!=='undefined' && DATA_ResPro.initialParams?.seatBlock===false);
+    if(!safe)throw Error('TEMPORARY_BLOCK_NOT_DISABLED');
+    await openPassengerOptions(this.searchFrame,this.page,this.report);
+    await continueWithTestPassenger(this.searchFrame,this.report);
+    const seats=await scanSeatPrices(this.searchFrame,this.page,this.report);
+    const catalogs=await scanAncillaryCatalogs(this.searchFrame,this.page,this.report);
+    return formatLiveQuote(request,quoteFromScans(request,seats,catalogs));
+  }
+
   async runSearchProbe({ departureDate }) {
     if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
     if (!this.searchFrame || this.searchFrame.isDetached?.()) {
@@ -543,8 +562,10 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
 
   let browser;
   let session;
+  let stopPolling;
   let failed = false;
   const shutdown = async () => {
+    if(stopPolling) await stopPolling();
     if (session) await session.stop().catch(() => {});
     if (browser) await browser.close().catch(() => {});
   };
@@ -583,6 +604,7 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
       }
     });
     log.log('Air Arabia keepalive worker started; idle protected-page refresh interval is 15 minutes.');
+    if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true') stopPolling=startQuotePolling(session,{log});
     await park();
   } catch (error) {
     failed = true;

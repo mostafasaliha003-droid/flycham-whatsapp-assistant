@@ -1,0 +1,43 @@
+# Air Arabia WhatsApp quote pilot
+
+The signed Meta webhook enqueues a supported request. The existing authenticated
+browser worker polls a bearer-protected endpoint, claims one lease, runs it through
+PortalSession's serialized queue, and posts one result. The web service retains
+the WhatsApp recipient; the browser worker receives only trip details.
+
+Supported pilot: one adult, no children/infants, explicit round-trip dates,
+SHJ–DAM or DAM–SHJ. No customer passenger data is entered in the portal. The
+operator-authorized synthetic passenger is used only to inspect ancillaries.
+Unsupported or unconfirmed requests receive a review-needed response.
+
+The operator confirms the displayed portal total includes taxes and fees. This
+pilot accepts that total without inventing tax charges. It requires freshly
+complete seat, actual food and checked-weight catalogs, AED amounts and a zero
+existing ancillary subtotal before adding unselected supplier option costs.
+It adds AED25 once for the passenger, AED10 per paid default seat, AED5 per paid
+food choice, and AED10 once for explicitly requested higher baggage weight
+across the itinerary. It reports unknown hand baggage as unconfirmed.
+
+The reader does not apply services, hold inventory, press ancillary Continue,
+open payment, or issue a ticket. It reports an available fare, not a guaranteed
+booking or a proven minimum across every possible flight/fare bundle.
+
+## Configuration
+
+Both services: `AIR_ARABIA_QUOTE_QUEUE_ENABLED=true` and a shared random
+`AIR_ARABIA_QUOTE_QUEUE_KEY` (at least 32 characters, never committed).
+Worker: `AIR_ARABIA_QUOTE_QUEUE_URL` is the web service origin followed by
+`/internal/quotes`. Disable the unrelated random startup search probe.
+
+## Operational limits
+
+This is a bounded in-memory pilot queue (100 jobs, ten-minute expiry), not durable
+production infrastructure. A web-process restart loses pending jobs. Claims and
+completion leases are consumed once; ambiguous send failures are not retried to
+avoid duplicate customer messages. A persistent job store, delivery outbox and
+recovery flow are required before a 24-hour service guarantee. Polls keep the
+web service active only while the authenticated worker is running.
+
+No browser credentials or WhatsApp access token are copied between services.
+The worker may require operator OTP after deployment. A deploy marked live is
+not proof of a working supplier session or a completed WhatsApp fare lookup.

@@ -6,6 +6,9 @@ const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { handleMessage } = require('./conversation');
 const { sendTextMessage } = require('./graph-api');
+const { QuoteJobs, validQueueKey } = require('./quote-jobs');
+const { validateLiveRequest } = require('./live-quote');
+const quoteJobs = new QuoteJobs();
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -48,10 +51,24 @@ async function handleWebhookPost(request, response) {
   response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ received: true }));
   for (const message of extractIncomingMessages(payload)) {
     try {
+      const queueEnabled=process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true';
+      if(queueEnabled && !quoteJobs.acceptMessage(message.id))continue;
       const result = handleMessage(message.from, message.text);
-      await sendTextMessage(message.from, result.reply);
+      let reply=result.reply;
+      if(result.complete && queueEnabled){
+        try{
+          validateLiveRequest(result.request);
+          quoteJobs.enqueue(message.from,result.request);
+          reply='وصل طلبك. يجري التحقق من السعر والوزن والمقعد والوجبة لدى العربية. قد يستغرق الفحص بضع دقائق؛ هذا استعلام فقط دون حجز.';
+          console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
+        }catch{
+          reply='البحث الآلي التجريبي يدعم حاليًا الشارقة–دمشق ذهابًا وعودة لشخص بالغ واحد، عندما تكون البوابة متصلة. هذا الطلب يحتاج مراجعة موظف؛ لم يُؤكد أي سعر.';
+        }
+      }
+      const delivery=await sendTextMessage(message.from,reply);
+      console.log(delivery?.dryRun ? 'WHATSAPP_TEST_REPLY_SUPPRESSED' : 'WHATSAPP_REPLY_ACCEPTED_BY_META');
     } catch (error) {
-      console.error(`Could not process inbound message ${message.id ?? '(no id)'}`, error.message);
+      console.error('WHATSAPP_REPLY_FAILED');
     }
   }
 }
@@ -59,6 +76,33 @@ async function handleWebhookPost(request, response) {
 function createServer() {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if(url.pathname.startsWith('/internal/quotes/')){
+      if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED!=='true' || !validQueueKey(request.headers.authorization,process.env.AIR_ARABIA_QUOTE_QUEUE_KEY)){
+        response.writeHead(401).end('Unauthorized');return;
+      }
+      if(request.method!=='POST'){response.writeHead(405).end();return;}
+      try{
+        const data=JSON.parse((await readBody(request)).toString('utf8'));
+        if(url.pathname==='/internal/quotes/claim'){
+          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(quoteJobs.claim()||{}));return;
+        }
+        if(url.pathname==='/internal/quotes/complete'){
+          if(typeof data.reply!=='string'||data.reply.length>2000){response.writeHead(400).end();return;}
+          const job=quoteJobs.takeResult(data.id,data.lease);
+          if(!job){response.writeHead(409).end();return;}
+          try{
+            await sendTextMessage(job.recipient,data.reply);
+            console.log('WHATSAPP_LIVE_QUOTE_REPLY_ACCEPTED_BY_META');
+            response.writeHead(200,{'Content-Type':'application/json'}).end('{"accepted":true}');
+          }catch{
+            console.log('WHATSAPP_LIVE_QUOTE_REPLY_FAILED');response.writeHead(502).end();
+          }finally{quoteJobs.finish(data.id);}
+          return;
+        }
+        response.writeHead(404).end();
+      }catch{if(!response.headersSent)response.writeHead(400).end();}
+      return;
+    }
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/privacy') {
       response.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
