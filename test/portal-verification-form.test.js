@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { verificationFormAction } = require('../src/portal-verification-form');
+const { verificationFormAction, verificationResultAction } = require('../src/portal-verification-form');
 
 function fixture({ duplicate = false, hiddenParent = false, disabled = false, foreign = false } = {}) {
   const events = [];
@@ -37,5 +37,28 @@ test('refuses ambiguous, hidden, disabled and foreign verification forms', () =>
     assert.equal(f.call({ operation: 'submit', code: '123456' }).ready, false);
     assert.equal(f.clicks(), 0);
     assert.equal(f.value(), undefined);
+  }
+});
+
+test('resumes the supplier navigation only after a true supplier verification flag', () => {
+  for (const flag of [false, undefined, 'true', 'false', true]) {
+    let reloads = 0;
+    const context = { location: { origin: 'https://agents.airarabia.com', pathname: '/xbe/private/verifyOTP.action' },
+      window: { otpVerified: flag, parent: { location: { origin: 'https://agents.airarabia.com' }, reloadMain: () => reloads++ } },
+      document: { getElementById: () => null }, getComputedStyle: () => ({ visibility: 'visible' }) };
+    const result = vm.runInNewContext('(' + verificationResultAction.toString() + ')({operation:"resume"})', context);
+    assert.equal(reloads, flag === true ? 1 : 0);
+    assert.equal(result.status, flag === true ? 'CONFIRMED' : 'UNCONFIRMED');
+  }
+});
+
+test('classifies the visible supplier response without returning OTP or private text', () => {
+  for (const [message, status] of [['Invalid OTP 123456', 'INVALID_CODE'], ['OTP expired', 'EXPIRED'], ['', 'UNCONFIRMED'], ['Please contact private@example.com', 'SUPPLIER_MESSAGE']]) {
+    const result = vm.runInNewContext('(' + verificationResultAction.toString() + ')()', {
+      location: { origin: 'https://agents.airarabia.com', pathname: '/xbe/private/verifyOTP.action' }, window: {},
+      document: { getElementById: () => ({ getClientRects: () => [1], textContent: message }) }, getComputedStyle: () => ({ visibility: 'visible' }),
+    });
+    assert.equal(result.status, status);
+    assert.deepEqual(Object.keys(result), ['status']);
   }
 });

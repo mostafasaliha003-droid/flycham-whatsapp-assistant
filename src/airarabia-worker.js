@@ -2,7 +2,7 @@
 
 const { chromium } = require('playwright');
 const { waitForVerificationCode } = require('./operator-verification');
-const { verificationFormAction } = require('./portal-verification-form');
+const { verificationFormAction, verificationResultAction } = require('./portal-verification-form');
 const { submitProbe } = require('./portal-search-probe');
 const { openPassengerOptions } = require('./portal-options-probe');
 const { continueWithTestPassenger } = require('./portal-test-passenger');
@@ -19,7 +19,7 @@ const AIRPORTS = {
 };
 
 const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION', 'PROBE']);
-const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'VERIFICATION_EXPIRED', 'VERIFICATION_NOT_CONFIRMED', 'VERIFIED_NAVIGATION_PENDING', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);
 
 class PortalError extends Error {
   constructor(stage, reason) {
@@ -168,6 +168,8 @@ class AirArabiaPortalAdapter {
 
   async waitForAuthentication(timeoutMs = 30000, { operatorVerification = false } = {}) {
     let deadline = Date.now() + timeoutMs;
+    let verificationStatus = null;
+    let verificationSubmittedAt = 0;
     do {
       const verification = await this.findVerificationFrame();
       if (verification && !this.verificationAttempted) {
@@ -194,11 +196,26 @@ class AirArabiaPortalAdapter {
             await verification.locator('#btnSubmit').click({ noWaitAfter: true });
           }
           this.report('PORTAL_VERIFICATION_SUBMITTED');
+          verificationSubmittedAt = Date.now();
         } catch (error) {
           code = null;
           throw new PortalError('VERIFICATION', error.code === 'VERIFICATION_TIMEOUT' ? 'VERIFICATION_TIMEOUT' : 'MANUAL_VERIFICATION');
         }
         deadline = Date.now() + timeoutMs;
+      }
+      if (verification && this.verificationAttempted && verification.evaluate) {
+        const result = await verification.evaluate(verificationResultAction, { operation: 'inspect' }).catch(() => null);
+        const allowed = new Set(['CONFIRMED', 'UNCONFIRMED', 'EXPIRED', 'INVALID_CODE', 'ATTEMPT_LIMIT', 'SUPPLIER_MESSAGE']);
+        if (allowed.has(result?.status)) {
+          if (result.status !== verificationStatus) this.report('PORTAL_VERIFICATION_RESULT_' + result.status);
+          verificationStatus = result.status;
+          if (['EXPIRED', 'INVALID_CODE', 'ATTEMPT_LIMIT'].includes(result.status)) break;
+          if (result.status === 'CONFIRMED' && !this.verificationNavigationResumed && Date.now() - verificationSubmittedAt >= 2000) {
+            this.verificationNavigationResumed = true;
+            const resumed = await verification.evaluate(verificationResultAction, { operation: 'resume' }).catch(() => null);
+            this.report(resumed?.resumed ? 'PORTAL_VERIFICATION_SUPPLIER_NAVIGATION_RESUMED' : 'PORTAL_VERIFICATION_SUPPLIER_NAVIGATION_PENDING');
+          }
+        }
       }
       if (await this.isAuthenticated()) return true;
       if (Date.now() >= deadline) break;
@@ -206,7 +223,11 @@ class AirArabiaPortalAdapter {
     } while (Date.now() < deadline);
     if (await this.findVerificationFrame()) {
       await this.inspectSearchUI();
-      throw new PortalError('VERIFICATION', this.verificationAttempted ? 'VERIFICATION_REJECTED' : 'VERIFICATION_FORM_UNAVAILABLE');
+      const reason = !this.verificationAttempted ? 'VERIFICATION_FORM_UNAVAILABLE'
+        : verificationStatus === 'EXPIRED' ? 'VERIFICATION_EXPIRED'
+        : ['INVALID_CODE', 'ATTEMPT_LIMIT'].includes(verificationStatus) ? 'VERIFICATION_REJECTED'
+        : verificationStatus === 'CONFIRMED' ? 'VERIFIED_NAVIGATION_PENDING' : 'VERIFICATION_NOT_CONFIRMED';
+      throw new PortalError('VERIFICATION', reason);
     }
     return false;
   }

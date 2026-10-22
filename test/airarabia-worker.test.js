@@ -245,6 +245,35 @@ test('heartbeat cannot submit a code or continue through a verification challeng
   assert.equal(supplied, 0);
 });
 
+test('supplier-confirmed OTP resumes normal navigation and still requires authenticated controls', async () => {
+  const adapter = adapterFor(fakePage());
+  let pending = true, resumed = 0;
+  adapter.verificationAttempted = true;
+  adapter.findVerificationFrame = async () => pending ? { evaluate: async (fn, arg) => {
+    if (arg.operation === 'resume') { resumed++; pending = false; return { status: 'CONFIRMED', resumed: true }; }
+    return { status: 'CONFIRMED' };
+  } } : null;
+  adapter.isAuthenticated = async () => !pending;
+  assert.equal(await adapter.waitForAuthentication(50), true);
+  assert.equal(resumed, 1);
+  const noNavigation = adapterFor(fakePage());
+  noNavigation.verificationAttempted = true;
+  noNavigation.findVerificationFrame = async () => ({ evaluate: async () => ({ status: 'CONFIRMED', resumed: false }) });
+  noNavigation.isAuthenticated = async () => false;
+  await assert.rejects(noNavigation.waitForAuthentication(0), /VERIFIED_NAVIGATION_PENDING/);
+});
+
+test('a remaining OTP form is not falsely classified as an explicit rejection', async () => {
+  for (const [status, error] of [['UNCONFIRMED', 'VERIFICATION_NOT_CONFIRMED'], ['INVALID_CODE', 'VERIFICATION_REJECTED'], ['EXPIRED', 'VERIFICATION_EXPIRED']]) {
+    const adapter = adapterFor(fakePage());
+    adapter.verificationAttempted = true;
+    adapter.findVerificationFrame = async () => ({ evaluate: async () => ({ status }) });
+    adapter.isAuthenticated = async () => false;
+    adapter.inspectSearchUI = async () => {};
+    await assert.rejects(adapter.waitForAuthentication(0), new RegExp(error));
+  }
+});
+
 
 test('reacquires an OTP frame replaced during the login transition', async () => {
   const page = fakePage();

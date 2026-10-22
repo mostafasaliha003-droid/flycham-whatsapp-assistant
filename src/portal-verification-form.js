@@ -40,4 +40,29 @@ function verificationFormAction({ operation = 'inspect', code } = {}) {
   return { submitted: true };
 }
 
-module.exports = { verificationFormAction };
+// The supplier's VerifyUserOTP28102018.js calls parent.reloadMain() when
+// verifiedUser or otpVerified is true. Reuse that normal navigation only
+// after a supplier-confirmed boolean; never change flags or bypass OTP.
+function verificationResultAction({ operation = 'inspect' } = {}) {
+  const origin = 'https://agents.airarabia.com';
+  if (location.origin !== origin || !/\/(?:sendOTP|verifyOTP)(?:\.action)?$/.test(location.pathname)) return { status: 'UNCONFIRMED' };
+  const confirmed = window.verifiedUser === true || window.otpVerified === true;
+  let status = confirmed ? 'CONFIRMED' : 'UNCONFIRMED';
+  if (!confirmed && /\/verifyOTP(?:\.action)?$/.test(location.pathname)) {
+    const error = document.getElementById('spnError');
+    const shown = error && error.getClientRects().length && getComputedStyle(error).visibility !== 'hidden';
+    const message = shown ? error.textContent : '';
+    if (/expir|منتهي|انتهت صلاح/i.test(message)) status = 'EXPIRED';
+    else if (/invalid|incorrect|wrong|غير صحيح/i.test(message)) status = 'INVALID_CODE';
+    else if (/attempt|locked|محاول|حظر/i.test(message)) status = 'ATTEMPT_LIMIT';
+    else if (message?.trim()) status = 'SUPPLIER_MESSAGE';
+  }
+  if (operation !== 'resume' || !confirmed) return { status };
+  try {
+    if (window.parent.location.origin !== origin || typeof window.parent.reloadMain !== 'function') return { status, resumed: false };
+    window.parent.reloadMain();
+    return { status, resumed: true };
+  } catch { return { status, resumed: false }; }
+}
+
+module.exports = { verificationFormAction, verificationResultAction };
