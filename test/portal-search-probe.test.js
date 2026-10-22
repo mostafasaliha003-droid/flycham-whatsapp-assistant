@@ -2,6 +2,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { submitProbe } = require('../src/portal-search-probe');
+const { airportCodeConfirmed } = require('../src/portal-search-probe');
+
+test('confirms only an exact requested IATA token inside a supplier display value', () => {
+  assert.equal(airportCodeConfirmed('SHJ - Sharjah', 'SHJ'), true);
+  assert.equal(airportCodeConfirmed('Sharjah (SHJ)', 'SHJ'), true);
+  assert.equal(airportCodeConfirmed('SHJ Airport', 'SHJ'), true);
+  assert.equal(airportCodeConfirmed('OTHER', 'SHJ'), false);
+  assert.equal(airportCodeConfirmed('XSHJX', 'SHJ'), false);
+  assert.equal(airportCodeConfirmed('SHJ / DAM', 'SHJ'), false);
+});
 
 function fixture({ wrongAirport = false, missingOneWay = false, missingOption = false, defaultReturn = false } = {}) {
   const calls = [];
@@ -144,4 +154,16 @@ test('airport confirmation follows a real pointer click and disposes its element
   };
   await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
   assert.equal(pointerClicks, 1); assert.equal(disposed, 1);
+});
+
+test('airport confirmation accepts a formatted supplier value only after the pointer click', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  let hidden = '', pointerClicks = 0;
+  const frame = {
+    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, inputValue: async () => hidden }),
+    evaluate: async () => ({ status: 'READY' }),
+    evaluateHandle: async () => ({ asElement: () => ({ click: async () => { pointerClicks++; hidden = 'SHJ - Sharjah'; } }), dispose: async () => {} }),
+  };
+  await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
+  assert.equal(pointerClicks, 1);
 });

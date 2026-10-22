@@ -1,6 +1,18 @@
 'use strict';
 const { airportSuggestionAction } = require('./airport-suggestions');
 
+// The supplier's legacy autocomplete may store a display-form value (for
+// example, "SHJ - Sharjah") instead of the bare IATA code. Accept only an
+// exact IATA token for the requested airport and reject the other probe IATA.
+// Never infer a code from a city name or a partial match.
+function airportCodeConfirmed(value, code) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) return false;
+  const hasToken = token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(normalized);
+  const other = code === 'SHJ' ? 'DAM' : 'SHJ';
+  return hasToken(code) && !hasToken(other);
+}
+
 // A bounded synthetic search only; this module has no booking/passenger actions.
 async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {} } = {}) {
   const names = { SHJ: 'Sharjah', DAM: 'Damascus' };
@@ -30,7 +42,7 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
         } finally { await handle.dispose(); }
         const confirmDeadline = now() + Math.min(lookupMs, 5000);
         do {
-          if ((await frame.locator(`#${hiddenId}`).inputValue()).trim().toUpperCase() === code) return;
+          if (airportCodeConfirmed(await frame.locator(`#${hiddenId}`).inputValue(), code)) return;
           if (now() >= confirmDeadline) break;
           await pause(100);
         } while (now() < confirmDeadline);
@@ -130,7 +142,13 @@ async function prepareSearch(frame, { origin, destination, departureDate, report
   report('PORTAL_PROBE_STAGE_VALIDATE_INPUTS');
   const validation = await frame.evaluate(({ origin, destination, departureDate, returnDate }) => {
     const value = id => document.getElementById(id)?.value;
-    return (value('fromAirport') || '').trim().toUpperCase() === origin && (value('toAirport') || '').trim().toUpperCase() === destination
+    const hasCode = (raw, code) => {
+      const normalized = String(raw || '').trim().toUpperCase();
+      const hasToken = token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(normalized);
+      const other = code === 'SHJ' ? 'DAM' : 'SHJ';
+      return hasToken(code) && !hasToken(other);
+    };
+    return hasCode(value('fromAirport'), origin) && hasCode(value('toAirport'), destination)
       && value('departureDate') === departureDate && value('adultCount') === '1'
       && value('childCount') === '0' && value('infantCount') === '0'
       && value('selectedCurrency') === 'AED' && (!returnDate || value('returnDate') === returnDate);
@@ -146,4 +164,4 @@ async function submitProbe(frame, config) {
   return { submitted: true, tripKind: prepared.tripKind };
 }
 
-module.exports = { chooseAirport, prepareSearch, submitProbe };
+module.exports = { airportCodeConfirmed, chooseAirport, prepareSearch, submitProbe };
