@@ -161,7 +161,9 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
 async function submitProbe(frame, config) {
   const prepared = await prepareSearch(frame, config);
   // btnSearch was observed as a visible input/button on makeReservation.action.
+  config.report?.('PORTAL_SEARCH_SUBMIT_STARTED');
   await frame.locator('input#btnSearch[type="button"]:visible').click({ timeout: 15000 });
+  config.report?.('PORTAL_SEARCH_SUBMIT_COMPLETED');
   return { submitted: true, tripKind: prepared.tripKind };
 }
 

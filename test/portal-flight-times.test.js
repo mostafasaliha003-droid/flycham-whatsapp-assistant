@@ -30,3 +30,18 @@ test('one-way range enumerates every day without a return date; all results are 
  const results=[1,2,3,4,5].map(n=>({timing:{out:{flight:'G9'+n,departure:`0${n}:00`,arrival:'10:00'},back:null},price:{sellingTotal:String(1000+n),weights:[{kg:20}]}}));
  const text=formatQuoteOptions(r,results,{complete:true,attempted:5,totalDates:7});assert.match(text,/1005/);assert.doesNotMatch(text,/العودة/);assert.match(text,/ذهاب فقط/);
 });
+
+test('search results can be ready while Make Reservation remains hidden',async()=>{
+ const {waitForFlightResults}=require('../src/portal-flight-times');
+ const sandbox={location:{origin:'https://agents.airarabia.com'},jQuery:{active:0},UI_tabSearchFlights:{objResSrchParams:{}},jsonOutFlts:[{}],jsonRetFlts:[]};
+ const f={waitForFunction:async(fn,arg)=>{assert.equal(vm.runInNewContext('('+fn.toString()+')(arg)',{...sandbox,arg}),true);},evaluate:async(fn,arg)=>vm.runInNewContext('('+fn.toString()+')(arg)',{...sandbox,arg})};
+ await waitForFlightResults(f,true);
+ sandbox.jsonOutFlts=[];await assert.rejects(waitForFlightResults(f,true),/NO_FLIGHTS_CONFIRMED/);
+});
+test('already selected flight still confirms its visible fare before waiting for reservation',async()=>{
+ const {selectFlightTimes}=require('../src/portal-flight-times'),f=frame(),calls=[];
+ f.locator=selector=>({count:async()=>selector.includes('outboundConfirm')?1:0,click:async()=>calls.push('confirm'),waitFor:async()=>calls.push('reservation')});
+ f.waitForFunction=async()=>{};
+ const choices=await readFlightTimes(f,true);await selectFlightTimes(f,{out:choices.out[0],back:null});
+ assert.deepEqual(calls,['confirm','reservation']);
+});
