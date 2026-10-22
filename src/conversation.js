@@ -168,7 +168,22 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
   const state=sessions.get(sender) ?? {request:emptyRequest(),awaiting:null,submitted:false,at:now};
   const request=state.request;
   const before=JSON.stringify(request);
+  const follow=normalize(normalized).replace(/[؟?!،,.]+$/g,'');
+  if(state.submitted&&/^(?:شفلي|شوفلي|شوف لي|شوف|اي شفلي|اي شوفلي|تابع|كمل|نعم|اي|شفلي بعد بكم يوم|شوفلي بعد بكم يوم|بعد بكم يوم|بعد كم يوم)$/.test(follow)){
+    state.awaiting='searchExpansion';sessions.set(sender,state);
+    return{complete:false,reply:'أكيد، منكمل على نفس المسار والوزن. بتحب نبحث بالأسبوع الجاي، أو الشهر الجاي؟ وإذا بدك بعد كم يوم، حدد قديش منوسّع بعد آخر تاريخ، مثل 3 أيام أو أسبوع.'};
+  }
+  if(state.submitted&&/^(?:حصرا|فقط|بس)(?:\s*(?:بهل ايام|هالايام|هال ايام|ضمن هالايام|هل ايام))?$/.test(follow))return{complete:false,reply:'تمام، منبقى ضمن نفس التواريخ والمسار والوزن. الخيارات المذكورة هي التي تأكدت أسعارها حتى الآن.'};
+  if(state.awaiting==='searchExpansion'){
+    const days=follow.match(/^(?:بعد\s*)?(\d{1,2})\s*(?:ايام|يوم)$/);
+    if(days&&Number(days[1])>=1&&Number(days[1])<=31){
+      const last=request.departureRange?.end||request.departureDate;
+      if(last){const end=new Date(last+'T00:00:00Z');request.departureRange={start:iso(addDays(end,1)),end:iso(addDays(end,Number(days[1]))),kind:'customer_extension'};request.departureDate=null;state.awaiting=null;}
+    }
+  }
+
   const invalidDate = applyParsed(request, normalized,{now,awaiting:state.awaiting});
+  if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
   state.at=now;sessions.set(sender,state);
 

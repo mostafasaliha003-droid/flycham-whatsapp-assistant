@@ -21,7 +21,7 @@ test('month/week date ranges expand without silently choosing a random date or s
 });
 test('each timing carries its own verified price and partial comparisons never claim the entire month is cheapest',()=>{
  const request={};const results=[1000,1200].map((n,i)=>({timing:{out:{flight:'G9'+i,departure:'11Nov 08:00',arrival:'11Nov 10:00'},back:{flight:'G9434',departure:'18Nov 12:00',arrival:'18Nov 16:00'}},price:{sellingTotal:n+'.00',weights:[{kg:20},{kg:20}]}}));
- const text=formatQuoteOptions(request,results,{complete:false,attempted:2,totalDates:31});assert.match(text,/1000.00/);assert.match(text,/1200.00/);assert.match(text,/الفحص جزئي/);assert.match(text,/08:00/);
+ const text=formatQuoteOptions(request,results,{complete:false,attempted:2,totalDates:31});assert.match(text,/1000.00/);assert.match(text,/1200.00/);assert.match(text,/بقية الفترة لم يكتمل تأكيد أسعارها/);assert.match(text,/08:00/);
 });
 
 test('one-way range enumerates every day without a return date; all results are listed instead of top three',async()=>{
@@ -51,4 +51,11 @@ test('a disabled fare quote button is skipped after the supplier has already quo
  f.locator=selector=>({count:async()=>selector==='#btnFQ:visible'?1:0,isEnabled:async()=>false,click:async()=>{throw Error('must not click disabled fare button');},waitFor:async()=>calls.push('reservation')});
  f.waitForFunction=async()=>{};
  const choices=await readFlightTimes(f,true);await selectFlightTimes(f,{out:choices.out[0],back:null});assert.deepEqual(calls,['reservation']);
+});
+
+test('professional coverage names the origin and verified dates without claiming a whole-week minimum',()=>{
+ const request={origin:'الشارقة',destination:'دمشق',tripType:'one_way',departureRange:{start:'2026-10-23',end:'2026-10-25'}};
+ const q={request:{departureDate:'2026-10-24'},timing:{out:{flight:'G9433',departure:'08:00',arrival:'10:00'}},price:{sellingTotal:'750.50',weights:[{kg:30}]}};
+ const text=formatQuoteOptions(request,[q],{complete:false,attempted:3,totalDates:3});assert.match(text,/من مطار الشارقة/);assert.match(text,/هذه العروض تأكدت لتواريخ 2026-10-24/);assert.match(text,/قد تتوفر خيارات أوفر/);assert.match(text,/بدك نوسّع البحث/);
+ const progress=formatQuoteOptions(request,[q],{complete:false,inProgress:true});assert.match(progress,/البحث مستمر/);assert.doesNotMatch(progress,/بدك نوسّع البحث/);
 });

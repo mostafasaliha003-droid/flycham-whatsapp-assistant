@@ -59,12 +59,16 @@ function expandLiveRequests(request){
  }
  return dates;
 }
-function formatQuoteOptions(request,results,{complete,attempted,totalDates}={}){
+function formatQuoteOptions(request,results,{complete,attempted,totalDates,inProgress=false}={}){
  if(!results.length)return 'تعذر تأكيد أسعار التواقيت المطلوبة. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء حجز.';
  const sorted=results.slice().sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
  const shown=request.resultsMode==='summary'?sorted.slice(0,3):results;
+ const verifiedDates=[...new Set(results.map(q=>q.request?.departureDate||request.departureDate).filter(Boolean))].sort();
+ const airport=airports.get(String(request.origin||'').trim().toLowerCase());
+ const originName=airport==='SHJ'?'الشارقة':airport==='DAM'?'دمشق':request.origin;
+ const coverage=inProgress?'البحث مستمر، وهذه نتيجة تأكدت حتى الآن.':complete?'اكتمل فحص التواقيت المتاحة في نتائج البحث.':`هذه العروض تأكدت لتواريخ ${verifiedDates.join('، ')||'الخيارات المذكورة أعلاه'}؛ بقية الفترة لم يكتمل تأكيد أسعارها. قد تتوفر خيارات أوفر في الأسبوع أو الشهر القادم، حسب التوفر.`;
  const title=request.departureRange?`نتائج المقارنة ضمن ${request.departureRange.start} إلى ${request.departureRange.end}`:'أسعار الرحلات التي تم فحصها';
- return `*عروض الطيران | مجموعة الرمال*\n${title}\nلشخص بالغ واحد، ${request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${request.baggageRequest?` — الوزن المطلوب ${request.baggageRequest.checkedWeightKg} كغ`:''}\n\n`+shown.map((q,i)=>`*الخيار ${i+1}*\n📅 الذهاب ${q.request?.departureDate||request.departureDate||''} — ${q.timing.out.flight}: ${q.timing.out.departure} ← الوصول ${q.timing.out.arrival}${q.timing.back?`\nالعودة ${q.request?.returnDate||request.returnDate||''} — ${q.timing.back.flight}: ${q.timing.back.departure} ← الوصول ${q.timing.back.arrival}`:''}\n🧳 الوزن المسجل: ${q.price.weights.map(w=>w.kg===0?'بدون أمتعة مسجلة':w.kg+' كغ').join(' / ')}\n💰 *الإجمالي: ${q.price.sellingTotal} درهم*${q.price.sellingTotal===sorted[0].price.sellingTotal?' — الأقل بين النتائج المؤكدة':''}`).join('\n\n')
-  +`\n\n${complete?'اكتمل فحص التواقيت المتاحة في نتائج البحث.':'الفحص جزئي؛ لا نؤكد أن هذه أرخص أسعار كامل الفترة أو أن جميع التواقيت فُحصت.'}\nتمت محاولة فحص ${attempted} خيارًا؛ فترة الطلب تضم ${totalDates} تاريخًا. الأسعار تشمل الرسوم وعمولة الخدمة. المواعيد كما تظهر في البوابة. وزن اليد غير مؤكد. السعر والتوفر قابلان للتغير؛ لم يتم حجز أي تذكرة.`;
+ return `*عروض الطيران | مجموعة الرمال*\n${title}\n✈️ من مطار ${originName||'غير محدد'} إلى ${request.destination||'الوجهة المطلوبة'}\nلشخص بالغ واحد، ${request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${request.baggageRequest?` — الوزن المطلوب ${request.baggageRequest.checkedWeightKg} كغ`:''}\n\n`+shown.map((q,i)=>`*الخيار ${i+1}*\n📅 الذهاب ${q.request?.departureDate||request.departureDate||''} — ${q.timing.out.flight}: ${q.timing.out.departure} ← الوصول ${q.timing.out.arrival}${q.timing.back?`\nالعودة ${q.request?.returnDate||request.returnDate||''} — ${q.timing.back.flight}: ${q.timing.back.departure} ← الوصول ${q.timing.back.arrival}`:''}\n🧳 الوزن المسجل: ${q.price.weights.map(w=>w.kg===0?'بدون أمتعة مسجلة':w.kg+' كغ').join(' / ')}\n💰 *الإجمالي: ${q.price.sellingTotal} درهم*${q.price.sellingTotal===sorted[0].price.sellingTotal?' — الأقل بين النتائج المؤكدة':''}`).join('\n\n')
+  +`\n\n${coverage}${inProgress?'':'\nبدك نوسّع البحث للأسبوع الجاي أو الشهر الجاي، ولا سفرك حصراً ضمن هالأيام؟'}\nتمت محاولة فحص ${attempted} خيارًا؛ فترة الطلب تضم ${totalDates} تاريخًا. الأسعار تشمل الرسوم وعمولة الخدمة. المواعيد كما تظهر في البوابة. وزن اليد غير مؤكد. السعر والتوفر قابلان للتغير؛ لم يتم حجز أي تذكرة.`;
 }
 module.exports={validateLiveRequest,quoteFromScans,formatLiveQuote,expandLiveRequests,formatQuoteOptions};

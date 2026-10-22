@@ -116,3 +116,12 @@ test('a baggage follow-up amends the same weekly request after submission',()=>{
   const r=handleMessage('amend-user',weight);assert.equal(r.complete,true);assert.equal(r.amendment,true);assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.destination,'دمشق');assert.ok(r.request.departureRange);
  }
 });
+
+test('search-expansion replies clarify the window and retain route and requested weight',()=>{
+ const now=Date.parse('2026-10-23T08:00:00Z');resetSessions();const h=t=>handleMessage('expansion',t,{now});
+ h('من الشارقة على الشام بدي ارخص سعر بهل اسبوع بدي 30 كيلو');
+ assert.equal(h('شفلي').complete,false);assert.match(h('شفلي بعد بكم يوم').reply,/حدد قديش/);
+ const r=h('3 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureRange.start,'2026-10-26');assert.equal(r.request.departureRange.end,'2026-10-28');assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.origin,'الشارقة');
+ assert.equal(h('حصرا بهل ايام').complete,false);
+ assert.equal(h('شوفلي').complete,false);const next=h('الشهر الجاي');assert.equal(next.complete,true);assert.equal(next.request.departureRange.start,'2026-11-01');
+});
