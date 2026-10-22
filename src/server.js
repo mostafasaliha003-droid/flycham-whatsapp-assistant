@@ -5,7 +5,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { handleMessage } = require('./conversation');
-const { sendTextMessage } = require('./graph-api');
+const { sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const { expandLiveRequests } = require('./live-quote');
 const quoteJobs = new QuoteJobs();
@@ -138,6 +138,7 @@ function createServer() {
 }
 
 if (require.main === module) {
+  checkWhatsAppConnection().then(code=>console.log(code));
   createServer().listen(PORT, () => console.log(`FlyCham WhatsApp Assistant listening on port ${PORT}`));
 }
 
