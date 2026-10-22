@@ -49,7 +49,8 @@ async function handleWebhookPost(request, response) {
   for (const message of extractIncomingMessages(payload)) {
     try {
       const result = handleMessage(message.from, message.text);
-      await sendTextMessage(message.from, result.reply);
+      const delivery = await sendTextMessage(message.from, result.reply);
+      console.log(delivery?.dryRun ? "WHATSAPP_TEST_REPLY_SUPPRESSED" : "WHATSAPP_REPLY_ACCEPTED_BY_META");
     } catch (error) {
       console.error(`Could not process inbound message ${message.id ?? '(no id)'}`, error.message);
     }
