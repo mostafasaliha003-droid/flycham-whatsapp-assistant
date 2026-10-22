@@ -343,7 +343,8 @@ class AirArabiaPortalAdapter {
       try {
         const url = new URL(frame.url());
         if (url.origin !== new URL(LOGIN_URL).origin) continue;
-        const resource = url.pathname.split('/').pop();
+        // Strip matrix parameters such as ;jsessionid without logging them.
+        const resource = url.pathname.split('/').pop().split(';')[0];
         if (!/^[A-Za-z][A-Za-z0-9_.-]{0,70}$/.test(resource)) continue;
         const metadata = await frame.evaluate(() => {
           const staticName = value => /^[A-Za-z_][A-Za-z0-9_.-]{0,60}$/.test(value || '') ? value : null;
@@ -369,6 +370,47 @@ class AirArabiaPortalAdapter {
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
     }
+  }
+
+  async inspectReservationSearch({ timeoutMs = 30000, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now } = {}) {
+    if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
+    if (!this.reservationControl) {
+      this.report('PORTAL_RESERVATION_MENU_UNAVAILABLE');
+      await this.inspectSearchUI();
+      return false;
+    }
+    // This is the observed navigation control, never a result's Book button.
+    await this.reservationControl.click({ timeout: 15000 });
+    this.report('PORTAL_RESERVATION_SEARCH_OPENED');
+    const deadline = now() + timeoutMs;
+    do {
+      if (await this.findVerificationFrame()) throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
+      for (const frame of this.page.frames()) {
+        try {
+          if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
+          const ready = await frame.evaluate(() => {
+            const ids = ['fAirport', 'tAirport', 'departureDate', 'adultCount', 'btnSearch'];
+            return ids.every(id => {
+              const fields = document.querySelectorAll('[id="' + id + '"]');
+              if (fields.length !== 1) return false;
+              const field = fields[0], style = getComputedStyle(field);
+              return !field.disabled && style.display !== 'none' && style.visibility !== 'hidden' && field.getClientRects().length > 0;
+            });
+          });
+          if (ready === true) {
+            this.searchFrame = frame;
+            this.report('PORTAL_RESERVATION_SEARCH_FORM_CONFIRMED');
+            await this.inspectSearchUI();
+            return true;
+          }
+        } catch {}
+      }
+      if (now() >= deadline) break;
+      await pause(500);
+    } while (now() < deadline);
+    this.report('PORTAL_RESERVATION_SEARCH_FORM_NOT_CONFIRMED');
+    await this.inspectSearchUI();
+    return false;
   }
 
   async selectAirport(frame, selector, code) {
@@ -459,7 +501,7 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     await adapter.signIn();
     log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
     await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate() });
-    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') await adapter.inspectSearchUI();
+    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') await adapter.inspectReservationSearch();
     session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
 
     let errorReported = false;
@@ -472,7 +514,7 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
         log.error('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY');
       }
     });
-    log.log('Air Arabia keepalive worker started; idle search interval is 15 minutes.');
+    log.log('Air Arabia keepalive worker started; idle protected-page refresh interval is 15 minutes.');
     await park();
   } catch (error) {
     failed = true;

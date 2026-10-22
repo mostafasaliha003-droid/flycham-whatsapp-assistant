@@ -1,40 +1,36 @@
-# Air Arabia quote selection and continuous-operation preparation
+# Air Arabia assistant operations
 
-## Incident update — 21 October 2026
+## Verified live state — 22 October 2026
 
-CORRECTION — search-UI inspection found the private sendOTP.action frame with a visible userOtp field. Earlier sign-out-based login and main-page-refresh success events proved only a partial session; they did not establish completion of OTP or access to reservation search. The scheduled refresh check also confirmed refresh of that partial session only. Do not describe this as a fully authenticated fare-search workflow.
+Independent service: airarabia-portal-keepalive, srv-dbcjdhfb9u1s73bsm1s0, workspace tea-da8acfugekts73clvm7g. Repository mostafasaliha003-droid/flycham-whatsapp-assistant, branch codex/airarabia-fixed-margin, auto-deploy off. Do not modify the hotel services or repository. The existing worker uses the approved USD 25/month plan; no additional paid resources are authorized.
 
-The corrected adapter rejects authentication while any same-origin OTP frame is present and requires usable reservation navigation in addition to sign-out. On initial login it waits for operator-provided verification, submits at most one code to the observed userOtp / btnSubmit form, and stops on failure or expiry. No CAPTCHA/verification is bypassed, no codes are fetched from email, and no automatic resend is clicked.
+Live runtime evidence (UTC / Dubai UTC+4):
+- Operator verification submitted: 00:01:38 / 04:01:38.
+- Authentication confirmed: 00:02:02 / 04:02:02.
+- Protected-page refresh completed: 00:02:15 / 04:02:15.
+- The OTP route was replaced by showMain. This is stronger evidence than the earlier partial-session sign-out events.
 
-Operator handoff: open the existing worker's Render Shell while PORTAL_VERIFICATION_WAITING_FOR_OPERATOR is logged. Enter the OTP directly in that terminal with a masked read, then write it atomically to /tmp/airarabia-verification-code with mode 0600. It must be newer than the current challenge and is deleted when consumed. Do not put an OTP into chat, source, logs, or a Render variable that restarts the process. The operator may use:
+A later heartbeat after fifteen idle minutes has not yet been observed for this fully verified session. The implemented heartbeat refreshes a protected page. It is not a flight search. Host uptime alone is never proof of supplier session availability.
+
+## Current inspection change
+
+After authentication and initial refresh, the inspection mode opens only the observed Make Reservation navigation control. It waits up to thirty seconds for the actual search form, inspects same-origin frame metadata and stops there. It does not submit a fare search or click Book. Matrix parameters (including session identifiers) are removed before logging static resource names. Input values, cookies, raw URLs, customer data and raw browser errors must never be logged.
+
+Search-form confirmation requires unique enabled visible origin, destination, departure date, adult count and Search controls in one trusted frame. Unconfirmed forms are reported, never inferred as successful. The current change passes 59 local tests and still requires live confirmation. Fare search, ancillaries, booking boundary and WhatsApp quote delivery are not yet verified.
+
+## Verification and recovery
+
+The supplier opens a named login popup. Start from the user-supplied protected portal route and follow only the supplier's own expected-origin login popup. Never manufacture a raw login POST or hidden security tokens.
+
+A same-origin OTP frame blocks authentication even if a header already displays Sign Out. The worker waits at most ten minutes for one operator-provided code. Locator ambiguity was observed; the guarded native-form fallback validates the supplier origin, unique observed controls, visible enabled form and matching submit button, then uses normal input/change/click events. It does not bypass OTP or form validation, resend a code, or fetch one from email.
+
+While PORTAL_VERIFICATION_WAITING_FOR_OPERATOR is present, enter the latest code in the same worker's Render Shell:
 
 ```bash
-read -r -s -p 'OTP: ' AA_CODE && AA_CODE_FILE=$(mktemp /tmp/aa-otp.XXXXXX) && printf '%s' "$AA_CODE" > "$AA_CODE_FILE" && mv "$AA_CODE_FILE" /tmp/airarabia-verification-code; unset AA_CODE AA_CODE_FILE
+bash -c 'read -rs -p "OTP: " AA_CODE && AA_FILE=$(mktemp /tmp/aa-otp.XXXXXX) && printf "%s" "$AA_CODE" > "$AA_FILE" && mv "$AA_FILE" /tmp/airarabia-verification-code; unset AA_CODE AA_FILE'
 ```
 
-The worker holds the same browser session for up to ten minutes awaiting this handoff. An expired/rejected code stops the attempt. The current patch passes 53 local tests; live operator verification and flight search remain pending. No quote search is connected to WhatsApp yet. A host restart can require new OTP; 24/7 recovery without an operator is not established.
-
-Live diagnostics show a visible SignOut title/alt control in a private portal frame after login HTTP 302. The adapter now explicitly checks title and alt locators. A private portal window with a visible sign-out control and no visible password form can confirm authentication without requiring a reservation menu to be on the current screen. If the Make Reservation action is absent, heartbeat navigates the existing authenticated window to the known protected portal main page, then re-verifies sign-out. This is read-only session refresh, not a flight search. It emits PORTAL_HEARTBEAT_REFRESH_COMPLETED; search success retains its distinct event. Startup performs an initial heartbeat before enabling the 15-minute idle timer. No booking controls are clicked.
-
-Live verification of the protected-entry fix: the supplier login returned HTTP 302, not 400, and reached private portal pages with multiple frames. Authentication markers were still not confirmed by the old text-only checks. The current patch recognizes accessible names on links, buttons and images, and allows the header sign-out and reservation menu to be in separate trusted frames within the same browser window. It must not combine partial markers across unrelated windows. This recognition patch awaits a live check. Neither a completed login workflow nor a heartbeat search has yet been confirmed.
-
-A concrete login-flow defect was identified after reviewing the code: it navigated directly to the public form-login action. FORM container authentication may return HTTP 400 when there is no saved protected request. See IBM's primary support explanation: https://www.ibm.com/support/pages/http-status-400-invalid-direct-reference-form-login-page . This is a supported hypothesis for the supplier failure, not confirmation of the supplier's internal implementation or the exact HTTP 400 cause.
-
-The adapter now starts at the protected portal route previously supplied by the user (`/xbe/private/showXBEMain.action`), allowing the supplier to initialize the session and redirect/forward to its own login normally. It retains the supplier popup handling and never fabricates session tokens or submits a raw login POST. This entry-route correction passes a regression test but awaits live verification. Render remains suspended; do not report login or heartbeat success until observed.
-
-A separate Render worker now exists: `airarabia-portal-keepalive` (`srv-dbcjdhfb9u1s73bsm1s0`), Frankfurt, 1c-2g, on branch `codex/airarabia-fixed-margin`, with auto-deploy off. It is suspended while startup is being diagnosed. Do not modify hotel services.
-
-The live diagnostic deployment reached the login page but timed out waiting for the username field. Public supplier Login.js confirms fullScreen2() opens a named winCC popup and keeps the launcher body hidden. The adapter now follows that popup only when its origin and path match the expected login page. It also avoids the supplier Browser.js innerText override, which includes hidden script/error catalogs, by checking only visible captcha/error elements.
-
-The previous version logged only a generic startup failure, then exited and could be restarted by Render, repeating login. The patched version validates configuration first, uses `domcontentloaded` plus explicit form checks instead of waiting for every page resource, waits for the visible authenticated sign-out control, and reports only allowlisted stage/error codes. It stops before any visible CAPTCHA/verification challenge. Startup or session failure closes the browser and parks without automatic retries. Shutdown remains supported while parked.
-
-Safe diagnostics include `PORTAL_OPEN_LOGIN_PAGE_TIMEOUT`, `PORTAL_LOGIN_FORM_TIMEOUT`, `PORTAL_LOGIN_CONFIRM_MANUAL_VERIFICATION`, `PORTAL_LOGIN_CONFIRM_LOGIN_NOT_CONFIRMED`, `PORTAL_AUTHENTICATED`, and `PORTAL_HEARTBEAT_SEARCH_COMPLETED`. Never print raw browser errors, credentials, page contents, supplier URLs, cookies, or customer data. A successful Render deploy is not proof of portal login or session retention.
-
-Manual portal login was reported successful by the operator. The popup fix reached the login-submit stage but the old literal iframe/sign-out check did not confirm authentication. The adapter now checks actual same-origin frames and requires both visible Sign Out and Make Reservation controls in the same frame. It records only fixed result categories on failure, without raw supplier messages or page content. This correction is awaiting live verification.
-
-The patched version passes 46 local tests. Live portal authentication and the first 15-minute heartbeat search remain unverified. Resume the existing worker and inspect these diagnostics; do not claim 24/7 availability until both authentication and a later heartbeat are confirmed. A challenge or rejected login requires operator review, not bypass or automatic repeated attempts.
-
-The preparation notes below describe the earlier draft and are retained as historical context; their statements that no worker exists are superseded by this incident update.
+The private file must be newer than the challenge, is consumed once and deleted. Do not store codes in source, logs or Render variables. Rejected verification, expiry or failed startup parks the process without repeated login attempts. Host restarts/deployments can require a new device verification; unattended recovery is not established. Credentials remain only in existing Render secrets.
 
 ## Agreed customer policy
 
@@ -44,26 +40,6 @@ Ticket margin: AED 25 per passenger, once for the whole itinerary. Default paid 
 
 A final quote requires complete options and actual availability for every passenger/segment, selected services, verified baggage weights, a fresh final portal review, and reconciliation of every supplier charge. Different weight alternatives must be rechecked individually before their total is represented as final. Test passengers cannot establish the real customer's age/residency/eligibility-dependent fare.
 
-## Prepared code, not a deployed integration
+## Remaining implementation
 
-- selection.js: complete option catalogs, cheapest defaults, explicit seat requests, seat uniqueness, real-food filtering, baggage disclosure and final-total reconciliation.
-- pricing.js / money.js: integer-fils base, supplier-service costs, and independent ticket/seat/meal margins.
-- portal-session.js: a single serialized session; after 15 idle minutes it requests one one-way search using a randomized departure date 30–90 days ahead; checks once per minute so the threshold is not missed; pre-job authentication verification; one sign-in attempt on expiry; sign-in failure requires operator review; no concurrent heartbeat during a quote; graceful stop.
-- airarabia-worker.js: proposed Playwright UI adapter, fixed to observed SHJ–DAM airport selectors and stopping at results without selecting or booking. Credentials are read only from environment secrets. This driver has passed syntax checks but has not been run against the live portal; selector accuracy, search completion and session renewal remain unverified.
-- Dockerfile.worker and render.yaml: proposed Playwright 1.64.0 worker using Render's 1 CPU / 2 GB `1c-2g` plan (currently USD 25/month). The worker is declared disabled and auto-deploy is off. No worker has been created or deployed.
-- test fixture: synthetic names and date of birth only, reserved invalid email, no real contact, nationality or passport. It is deliberately not a live-submittable passenger record.
-
-The adapter must stop at site challenges and never log credentials. The heartbeat search must stop after results appear; it must not select a fare or continue to booking. It must detect all seat-map pages, quote expiry, unavailable extras and the actual booking-commit boundary before it can be used for customer quotes. No unobserved ancillary selectors or raw private endpoints have been invented.
-
-## Continuous operation on Render
-
-The independent assistant's current live web service is on the Free plan (verified 21 October 2026). Render's current documentation states that Free web services spin down after 15 minutes without inbound traffic. Outbound portal searches do not keep that web service awake. A persistent background worker is the proposed execution model for the separate portal session; it does not yet consume customer quote jobs.
-
-Keep credentials in hosting secrets, separate from the synthetic passenger fixture and source control. The proposed worker uses 1 CPU / 2 GB for Chromium headroom; verify its actual memory use before production. Idle activity does not guarantee a session can never expire. The 25-minute idle timeout is user-reported and has not been independently verified. A 15-minute search leaves a 10-minute buffer if the portal's timer is activity-based and a search resets it.
-
-Current references read directly from Render documentation:
-- https://render.com/docs/service-types
-- https://render.com/docs/background-workers
-- https://render.com/docs/free
-
-No worker, queue, credentials, plan upgrade, deployment, heartbeat or 24/7 browser process has been created or activated by this draft. The current webhook still has no live quote adapter and remains in dry-run. Live seat, meal and baggage verification is still incomplete because browser control failed after opening the selected fare bundle. No live test passenger or reservation was submitted.
+The WhatsApp web service currently collects itinerary details only. It has no verified live fare adapter or durable quote queue. The pricing and ancillary selection modules implement the agreed rules, but cannot issue a final quote until live catalogs and final supplier totals are checked. Do not represent a submitted test passenger as a verified fare for a real customer. No real booking, hold, ticket or payment is authorized.

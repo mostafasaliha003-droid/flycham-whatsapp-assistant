@@ -277,3 +277,31 @@ test('prefers the visible OTP input over a route-only wrapper frame', async () =
   page.frames = () => [wrapper, form];
   assert.equal(await adapterFor(page).findVerificationFrame(), form);
 });
+
+
+test('reservation inspection clicks only navigation and stops at a confirmed search form', async () => {
+  const page = fakePage();
+  let navigationClicks = 0, surveyed = 0;
+  const frame = { url: () => 'https://agents.airarabia.com/xbe/private/showSearch;jsessionid=secret-test-only', evaluate: async () => true };
+  page.frames = () => [frame];
+  const adapter = adapterFor(page);
+  adapter.isAuthenticated = async () => true;
+  adapter.reservationControl = { click: async () => { navigationClicks++; } };
+  adapter.inspectSearchUI = async () => { surveyed++; };
+  assert.equal(await adapter.inspectReservationSearch(), true);
+  assert.equal(navigationClicks, 1); assert.equal(surveyed, 1);
+  assert.equal(adapter.searchFrame, frame);
+});
+
+test('reservation inspection never accepts a foreign-origin form or missing navigation', async () => {
+  const page = fakePage();
+  let evaluations = 0;
+  page.frames = () => [{ url: () => 'https://foreign.example/search', evaluate: async () => { evaluations++; return true; } }];
+  const adapter = adapterFor(page);
+  adapter.isAuthenticated = async () => true;
+  adapter.inspectSearchUI = async () => {};
+  assert.equal(await adapter.inspectReservationSearch({ timeoutMs: 0 }), false);
+  adapter.reservationControl = { click: async () => {} };
+  assert.equal(await adapter.inspectReservationSearch({ timeoutMs: 0 }), false);
+  assert.equal(evaluations, 0);
+});
