@@ -55,7 +55,7 @@ async function selectFlightTimes(frame,choice){
   if(await confirm.count()===1)await confirm.click({timeout:15000});
  }
  await frame.waitForFunction(()=>typeof jQuery!=='undefined'&&jQuery.active===0,null,{timeout:45000});
- const fq=frame.locator('#btnFQ:visible');if(await fq.count()===1)await fq.click({timeout:15000});
+ const fq=frame.locator('#btnFQ:visible');if(await fq.count()===1&&await fq.isEnabled())await fq.click({timeout:15000});
  await frame.locator('button#btnBook:visible').waitFor({state:'visible',timeout:45000});
  await frame.waitForFunction(({out,back})=>{
   const o=jsonOutFlts[out-1],r=back?jsonRetFlts[back-1]:null,info=UI_tabSearchFlights.flightInfo;

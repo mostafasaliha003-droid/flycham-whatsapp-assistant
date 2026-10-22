@@ -45,3 +45,10 @@ test('already selected flight still confirms its visible fare before waiting for
  const choices=await readFlightTimes(f,true);await selectFlightTimes(f,{out:choices.out[0],back:null});
  assert.deepEqual(calls,['confirm','reservation']);
 });
+
+test('a disabled fare quote button is skipped after the supplier has already quoted the selected flight',async()=>{
+ const {selectFlightTimes}=require('../src/portal-flight-times'),f=frame(),calls=[];
+ f.locator=selector=>({count:async()=>selector==='#btnFQ:visible'?1:0,isEnabled:async()=>false,click:async()=>{throw Error('must not click disabled fare button');},waitFor:async()=>calls.push('reservation')});
+ f.waitForFunction=async()=>{};
+ const choices=await readFlightTimes(f,true);await selectFlightTimes(f,{out:choices.out[0],back:null});assert.deepEqual(calls,['reservation']);
+});
