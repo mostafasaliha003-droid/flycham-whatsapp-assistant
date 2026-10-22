@@ -4,6 +4,7 @@ const { chromium } = require('playwright');
 const { waitForVerificationCode } = require('./operator-verification');
 const { verificationFormAction } = require('./portal-verification-form');
 const { submitProbe } = require('./portal-search-probe');
+const { openPassengerOptions } = require('./portal-options-probe');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -348,7 +349,7 @@ class AirArabiaPortalAdapter {
         const resource = url.pathname.split('/').pop().split(';')[0];
         if (!/^[A-Za-z][A-Za-z0-9_.-]{0,70}$/.test(resource)) continue;
         const metadata = await frame.evaluate(() => {
-          const staticName = value => /^[A-Za-z_][A-Za-z0-9_.-]{0,60}$/.test(value || '') ? value : null;
+          const staticName = value => /^(?:[A-Za-z_][A-Za-z0-9_.-]{0,60}|[1-9][0-9]?_display(?:Adult|Infant)(?:FirstName|LastName|Title|Nationality|DOB))$/.test(value || '') ? value : null;
           const visible = el => getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
           const menuName = /^(?:(?:make|new|create|modify|manage|view|search|find|book)\s*)?(?:reservations?|bookings?|flights?|search)(?:\s*(?:search|reservations?|flights?))?$/i;
           const controls = [];
@@ -404,7 +405,7 @@ class AirArabiaPortalAdapter {
               return [url.pathname];
             } catch { return []; }
           });
-          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, resultValues: resultValues.slice(0,60), scriptResources: [...new Set(scriptResources)].slice(0,80), frameCount: document.querySelectorAll('frame,iframe').length };
+          return { controls: controls.slice(0,30), fields: fields.sort((a,b) => Number(b.visible) - Number(a.visible)).slice(0,100), choices, trips, resultContainers, flightRows, resultValues: resultValues.slice(0,60), scriptResources: [...new Set(scriptResources)].slice(0,80), frameCount: document.querySelectorAll('frame,iframe').length };
         });
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
@@ -464,6 +465,8 @@ class AirArabiaPortalAdapter {
       this.report('PORTAL_PROBE_SEARCH_SUBMITTED');
       await this.searchFrame.locator('button#btnBook:visible').first().waitFor({ state: 'visible', timeout: 45000 });
       this.report('PORTAL_PROBE_RESULTS_CONTROL_VISIBLE');
+      await this.inspectSearchUI();
+      await openPassengerOptions(this.searchFrame, this.page, this.report);
       await this.inspectSearchUI();
       // Reaching a result page is not a final ancillary-inclusive quote.
       return true;
