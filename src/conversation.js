@@ -66,8 +66,17 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   for(const [alias,city]of cities){
     if(new RegExp('(?:من|from)\\s+'+alias).test(text))request.origin=city;
     if(new RegExp('(?:الى|إلى|على|علي|ع)\\s*'+alias).test(text))request.destination=city;
-    if(plain===normalize(alias) && awaiting==='origin')request.origin=city;
-    if(plain===normalize(alias) && awaiting==='destination')request.destination=city;
+
+  }
+  // A reply to a city question may include airport names, fillers or IATA codes.
+  // Match known names only; never assign a vague country to an airport.
+  const airportNames=[['الشارقة',/الشارق[ةه]|\bsharjah\b|\bshj\b/i],['دمشق',/دمشق|\bdamascus\b|\bdam\b/i],['دبي',/دبي|\bdubai\b|\bdxb\b/i],['حلب',/حلب|\baleppo\b|\balp\b/i],['اللاذقية',/اللاذقي[ةه]|\blatakia\b|\bltk\b/i]];
+  const mentioned=airportNames.filter(([,pattern])=>pattern.test(plain));
+  if(mentioned.length===1&&(awaiting==='origin'||awaiting==='destination')){
+    const city=mentioned[0][0];
+    if(!/(?:من|from)\s/.test(plain)&&!/(?:الى|علي|على|to)\s/.test(plain))request[awaiting]=city;
+    else if(awaiting==='origin'&&/(?:من|from)\s/.test(plain))request.origin=city;
+    else if(awaiting==='destination'&&/(?:الى|علي|على|to)\s/.test(plain))request.destination=city;
   }
   if(/سوريا|سورية/.test(text))request.destinationCountry='سوريا';
 

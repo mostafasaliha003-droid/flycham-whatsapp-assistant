@@ -69,3 +69,15 @@ test('records requested weight without prompting for special services',()=>{
   assert.equal(result.request.baggageRequest.checkedWeightKg,30);
   assert.match(result.reply,/الوزن المطلوب: 30/);
 });
+
+test('airport replies with airport prefix, fillers and IATA codes advance instead of repeating',()=>{
+ for(const answer of ['مطار الشارقة','الشارقه الدولي','من مطار الشارقة','بدي من الشارقة','SHJ','Sharjah airport']){
+  resetSessions();handleMessage('airport-user','بدي ارخص تاريخ بهل اسبوع');
+  const next=handleMessage('airport-user',answer);assert.match(next.reply,/إلى أي مدينة أو مطار/);
+  const done=handleMessage('airport-user','مطار دمشق الدولي');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
+ }
+});
+test('bare ambiguous multiple cities do not silently choose an airport',()=>{
+ resetSessions();handleMessage('ambiguous-user','بدي ارخص تاريخ بهل اسبوع');
+ assert.match(handleMessage('ambiguous-user','الشارقة او دبي').reply,/من أي مدينة أو مطار/);
+});
