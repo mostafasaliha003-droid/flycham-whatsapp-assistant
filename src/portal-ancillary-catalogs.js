@@ -10,7 +10,7 @@ function foodKind(name) {
 }
 
 function checkedWeight(name) {
-  if (/^(?:no checked baggage|no baggage|without baggage)$/i.test(name.trim())) return 0;
+  if (/^(?:no checked baggage|no baggage|no bag|without baggage)$/i.test(name.trim())) return 0;
   if (/[2-9]\s*(?:pc|piece)/i.test(name) && !/\btotal\b/i.test(name)) return null;
   const values = [...name.matchAll(/\b(\d+(?:\.\d+)?)\s*(?:kg|kilograms?)\b/ig)];
   return values.length === 1 && Number(values[0][1]) <= 100 ? Number(values[0][1]) : null;

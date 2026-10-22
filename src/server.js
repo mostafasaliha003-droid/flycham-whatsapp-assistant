@@ -59,7 +59,7 @@ async function handleWebhookPost(request, response) {
         try{
           expandLiveRequests(result.request);
           quoteJobs.enqueue(message.from,result.request);
-          reply=`${result.request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. المتاح للبحث الآلي حاليًا الشارقة فقط؛ لن أعتبره الأرخص بين جميع مطارات الإمارات. ':''}وصل طلبك. المقارنة ${result.request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'} لشخص بالغ واحد. رح نفحص التواريخ والتواقيت ونرسل الأسعار على دفعات. المقارنة الواسعة قد تستغرق وقتًا، وأي نقص بالفحص رح نوضّحه. هذا استعلام فقط دون حجز.`;
+          reply=`${result.request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. المتاح للبحث الآلي حاليًا الشارقة فقط؛ لن أعتبره الأرخص بين جميع مطارات الإمارات. ':''}${result.amendment?'تم تحديث طلبك؛ سنعيد فحص الأسعار حسب التفاصيل الجديدة.':'وصل طلبك.'} ${result.request.baggageRequest?`الوزن المطلوب ${result.request.baggageRequest.checkedWeightKg} كغ. `:''}المقارنة ${result.request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'} لشخص بالغ واحد. رح نفحص التواريخ والتواقيت ونرسل الأسعار على دفعات. المقارنة الواسعة قد تستغرق وقتًا، وأي نقص بالفحص رح نوضّحه. هذا استعلام فقط دون حجز.`;
           console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
         }catch{
           reply='البحث الآلي التجريبي يدعم حاليًا الشارقة–دمشق لشخص بالغ واحد، عندما تكون البوابة متصلة. هذا الطلب يحتاج مراجعة موظف؛ لم يُؤكد أي سعر.';
@@ -85,6 +85,9 @@ function createServer() {
         const data=JSON.parse((await readBody(request)).toString('utf8'));
         if(url.pathname==='/internal/quotes/claim'){
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(quoteJobs.claim()||{}));return;
+        }
+        if(url.pathname==='/internal/quotes/current'){
+          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({current:quoteJobs.current(data.id,data.lease)}));return;
         }
         if(['/internal/quotes/complete','/internal/quotes/progress'].includes(url.pathname)){
           if(typeof data.reply!=='string'||data.reply.length>12000){response.writeHead(400).end();return;}

@@ -109,3 +109,10 @@ test('vague Syria request still asks destination city after origin is repeated',
  h('خيو بدي انزل على سوريا بهل اسبوع شوفي اسعار');h('من الشارجه');
  const r=h('شارقه');assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة بسوريا/);
 });
+
+test('a baggage follow-up amends the same weekly request after submission',()=>{
+ for(const weight of ['30 كيلو','بدي 30 كيلو','٣٠ كيلو','30kg']){
+  resetSessions();handleMessage('amend-user','من الشارقة على الشام بدي ارخص سعر بهل اسبوع');
+  const r=handleMessage('amend-user',weight);assert.equal(r.complete,true);assert.equal(r.amendment,true);assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.destination,'دمشق');assert.ok(r.request.departureRange);
+ }
+});

@@ -26,6 +26,7 @@ test('unknown prices, inventory and weight alternatives never become complete qu
   assert.equal(checkedWeight('20 KG + 10 KG'), null);
   assert.equal(checkedWeight('30 Kg Total In 2 Pieces Discounted'), 30);
   assert.equal(checkedWeight('No checked baggage'), 0);
+  assert.equal(checkedWeight('No Bag'), 0);
 });
 
 function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassenger = false, disabledMealSegment = false, multiMeal = false, absentBaggageQuantity = false } = {}) {

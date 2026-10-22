@@ -11,10 +11,12 @@ function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console}
         log.log('PORTAL_CUSTOMER_QUOTE_STARTED');
         let reply;
         let seq=0;
-        try{reply=await session.run(p=>p.runCustomerQuote(job.request,reply=>call('/progress',{id:job.id,lease:job.lease,seq:++seq,reply})));log.log('PORTAL_CUSTOMER_QUOTE_PRICED');}
+        try{reply=await session.run(p=>p.runCustomerQuote(job.request,reply=>call('/progress',{id:job.id,lease:job.lease,seq:++seq,reply}),async()=>{const state=await call('/current',{id:job.id,lease:job.lease});if(!state.current)throw Error('QUOTE_SUPERSEDED');}));log.log('PORTAL_CUSTOMER_QUOTE_PRICED');}
         catch{reply='تعذر التحقق من السعر لهذا الطلب حاليًا. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء أي حجز.';log.log('PORTAL_CUSTOMER_QUOTE_UNCONFIRMED');}
         // One completion attempt: never duplicate a WhatsApp reply after an
         // ambiguous network failure. The server consumes each lease once.
+        const current=await call('/current',{id:job.id,lease:job.lease});
+        if(!current.current){log.log('PORTAL_CUSTOMER_QUOTE_SUPERSEDED');return;}
         await call('/complete',{id:job.id,lease:job.lease,reply});
         log.log('PORTAL_CUSTOMER_QUOTE_REPLY_SUBMITTED');
       }

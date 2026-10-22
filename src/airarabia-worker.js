@@ -480,11 +480,12 @@ class AirArabiaPortalAdapter {
     return false;
   }
 
-  async runCustomerQuote(request,onProgress) {
+  async runCustomerQuote(request,onProgress,assertCurrent=async()=>{}) {
     const dates=expandLiveRequests(request),results=[];
     const deadline=Date.now()+45*60*1000;
     let complete=true,attempted=0;
     for(const dated of dates){
+      await assertCurrent();
       if(Date.now()>=deadline || results.length>=80){complete=false;break;}
       let first;
       attempted++;
@@ -492,6 +493,7 @@ class AirArabiaPortalAdapter {
       catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
       if(onProgress)await onProgress('نتيجة متاحة الآن، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[first],{complete:false,attempted:1,totalDates:1}));
       for(const choice of flightPairs(first.choices)){
+        await assertCurrent();
         if(choice.out.row===first.timing.out.row&&choice.back?.row===first.timing.back?.row)continue;
         if(Date.now()>=deadline || results.length>=80){complete=false;break;}
         attempted++;
