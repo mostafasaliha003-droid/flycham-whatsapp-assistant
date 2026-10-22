@@ -7,6 +7,7 @@ const { submitProbe } = require('./portal-search-probe');
 const { openPassengerOptions } = require('./portal-options-probe');
 const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
+const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
@@ -494,6 +495,7 @@ class AirArabiaPortalAdapter {
       await continueWithTestPassenger(this.searchFrame, this.report);
       await this.inspectSearchUI();
       await scanSeatPrices(this.searchFrame, this.page, this.report);
+      await scanAncillaryCatalogs(this.searchFrame, this.page, this.report);
       // Reaching a result page is not a final ancillary-inclusive quote.
       return true;
     } catch (error) {

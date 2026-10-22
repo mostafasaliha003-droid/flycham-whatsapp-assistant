@@ -77,3 +77,21 @@ supplier's complete itinerary total still need verification before a customer
 price can be issued. Tests use a DOM contract fixture; live supplier behavior
 must be verified separately after authentication.
 
+
+## Meal and baggage catalog reader
+
+After the seat scan, the synthetic probe opens only the meal and baggage tabs
+and their segment navigation controls. Reviewed read endpoints are anciMeal.action
+and anciBaggage.action, in addition to seatMap.action and anciFlexi.action.
+It matches supplier catalog names to displayed jqGrid charge cells, checks
+stock where returned, and fails completeness on unknown prices or inventory.
+No-meal and beverage options are not treated as free food; uncertain food names
+remain unconfirmed. Checked weights are parsed only when unambiguous; hand baggage
+is not inferred. Shared baggage groups record covered segment indexes once.
+Empty passenger-restriction arrays no longer classify ordinary seats as conditional;
+the seat result still applies only to the synthetic adult passenger.
+
+The reader records the visible ancillary-stage total separately. This is not
+an all-charges-checked final price. It never selects/applies a meal or baggage,
+clicks ancillary Continue, blocks seats, confirms a reservation, pays or issues
+a ticket. Customer quotation and WhatsApp live fare delivery remain unverified.

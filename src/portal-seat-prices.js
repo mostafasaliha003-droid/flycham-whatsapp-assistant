@@ -34,7 +34,7 @@ function seatRequestPolicy(request) {
   const cosmetic = ['image', 'font', 'stylesheet', 'media'].includes(kind) && request.method() === 'GET';
   // Reviewed supplier onClickSeat / onClickFlexi handlers fetch catalog data.
   // The latter is also invoked while loading seat/bundle options.
-  const availabilityAction = ['seatMap.action', 'anciFlexi.action'].includes(action);
+  const availabilityAction = ['seatMap.action', 'anciFlexi.action', 'anciMeal.action', 'anciBaggage.action'].includes(action);
   const supplierAsset = cosmetic && url.protocol === 'https:' && (url.hostname === 'airarabia.com' || url.hostname.endsWith('.airarabia.com')) && !/\.action$/i.test(action);
   const allowed = supplierAsset || (url.origin === 'https://agents.airarabia.com'
     && (!/\.action$/i.test(action) || availabilityAction)
@@ -110,8 +110,12 @@ async function scanSeatPrices(frame, page, report = () => {}) {
         if (!/^[A-Z]{3}$/.test(currency || '')) currency = DATA_ResPro.initialParams.baseCurrencyCode;
         const map = UI_tabAnci.seatRefMap[UI_tabAnci.currFltRefNo];
         const cabin = UI_tabAnci.getSelectedLogicalCabinClass(UI_tabAnci.currFltRefNo);
+        const paxType = jsonPaxAdults[0].type;
         const seats = Object.values(map?.seats || {}).filter(s => s.avail === 'VAC' && s.lccCode === cabin && /^\d{1,3}[A-K]$/.test(s.seatNumber)).map(s => ({
-          seat: s.seatNumber, conditional: !!(s.seatMessage || s.notAllowedPassengerType || s.seatType === 'EXIT'),
+          seat: s.seatNumber, conditional: !!String(s.seatMessage || '').trim() || s.seatType === 'EXIT'
+            || !['AD','ADT'].includes(paxType)
+            || (Array.isArray(s.notAllowedPassengerType) ? s.notAllowedPassengerType.includes(paxType)
+              : typeof s.notAllowedPassengerType === 'string' && s.notAllowedPassengerType.split(/[,|\s]+/).includes(paxType)),
         })).filter(s => {
           const el = document.getElementById('tdSeat_' + s.seat);
           return el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden'

@@ -42,7 +42,7 @@ function fixture({ wrongPassenger = false, failedSeat = null, extraVacant = fals
   const sandbox = {
     location: { origin: 'https://agents.airarabia.com' },
     UI_commonSystem: { strPGMode: '' }, DATA_ResPro: { initialParams: { baseCurrencyCode: 'AED' } },
-    jsonPaxAdults: [{ displayAdultFirstName: wrongPassenger ? 'OTHER' : 'TEST', displayAdultLastName: 'QUOTE' }], jsonPaxInfants: [],
+    jsonPaxAdults: [{ displayAdultFirstName: wrongPassenger ? 'OTHER' : 'TEST', displayAdultLastName: 'QUOTE', type:'AD' }], jsonPaxInfants: [],
     jsAnciSeg: [{ flightNumber: 'G9433' }, { flightNumber: 'G9434' }],
     getComputedStyle: () => ({ visibility: 'visible' }),
     document: { querySelectorAll: () => segments, getElementById: id => elements[id] },
@@ -54,7 +54,7 @@ function fixture({ wrongPassenger = false, failedSeat = null, extraVacant = fals
     ui.currSegRow = index; ui.currFltRefNo = 'segment' + index;
     const seats = {};
     for (const seat of segmentSeats[index]) {
-      seats[seat.seatNumber] = { ...seat, avail: 'VAC', lccCode: 'Y' };
+      seats[seat.seatNumber] = { ...seat, avail: 'VAC', lccCode: 'Y', notAllowedPassengerType:[] };
       elements['tdSeat_' + seat.seatNumber] = { ...visible, querySelector: () => ({}) };
     }
     if (extraVacant) seats['99A'] = { seatNumber: '99A', avail: 'VAC', lccCode: 'Y' };
