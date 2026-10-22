@@ -68,7 +68,8 @@ seat only for a complete scan. Missing hover targets or unknown prices make
 the scan incomplete; absence of a seat map does not mean a free seat exists.
 Conditional seats are counted separately. No passenger values, session URLs,
 cookies or raw page text are logged. The bounded scan permits only the reviewed
-`seatMap.action` request and static same-origin GETs, then removes its request
+`seatMap.action` and `anciFlexi.action` catalog requests plus supplier static
+assets, then removes its request
 guard before normal keepalive resumes.
 
 `PORTAL_SEAT_SCAN_COMPLETED` verifies this seat scan only. Meals, baggage and the

@@ -73,7 +73,12 @@ function fixture({ wrongPassenger = false, failedSeat = null, extraVacant = fals
       waitFor: async () => {},
       click: async () => {
         calls.push(['click', selector]);
-        if (selector === '#imgTab_2:visible') { sandbox.UI_tabAnci.currAnciSrv = 'SEAT'; sandbox.UI_tabAnci.selectedAnciTypeGlobal = 'SEAT_MAP'; sandbox.UI_tabAnci.dataStatus.seat = true; setSegment(0); }
+        if (selector === '#imgTab_2:visible') {
+          // The live supplier loads flexi catalog data while entering seat options.
+          await page.guard({ request: () => ({ url: () => 'https://agents.airarabia.com/xbe/private/anciFlexi.action', method: () => 'POST', resourceType: () => 'xhr' }),
+            abort: async () => assert.fail('supplier catalog load blocked'), continue: async () => {} });
+          sandbox.UI_tabAnci.currAnciSrv = 'SEAT'; sandbox.UI_tabAnci.selectedAnciTypeGlobal = 'SEAT_MAP'; sandbox.UI_tabAnci.dataStatus.seat = true; setSegment(0);
+        }
         else if (/^#tdAnciSeg_\d+$/.test(selector)) setSegment(Number(selector.split('_').pop()));
         else assert.fail('Unexpected click: ' + selector);
       },
@@ -132,5 +137,8 @@ test('allows supplier display assets but prevents unreviewed action requests', (
   assert.equal(action.allowed, false); assert.equal(action.critical, true);
   assert.ok(!JSON.stringify(action).includes('private'));
   assert.equal(seatRequestPolicy(request('https://agents.airarabia.com/xbe/private/seatMap.action', 'POST', 'xhr')).allowed, true);
+  assert.equal(seatRequestPolicy(request('https://agents.airarabia.com/xbe/private/anciFlexi.action', 'POST', 'xhr')).allowed, true);
+  assert.equal(seatRequestPolicy(request('https://telemetry.example/collect?private=value', 'POST', 'fetch')).allowed, false);
+  assert.equal(seatRequestPolicy(request('https://telemetry.example/collect?private=value', 'POST', 'fetch')).critical, false);
   assert.equal(seatRequestPolicy(request('https://other.example/code.js', 'GET', 'script')).critical, true);
 });

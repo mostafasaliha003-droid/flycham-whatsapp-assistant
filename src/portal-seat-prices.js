@@ -32,12 +32,18 @@ function seatRequestPolicy(request) {
   const action = url.pathname.split('/').pop().split(';')[0];
   const kind = request.resourceType?.() || 'unknown';
   const cosmetic = ['image', 'font', 'stylesheet', 'media'].includes(kind) && request.method() === 'GET';
+  // Reviewed supplier onClickSeat / onClickFlexi handlers fetch catalog data.
+  // The latter is also invoked while loading seat/bundle options.
+  const availabilityAction = ['seatMap.action', 'anciFlexi.action'].includes(action);
   const supplierAsset = cosmetic && url.protocol === 'https:' && (url.hostname === 'airarabia.com' || url.hostname.endsWith('.airarabia.com')) && !/\.action$/i.test(action);
   const allowed = supplierAsset || (url.origin === 'https://agents.airarabia.com'
-    && (!/\.action$/i.test(action) || action === 'seatMap.action')
-    && (request.method() === 'GET' || action === 'seatMap.action'));
-  return { allowed, critical: !allowed && !cosmetic, kind: /^(?:image|font|stylesheet|media|xhr|fetch|script|document|other|unknown)$/.test(kind) ? kind : 'other',
-    action: /^[A-Za-z][A-Za-z0-9_-]{0,60}\.action$/.test(action) ? action : null };
+    && (!/\.action$/i.test(action) || availabilityAction)
+    && (request.method() === 'GET' || availabilityAction));
+  // Block unrelated third-party telemetry, but it is not supplier price data.
+  // Unknown supplier actions, scripts and document transitions remain critical.
+  const critical = !allowed && !cosmetic && (url.origin === 'https://agents.airarabia.com' || ['script', 'document'].includes(kind));
+  return { allowed, critical, kind: /^(?:image|font|stylesheet|media|xhr|fetch|script|document|other|unknown)$/.test(kind) ? kind : 'other',
+    action: /^[A-Za-z][A-Za-z0-9_!.-]{0,70}\.action$/.test(action) ? action : null };
 }
 
 async function scanSeatPrices(frame, page, report = () => {}) {
