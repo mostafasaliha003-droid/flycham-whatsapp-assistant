@@ -48,3 +48,31 @@ A final quote requires complete options and actual availability for every passen
 ## Remaining implementation
 
 The WhatsApp web service currently collects itinerary details only. It has no verified live fare adapter or durable quote queue. The pricing and ancillary selection modules implement the agreed rules, but cannot issue a final quote until live catalogs and final supplier totals are checked. Do not represent a submitted test passenger as a verified fare for a real customer. No real booking, hold, ticket or payment is authorized.
+
+## Seat tooltip inspection
+
+This current synthetic probe supersedes the earlier result-only stopping point
+in the historical notes above. The user-authorized result-page Make Reservation
+step opens passenger details; the synthetic TEST QUOTE passenger continues only
+to ancillary availability, with profile saving disabled. The new hover inspection
+runs there and never proceeds to ancillary confirmation or payment.
+
+The synthetic startup probe now opens the supplier's seat tab (`imgTab_2`),
+visits every available segment, and uses Playwright pointer hover on each
+vacant seat in the selected cabin. It reads `spnTTSeatNo` and `spnTTSeatChg`
+only after confirming the tooltip belongs to that seat. It never clicks a
+seat, the ancillary Continue button, payment or booking confirmation.
+
+`PORTAL_SEAT_SCAN_SEGMENT_` reports counts, free seats and the cheapest ordinary
+seat only for a complete scan. Missing hover targets or unknown prices make
+the scan incomplete; absence of a seat map does not mean a free seat exists.
+Conditional seats are counted separately. No passenger values, session URLs,
+cookies or raw page text are logged. The bounded scan permits only the reviewed
+`seatMap.action` request and static same-origin GETs, then removes its request
+guard before normal keepalive resumes.
+
+`PORTAL_SEAT_SCAN_COMPLETED` verifies this seat scan only. Meals, baggage and the
+supplier's complete itinerary total still need verification before a customer
+price can be issued. Tests use a DOM contract fixture; live supplier behavior
+must be verified separately after authentication.
+
