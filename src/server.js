@@ -7,7 +7,7 @@ const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = req
 const { handleMessage } = require('./conversation');
 const { sendTextMessage } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
-const { validateLiveRequest } = require('./live-quote');
+const { expandLiveRequests } = require('./live-quote');
 const quoteJobs = new QuoteJobs();
 
 const PORT = Number(process.env.PORT || 3000);
@@ -57,9 +57,9 @@ async function handleWebhookPost(request, response) {
       let reply=result.reply;
       if(result.complete && queueEnabled){
         try{
-          validateLiveRequest(result.request);
+          expandLiveRequests(result.request);
           quoteJobs.enqueue(message.from,result.request);
-          reply='وصل طلبك. يجري التحقق من السعر والوزن والمقعد والوجبة لدى العربية. قد يستغرق الفحص بضع دقائق؛ هذا استعلام فقط دون حجز.';
+          reply='وصل طلبك. رح نفحص أسعار التواقيت المتاحة والوزن والمقعد والوجبة لدى العربية. المقارنة قد تستغرق عدة دقائق، وإذا كان الفحص جزئيًا رح نوضّح ذلك. هذا استعلام فقط دون حجز.';
           console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
         }catch{
           reply='البحث الآلي التجريبي يدعم حاليًا الشارقة–دمشق ذهابًا وعودة لشخص بالغ واحد، عندما تكون البوابة متصلة. هذا الطلب يحتاج مراجعة موظف؛ لم يُؤكد أي سعر.';
@@ -87,11 +87,11 @@ function createServer() {
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(quoteJobs.claim()||{}));return;
         }
         if(url.pathname==='/internal/quotes/complete'){
-          if(typeof data.reply!=='string'||data.reply.length>2000){response.writeHead(400).end();return;}
+          if(typeof data.reply!=='string'||data.reply.length>12000){response.writeHead(400).end();return;}
           const job=quoteJobs.takeResult(data.id,data.lease);
           if(!job){response.writeHead(409).end();return;}
           try{
-            await sendTextMessage(job.recipient,data.reply);
+            for(let i=0;i<data.reply.length;i+=3500)await sendTextMessage(job.recipient,data.reply.slice(i,i+3500));
             console.log('WHATSAPP_LIVE_QUOTE_REPLY_ACCEPTED_BY_META');
             response.writeHead(200,{'Content-Type':'application/json'}).end('{"accepted":true}');
           }catch{

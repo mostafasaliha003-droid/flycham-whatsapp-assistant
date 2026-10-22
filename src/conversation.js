@@ -2,6 +2,7 @@
 
 const sessions = new Map();
 const { pricingDemo } = require('./pricing-demo');
+const {naturalDate,normalize,dubaiDay,addDays,iso}=require('./arabic-dates');
 
 const prompts = {
   origin: 'من أي مدينة أو مطار؟',
@@ -16,7 +17,7 @@ const digitMap = { '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': 
 function normalizeDigits(text) { return String(text).replace(/[٠-٩۰-۹]/g, (digit) => digitMap[digit]); }
 
 function emptyRequest() {
-  return { origin: null, destination: null, departureDate: null, tripType: null, returnDate: null, passengers: null, baggageRequest:null };
+  return { origin: null, destination: null, departureDate: null, departureRange:null, stayNights:null, tripType: null, returnDate: null, passengers: null, baggageRequest:null };
 }
 
 function parseDate(text) {
@@ -50,41 +51,70 @@ function parsePassengerCount(text) {
   return { adults, children, infants, ages };
 }
 
-function applyParsed(request, text) {
+function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
+  const previousDepartureDate=request.departureDate;
   text = normalizeDigits(text);
+  const plain=normalize(text);
+  if(/ارخص|اقل سعر/.test(plain))request.searchMode='cheapest';
   const weight=text.match(/(?:وزن(?:\s+إضافي|\s+اضافي)?|بدي|أريد|اريد)\s*(\d{1,3})\s*(?:كيلو|كغ|kg)/i);
   if (weight && Number(weight[1]) > 0 && Number(weight[1]) <= 100) request.baggageRequest={checkedWeightKg:Number(weight[1]),requestedByCustomer:true};
   let invalidDate = false;
   const route = parseRoute(text);
   if (route.origin) request.origin = route.origin;
   if (route.destination) request.destination = route.destination;
+  const cities=[['الشارقة','الشارقة'],['الشارقه','الشارقة'],['دمشق','دمشق'],['دبي','دبي'],['حلب','حلب'],['اللاذقية','اللاذقية']];
+  for(const [alias,city]of cities){
+    if(new RegExp('(?:من|from)\\s+'+alias).test(text))request.origin=city;
+    if(new RegExp('(?:الى|إلى|على|علي|ع)\\s*'+alias).test(text))request.destination=city;
+    if(plain===normalize(alias) && awaiting==='origin')request.origin=city;
+    if(plain===normalize(alias) && awaiting==='destination')request.destination=city;
+  }
+  if(/سوريا|سورية/.test(text))request.destinationCountry='سوريا';
 
   const dateTokens = [...text.matchAll(/\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/g)].map((m) => m[0]);
   const dates = dateTokens.map((token) => parseDate(token));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
-  const hasReturn = /ذهاب\s*(?:و|مع)\s*عود|ذهاب\s*عودة|round\s*trip|return\s*flight/i.test(text);
-  const oneWay = /ذهاب\s*فقط|one\s*way/i.test(text);
+  const hasReturn = /ذهاب\s*(?:و|مع)\s*عود|ذهاب\s*عودة|روحة\s*(?:و|مع)\s*رجعة|رايح\s*(?:و)?راجع|مع\s*رجعة|round\s*trip|return\s*flight/i.test(text);
+  const oneWay = /ذهاب\s*(?:فقط|بس)|روحة\s*(?:فقط|بس)|one\s*way/i.test(text) || plain==='ذهاب';
   if (dates.length && !invalidDate) {
     if (dates.length > 1 && dates[1] < dates[0]) invalidDate = true;
     else {
-      request.departureDate = dates[0];
+      if((awaiting==='returnDate'||/^(?:العودة|الرجعة|رجعة|عودة)/.test(text))&&dates.length===1)request.returnDate=dates[0];
+      else {request.departureDate = dates[0];request.departureRange=null;}
       if (dates.length > 1) request.returnDate = dates[1];
     }
   }
   if (hasReturn || dates.length > 1) request.tripType = 'round_trip';
+  const duration=plain.match(/(?:بعد|لمدة|مده|مدة)\s*(\d+)\s*(?:ايام|يوم|ليالي|ليلة)/);
+  let nights=duration?Number(duration[1]):/(?:بعد|لمدة|مده|مدة)\s*اسبوعين/.test(plain)?14:/(?:بعد|لمدة|مده|مدة)\s*اسبوع/.test(plain)?7:null;
+  if(awaiting==='returnDate'&&plain==='اسبوع')nights=7;
+  if(nights&&nights<=90){request.stayNights=nights;if(request.departureDate)request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),nights));}
+  if(!dates.length && !nights){
+    const natural=naturalDate(text,now);
+    if(natural.invalid)invalidDate=true;
+    if(natural.range){request.departureRange=natural.range;request.departureDate=null;}
+    else if(natural.dates.length){if(awaiting==='returnDate'||/^(?:العودة|الرجعة|رجعة|عودة)/.test(text))request.returnDate=natural.dates[0];
+      else {request.departureDate=natural.dates[0];request.departureRange=null;}}
+  }
   if (oneWay) {
     request.tripType = 'one_way';
     request.returnDate = null;
+    request.stayNights=null;
   }
-  const passengers = parsePassengerCount(text);
+  let passengers = parsePassengerCount(text);
+  if(/^(?:لحالي|انا لحالي|انا بس|شخص واحد|واحد|1)$/.test(plain)&&awaiting==='passengers')passengers={adults:1,children:0,infants:0,ages:[]};
+  if(/^(?:شخصين|نحن شخصين|اتنين|اثنين|2)$/.test(plain)&&awaiting==='passengers')passengers={adults:2,children:0,infants:0,ages:[]};
+  if(awaiting==='passengers'&&/^\d+$/.test(plain)&&Number(plain)>=1&&Number(plain)<=9)passengers={adults:Number(plain),children:0,infants:0,ages:[]};
   if (passengers) request.passengers = passengers;
+  if(request.stayNights&&request.departureDate&&request.departureDate!==previousDepartureDate&&dates.length<=1&&awaiting!=='returnDate')request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),request.stayNights));
+  if(request.departureDate&&request.returnDate&&request.returnDate<request.departureDate)invalidDate=true;
   return invalidDate;
 }
 
 function missingFields(request) {
-  return ['origin', 'destination', 'departureDate', 'tripType', ...(request.tripType === 'round_trip' ? ['returnDate'] : []), 'passengers']
-    .filter((field) => !request[field]);
+  return ['origin', 'destination', ...(!request.departureDate&&!request.departureRange?['departureDate']:[]), 'tripType',
+    ...(request.tripType === 'round_trip'&&!request.returnDate&&!request.stayNights ? ['returnDate'] : []), 'passengers'].filter(field=>!request[field]);
 }
 
 function summarize(request) {
@@ -93,14 +123,14 @@ function summarize(request) {
   if (request.passengers.infants) passengerParts.push(`${request.passengers.infants} رضيع`);
   return [
     `المسار: ${request.origin} ← ${request.destination}`,
-    `الذهاب: ${request.departureDate}`,
-    request.tripType === 'round_trip' ? `العودة: ${request.returnDate}` : 'نوع الرحلة: ذهاب فقط',
+    request.departureRange?`فترة البحث: ${request.departureRange.start} إلى ${request.departureRange.end}`:`الذهاب: ${request.departureDate}`,
+    request.tripType === 'round_trip' ? (request.stayNights?`مدة الإقامة: ${request.stayNights} أيام`:`العودة: ${request.returnDate}`) : 'نوع الرحلة: ذهاب فقط',
     `المسافرون: ${passengerParts.join('، ')}`,
     ...(request.baggageRequest ? [`الوزن المطلوب: ${request.baggageRequest.checkedWeightKg} كغ؛ يحتاج التحقق من توفره وسعره.`] : [])
   ].join('\n');
 }
 
-function handleMessage(sender, text) {
+function handleMessage(sender, text, {now=Date.now()}={}) {
   const normalized = String(text ?? '').trim();
   if (normalized === 'اختبار التسعير') return {complete:false,reply:pricingDemo()};
   if (/^(إلغاء|الغاء|إلغاء الطلب|الغاء الطلب|cancel|restart|ابدأ من جديد)$/i.test(normalized)) {
@@ -110,19 +140,25 @@ function handleMessage(sender, text) {
   if (/^(ابدأ|مرحبا|مرحباً|السلام عليكم|hi|hello|start)$/i.test(normalized) && !sessions.has(sender)) {
     return { complete: false, reply: 'أهلًا بك في خدمة طلبات الطيران من مجموعة الرمال. أرسل مسار الرحلة وتاريخ الذهاب، مثل: من الشارقة إلى دمشق، 11-11-2026، ذهاب فقط.' };
   }
-  const request = sessions.get(sender) ?? emptyRequest();
-  const invalidDate = applyParsed(request, normalized);
+  const state=sessions.get(sender) ?? {request:emptyRequest(),awaiting:null,submitted:false,at:now};
+  const request=state.request;
+  const before=JSON.stringify(request);
+  const invalidDate = applyParsed(request, normalized,{now,awaiting:state.awaiting});
   const missing = missingFields(request);
-  sessions.set(sender, request);
+  state.at=now;sessions.set(sender,state);
 
   if (invalidDate) {
     return { complete: false, reply: 'التاريخ غير صالح أو مضى، أو أن العودة تسبق الذهاب. أرسل تاريخًا مستقبليًا صحيحًا بصيغة يوم-شهر-سنة، مثل 11-11-2026.' };
   }
 
   if (missing.length) {
-    return { complete: false, reply: `حتى أتحقق من السعر، أحتاج هذه المعلومة: ${prompts[missing[0]]}` };
+    state.awaiting=missing[0];
+    const prompt=missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
+    const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، فهمت تاريخ الذهاب ${request.departureDate}. `:'';
+    return { complete: false, reply: `${understood}${prompt}` };
   }
-  sessions.delete(sender);
+  if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};
+  state.submitted=true;state.awaiting=null;
   return {
     complete: true,
     request: structuredClone(request),
