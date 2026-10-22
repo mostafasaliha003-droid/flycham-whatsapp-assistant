@@ -28,8 +28,14 @@ test('a return-date reply never overwrites the departure date',()=>{
  h('من الشارقة إلى دمشق، 25-10-2026، ذهاب وعودة، 1 بالغ');
  const r=h('30-10-2026');assert.equal(r.request.departureDate,'2026-10-25');assert.equal(r.request.returnDate,'2026-10-30');
 });
-test('cheapest month intent stays a range and asks stay length instead of inventing dates or passenger count',()=>{
+test('cheapest month round-trip intent asks stay length and preserves the date range',()=>{
  resetSessions();const h=t=>handleMessage('range-user',t,{now});
- h('من الشارقة إلى دمشق، أرخص سعر بهل شهر');h('ذهاب وعودة');h('لمدة 7 أيام');
- const r=h('1');assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.start,'2026-10-23');assert.equal(r.request.stayNights,7);
+ h('من الشارقة إلى دمشق، أرخص سعر بهل شهر، ذهاب وعودة');
+ const r=h('لمدة 7 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.start,'2026-10-23');assert.equal(r.request.stayNights,7);
+});
+
+test('cheapest-week request with a known route proceeds with a declared one-adult one-way comparison basis',()=>{
+ resetSessions();const r=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع',{now});
+ assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.end,'2026-10-25');
+ assert.equal(r.request.tripType,'one_way');assert.equal(r.request.passengers.adults,1);assert.equal(r.request.comparisonTripDefault,true);
 });

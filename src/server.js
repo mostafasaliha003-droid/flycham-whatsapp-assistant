@@ -59,10 +59,10 @@ async function handleWebhookPost(request, response) {
         try{
           expandLiveRequests(result.request);
           quoteJobs.enqueue(message.from,result.request);
-          reply='وصل طلبك. رح نفحص أسعار التواقيت المتاحة والوزن والمقعد والوجبة لدى العربية. المقارنة قد تستغرق عدة دقائق، وإذا كان الفحص جزئيًا رح نوضّح ذلك. هذا استعلام فقط دون حجز.';
+          reply=`وصل طلبك. المقارنة ${result.request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'} لشخص بالغ واحد. رح نفحص التواريخ والتواقيت ونرسل الأسعار على دفعات. المقارنة الواسعة قد تستغرق وقتًا، وأي نقص بالفحص رح نوضّحه. هذا استعلام فقط دون حجز.`;
           console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
         }catch{
-          reply='البحث الآلي التجريبي يدعم حاليًا الشارقة–دمشق ذهابًا وعودة لشخص بالغ واحد، عندما تكون البوابة متصلة. هذا الطلب يحتاج مراجعة موظف؛ لم يُؤكد أي سعر.';
+          reply='البحث الآلي التجريبي يدعم حاليًا الشارقة–دمشق لشخص بالغ واحد، عندما تكون البوابة متصلة. هذا الطلب يحتاج مراجعة موظف؛ لم يُؤكد أي سعر.';
         }
       }
       const delivery=await sendTextMessage(message.from,reply);
@@ -86,17 +86,18 @@ function createServer() {
         if(url.pathname==='/internal/quotes/claim'){
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(quoteJobs.claim()||{}));return;
         }
-        if(url.pathname==='/internal/quotes/complete'){
+        if(['/internal/quotes/complete','/internal/quotes/progress'].includes(url.pathname)){
           if(typeof data.reply!=='string'||data.reply.length>12000){response.writeHead(400).end();return;}
-          const job=quoteJobs.takeResult(data.id,data.lease);
+          const progress=url.pathname.endsWith('/progress');
+          const job=progress?quoteJobs.takeProgress(data.id,data.lease,data.seq):quoteJobs.takeResult(data.id,data.lease);
           if(!job){response.writeHead(409).end();return;}
           try{
             for(let i=0;i<data.reply.length;i+=3500)await sendTextMessage(job.recipient,data.reply.slice(i,i+3500));
-            console.log('WHATSAPP_LIVE_QUOTE_REPLY_ACCEPTED_BY_META');
+            console.log(progress?'WHATSAPP_QUOTE_PROGRESS_ACCEPTED_BY_META':'WHATSAPP_LIVE_QUOTE_REPLY_ACCEPTED_BY_META');
             response.writeHead(200,{'Content-Type':'application/json'}).end('{"accepted":true}');
           }catch{
             console.log('WHATSAPP_LIVE_QUOTE_REPLY_FAILED');response.writeHead(502).end();
-          }finally{quoteJobs.finish(data.id);}
+          }finally{if(!progress)quoteJobs.finish(data.id);}
           return;
         }
         response.writeHead(404).end();

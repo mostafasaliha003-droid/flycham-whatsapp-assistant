@@ -16,9 +16,13 @@ test('signed WhatsApp request queues privately and completes one reply using aut
   assert.equal((await post('/webhooks/whatsapp',payload,{'x-hub-signature-256':signature})).status,200);
   const claimed=await post('/internal/quotes/claim',{},auth),job=JSON.parse(claimed.body);
   assert.ok(job.id);assert.ok(!claimed.body.includes('private-recipient'));assert.equal(job.request.baggageRequest.checkedWeightKg,30);
+  const progress={id:job.id,lease:job.lease,seq:1,reply:'First verified date and timing'};
+  assert.equal((await post('/internal/quotes/progress',{...progress,lease:'wrong'},auth)).status,409);
+  assert.equal((await post('/internal/quotes/progress',progress,auth)).status,200);
+  assert.equal((await post('/internal/quotes/progress',progress,auth)).status,409);
   const complete={id:job.id,lease:job.lease,reply:'Verified test result'};
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,200);
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,409);
-  assert.equal(out.length,2);assert.equal(out[1].to,'private-recipient');
+  assert.equal(out.length,3);assert.equal(out[2].to,'private-recipient');
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);}
 });

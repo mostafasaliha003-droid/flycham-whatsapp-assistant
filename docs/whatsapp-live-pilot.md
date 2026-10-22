@@ -5,7 +5,7 @@ browser worker polls a bearer-protected endpoint, claims one lease, runs it thro
 PortalSession's serialized queue, and posts one result. The web service retains
 the WhatsApp recipient; the browser worker receives only trip details.
 
-Supported pilot: one adult, no children/infants, explicit round-trip dates,
+Supported pilot: one adult, no children/infants, one-way or round-trip dates,
 SHJ–DAM or DAM–SHJ. No customer passenger data is entered in the portal. The
 operator-authorized synthetic passenger is used only to inspect ancillaries.
 Unsupported or unconfirmed requests receive a review-needed response.
@@ -31,7 +31,7 @@ Worker: `AIR_ARABIA_QUOTE_QUEUE_URL` is the web service origin followed by
 
 ## Operational limits
 
-This is a bounded in-memory pilot queue (100 jobs, ten-minute expiry), not durable
+This is a bounded in-memory pilot queue (100 jobs, sixty-minute expiry), not durable
 production infrastructure. A web-process restart loses pending jobs. Claims and
 completion leases are consumed once; ambiguous send failures are not retried to
 avoid duplicate customer messages. A persistent job store, delivery outbox and
@@ -48,8 +48,7 @@ Arabic relative dates use Asia/Dubai calendar days. Next weekday means the next
 occurrence strictly after today. Calendar weeks start Monday; the bot states
 explicit range boundaries. This/next month and week remain ranges rather than
 being replaced with an arbitrary departure date. Round-trip ranges require an
-explicit stay duration or return date. Missing origin, destination city, trip
-type and passenger count are requested individually without assuming them.
+explicit stay duration or return date. Missing origin and destination city are requested. Flexible-date comparisons default to one adult and one-way only when not previously specified; the acknowledgment states this basis. Explicit round trips still require return timing.
 
 Flight clocks are read from the supplier's actual outbound/inbound jqGrid
 columns. A different timing is selected through the ordinary flight radio
@@ -57,10 +56,8 @@ controls and its fare reference must match the requested selected flights
 before inspecting ancillaries. Each round-trip pair is priced independently.
 No price is copied from the default flight to other departure times.
 
-Comparisons are bounded to eight minutes and twelve successfully priced
+Comparisons are bounded to forty-five minutes and eighty successfully priced
 options per customer job. Week/month searches can therefore be partial. Any
 failure or exhausted budget is explicitly disclosed; the bot never claims
 to have found the minimum for the whole month if coverage is incomplete.
-For cheapest/range intents it shows up to three cheapest verified options;
-for an exact date it shows all verified timing pairs within the stated limit.
-The adapter still supports the pilot route, round trips and one adult only.
+Every successfully priced date/timing is sent as a progress message. The final summary highlights three cheapest results already sent. Incomplete coverage is disclosed. Progress uses a sequential, lease-protected at-most-once endpoint. The adapter supports the pilot route and one adult only. One-way search clears the optional return field and verifies that the supplier search has no return date.
