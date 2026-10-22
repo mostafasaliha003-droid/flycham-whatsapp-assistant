@@ -21,14 +21,21 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
       }
       if (state?.status === 'AMBIGUOUS') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
       if (state?.status === 'READY') {
-        const selected = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'click' });
-        if (selected?.status !== 'CLICKED') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+        const handle = await frame.evaluateHandle(airportSuggestionAction, { inputId, code, operation: 'resolve' });
+        try {
+          const element = handle.asElement();
+          if (!element) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+          await element.click({ timeout: 15000 });
+          report('PORTAL_AIRPORT_POINTER_CLICK_COMPLETED');
+        } finally { await handle.dispose(); }
         const confirmDeadline = now() + Math.min(lookupMs, 5000);
         do {
-          if (await frame.locator(`#${hiddenId}`).inputValue() === code) return;
+          if ((await frame.locator(`#${hiddenId}`).inputValue()).trim().toUpperCase() === code) return;
           if (now() >= confirmDeadline) break;
           await pause(100);
         } while (now() < confirmDeadline);
+        const actual = (await frame.locator(`#${hiddenId}`).inputValue()).trim();
+        report(!actual ? 'PORTAL_AIRPORT_CODE_EMPTY' : /^[A-Za-z]{3}$/.test(actual) ? 'PORTAL_AIRPORT_CODE_OTHER_AIRPORT' : 'PORTAL_AIRPORT_CODE_OTHER_FORMAT');
         throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
       }
       if (state?.status && !['NONE'].includes(state.status)) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
@@ -123,7 +130,7 @@ async function prepareSearch(frame, { origin, destination, departureDate, report
   report('PORTAL_PROBE_STAGE_VALIDATE_INPUTS');
   const validation = await frame.evaluate(({ origin, destination, departureDate, returnDate }) => {
     const value = id => document.getElementById(id)?.value;
-    return value('fromAirport') === origin && value('toAirport') === destination
+    return (value('fromAirport') || '').trim().toUpperCase() === origin && (value('toAirport') || '').trim().toUpperCase() === destination
       && value('departureDate') === departureDate && value('adultCount') === '1'
       && value('childCount') === '0' && value('infantCount') === '0'
       && value('selectedCurrency') === 'AED' && (!returnDate || value('returnDate') === returnDate);

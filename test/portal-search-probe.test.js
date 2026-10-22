@@ -16,6 +16,7 @@ function fixture({ wrongAirport = false, missingOneWay = false, missingOption = 
       if (args.pattern) { optionReads++; return missingOption ? null : args.id === 'selectedCurrency' ? 'AED' : 'observed-option'; }
       return true;
     },
+    evaluateHandle: async () => ({ asElement: () => ({ click: async () => calls.push(['pointer-click', 'suggestion']) }), dispose: async () => {} }),
     locator: selector => {
       const field = {
         fill: async value => { values[selector] = value; calls.push(['fill', selector]); },
@@ -127,4 +128,20 @@ test('preserves a confirmed default return mode and enters a date seven days lat
   assert.equal(result.tripKind, 'return');
   assert.equal(f.values['#returnDate'], '04/01/2027');
   assert.ok(!f.calls.some(([operation]) => operation === 'check'));
+});
+
+
+test('airport confirmation follows a real pointer click and disposes its element handle', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  let hidden = '', disposed = 0, pointerClicks = 0;
+  const frame = {
+    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, inputValue: async () => hidden }),
+    evaluate: async () => ({ status: 'READY' }),
+    evaluateHandle: async (fn, args) => {
+      assert.equal(args.operation, 'resolve');
+      return { asElement: () => ({ click: async () => { pointerClicks++; hidden = 'SHJ'; } }), dispose: async () => { disposed++; } };
+    },
+  };
+  await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
+  assert.equal(pointerClicks, 1); assert.equal(disposed, 1);
 });

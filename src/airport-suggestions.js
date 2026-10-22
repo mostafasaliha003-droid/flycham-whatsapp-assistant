@@ -33,9 +33,10 @@ function airportSuggestionAction({ inputId, code, operation = 'inspect' }) {
   const candidates = Array.from(grouped).filter(element => !Array.from(element.querySelectorAll(selector)).some(child => grouped.has(child)));
   if (candidates.length !== 1) return { status: candidates.length ? 'AMBIGUOUS' : 'NONE', count: Math.min(candidates.length, 20) };
   if (operation === 'inspect') return { status: 'READY' };
-  if (operation !== 'click') return { status: 'INVALID' };
-  candidates[0].click();
-  return { status: 'CLICKED' };
+  // Return the observed DOM element for a real Playwright pointer click.
+  // HTMLElement.click() alone omits mouse-down/up handlers used by legacy menus.
+  if (operation !== 'resolve') return { status: 'INVALID' };
+  return candidates[0];
 }
 
 module.exports = { airportSuggestionAction };

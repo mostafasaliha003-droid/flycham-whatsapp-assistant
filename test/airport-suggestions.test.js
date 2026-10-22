@@ -21,8 +21,8 @@ test('accepts supplier airport-name labels without depending on a CSS widget', (
     const f = fixture([text]);
     assert.equal(f.call({ inputId: 'fAirport', code: 'SHJ' }).status, 'READY');
     assert.equal(f.clicks(), 0);
-    assert.equal(f.call({ inputId: 'fAirport', code: 'SHJ', operation: 'click' }).status, 'CLICKED');
-    assert.equal(f.clicks(), 1);
+    assert.equal(f.call({ inputId: 'fAirport', code: 'SHJ', operation: 'resolve' }).textContent, text);
+    assert.equal(f.clicks(), 0);
   }
 });
 
@@ -35,7 +35,7 @@ test('rejects unrelated, ambiguous, hidden and foreign suggestions without click
     [['Sharjah'], { foreign: true }],
   ]) {
     const f = fixture(texts, options);
-    assert.notEqual(f.call({ inputId: 'fAirport', code: 'SHJ', operation: 'click' }).status, 'CLICKED');
+    assert.ok(f.call({ inputId: 'fAirport', code: 'SHJ', operation: 'resolve' }).status);
     assert.equal(f.clicks(), 0);
   }
 });
@@ -49,11 +49,11 @@ test('treats city and IATA spans inside one list option as one suggestion', () =
   option.closest = () => option;
   option.querySelectorAll = () => [city, code];
   const result = vm.runInNewContext(`(${airportSuggestionAction.toString()})(args)`, {
-    args: { inputId: 'fAirport', code: 'SHJ', operation: 'click' },
+    args: { inputId: 'fAirport', code: 'SHJ', operation: 'resolve' },
     location: { origin: 'https://agents.airarabia.com' },
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     document: { querySelectorAll: selector => selector.startsWith('[id=') ? [base] : [option, city, code] },
   });
-  assert.equal(result.status, 'CLICKED');
-  assert.equal(clicks, 1);
+  assert.equal(result, option);
+  assert.equal(clicks, 0);
 });
