@@ -378,7 +378,22 @@ class AirArabiaPortalAdapter {
           const trips = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]')).map(radio => ({ value: staticName(radio.value), labels: Array.from(radio.labels || []).map(label => label.textContent.replace(/\s+/g,' ').trim()).filter(label => /^(?:one\s*way|round\s*trip|return|multi[ -]?(?:city|destination))$/i.test(label)) }));
           const resultContainers = Array.from(document.querySelectorAll('[id]')).filter(element => visible(element) && /flight|fare|avail|outbound|inbound|segment|searchResult/i.test(element.id)).map(element => ({ tag: element.tagName, id: staticName(element.id), children: element.children.length })).filter(element => element.id).slice(0,40);
           const flightRows = Array.from(document.querySelectorAll('tr')).filter(row => visible(row) && /\bG9[ -]?\d{1,4}\b/i.test(row.textContent || '')).map(row => ({ id: staticName(row.id), cells: row.cells.length, routeCodesPresent: /\bSHJ\b/.test(row.textContent || '') && /\bDAM\b/.test(row.textContent || '') })).slice(0,20);
-          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, frameCount: document.querySelectorAll('frame,iframe').length };
+          // Read only short visible result values from exact supplier IDs.
+          // This excludes passenger/account content and never clicks a fare or booking control.
+          const resultValues = [];
+          const resultIds = new Set(['outboundFlightNumber','inboundFlightNumber','outboundColumnBundle','inboundColumnBundle','outboundColumnBundlePrice','inboundColumnBundlePrice']);
+          for (const el of document.querySelectorAll('[id]')) {
+            if (!resultIds.has(el.id) || !visible(el)) continue;
+            const value = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!value || value.length > 40) continue;
+            const flight = /^(?:G9|3O|[A-Z0-9]{2})[ -]?\d{1,4}$/i.test(value);
+            const bundle = /^(?:[A-Za-z0-9][A-Za-z0-9 _-]{0,29})$/.test(value);
+            const price = /^(?:(?:AED|USD|EUR|GBP|SAR)\s*)?[\d,]+(?:\.\d{1,2})?(?:\s*(?:AED|USD|EUR|GBP|SAR))?$/i.test(value) && /\d/.test(value);
+            if ((/FlightNumber$/i.test(el.id) && flight) || (/ColumnBundlePrice$/i.test(el.id) && price) || (/ColumnBundle$/i.test(el.id) && bundle)) {
+              resultValues.push({ id: el.id, value });
+            }
+          }
+          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, resultValues: resultValues.slice(0,60), frameCount: document.querySelectorAll('frame,iframe').length };
         });
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
