@@ -393,7 +393,18 @@ class AirArabiaPortalAdapter {
               resultValues.push({ id: el.id, value });
             }
           }
-          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, resultValues: resultValues.slice(0,60), frameCount: document.querySelectorAll('frame,iframe').length };
+          // Public static script paths let an operator inspect the booking
+          // handler without clicking it. Strip all queries/matrix parameters;
+          // never return inline scripts, request headers or session URLs.
+          const scriptResources = Array.from(document.scripts || []).flatMap(script => {
+            if (!script.src) return [];
+            try {
+              const url = new URL(script.src, location.href);
+              if (url.origin !== location.origin || !/^\/[A-Za-z0-9_./-]+\.js$/i.test(url.pathname)) return [];
+              return [url.pathname];
+            } catch { return []; }
+          });
+          return { controls: controls.slice(0,30), fields: fields.slice(0,100), choices, trips, resultContainers, flightRows, resultValues: resultValues.slice(0,60), scriptResources: [...new Set(scriptResources)].slice(0,80), frameCount: document.querySelectorAll('frame,iframe').length };
         });
         this.report(`PORTAL_SEARCH_UI_${JSON.stringify({ resource, ...metadata })}`);
       } catch { this.report('PORTAL_SEARCH_UI_FRAME_UNAVAILABLE'); }
