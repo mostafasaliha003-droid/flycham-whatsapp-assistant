@@ -10,3 +10,7 @@ test('unknown fields, invented monetary replies and invalid dates are rejected',
 test('missing or refused model outputs never become a successful extraction',async()=>{
  await assert.rejects(understand('x',{}, {env:{OPENAI_API_KEY:'test'},fetchImpl:async()=>({ok:true,json:async()=>({status:'incomplete',output:[]})})}),/NLU_INCOMPLETE/);
 });
+
+test('API failure logs contain only HTTP status and safe error code, never the provider message',async()=>{
+ await assert.rejects(understand('x',{}, {env:{OPENAI_API_KEY:'private'},fetchImpl:async()=>({ok:false,status:429,json:async()=>({error:{code:'insufficient_quota',message:'secret-provider-detail'}})})}),/^Error: NLU_HTTP_429_INSUFFICIENT_QUOTA$/);
+});

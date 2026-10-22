@@ -49,3 +49,27 @@ test('state survives encrypted snapshot reload without plaintext passenger or co
 test('per-customer batching combines bursts and serializes processing',async()=>{
  const {MessageBatcher}=require('../src/message-batcher');const calls=[];const b=new MessageBatcher(async(id,m)=>{calls.push([id,m.map(x=>x.text).join(' ')]);},{delay:5});await Promise.all([b.push('a',{text:'من الشارقة'}),b.push('a',{text:'على الشام'})]);assert.deepEqual(calls,[['a','من الشارقة على الشام']]);
 });
+
+function nluDecision(fields,intent='request') {
+ const {schema}=require('../src/assistant-nlu');
+ return {intent,fields:{...Object.fromEntries(Object.keys(schema.properties.fields.properties).map(k=>[k,['ages','excludedDates'].includes(k)?[]:null])),...fields},question:null,option:null};
+}
+test('structured extraction preserves original relative dates when model only supplies route and count',async()=>{
+ const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>nluDecision({origin:'الشارقة',destination:'دمشق',adults:1,weightKg:30,tripType:'one_way'})});
+ const r=await e.handle('nlu-dates','من شارق للشام الأسبوع الجاي، لحالي، ذهاب فقط، ثلاثين كيلو',{now});
+ assert.equal(r.complete,true);assert.ok(r.request.departureRange);assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.baggageRequest.requestedByCustomer,true);assert.equal(e.state('nlu-dates').lastQuestion,null);
+});
+test('greeting classification cannot discard a travel request containing structured facts',async()=>{
+ const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>nluDecision({origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',adults:1,tripType:'one_way'},'greeting')});
+ const r=await e.handle('nlu-greet','اهلين بدي سافر',{now});assert.equal(r.complete,true);assert.equal(r.request.destination,'دمشق');
+});
+test('structured baggage amendment preserves route and the whole date range',async()=>{
+ let first=true;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>first?(first=false,nluDecision({origin:'الشارقة',destination:'دمشق',rangeStart:'2026-10-26',rangeEnd:'2026-11-01',adults:1,tripType:'one_way'})):nluDecision({weightKg:30},'change')});
+ await e.handle('nlu-weight','بدي سافر الأسبوع الجاي لحالي',{now});e.jobState('nlu-weight','searching');
+ const r=await e.handle('nlu-weight','خلي الشنطة ثلاثين',{now});assert.equal(r.complete,true);assert.equal(r.request.departureRange.end,'2026-11-01');assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.baggageRequest.checkedWeightKg,30);
+});
+test('structured child ages update the existing party rather than repeating the age question',async()=>{
+ let first=true;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>first?(first=false,nluDecision({origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',adults:1,children:1,tripType:'one_way'})):nluDecision({ages:[7]},'change')});
+ assert.match((await e.handle('nlu-child','معي ابني',{now})).reply,/أعمار/);
+ const r=await e.handle('nlu-child','عمره سبعة',{now});assert.doesNotMatch(r.reply,/كم أعمار/);assert.deepEqual(e.state('nlu-child').base.request.passengers.ages,[7]);
+});

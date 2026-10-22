@@ -16,7 +16,7 @@ class AssistantEngine{
   const before=this.locks.get(id)||Promise.resolve();const work=before.catch(()=>{}).then(()=>this.process(id,text,{now,quotedMessageId}));this.locks.set(id,work);try{return await work;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
  }
  async process(id,text,{now,quotedMessageId}){
-  const s=this.state(id);if(quotedMessageId){const quoted=s.offers.find(o=>o.messageId===quotedMessageId);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:quoted.request,submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}legacy.importSession(id,s.base);const t=normalize(clean(text)),say=reply=>{this.save(id,s);return{complete:false,reply};};
+  const s=this.state(id);if(quotedMessageId){const quoted=s.offers.find(o=>o.messageId===quotedMessageId);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:quoted.request,submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}legacy.importSession(id,s.base);const t=normalize(clean(text)),say=reply=>{s.lastQuestion=/[؟?]/.test(reply)?reply:null;s.history.push({role:'assistant',text:reply});s.history=s.history.slice(-16);this.save(id,s);return{complete:false,reply};};
   if(s.humanOwned)return say('المحادثة الآن بمتابعة موظف الحجوزات.');
   const hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
@@ -43,9 +43,10 @@ class AssistantEngine{
   }
   if(['اي','نعم','تمام'].includes(t)&&s.lastQuestion?.includes('أو'))return say('أكيد، أي خيار من المذكورين بتفضّل؟');
   let decision=null;
-  try{decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-8),selectedOffer:s.offers.find(o=>o.id===s.selected),status:s.status});}catch{console.log('ASSISTANT_NLU_UNAVAILABLE');}
+  try{decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-8),selectedOffer:s.offers.find(o=>o.id===s.selected),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
   s.history.push({role:'user',text:clean(text)});s.history=s.history.slice(-16);
-  if(decision&&['status','thanks','greeting','goodbye','negotiate','booking','cancel'].includes(decision.intent)){const phrase={status:'شو صار',thanks:'شكرا',greeting:'مرحبا',goodbye:'برجعلكن',negotiate:'زبطونا بالسعر',booking:'كيف بثبت',cancel:'وقف البحث'}[decision.intent];this.save(id,s);return this.process(id,phrase,{now});}
+  const hasDecisionFields=decision&&Object.values(decision.fields).some(v=>Array.isArray(v)?v.length:v!==null);
+  if(decision&&!hasDecisionFields&&['status','thanks','greeting','goodbye','negotiate','booking','cancel'].includes(decision.intent)){const phrase={status:'شو صار',thanks:'شكرا',greeting:'مرحبا',goodbye:'برجعلكن',negotiate:'زبطونا بالسعر',booking:'كيف بثبت',cancel:'وقف البحث'}[decision.intent];this.save(id,s);return this.process(id,phrase,{now});}
   if(decision?.intent==='clarify')return say(decision.question||'قصدك نعدّل الطلب، أو نعمل مقارنة إضافية بدون تغيير اختيارك؟');
   const hypothetical=decision?.intent==='compare'||(/لو |قديش.*(?:بيصير|بصير|بوفر|الفرق)|بس قلي|بس قولي|بكم/.test(t)&&Boolean(s.base?.submitted));
   if(/كيلو|كغ/.test(t)&&/معنا|سوا|مجموع/.test(t)&&!/(?:لكل|للشخص|اجمالي|مجموع)/.test(t))return say('الوزن المطلوب لكل شخص، أو مجموع الوزن للمسافرين سوا؟');
@@ -53,30 +54,15 @@ class AssistantEngine{
   if(/مو هيك|ما فهمت|ما قلت|بدي اخف|غيره$|مو .*|لا تغير/.test(t)&&!decision)return say('خلينا نضبطها بدون تغيير التفاصيل الثانية: قصدك نعدّل الوزن، أو الموعد، أو نبحث عن سعر أقل؟');
   if(/الا |باستثناء|لازم.*(?:اوصل|وصول)|بدون ترانزيت|مباشر حصرا|قطعتين|قطعه|قطعة/.test(t)&&!decision)return say('فهمت إن عندك شرط إضافي على الرحلة. حتى ما نعرض خيارًا غير مناسب، حدد الشرط بدقة؛ التحقق الآلي من بعض شروط الوصول وعدد القطع غير مكتمل حاليًا.');
   const previous=legacy.exportSession(id);
-  let interpreted=clean(text);
-  if(decision){const f=decision.fields,parts=[];
-   if(f.origin)parts.push('من '+f.origin);if(f.destination)parts.push('إلى '+f.destination);
-   for(const k of ['departureDate','returnDate'])if(f[k])parts.push((k==='returnDate'?'العودة ':'')+dateText(f[k]));
-   if(f.tripType)parts.push(f.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة');
-   if(f.adults!==null)parts.push(`${f.adults} بالغين`);if(f.children!==null)parts.push(`أطفال ${f.children}`);if(f.infants!==null)parts.push(`رضع ${f.infants}`);for(const age of f.ages)parts.push('عمر '+age);
-   if(f.weightKg!==null)parts.push('بدي '+f.weightKg+' كيلو');
-   // Relative dates still go through the local date parser. Canonical fields override only stated facts.
-   interpreted=parts.length?parts.join('، '):interpreted;
-  }
-  let result=legacy.handleMessage(id,interpreted,{now});let base=legacy.exportSession(id);
-  if(decision&&base){const f=decision.fields;if(f.rangeStart&&f.rangeEnd){base.request.departureRange={start:f.rangeStart,end:f.rangeEnd};base.request.departureDate=null;}
-   if(f.pieces||f.weightScope){base.request.baggageRequest={...base.request.baggageRequest,...(f.pieces?{pieces:f.pieces}:{}),...(f.weightScope?{scope:f.weightScope}:{})};}
-   if(f.excludedDates.length||f.latestArrival)base.request.constraints={excludedDates:f.excludedDates,latestArrival:f.latestArrival};
-   legacy.importSession(id,base);
-   if(f.rangeStart&&f.rangeEnd){base.submitted=false;legacy.importSession(id,base);result=legacy.handleMessage(id,'تابع نفس التفاصيل',{now});}
-  }
+  let result=legacy.handleMessage(id,clean(text),{now,patch:decision?.fields});let base;
   base=legacy.exportSession(id);
   if(base?.request?.passengers){const p=base.request.passengers;if(p.children+p.infants>(p.ages?.length||0)){result={complete:false,reply:'كم أعمار الأطفال والرضّع وقت السفر؟ اذكر عمر كل واحد حتى ما نحسب سعرًا لفئة غير صحيحة.'};}}
   if(hypothetical&&result.complete){result.comparison=true;s.comparison={request:result.request,base:previous};legacy.importSession(id,previous);}
   else if(result.complete){if(previous)s.previous.push(previous);s.previous=s.previous.slice(-5);s.offers=[];s.selected=null;s.comparison=null;}
   if(result.complete){const issue=capabilityIssue(result.request);if(issue){s.status='unsupported';result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص.':issue==='route'?'فهمت المسار. البحث المتصل والمتَحقق منه حاليًا بين الشارقة ودمشق على العربية؛ هذا المسار لم يُربط بعد، وفلاي شام نضيفها بعد تجهيز ربطها.':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
   if(!result.complete&&s.status==='searching'&&/طلبك السابق مسجل/.test(result.reply))result.reply='طلبك قيد البحث حاليًا. إذا عندك تعديل بالوزن أو الموعد ابعته، وإذا عم تتابع النتيجة فأول ما تتأكد منرسلها.';
-  if(!result.complete)s.lastQuestion=result.reply;
+  s.lastQuestion=result.complete?null:result.reply;
+  s.history.push({role:'assistant',text:result.reply});s.history=s.history.slice(-16);
   this.save(id,s);return result;
  }
  jobState(id,status){const s=this.state(id);s.status=status;this.store.set(id,s);}

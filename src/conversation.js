@@ -157,7 +157,25 @@ function summarize(request) {
   ].join('\n');
 }
 
-function handleMessage(sender, text, {now=Date.now()}={}) {
+function applyDecisionPatch(request, patch, now) {
+  if (!patch) return false;
+  for (const k of ['origin','destination','tripType']) if (patch[k]) request[k]=patch[k];
+  if (patch.departureDate) {request.departureDate=patch.departureDate;request.departureRange=null;}
+  if (patch.rangeStart && patch.rangeEnd) {request.departureRange={start:patch.rangeStart,end:patch.rangeEnd,kind:'customer_range'};request.departureDate=null;}
+  if (patch.returnDate) request.returnDate=patch.returnDate;
+  if (request.tripType==='one_way') {request.returnDate=null;request.stayNights=null;}
+  if (['adults','children','infants'].some(k=>patch[k]!=null)||patch.ages?.length) {
+    const party={adults:null,children:0,infants:0,ages:[],...request.passengers};
+    for(const k of ['adults','children','infants'])if(patch[k]!=null)party[k]=patch[k];
+    if(patch.ages?.length)party.ages=patch.ages;
+    request.passengers=party;
+  }
+  if(patch.weightKg!=null||patch.pieces!=null||patch.weightScope)request.baggageRequest={...request.baggageRequest,...(patch.weightKg!=null?{checkedWeightKg:patch.weightKg,requestedByCustomer:true}:{}),...(patch.pieces!=null?{pieces:patch.pieces}:{}),...(patch.weightScope?{scope:patch.weightScope}:{})};
+  if(patch.excludedDates?.length||patch.latestArrival)request.constraints={...request.constraints,...(patch.excludedDates?.length?{excludedDates:patch.excludedDates}:{}),...(patch.latestArrival?{latestArrival:patch.latestArrival}:{})};
+  const today=iso(dubaiDay(now));
+  return Boolean(request.departureDate&&request.departureDate<today||request.departureRange&&(request.departureRange.start<today||request.departureRange.end<request.departureRange.start)||request.returnDate&&request.departureDate&&request.returnDate<request.departureDate);
+}
+function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   const normalized = String(text ?? '').trim();
   if (normalized === 'اختبار التسعير') return {complete:false,reply:pricingDemo()};
   if (/^(إلغاء|الغاء|إلغاء الطلب|الغاء الطلب|cancel|restart|ابدأ من جديد)$/i.test(normalized)) {
@@ -184,7 +202,8 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
     }
   }
 
-  const invalidDate = applyParsed(request, normalized,{now,awaiting:state.awaiting});
+  const parsedInvalid = applyParsed(request, normalized,{now,awaiting:state.awaiting});
+  const invalidDate = applyDecisionPatch(request,patch,now)||parsedInvalid;
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
   if(!invalidDate)state.request=request;
