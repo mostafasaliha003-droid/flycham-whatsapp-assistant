@@ -1,4 +1,15 @@
 'use strict';
+async function waitForFlightResults(frame,oneWay=false){
+ await frame.waitForFunction(oneWay=>{
+  if(location.origin!=='https://agents.airarabia.com')return false;
+  if(typeof jQuery==='undefined'||jQuery.active!==0||typeof UI_tabSearchFlights==='undefined'||!UI_tabSearchFlights.objResSrchParams)return false;
+  const out=typeof jsonOutFlts==='undefined'?null:jsonOutFlts;
+  const back=typeof jsonRetFlts==='undefined'?null:jsonRetFlts;
+  return Array.isArray(out)&&(oneWay||Array.isArray(back));
+ },oneWay,{timeout:45000});
+ const counts=await frame.evaluate(oneWay=>({out:jsonOutFlts.length,back:oneWay?null:jsonRetFlts.length}),oneWay);
+ if(!counts.out||(!oneWay&&!counts.back))throw Error('NO_FLIGHTS_CONFIRMED');
+}
 async function readFlightTimes(frame,oneWay=false){
  return frame.evaluate(oneWay=>{
   if(location.origin!=='https://agents.airarabia.com')throw Error('UNTRUSTED');
@@ -26,7 +37,12 @@ async function selectFlightTimes(frame,choice){
   const wanted=choice[leg];if(!wanted)continue;
   const found=current[leg].find(f=>f.row===wanted.row);
   if(!found || ['flight','departure','arrival'].some(k=>found[k]!==wanted[k]))throw Error('FLIGHT_OPTION_CHANGED');
-  if(found.selected)continue;
+  if(found.selected){
+    // A selected radio can still require the supplier's fare confirmation.
+    const confirm=frame.locator('#'+(leg==='out'?'outbound':'inbound')+'ConfirmSelectionAnchor:visible');
+    if(await confirm.count()===1)await confirm.click({timeout:15000});
+    continue;
+  }
   const visible=frame.locator('input[name="'+name+'"][value="'+wanted.row+'"]:visible');
   if(await visible.count()===0){
     const summary=leg==='out'?'smrySlctionOutgoing':'smrySlctionReturn';
@@ -51,4 +67,4 @@ async function selectFlightTimes(frame,choice){
  return choice;
 }
 function flightPairs(times){return times.out.flatMap(out=>times.back.length?times.back.map(back=>({out,back})):[{out,back:null}]);}
-module.exports={readFlightTimes,selectFlightTimes,flightPairs};
+module.exports={waitForFlightResults,readFlightTimes,selectFlightTimes,flightPairs};

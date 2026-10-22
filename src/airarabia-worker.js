@@ -9,7 +9,7 @@ const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
 const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
 const { validateLiveRequest, quoteFromScans, expandLiveRequests, formatQuoteOptions } = require('./live-quote');
-const { readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
+const { waitForFlightResults, readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
 const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 
@@ -489,7 +489,7 @@ class AirArabiaPortalAdapter {
       let first;
       attempted++;
       try{first=await this.runCustomerQuoteVariant(dated);results.push(first);}
-      catch{complete=false;this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
+      catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
       if(onProgress)await onProgress('نتيجة متاحة الآن، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[first],{complete:false,attempted:1,totalDates:1}));
       for(const choice of flightPairs(first.choices)){
         if(choice.out.row===first.timing.out.row&&choice.back?.row===first.timing.back?.row)continue;
@@ -497,7 +497,7 @@ class AirArabiaPortalAdapter {
         attempted++;
         let result;
         try{result=await this.runCustomerQuoteVariant(dated,choice);results.push(result);}
-        catch{complete=false;this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');}
+        catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');}
         if(result&&onProgress)await onProgress('نتيجة إضافية، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[result],{complete:false,attempted:1,totalDates:1}));
       }
     }
@@ -514,13 +514,16 @@ class AirArabiaPortalAdapter {
     const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,report:this.report});
     const oneWay=request.tripType==='one_way';
     if(prepared.tripKind!==(oneWay?'one-way':'return'))throw Error('TRIP_NOT_CONFIRMED');
-    await this.searchFrame.locator('button#btnBook:visible').first().waitFor({state:'visible',timeout:45000});
+    this.report('PORTAL_QUOTE_WAITING_FOR_FLIGHT_RESULTS');
+    await waitForFlightResults(this.searchFrame,oneWay);
+    this.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');
     if(oneWay&&!await this.searchFrame.evaluate(()=>UI_tabSearchFlights.strRetDate===''))throw Error('ONE_WAY_NOT_CONFIRMED');
     const choices=await readFlightTimes(this.searchFrame,oneWay);
     const timing=choice?await selectFlightTimes(this.searchFrame,choice):{
-      out:choices.out.find(f=>f.selected),back:choices.back.find(f=>f.selected)};
+      out:choices.out.find(f=>f.selected)||choices.out[0],back:choices.back.find(f=>f.selected)||choices.back[0]};
     if(!timing.out||(!oneWay&&!timing.back))throw Error('FLIGHT_TIMES_UNCONFIRMED');
     if(!choice)await selectFlightTimes(this.searchFrame,timing);
+    this.report('PORTAL_QUOTE_TIMING_FARE_CONFIRMED');
     const safe=await this.searchFrame.evaluate(()=>typeof DATA_ResPro!=='undefined' && DATA_ResPro.initialParams?.seatBlock===false);
     if(!safe)throw Error('TEMPORARY_BLOCK_NOT_DISABLED');
     await openPassengerOptions(this.searchFrame,this.page,this.report);
