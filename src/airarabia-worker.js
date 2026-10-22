@@ -491,7 +491,7 @@ class AirArabiaPortalAdapter {
       attempted++;
       try{first=await this.runCustomerQuoteVariant(dated);results.push(first);}
       catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');continue;}
-      if(onProgress)await onProgress('نتيجة متاحة الآن، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[first],{complete:false,attempted:1,totalDates:1}));
+      if(onProgress)await onProgress('نتيجة متاحة الآن، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[first],{complete:false,attempted:1,totalDates:1,inProgress:true}));
       for(const choice of flightPairs(first.choices)){
         await assertCurrent();
         if(choice.out.row===first.timing.out.row&&choice.back?.row===first.timing.back?.row)continue;
@@ -500,7 +500,7 @@ class AirArabiaPortalAdapter {
         let result;
         try{result=await this.runCustomerQuoteVariant(dated,choice);results.push(result);}
         catch(error){complete=false;this.report(safeFailureCode(error,'PROBE'));this.report('PORTAL_TIMING_OPTION_UNCONFIRMED');}
-        if(result&&onProgress)await onProgress('نتيجة إضافية، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[result],{complete:false,attempted:1,totalDates:1}));
+        if(result&&onProgress)await onProgress('نتيجة إضافية، والمقارنة مستمرة:\n'+formatQuoteOptions(dated,[result],{complete:false,attempted:1,totalDates:1,inProgress:true}));
       }
     }
     this.report(complete?'PORTAL_TIMING_COMPARISON_COMPLETE':'PORTAL_TIMING_COMPARISON_PARTIAL');
