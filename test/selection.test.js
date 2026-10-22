@@ -92,3 +92,27 @@ test('a specifically requested seat carries AED 10 even when its supplier cost i
   q.seatRequests = [{ passengerIndex: 1, segmentId: 'out', requestedByCustomer: true, seatNumber: '12B' }];
   assert.equal(buildAirArabiaQuote(q, {}).sellingTotal, '730.01');
 });
+
+test('requested extra weight adds AED 10 and never repeats supplier costs included in portal total', () => {
+  for (const included of [false,true]) {
+    const q=fixture();
+    q.baggageRequests=[{passengerIndex:1,segmentId:'out',requestedByCustomer:true,checkedWeightKg:30}];
+    q.catalogs[2].options[0].includedInBase=included;
+    q.baseTotal=included ? '775.01' : '695.01';
+    q.finalPortalTotal='775.01';
+    const p=buildAirArabiaQuote(q,{});
+    assert.equal(p.sellingTotal,'810.01');
+    assert.equal(p.baggageMargin,'10.00');
+    assert.equal(p.baggageCostAdded,included ? '0.00' : '80.00');
+  }
+});
+test('extra baggage markup is once per passenger on return itinerary; cheapest default has no markup', () => {
+  const q=fixture(); q.segmentIds.push('return');
+  q.catalogs=q.catalogs.flatMap(c=>[c,structuredClone({...c,segmentId:'return'})]);
+  q.baggageRequests=q.segmentIds.map(segmentId=>({passengerIndex:1,segmentId,requestedByCustomer:true,checkedWeightKg:30}));
+  q.finalPortalTotal='855.01';
+  assert.equal(buildAirArabiaQuote(q,{}).sellingTotal,'890.01');
+  assert.equal(buildAirArabiaQuote(fixture(),{}).baggageMargin,'0.00');
+  q.baggageRequests[0].checkedWeightKg=50;
+  assert.throws(()=>buildAirArabiaQuote(q,{}));
+});

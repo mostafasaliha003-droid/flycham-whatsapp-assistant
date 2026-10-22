@@ -1,6 +1,7 @@
 'use strict';
 
 const sessions = new Map();
+const { pricingDemo } = require('./pricing-demo');
 
 const prompts = {
   origin: 'من أي مدينة أو مطار؟',
@@ -11,11 +12,15 @@ const prompts = {
   passengers: 'كم عدد المسافرين؟ اذكر البالغين والأطفال والرضع، وأعمار الأطفال والرضع.'
 };
 
+const digitMap = { '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9', '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4', '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9' };
+function normalizeDigits(text) { return String(text).replace(/[٠-٩۰-۹]/g, (digit) => digitMap[digit]); }
+
 function emptyRequest() {
-  return { origin: null, destination: null, departureDate: null, tripType: null, returnDate: null, passengers: null };
+  return { origin: null, destination: null, departureDate: null, tripType: null, returnDate: null, passengers: null, baggageRequest:null };
 }
 
 function parseDate(text) {
+  text = normalizeDigits(text);
   const match = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/);
   if (!match) return null;
   const [, day, month, year] = match;
@@ -30,6 +35,7 @@ function parseRoute(text) {
 }
 
 function parsePassengerCount(text) {
+  text = normalizeDigits(text);
   const adult = text.match(/(?:بالغ(?:ين)?\s*[:：]?\s*(\d+)|(\d+)\s*بالغ(?:ين)?)/i);
   const child = text.match(/أطفال?\s*[:：]?\s*(\d+)/i);
   const infant = text.match(/رضع?\s*[:：]?\s*(\d+)/i);
@@ -45,16 +51,26 @@ function parsePassengerCount(text) {
 }
 
 function applyParsed(request, text) {
+  text = normalizeDigits(text);
+  const weight=text.match(/(?:وزن(?:\s+إضافي|\s+اضافي)?|بدي|أريد|اريد)\s*(\d{1,3})\s*(?:كيلو|كغ|kg)/i);
+  if (weight && Number(weight[1]) > 0 && Number(weight[1]) <= 100) request.baggageRequest={checkedWeightKg:Number(weight[1]),requestedByCustomer:true};
+  let invalidDate = false;
   const route = parseRoute(text);
   if (route.origin) request.origin = route.origin;
   if (route.destination) request.destination = route.destination;
 
-  const dates = [...text.matchAll(/\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/g)].map((m) => parseDate(m[0])).filter(Boolean);
+  const dateTokens = [...text.matchAll(/\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/g)].map((m) => m[0]);
+  const dates = dateTokens.map((token) => parseDate(token));
+  const today = new Date().toISOString().slice(0, 10);
+  if (dates.some((date) => !date || date < today)) invalidDate = true;
   const hasReturn = /ذهاب\s*(?:و|مع)\s*عود|ذهاب\s*عودة|round\s*trip|return\s*flight/i.test(text);
   const oneWay = /ذهاب\s*فقط|one\s*way/i.test(text);
-  if (dates.length) {
-    request.departureDate = dates[0];
-    if (dates.length > 1) request.returnDate = dates[1];
+  if (dates.length && !invalidDate) {
+    if (dates.length > 1 && dates[1] < dates[0]) invalidDate = true;
+    else {
+      request.departureDate = dates[0];
+      if (dates.length > 1) request.returnDate = dates[1];
+    }
   }
   if (hasReturn || dates.length > 1) request.tripType = 'round_trip';
   if (oneWay) {
@@ -63,6 +79,7 @@ function applyParsed(request, text) {
   }
   const passengers = parsePassengerCount(text);
   if (passengers) request.passengers = passengers;
+  return invalidDate;
 }
 
 function missingFields(request) {
@@ -78,15 +95,29 @@ function summarize(request) {
     `المسار: ${request.origin} ← ${request.destination}`,
     `الذهاب: ${request.departureDate}`,
     request.tripType === 'round_trip' ? `العودة: ${request.returnDate}` : 'نوع الرحلة: ذهاب فقط',
-    `المسافرون: ${passengerParts.join('، ')}`
+    `المسافرون: ${passengerParts.join('، ')}`,
+    ...(request.baggageRequest ? [`الوزن المطلوب: ${request.baggageRequest.checkedWeightKg} كغ؛ يحتاج التحقق من توفره وسعره.`] : [])
   ].join('\n');
 }
 
 function handleMessage(sender, text) {
+  const normalized = String(text ?? '').trim();
+  if (normalized === 'اختبار التسعير') return {complete:false,reply:pricingDemo()};
+  if (/^(إلغاء|الغاء|إلغاء الطلب|الغاء الطلب|cancel|restart|ابدأ من جديد)$/i.test(normalized)) {
+    sessions.delete(sender);
+    return { complete: false, reply: 'تم إلغاء طلب التسعير. إذا أردت البدء من جديد، أرسل تفاصيل رحلتك أو اكتب «ابدأ».' };
+  }
+  if (/^(ابدأ|مرحبا|مرحباً|السلام عليكم|hi|hello|start)$/i.test(normalized) && !sessions.has(sender)) {
+    return { complete: false, reply: 'أهلًا بك في خدمة طلبات الطيران من مجموعة الرمال. أرسل مسار الرحلة وتاريخ الذهاب، مثل: من الشارقة إلى دمشق، 11-11-2026، ذهاب فقط.' };
+  }
   const request = sessions.get(sender) ?? emptyRequest();
-  applyParsed(request, text);
+  const invalidDate = applyParsed(request, normalized);
   const missing = missingFields(request);
   sessions.set(sender, request);
+
+  if (invalidDate) {
+    return { complete: false, reply: 'التاريخ غير صالح أو مضى، أو أن العودة تسبق الذهاب. أرسل تاريخًا مستقبليًا صحيحًا بصيغة يوم-شهر-سنة، مثل 11-11-2026.' };
+  }
 
   if (missing.length) {
     return { complete: false, reply: `حتى أتحقق من السعر، أحتاج هذه المعلومة: ${prompts[missing[0]]}` };
@@ -95,10 +126,10 @@ function handleMessage(sender, text) {
   return {
     complete: true,
     request: structuredClone(request),
-    reply: `وصلني طلب التسعير بهذه التفاصيل:\n${summarize(request)}\nسأتحقق من السعر المتاح وأرسل لك عرضًا. هذا الطلب للاستعلام فقط ولا يتم حجز أو إصدار تذكرة تلقائيًا.`
+    reply: `وصلتني تفاصيل طلب الاستعلام:\n${summarize(request)}\nالتحقق من السعر غير متاح تلقائيًا حاليًا؛ يحتاج الطلب إلى مراجعة موظف على بوابة الطيران قبل تأكيد أي سعر. لا يتم حجز أو إصدار تذكرة تلقائيًا.`
   };
 }
 
 function resetSessions() { sessions.clear(); }
 
-module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount };
+module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits };
