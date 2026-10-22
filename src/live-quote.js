@@ -1,0 +1,49 @@
+'use strict';
+const {toFils,formatAED,MAX_FILS}=require('./money');
+const airports=new Map([['SHJ','SHJ'],['الشارقة','SHJ'],['الشارقه','SHJ'],['Sharjah','SHJ'],['DAM','DAM'],['دمشق','DAM'],['Damascus','DAM']].map(([a,b])=>[a.toLowerCase(),b]));
+function validateLiveRequest(r,now=Date.now()){
+  const origin=airports.get(String(r?.origin||'').trim().toLowerCase()),destination=airports.get(String(r?.destination||'').trim().toLowerCase());
+  const validDate=d=>/^\d{4}-\d{2}-\d{2}$/.test(d||'') && new Date(d+'T00:00:00Z').toISOString().slice(0,10)===d;
+  if(!origin || !destination || origin===destination || r.tripType!=='round_trip' || !validDate(r.departureDate) || !validDate(r.returnDate)
+    || r.departureDate<new Date(now).toISOString().slice(0,10) || r.returnDate<r.departureDate
+    || r.passengers?.adults!==1 || r.passengers.children!==0 || r.passengers.infants!==0)throw Error('LIVE_SCOPE_UNSUPPORTED');
+  if(r.baggageRequest && (!Number.isFinite(r.baggageRequest.checkedWeightKg)||r.baggageRequest.checkedWeightKg<=0||r.baggageRequest.checkedWeightKg>100||r.baggageRequest.requestedByCustomer!==true))throw Error('LIVE_SCOPE_UNSUPPORTED');
+  return{origin,destination,departureDate:r.departureDate.split('-').reverse().join('/'),returnDate:r.returnDate.split('-').reverse().join('/')};
+}
+function quoteFromScans(request,seats,catalogs){
+  validateLiveRequest(request);
+  const legs=seats?.segments;
+  if(!seats?.complete || !catalogs?.complete || !legs?.length || catalogs.provisionalTotal?.base?.currency!=='AED'
+    || catalogs.feeAudit?.amounts?.ancillaryTotal!=='0.00')throw Error('PRICE_NOT_VERIFIED');
+  const seatIds=new Set(legs.map(s=>s.segment));if(seatIds.size!==legs.length)throw Error('PRICE_NOT_VERIFIED');
+  let supplier=toFils(catalogs.provisionalTotal.base.amount,'Portal total'),margin=2500n;
+  const weights=[];let baggageUpgrade=false;
+  for(const leg of legs){if(!leg.complete || !leg.cheapestOrdinarySeat || leg.cheapestOrdinarySeat.currency!=='AED')throw Error('PRICE_NOT_VERIFIED');const seat=toFils(leg.cheapestOrdinarySeat.amount,'Seat');supplier+=seat;if(seat>0n)margin+=1000n;}
+  for(const type of ['meal','baggage']){
+    const group=catalogs.results.find(r=>r.type===type);if(!group?.complete)throw Error('PRICE_NOT_VERIFIED');
+    const covered=new Set();
+    for(const c of group.catalogs){
+      if(!c.complete || c.classificationsComplete!==true || !c.coveredSegments?.length || c.coveredSegments.some(id=>!seatIds.has(id)))throw Error('PRICE_NOT_VERIFIED');
+      // Shared OND groups are one supplier offer, never double charged.
+      if(c.coveredSegments.every(id=>covered.has(id)))continue;
+      if(c.coveredSegments.some(id=>covered.has(id)))throw Error('PRICE_NOT_VERIFIED');
+      c.coveredSegments.forEach(id=>covered.add(id));
+      const options=c.options.filter(o=>o.available===true&&o.price?.currency==='AED'&&(type!=='meal'||o.foodKind==='food')).sort((a,b)=>a.price.amount-b.price.amount);
+      const baseline=options[0];
+      const selected=type==='baggage'&&request.baggageRequest?options.find(o=>o.checkedWeightKg>=request.baggageRequest.checkedWeightKg):baseline;
+      if(!selected)throw Error('PRICE_NOT_VERIFIED');
+      const cost=toFils(selected.price.amount,'Service');supplier+=cost;
+      if(type==='meal'&&cost>0n)margin+=500n;
+      if(type==='baggage'){
+        baggageUpgrade ||= Boolean(request.baggageRequest && selected.checkedWeightKg>baseline.checkedWeightKg);
+        weights.push({segments:c.coveredSegments,kg:selected.checkedWeightKg});
+      }
+    }
+    if(covered.size!==seatIds.size)throw Error('PRICE_NOT_VERIFIED');
+  }
+  if(baggageUpgrade)margin+=1000n;
+  if(supplier+margin>MAX_FILS)throw Error('PRICE_NOT_VERIFIED');
+  return{currency:'AED',sellingTotal:formatAED(supplier+margin),weights};
+}
+function formatLiveQuote(request,price){return `السعر المتاح لشخص بالغ واحد من ${request.origin} إلى ${request.destination}، ذهابًا وعودة:\nالذهاب: ${request.departureDate}\nالعودة: ${request.returnDate}\nالإجمالي: ${price.sellingTotal} درهم، شامل الرسوم وعمولة الخدمة.\nالوزن المسجل: ${price.weights.map(w=>w.kg+' كغ').join(' / ')} حسب اتجاه الرحلة.\nوزن اليد غير مؤكد في هذا العرض. السعر والتوفر قابلان للتغير حتى إصدار التذكرة. لم يتم إجراء حجز.`;}
+module.exports={validateLiveRequest,quoteFromScans,formatLiveQuote};
