@@ -57,14 +57,21 @@ async function scanAncillaryCatalogs(frame, page, report = () => {}) {
       report('PORTAL_CATALOG_' + config.type.toUpperCase() + '_STARTED');
       await tab.click({ timeout:15000 });
       await frame.waitForFunction(c => UI_tabAnci.currAnciSrv === c.code && UI_tabAnci.dataStatus[c.type] === true, config, { timeout:30000 });
-      const segments = await frame.evaluate(() => Array.from(document.querySelectorAll('#tbdyAnciSeg [id^="tdAnciSeg_"]')).map(e => ({
-        index:Number(e.id.split('_')[1]), enabled:e.classList.contains('cursorPointer'),
-      })));
+      // buildFlightSegments concatenates the service type onto cursorPointer:
+      // cursorPointerMEALS / cursorPointerBAGGAGES, rather than a separate token.
+      const segments = await frame.evaluate(type => Array.from(document.querySelectorAll('#tbdyAnciSeg [id^="tdAnciSeg_"]')).map(e => ({
+        index:Number(e.id.split('_')[1]), enabled:e.classList.contains('cursorPointer')
+          || e.classList.contains(type === 'meal' ? 'cursorPointerMEALS' : 'cursorPointerBAGGAGES'),
+      })), config.type);
       if (!segments.length || segments.length > 20 || segments.some(s => !Number.isInteger(s.index) || s.index < 0 || s.index >= 20)
         || new Set(segments.map(s => s.index)).size !== segments.length) throw new Error('CATALOG_SEGMENTS_NOT_CONFIRMED');
       const catalogs = [];
       for (const segment of segments) {
-        if (!segment.enabled) { catalogs.push({ segment:segment.index, complete:false, unavailable:true }); continue; }
+        if (!segment.enabled) {
+          catalogs.push({ segment:segment.index, complete:false, unavailable:true });
+          report('PORTAL_CATALOG_' + config.type.toUpperCase() + '_SEGMENT_UNAVAILABLE_' + segment.index);
+          continue;
+        }
         await frame.locator('#tdAnciSeg_' + segment.index).click({ timeout:15000 });
         await frame.waitForFunction(({index,code}) => UI_tabAnci.currSegRow === index && UI_tabAnci.currAnciSrv === code, { index:segment.index, code:config.code }, { timeout:15000 });
         const snapshot = await frame.evaluate(type => {

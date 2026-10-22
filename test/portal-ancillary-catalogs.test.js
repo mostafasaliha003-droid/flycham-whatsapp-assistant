@@ -27,7 +27,7 @@ test('unknown prices, inventory and weight alternatives never become complete qu
   assert.equal(checkedWeight('No checked baggage'), 0);
 });
 
-function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassenger = false } = {}) {
+function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassenger = false, disabledMealSegment = false } = {}) {
   const calls = [], events = [];
   const state = {
     location:{ origin:'https://agents.airarabia.com' }, UI_commonSystem:{ strPGMode:'' }, DATA_ResPro:{ initialParams:{ baseCurrencyCode:'AED' } },
@@ -51,7 +51,8 @@ function fixture({ sharedBaggage = false, duplicatePriceRow = false, wrongPassen
   state.jsMealModel = meals.map(items => ({ meals:items }));
   state.jsBaggageModel = baggage.map(items => ({ baggages:items }));
   const segments = () => (sharedBaggage && state.UI_tabAnci.currAnciSrv === 'BAGGAGE' ? [0] : [0,1]).map(index => ({
-    id:'tdAnciSeg_' + index, classList:{ contains:name => name === 'cursorPointer' },
+    id:'tdAnciSeg_' + index, classList:{ contains:name => !(disabledMealSegment && index === 1 && state.UI_tabAnci.currAnciSrv === 'MEAL')
+      && name === (state.UI_tabAnci.currAnciSrv === 'MEAL' ? 'cursorPointerMEALS' : 'cursorPointerBAGGAGES') },
   }));
   const table = id => {
     const meal = id === 'tblAnciMealBundle' && state.UI_tabAnci.currAnciSrv === 'MEAL';
@@ -118,4 +119,13 @@ test('refuses real passengers before catalog navigation', async () => {
   const f=fixture({ wrongPassenger:true });
   await assert.rejects(scanAncillaryCatalogs(f.frame,f.page,f.report),/SCOPE_NOT_CONFIRMED/);
   assert.equal(f.calls.length,0);
+});
+
+test('disabled supplier segments stay unavailable; service-specific CSS is not forced clickable', async () => {
+  const f=fixture({ disabledMealSegment:true });
+  const result=await scanAncillaryCatalogs(f.frame,f.page,f.report);
+  assert.equal(result.complete,false);
+  assert.equal(result.results[0].catalogs[1].unavailable,true);
+  assert.ok(f.events.includes('PORTAL_CATALOG_MEAL_SEGMENT_UNAVAILABLE_1'));
+  assert.equal(result.results[1].complete,true);
 });
