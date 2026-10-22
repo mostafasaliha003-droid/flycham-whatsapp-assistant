@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { scanSeatPrices, parseSeatPrice, summarizeSeats } = require('../src/portal-seat-prices');
+const { scanSeatPrices, parseSeatPrice, summarizeSeats, seatRequestPolicy } = require('../src/portal-seat-prices');
 
 test('reads actual tooltip prices and rejects unknown, mismatched or malformed prices', () => {
   assert.deepEqual(parseSeatPrice('25.00 AED', 'AED'), { amount: 25, currency: 'AED' });
@@ -73,7 +73,7 @@ function fixture({ wrongPassenger = false, failedSeat = null, extraVacant = fals
       waitFor: async () => {},
       click: async () => {
         calls.push(['click', selector]);
-        if (selector === '#imgTab_2:visible') { sandbox.UI_tabAnci.currAnciSrv = 'SEAT_MAP'; sandbox.UI_tabAnci.dataStatus.seat = true; setSegment(0); }
+        if (selector === '#imgTab_2:visible') { sandbox.UI_tabAnci.currAnciSrv = 'SEAT'; sandbox.UI_tabAnci.selectedAnciTypeGlobal = 'SEAT_MAP'; sandbox.UI_tabAnci.dataStatus.seat = true; setSegment(0); }
         else if (/^#tdAnciSeg_\d+$/.test(selector)) setSegment(Number(selector.split('_').pop()));
         else assert.fail('Unexpected click: ' + selector);
       },
@@ -121,4 +121,16 @@ test('real passenger data is refused before any interaction', async () => {
   await assert.rejects(scanSeatPrices(f.frame, f.page, f.report), /SCOPE_NOT_CONFIRMED/);
   assert.equal(f.calls.length, 0);
   assert.equal(f.page.guard, undefined);
+});
+
+test('allows supplier display assets but prevents unreviewed action requests', () => {
+  const request = (url, method, kind) => ({ url: () => url, method: () => method, resourceType: () => kind });
+  assert.equal(seatRequestPolicy(request('https://static.airarabia.com/images/seat.png', 'GET', 'image')).allowed, true);
+  const cosmetic = seatRequestPolicy(request('https://other.example/seat.png?private=value', 'GET', 'image'));
+  assert.equal(cosmetic.allowed, false); assert.equal(cosmetic.critical, false);
+  const action = seatRequestPolicy(request('https://agents.airarabia.com/xbe/private/blockSeat.action?private=value', 'POST', 'xhr'));
+  assert.equal(action.allowed, false); assert.equal(action.critical, true);
+  assert.ok(!JSON.stringify(action).includes('private'));
+  assert.equal(seatRequestPolicy(request('https://agents.airarabia.com/xbe/private/seatMap.action', 'POST', 'xhr')).allowed, true);
+  assert.equal(seatRequestPolicy(request('https://other.example/code.js', 'GET', 'script')).critical, true);
 });

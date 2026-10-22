@@ -27,6 +27,19 @@ function summarizeSeats(seats, expected) {
   };
 }
 
+function seatRequestPolicy(request) {
+  const url = new URL(request.url());
+  const action = url.pathname.split('/').pop().split(';')[0];
+  const kind = request.resourceType?.() || 'unknown';
+  const cosmetic = ['image', 'font', 'stylesheet', 'media'].includes(kind) && request.method() === 'GET';
+  const supplierAsset = cosmetic && url.protocol === 'https:' && (url.hostname === 'airarabia.com' || url.hostname.endsWith('.airarabia.com')) && !/\.action$/i.test(action);
+  const allowed = supplierAsset || (url.origin === 'https://agents.airarabia.com'
+    && (!/\.action$/i.test(action) || action === 'seatMap.action')
+    && (request.method() === 'GET' || action === 'seatMap.action'));
+  return { allowed, critical: !allowed && !cosmetic, kind: /^(?:image|font|stylesheet|media|xhr|fetch|script|document|other|unknown)$/.test(kind) ? kind : 'other',
+    action: /^[A-Za-z][A-Za-z0-9_-]{0,60}\.action$/.test(action) ? action : null };
+}
+
 async function scanSeatPrices(frame, page, report = () => {}) {
   const safe = await frame.evaluate(() => location.origin === 'https://agents.airarabia.com'
     && typeof UI_commonSystem !== 'undefined' && UI_commonSystem.strPGMode === ''
@@ -37,15 +50,16 @@ async function scanSeatPrices(frame, page, report = () => {}) {
     && !DATA_ResPro.pnrNo && !UI_tabAnci.pnr && !UI_tabAnci.seatsBlocked);
   if (!safe) throw new Error('SEAT_SCAN_SCOPE_NOT_CONFIRMED');
   let blocked = false;
+  const reportedRequests = new Set();
   const guard = async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const action = url.pathname.split('/').pop().split(';')[0];
-    if (url.origin !== 'https://agents.airarabia.com'
-      || (/\.action$/i.test(action) && action !== 'seatMap.action')
-      || (request.method() !== 'GET' && action !== 'seatMap.action')) {
-      blocked = true;
-      report('PORTAL_SEAT_SCAN_UNEXPECTED_REQUEST_PREVENTED');
+    const policy = seatRequestPolicy(route.request());
+    if (!policy.allowed) {
+      blocked ||= policy.critical;
+      const diagnostic = JSON.stringify({ kind: policy.kind, action: policy.action, critical: policy.critical });
+      if (!reportedRequests.has(diagnostic) && reportedRequests.size < 20) {
+        reportedRequests.add(diagnostic);
+        report('PORTAL_SEAT_SCAN_REQUEST_PREVENTED_' + diagnostic);
+      }
       return route.abort();
     }
     return route.continue();
@@ -69,7 +83,8 @@ async function scanSeatPrices(frame, page, report = () => {}) {
     const tab = frame.locator('#imgTab_2:visible');
     await tab.waitFor({ state: 'visible', timeout: 15000 });
     await tab.click({ timeout: 15000 });
-    await frame.waitForFunction(() => UI_tabAnci.currAnciSrv === 'SEAT_MAP' && UI_tabAnci.dataStatus.seat === true, null, { timeout: 30000 });
+    // Supplier UI service code is SEAT; its ancillary type is SEAT_MAP.
+    await frame.waitForFunction(() => UI_tabAnci.currAnciSrv === 'SEAT' && UI_tabAnci.selectedAnciTypeGlobal === 'SEAT_MAP' && UI_tabAnci.dataStatus.seat === true, null, { timeout: 30000 });
     const segments = await frame.evaluate(() => Array.from(document.querySelectorAll('#tbdyAnciSeg [id^="tdAnciSeg_"]')).map(el => ({
       index: Number(el.id.split('_')[1]), available: el.classList.contains('anciSeatAvail'),
     })));
@@ -82,7 +97,7 @@ async function scanSeatPrices(frame, page, report = () => {}) {
         continue;
       }
       await frame.locator('#tdAnciSeg_' + segment.index).click({ timeout: 15000 });
-      await frame.waitForFunction(index => UI_tabAnci.currAnciSrv === 'SEAT_MAP' && UI_tabAnci.currSegRow === index, segment.index, { timeout: 15000 });
+      await frame.waitForFunction(index => UI_tabAnci.currAnciSrv === 'SEAT' && UI_tabAnci.currSegRow === index, segment.index, { timeout: 15000 });
       const state = await frame.evaluate(() => {
         const seg = jsAnciSeg[UI_tabAnci.currSegRow];
         let currency = UI_tabAnci.jsonFareQuoteSummary.currency;
@@ -132,4 +147,4 @@ async function scanSeatPrices(frame, page, report = () => {}) {
   }
 }
 
-module.exports = { scanSeatPrices, parseSeatPrice, summarizeSeats };
+module.exports = { scanSeatPrices, parseSeatPrice, summarizeSeats, seatRequestPolicy };
