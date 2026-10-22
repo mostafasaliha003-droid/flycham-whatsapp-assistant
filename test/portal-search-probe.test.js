@@ -3,13 +3,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { submitProbe } = require('../src/portal-search-probe');
 
-function fixture({ wrongAirport = false, missingOneWay = false, missingOption = false } = {}) {
+function fixture({ wrongAirport = false, missingOneWay = false, missingOption = false, defaultReturn = false } = {}) {
   const calls = [];
   const values = {};
   let optionReads = 0;
   const frame = {
     evaluate: async (fn, args) => {
       if (!args) return missingOneWay ? -1 : 0;
+      if (args.operation === 'default-return') return defaultReturn;
       if (args.pattern) { optionReads++; return missingOption ? null : args.id === 'selectedCurrency' ? 'AED' : 'observed-option'; }
       return true;
     },
@@ -114,4 +115,13 @@ test('selects the live Search G9 label and actual supplier enum AA', async () =>
   f.frame.locator = selector => { const field = locator(selector); if (selector === '#selSearchOptions') field.selectOption = async value => { selected = value; }; return field; };
   await submitProbe(f.frame, config);
   assert.equal(selected, 'AA');
+});
+
+
+test('preserves a confirmed default return mode and enters a date seven days later', async () => {
+  const f = fixture({ missingOneWay: true, defaultReturn: true });
+  const result = await submitProbe(f.frame, { ...config, departureDate: '28/12/2026' });
+  assert.equal(result.tripKind, 'return');
+  assert.equal(f.values['#returnDate'], '04/01/2027');
+  assert.ok(!f.calls.some(([operation]) => operation === 'check'));
 });

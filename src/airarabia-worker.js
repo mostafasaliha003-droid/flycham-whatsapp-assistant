@@ -431,7 +431,8 @@ class AirArabiaPortalAdapter {
     }
     this.report('PORTAL_PROBE_STARTED');
     try {
-      await submitProbe(this.searchFrame, { origin: this.origin, destination: this.destination, departureDate });
+      const probe = await submitProbe(this.searchFrame, { origin: this.origin, destination: this.destination, departureDate, report: this.report });
+      this.report(probe.tripKind === 'return' ? 'PORTAL_PROBE_TRIP_RETURN' : 'PORTAL_PROBE_TRIP_ONE_WAY');
       this.report('PORTAL_PROBE_SEARCH_SUBMITTED');
       await this.searchFrame.locator('button#btnBook:visible').waitFor({ state: 'visible', timeout: 45000 });
       this.report('PORTAL_PROBE_RESULTS_CONTROL_VISIBLE');

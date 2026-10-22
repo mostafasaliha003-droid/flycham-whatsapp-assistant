@@ -13,10 +13,11 @@ async function chooseAirport(frame, inputId, hiddenId, code) {
   if (selected !== code) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
 }
 
-async function prepareSearch(frame, { origin, destination, departureDate }) {
+async function prepareSearch(frame, { origin, destination, departureDate, report = () => {} }) {
   if (!['SHJ', 'DAM'].includes(origin) || !['SHJ', 'DAM'].includes(destination) || origin === destination) throw new Error('UNSUPPORTED_PROBE_ROUTE');
   if (!/^\d{2}\/\d{2}\/\d{4}$/.test(departureDate)) throw new Error('INVALID_PROBE_DATE');
   // Use the actual visible radio label, never guess the supplier's enum value.
+  report('PORTAL_PROBE_STAGE_TRIP_MODE');
   const oneWay = await frame.evaluate(() => {
     const radios = Array.from(document.querySelectorAll('input[name="searchType"][type="radio"]'));
     const isOneWay = text => /^one[\s\-\u2010-\u2015]*way$/i.test(text.replace(/\s+/g, ' ').trim());
@@ -46,15 +47,37 @@ async function prepareSearch(frame, { origin, destination, departureDate }) {
     }).filter(index => index >= 0);
     return matches.length === 1 ? matches[0] : -1;
   });
-  if (!Number.isInteger(oneWay) || oneWay < 0) throw new Error('ONE_WAY_CONTROL_NOT_CONFIRMED');
-  await frame.locator('input[name="searchType"][type="radio"]').nth(oneWay).check();
+  let returnDate = null;
+  if (Number.isInteger(oneWay) && oneWay >= 0) {
+    await frame.locator('input[name="searchType"][type="radio"]').nth(oneWay).check();
+  } else {
+    // Preserve the observed existing default R; never guess which enum means
+    // one-way. A synthetic return search can exercise the ordinary date form.
+    const defaultReturn = await frame.evaluate(({ operation }) => {
+      if (operation !== 'default-return') return false;
+      const checked = document.querySelectorAll('input[name="searchType"][type="radio"]:checked');
+      const returns = document.querySelectorAll('[id="returnDate"]');
+      if (checked.length !== 1 || checked[0].value !== 'R' || returns.length !== 1) return false;
+      const field = returns[0], style = getComputedStyle(field);
+      return !field.disabled && !field.readOnly && style.display !== 'none' && style.visibility !== 'hidden' && field.getClientRects().length > 0;
+    }, { operation: 'default-return' });
+    if (defaultReturn !== true) throw new Error('ONE_WAY_CONTROL_NOT_CONFIRMED');
+    const [day, month, year] = departureDate.split('/').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day + 7));
+    returnDate = `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+  }
+  report('PORTAL_PROBE_STAGE_ORIGIN');
   await chooseAirport(frame, 'fAirport', 'fromAirport', origin);
+  report('PORTAL_PROBE_STAGE_DESTINATION');
   await chooseAirport(frame, 'tAirport', 'toAirport', destination);
+  report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
   await frame.locator('#departureDate').fill(departureDate);
+  if (returnDate) await frame.locator('#returnDate').fill(returnDate);
   await frame.locator('#adultCount').fill('1');
   await frame.locator('#childCount').fill('0');
   await frame.locator('#infantCount').fill('0');
   // Choose existing supplier options by their observed names; unknown forms stop.
+  report('PORTAL_PROBE_STAGE_SUPPLIER_OPTIONS');
   for (const [id, pattern] of [
     ['selectedCurrency', '^AED$'],
     ['classOfService', '^Economy(?:\\s*Class)?$'],
@@ -71,21 +94,23 @@ async function prepareSearch(frame, { origin, destination, departureDate }) {
     if (option === null) throw new Error('SEARCH_OPTION_NOT_CONFIRMED');
     await frame.locator(`#${id}`).selectOption(option);
   }
-  const validation = await frame.evaluate(({ origin, destination, departureDate }) => {
+  report('PORTAL_PROBE_STAGE_VALIDATE_INPUTS');
+  const validation = await frame.evaluate(({ origin, destination, departureDate, returnDate }) => {
     const value = id => document.getElementById(id)?.value;
     return value('fromAirport') === origin && value('toAirport') === destination
       && value('departureDate') === departureDate && value('adultCount') === '1'
       && value('childCount') === '0' && value('infantCount') === '0'
-      && value('selectedCurrency') === 'AED';
-  }, { origin, destination, departureDate });
+      && value('selectedCurrency') === 'AED' && (!returnDate || value('returnDate') === returnDate);
+  }, { origin, destination, departureDate, returnDate });
   if (validation !== true) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
+  return { tripKind: returnDate ? 'return' : 'one-way' };
 }
 
 async function submitProbe(frame, config) {
-  await prepareSearch(frame, config);
+  const prepared = await prepareSearch(frame, config);
   // btnSearch was observed as a visible input/button on makeReservation.action.
   await frame.locator('input#btnSearch[type="button"]:visible').click({ timeout: 15000 });
-  return { submitted: true };
+  return { submitted: true, tripKind: prepared.tripKind };
 }
 
 module.exports = { chooseAirport, prepareSearch, submitProbe };
