@@ -18,7 +18,7 @@ class FlyChamPortalAdapter{
  frames(){return this.page.frames().filter(trusted);}
  async findControl(frame,pattern){
   const candidates=['link','button','img','menuitem'].map(role=>frame.getByRole(role,{name:pattern}));
-  if(frame.getByAltText)candidates.push(frame.getByAltText(pattern));if(frame.getByTitle)candidates.push(frame.getByTitle(pattern));
+  if(frame.getByAltText)candidates.push(frame.getByAltText(pattern));if(frame.getByTitle)candidates.push(frame.getByTitle(pattern));if(frame.getByText)candidates.push(frame.getByText(pattern));
   for(const locator of candidates)for(let i=0;i<Math.min(await locator.count(),10);i++){const control=locator.nth(i);if(await control.isVisible())return control;}
   return null;
  }
@@ -36,7 +36,7 @@ class FlyChamPortalAdapter{
  }
  async loginFailure(){
   for(const page of this.page.context().pages())for(const frame of page.frames().filter(trusted)){try{
-   const state=await frame.evaluate(()=>{const text=document.body?.innerText||'';return{invalid:/invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),change:/change (your )?password|password.{0,20}expir/i.test(text),session:/already logged|active session|another session|concurrent session/i.test(text),verify:/captcha|verify (you|that you) are human|security challenge|one.time.password|verification code/i.test(text),login:Boolean(document.querySelector('input[type="password"]'))};});
+   const state=await frame.evaluate(()=>{const text=document.body?.innerText||'';return{invalid:/invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),change:/change (your )?password|password.{0,20}expir/i.test(text),session:/already logged|active session|another session|concurrent session/i.test(text),verify:/captcha|verify (you|that you) are human|security challenge|one.time.password|verification code/i.test(text),login:Boolean(document.querySelector('input[type="password"]')),signoutText:/(?:sign|log)\s*(?:out|off)/i.test(text),reservationText:/make\s*(?:a\s*)?reservation|new\s*reservation/i.test(text),namedSignout:[...document.querySelectorAll('[alt],[title],[aria-label]')].some(e=>['alt','title','aria-label'].some(k=>/^(?:sign|log)\s*(?:out|off)$/i.test(e.getAttribute(k)||''))),namedReservation:[...document.querySelectorAll('[alt],[title],[aria-label]')].some(e=>['alt','title','aria-label'].some(k=>/^make\s*reservation$/i.test(e.getAttribute(k)||'')))};});
    this.report('FLYCHAM_LOGIN_STATE_'+JSON.stringify(state));
    if(state.invalid)return 'FLYCHAM_LOGIN_BAD_CREDENTIALS';if(state.change)return 'FLYCHAM_PASSWORD_CHANGE_REQUIRED';if(state.session)return 'FLYCHAM_EXISTING_SESSION';if(state.verify)return 'FLYCHAM_MANUAL_VERIFICATION';
   }catch{}}

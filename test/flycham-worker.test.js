@@ -46,3 +46,9 @@ test('authentication requires sign-out and reservation markers across trusted fr
  const header=frame('header'),menu=frame('menu');const page={isClosed:()=>false,frames:()=>[header,menu],context:()=>({pages:()=>[page]})};const adapter=new FlyChamPortalAdapter(page,{});
  assert.equal(await adapter.authenticatedFrame(),menu);password=true;assert.equal(await adapter.authenticatedFrame(),null);
 });
+
+test('legacy plain-text navigation controls can confirm authentication without ARIA roles',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');const empty={count:async()=>0};const visible={count:async()=>1,nth(){return this;},isVisible:async()=>true};
+ const frame={url:()=> 'https://reservations.flycham.com/xbe/private/nav',locator:()=>empty,getByRole:()=>empty,getByText:pattern=>pattern.test('Sign Out')||pattern.test('Make Reservation')?visible:empty};
+ const page={isClosed:()=>false,frames:()=>[frame],context:()=>({pages:()=>[page]})};const adapter=new FlyChamPortalAdapter(page,{});assert.equal(await adapter.authenticatedFrame(),frame);
+});
