@@ -237,6 +237,9 @@ async function runFlyCham({env=process.env,launch=o=>chromium.launch(o),log=cons
  try{
   const credentials=await readFlyChamConfig(env);browser=await launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage();page.setDefaultTimeout(15000);
   const adapter=new FlyChamPortalAdapter(page,{...credentials,report:c=>log.log(c)});await adapter.signIn();
+  // Temporary bounded, quote-free audit of the actual origin menu. It runs
+  // before consuming jobs and never clicks Search or a booking control.
+  try{await require('./airport-menu-diagnostics').diagnoseFlyChamAirports(adapter);}catch{log.log('FLYCHAM_AIRPORT_DIAGNOSTIC_UNAVAILABLE');}
   session=new PortalSession(adapter,{report:c=>log.log(c)});await session.initialize();session.start(()=>{log.log('FLYCHAM_SESSION_UNAVAILABLE');shutdown().catch(()=>{});});
   stop=startQuotePolling(session,{env,log,provider:'flycham'});
   await new Promise(resolve=>{process.once('SIGTERM',resolve);process.once('SIGINT',resolve);});
