@@ -25,7 +25,7 @@ async function voucherPNG(voucher,origin,{demo=false}={}){
  <text x="1170" y="665" text-anchor="middle" font-size="20" fill="#b9d2d7">امسح الرمز للتحقق</text>
  <text x="1170" y="705" text-anchor="middle" font-size="15" fill="#77d8d2">${escape(voucher.id.slice(0,8).toUpperCase())}</text>
  <text x="1170" y="747" text-anchor="middle" font-size="17" fill="#b9d2d7">تواصل معنا عبر واتساب</text>
- <text x="1170" y="778" text-anchor="middle" font-size="18" fill="#77d8d2">+971 54 475 7578</text></g>
+ <text x="1170" y="778" text-anchor="middle" font-size="18" fill="#77d8d2">+971544908485</text></g>
  <image x="1035" y="345" width="270" height="270" xlink:href="${qr}"/>
  ${demo?'<rect x="1000" y="75" width="290" height="45" rx="14" fill="#b32d40"/><text x="1145" y="105" text-anchor="middle" font-family="DejaVu Sans" fill="white" font-weight="bold" font-size="17">نموذج تجريبي — غير صالح</text>':''}
  </svg>`;
