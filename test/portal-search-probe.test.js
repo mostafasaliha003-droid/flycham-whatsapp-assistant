@@ -180,3 +180,11 @@ test('airport confirmation accepts a formatted supplier value only after the poi
   await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
   assert.equal(pointerClicks, 1);
 });
+
+test('FlyCham accepts its visible search control without requiring AirArabia input type',async()=>{
+ const {clickSearchControl}=require('../src/portal-search-probe');let clicks=0;const control={count:async()=>1,isVisible:async()=>true,click:async()=>clicks++};
+ await clickSearchControl({locator:selector=>{assert.match(selector,/button#btnSearch/);return control;}},'flycham');assert.equal(clicks,1);
+});
+test('ambiguous FlyCham search controls never click or fall through to reservation actions',async()=>{
+ const {clickSearchControl}=require('../src/portal-search-probe');await assert.rejects(clickSearchControl({locator:()=>({count:async()=>2}),getByRole:()=>{throw Error('must not fall through');}},'flycham'),/SEARCH_CONTROL_UNCONFIRMED/);
+});

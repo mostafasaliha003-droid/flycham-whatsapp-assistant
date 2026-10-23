@@ -160,13 +160,23 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
   return { tripKind: returnDate ? 'return' : 'one-way' };
 }
 
+async function clickSearchControl(frame,supplier='airarabia'){
+  if(supplier==='flycham'){
+    let control=frame.locator('input#btnSearch:not([type="hidden"]):visible,button#btnSearch:visible');
+    if(await control.count()>1)throw Error('SEARCH_CONTROL_UNCONFIRMED');
+    if(await control.count()===0)control=frame.getByRole('button',{name:/^search(?:\s+flights?)?$/i});
+    if(await control.count()!==1||!await control.isVisible())throw Error('SEARCH_CONTROL_UNCONFIRMED');
+    await control.click({timeout:15000});
+  }else await frame.locator('input#btnSearch[type="button"]:visible').click({ timeout: 15000 });
+}
+
 async function submitProbe(frame, config) {
   const prepared = await prepareSearch(frame, config);
   // btnSearch was observed as a visible input/button on makeReservation.action.
   config.report?.('PORTAL_SEARCH_SUBMIT_STARTED');
-  await frame.locator('input#btnSearch[type="button"]:visible').click({ timeout: 15000 });
+  await clickSearchControl(frame,config.supplier);
   config.report?.('PORTAL_SEARCH_SUBMIT_COMPLETED');
   return { submitted: true, tripKind: prepared.tripKind };
 }
 
-module.exports = { airportCodeConfirmed, chooseAirport, prepareSearch, submitProbe };
+module.exports = { airportCodeConfirmed, chooseAirport, prepareSearch, submitProbe,clickSearchControl };
