@@ -99,15 +99,20 @@ class FlyChamPortalAdapter{
   const offers=[],attempted=[],coverage=[];const dates=expandLiveRequests(request);
   for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);const day={date:dated.departureDate,status:'unverified',confirmed:0,failed:0};coverage.push(day);try{
    const frame=await this.search(dated);await waitForFlightResults(frame,dated.tripType==='one_way',ORIGIN);
+   // Capture the supplier-confirmed selected itinerary before changing rows.
+   // A failure comparing another timing must not discard this verified offer.
+   try{const q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);day.confirmed++;if(onProgress)await onProgress('',{offer,coverage});}
+   catch(error){this.report(/^FLYCHAM_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_INITIAL_QUOTE_UNCONFIRMED');}
    const choices=await readFlightTimes(frame,dated.tripType==='one_way',ORIGIN),pairs=flightPairs(choices);
    if(!pairs.length)throw Error('FLYCHAM_TIMINGS_UNCONFIRMED');
    for(const choice of pairs){await isCurrent();try{
     await selectFlightTimes(frame,choice,ORIGIN);
     const q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});
     if(q.timing.out.flight!==choice.out.flight.replace(/\s/g,''))throw Error('FLYCHAM_TIMING_NOT_MATCHED');
+    if(offers.some(o=>o.request.departureDate===dated.departureDate&&o.request.returnDate===dated.returnDate&&o.timing.out.flight===q.timing.out.flight&&o.timing.out.departure===q.timing.out.departure&&o.timing.back?.flight===q.timing.back?.flight))continue;
     const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);day.confirmed++;
     if(onProgress)await onProgress('',{offer,coverage});
-   }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.failed++;this.report('FLYCHAM_TIMING_UNCONFIRMED');}}
+   }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.failed++;this.report(/^(?:FLYCHAM|FLIGHT)_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_TIMING_UNCONFIRMED');}}
    day.status=day.failed?'partial':'confirmed';
   }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
   const complete=coverage.length===dates.length&&coverage.every(d=>['confirmed','no_flights'].includes(d.status));
