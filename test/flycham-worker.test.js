@@ -148,3 +148,22 @@ test('FlyCham quote authentication loss is distinct from evidence of no flights'
  const adapter=new FlyChamPortalAdapter({},{});adapter.isAuthenticated=async()=>false;adapter.hasVerificationChallenge=async()=>true;
  await assert.rejects(adapter.assertQuoteSession([{date:'2026-11-11',status:'unverified',confirmed:0,failed:1}]),error=>error.code==='PORTAL_SESSION_EXPIRED'&&error.coverage[0].status==='authentication_required');
 });
+test('unselected flight results reach fare selection without waiting for a hidden total',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let checks=0,totalWaits=0;
+ const frame={
+  evaluate:async(fn,args)=>{
+   if(typeof args==='boolean')return {out:1,back:null};
+   if(!args)return fn.toString().includes('selectedCurrency')?'AED':0;
+   if(args.operation)return {status:args.operation==='input'?'INPUT_READY':'READY'};
+   if(args.pattern)return args.id==='selectedCurrency'?'AED':'observed-option';
+   if(Object.hasOwn(args,'oneWay'))return {out:1,back:null};
+   return true;
+  },
+  evaluateHandle:async()=>({asElement:()=>({click:async()=>{}}),dispose:async()=>{}}),
+  waitForFunction:async()=>{checks++;},
+  locator:selector=>({fill:async()=>{},pressSequentially:async()=>{},press:async()=>{},nth(){return this;},check:async()=>{},selectOption:async()=>{},inputValue:async()=>selector==='#fromAirport'?'SHJ':'ALP',count:async()=>1,isVisible:async()=>true,click:async()=>{},waitFor:async()=>{if(selector.includes('divFQTxnCurr')){totalWaits++;throw Error('total not selected');}}})
+ };
+ const adapter=new FlyChamPortalAdapter({},{});adapter.openSearchForm=async()=>frame;adapter.isAuthenticated=async()=>true;
+ const result=await adapter.search({origin:'الشارقة',destination:'حلب',departureDate:'2090-11-11',tripType:'one_way',passengers:{adults:1,children:0,infants:0}});
+ assert.equal(result,frame);assert.equal(checks,1);assert.equal(totalWaits,0);
+});

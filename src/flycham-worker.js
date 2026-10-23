@@ -192,14 +192,18 @@ class FlyChamPortalAdapter{
   const frame=await this.openSearchForm();
   const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});
   if(prepared.tripKind!==(request.tripType==='one_way'?'one-way':'return'))throw Error('FLYCHAM_TRIP_NOT_CONFIRMED');
-  await frame.locator('#divFQTxnCurr:visible').waitFor({state:'visible',timeout:45000});
+  // Flight inventory can arrive before any fare is selected. Waiting for the
+  // total here prevents reaching the normal selection controls.
+  this.report('FLYCHAM_WAITING_FOR_FLIGHT_RESULTS');
+  await waitForFlightResults(frame,request.tripType==='one_way',ORIGIN);
+  this.report('FLYCHAM_FLIGHT_RESULTS_READY');
   if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();
   return frame;
  }
  async runCustomerQuote(request,onProgress,isCurrent=async()=>{}){
   const offers=[],attempted=[],coverage=[];const dates=expandLiveRequests(request);
   for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);const day={date:dated.departureDate,status:'unverified',confirmed:0,failed:0};coverage.push(day);try{
-   const frame=await this.search(dated);await waitForFlightResults(frame,dated.tripType==='one_way',ORIGIN);
+   const frame=await this.search(dated);
    // Capture the supplier-confirmed selected itinerary before changing rows.
    // A failure comparing another timing must not discard this verified offer.
    try{const q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});await this.assertQuoteSession(coverage);this.onAuthenticatedActivity?.();const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);day.confirmed++;if(onProgress)await onProgress('',{offer,coverage});}
@@ -216,7 +220,7 @@ class FlyChamPortalAdapter{
     if(onProgress)await onProgress('',{offer,coverage});
    }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;await this.assertQuoteSession(coverage);day.failed++;this.report(/^(?:FLYCHAM|FLIGHT)_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_TIMING_UNCONFIRMED');}}
    day.status=day.failed?'partial':'confirmed';
-  }catch(error){if(error.message==='QUOTE_SUPERSEDED'||error.code==='PORTAL_SESSION_EXPIRED')throw error;await this.assertQuoteSession(coverage);day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
+  }catch(error){if(error.message==='QUOTE_SUPERSEDED'||error.code==='PORTAL_SESSION_EXPIRED')throw error;await this.assertQuoteSession(coverage);day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:error.name==='TimeoutError'?'FLYCHAM_SEARCH_RESULTS_TIMEOUT':'FLYCHAM_QUOTE_UNCONFIRMED');}}
   const complete=coverage.length===dates.length&&coverage.every(d=>['confirmed','no_flights'].includes(d.status));
 
   return{reply:formatFlyChamOffers(request,offers,{dates:attempted,complete}),outcome:offers.length?(complete?'done':'partial'):'failed',coverage};
