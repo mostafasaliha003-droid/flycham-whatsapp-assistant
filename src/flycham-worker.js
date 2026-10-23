@@ -78,11 +78,30 @@ class FlyChamPortalAdapter{
   for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=trusted(this.page)?this.page.url():(await this.authenticatedFrame()).url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}for(const f of this.frames())if(await f.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
   throw Error(await this.loginFailure());
  }
+ searchFrames(){
+  const found=[...this.frames()];
+  for(const page of this.page.context?.().pages()||[])if(!page.isClosed())for(const frame of page.frames().filter(trusted))if(!found.includes(frame))found.push(frame);
+  return found;
+ }
+ async inspectSearchState(){
+  for(const frame of this.searchFrames())try{const state=await frame.evaluate(()=>{
+   if(location.origin!=='https://reservations.flycham.com')return {trusted:false};
+   const visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden';
+   const names=/^(?:new search|modify search|change search|search|search flights|make reservation)$/i;
+   const controls=[...document.querySelectorAll('a,button,input[type="button"],input[type="submit"]')].filter(visible).flatMap(e=>{const label=(e.getAttribute('aria-label')||e.getAttribute('title')||e.value||e.textContent||'').replace(/\s+/g,' ').trim();return names.test(label)?[{tag:e.tagName,label,id:/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(e.id)?e.id:null}]:[];}).slice(0,12);
+   return{trusted:true,airportFields:document.querySelectorAll('#fAirport').length,visibleAirportFields:[...document.querySelectorAll('#fAirport')].filter(visible).length,controls};
+  });this.report('FLYCHAM_SEARCH_STATE_'+JSON.stringify(state));}catch{this.report('FLYCHAM_SEARCH_STATE_UNAVAILABLE');}
+ }
  async openSearchForm(){
   const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
   const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
-  let frame;for(let attempt=0;attempt<15;attempt++){for(const f of this.frames())if(await f.locator('#fAirport:visible').count()===1){frame=f;break;}if(frame)break;await this.page.waitForTimeout(500);}
-  if(!frame)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');return frame;
+  let recovered=false;
+  for(let attempt=0;attempt<60;attempt++){
+   for(const f of this.searchFrames())if(await f.locator('#fAirport:visible').count()===1)return f;
+   if(attempt===15&&!recovered){for(const f of this.searchFrames()){const control=await this.findControl(f,/^(?:new|modify|change)\s+search$/i);if(control){await control.click();recovered=true;this.report('FLYCHAM_SEARCH_RESET_NAVIGATION_COMPLETED');break;}}}
+   await this.page.waitForTimeout(500);
+  }
+  await this.inspectSearchState();throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
  }
  async searchFlightsForHeartbeat(){await this.openSearchForm();if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED');}
  async search(request){

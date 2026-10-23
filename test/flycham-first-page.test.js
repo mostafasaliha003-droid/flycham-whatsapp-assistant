@@ -1,8 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
 const {readFlyChamFirstPage}=require('../src/flycham-first-page');
-function frame({total='ER: AED 1.00 = USD 0.2717 AED 643.00',origin='https://reservations.flycham.com',back=false}={}){
+function frame({total='ER: AED 1.00 = USD 0.2717 AED 643.00',origin='https://reservations.flycham.com',back=false,fullYear=false}={}){
  const row={textContent:'SHJ/DAM i XH744 XH Wed 11Nov26 05:30 Wed 11Nov26 08:00 1+/1+',getClientRects:()=>[1]},ret={...row,textContent:'DAM/SHJ i XH745 XH Wed 18Nov26 09:00 Wed 18Nov26 13:30 1+/1+'};
+ if(fullYear)row.textContent=row.textContent.replaceAll('Nov26','Nov2026');
  const nodes={divFQTxnCurr:{textContent:total,getClientRects:()=>[1]},tblOutboundFlights:{querySelector:()=>({closest:()=>row})},...(back?{tblInboundFlights:{querySelector:()=>({closest:()=>ret})}}:{})};
  return {evaluate:fn=>vm.runInNewContext('('+fn.toString()+')()',{location:{origin},document:{getElementById:id=>nodes[id]},getComputedStyle:()=>({visibility:'visible'})})};
 }
@@ -16,4 +17,8 @@ test('first-page total must match the requested route and dates before it can be
  await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,departureDate:'2026-11-12'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
  await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,origin:'دمشق',destination:'الشارقة'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
  await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,baggageRequest:{checkedWeightKg:40}}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
+});
+
+test('FlyCham supplier dates can use a four-digit year without losing request validation',async()=>{
+ const request={origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',tripType:'one_way'};const q=await readFlyChamFirstPage(frame({fullYear:true}),{tripType:'one_way',request});assert.equal(q.price.sellingTotal,'683.00');assert.match(q.timing.out.departure,/2026/);
 });

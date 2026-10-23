@@ -59,3 +59,15 @@ test('FlyCham keepalive uses the authenticated reservation menu without reloadin
  const a=new FlyChamPortalAdapter(page,{username:'test',password:'test',report:x=>events.push(x)});a.authenticatedFrame=async()=>({});a.reservationControl={click:async()=>clicked++};a.frames=()=>[form];a.isAuthenticated=async()=>true;
  await a.searchFlightsForHeartbeat();assert.equal(clicked,1);assert.ok(events.includes('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED'));
 });
+
+test('a new trusted search popup can hold the form while navigation stays in the original window',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');const frame={url:()=> 'https://reservations.flycham.com/xbe/private/makeReservation.action',locator:()=>({count:async()=>1})};
+ const child={isClosed:()=>false,frames:()=>[frame]},page={context:()=>({pages:()=>[child]}),waitForTimeout:async()=>{}};
+ const a=new FlyChamPortalAdapter(page,{username:'test',password:'test'});a.frames=()=>[];a.authenticatedFrame=async()=>({});a.reservationControl={click:async()=>{}};
+ assert.equal(await a.openSearchForm(),frame);assert.equal(a.page,page);
+});
+test('a search form taking more than the old7.5s window is awaited within the bounded30s window',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let ticks=0;const frame={locator:()=>({count:async()=>ticks>=20?1:0})};const page={waitForTimeout:async()=>ticks++};
+ const a=new FlyChamPortalAdapter(page,{username:'test',password:'test'});a.frames=()=>[frame];a.authenticatedFrame=async()=>({});a.reservationControl={click:async()=>{}};a.findControl=async()=>null;
+ assert.equal(await a.openSearchForm(),frame);assert.equal(ticks,20);
+});
