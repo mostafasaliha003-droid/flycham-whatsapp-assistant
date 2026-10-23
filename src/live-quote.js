@@ -9,7 +9,7 @@ function validateLiveRequest(r,now=Date.now()){
   if(!origin || !destination || origin===destination || !['round_trip','one_way'].includes(r.tripType) || !validDate(r.departureDate) || (r.tripType==='round_trip'&&!validDate(r.returnDate))
     || r.departureDate<new Date(now).toISOString().slice(0,10) || (r.tripType==='round_trip'&&r.returnDate<r.departureDate)
     || r.passengers?.adults!==1 || r.passengers.children!==0 || r.passengers.infants!==0)throw Error('LIVE_SCOPE_UNSUPPORTED');
-  if(r.baggageRequest && (!Number.isFinite(r.baggageRequest.checkedWeightKg)||r.baggageRequest.checkedWeightKg<=0||r.baggageRequest.checkedWeightKg>100||r.baggageRequest.requestedByCustomer!==true))throw Error('LIVE_SCOPE_UNSUPPORTED');
+  if(r.baggageRequest && (!Number.isFinite(r.baggageRequest.checkedWeightKg)||r.baggageRequest.checkedWeightKg<0||r.baggageRequest.checkedWeightKg>100||r.baggageRequest.requestedByCustomer!==true&&r.baggageRequest.source!=='default30'))throw Error('LIVE_SCOPE_UNSUPPORTED');
   return{origin,destination,departureDate:r.departureDate.split('-').reverse().join('/'),returnDate:r.tripType==='round_trip'?r.returnDate.split('-').reverse().join('/'):null};
 }
 function quoteFromScans(request,seats,catalogs){

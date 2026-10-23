@@ -15,5 +15,5 @@ test('first-page total must match the requested route and dates before it can be
  const q=await readFlyChamFirstPage(frame(),{tripType:'one_way',request});assert.equal(q.price.sellingTotal,'683.00');
  await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,departureDate:'2026-11-12'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
  await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,origin:'دمشق',destination:'الشارقة'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
- await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,baggageRequest:{checkedWeightKg:30}}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
+ await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,baggageRequest:{checkedWeightKg:40}}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
 });

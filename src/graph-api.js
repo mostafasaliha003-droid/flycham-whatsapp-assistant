@@ -28,7 +28,8 @@ async function sendTextMessage(to, body, env = process.env) {
   const response = await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: false, body } })
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: false, body } }),
+    signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) {
     let payload;try{payload=await response.json();}catch{}

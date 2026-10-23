@@ -1,6 +1,7 @@
 'use strict';
 
 const sessions = new Map();
+const {languagePatch,applyDefaultBaggage}=require('./travel-language');
 const { pricingDemo } = require('./pricing-demo');
 const {naturalDate,normalize,dubaiDay,addDays,iso}=require('./arabic-dates');
 
@@ -84,7 +85,7 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
     if(/(?:الى|علي|على|ع|to)\s*(?:مطار\s*)?$/.test(prefix))request.destination=city;
   }
   const anyUae=/(?:اي|ايا|كل|جميع)\s*(?:مطار|مطارات)(?:\s+ب?الامارات|\s+في\s+الامارات)|(?:ما\s*(?:بتفرق|بيفرق)|مو\s*مهم).*مطار/.test(plain);
-  if(anyUae){request.origin='الشارقة';request.originScope='any_uae';}
+  if(anyUae){request.origin=request.origin||'الشارقة';request.originScope='any_uae';}
   const mentioned=airportNames.filter(([,pattern])=>pattern.test(plain));
   if(!anyUae&&mentioned.length===1&&(awaiting==='origin'||awaiting==='destination')){
     const city=mentioned[0][0];
@@ -139,7 +140,6 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   if(/^(?:لحالي|انا لحالي|انا بس)$/.test(plain))passengers={adults:1,children:0,infants:0,ages:[]};
   if (passengers) request.passengers = passengers;
   if(request.departureRange){
-    if(!request.tripType){request.tripType='one_way';request.comparisonTripDefault=true;}
 
   }
   if(request.stayNights&&request.departureDate&&request.departureDate!==previousDepartureDate&&dates.length<=1&&awaiting!=='returnDate')request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),request.stayNights));
@@ -178,7 +178,7 @@ function applyDecisionPatch(request, patch, now) {
     if(patch.ages?.length)party.ages=patch.ages;
     request.passengers=party;
   }
-  if(patch.weightKg!=null||patch.pieces!=null||patch.weightScope)request.baggageRequest={...request.baggageRequest,...(patch.weightKg!=null?{checkedWeightKg:patch.weightKg,requestedByCustomer:true}:{}),...(patch.pieces!=null?{pieces:patch.pieces}:{}),...(patch.weightScope?{scope:patch.weightScope}:{})};
+  if(patch.weightKg!=null||patch.pieces!=null||patch.weightScope)request.baggageRequest={...request.baggageRequest,...(patch.weightKg!=null?{checkedWeightKg:patch.weightKg,requestedByCustomer:true,source:'explicit'}:{}),...(patch.pieces!=null?{pieces:patch.pieces}:{}),...(patch.weightScope?{scope:patch.weightScope}:{})};
   if(patch.excludedDates?.length||patch.latestArrival)request.constraints={...request.constraints,...(patch.excludedDates?.length?{excludedDates:patch.excludedDates}:{}),...(patch.latestArrival?{latestArrival:patch.latestArrival}:{})};
   const today=iso(dubaiDay(now));
   return Boolean(request.departureDate&&request.departureDate<today||request.departureRange&&(request.departureRange.start<today||request.departureRange.end<request.departureRange.start)||request.returnDate&&request.departureDate&&request.returnDate<request.departureDate);
@@ -211,7 +211,11 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   }
 
   const parsedInvalid = applyParsed(request, normalized,{now,awaiting:state.awaiting});
-  const invalidDate = applyDecisionPatch(request,patch,now)||parsedInvalid;
+  const language=languagePatch(normalized,state.awaiting);
+  if(language.destination===request.origin&&!/(?:لل|الى|إلى|على)\s*/.test(normalized))delete language.destination;
+  if(language.origin===request.destination&&!/(?:من|from)\s/i.test(normalized))delete language.origin;
+  const invalidDate = applyDecisionPatch(request,language,now)||applyDecisionPatch(request,patch,now)||parsedInvalid;
+  applyDefaultBaggage(request);
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
   if(!invalidDate)state.request=request;

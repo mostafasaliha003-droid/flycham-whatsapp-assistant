@@ -2,12 +2,12 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
 const {readFlightTimes,flightPairs}=require('../src/portal-flight-times');
 const {expandLiveRequests,formatQuoteOptions}=require('../src/live-quote');
-function frame({missingTime=false}={}){
+function frame({missingTime=false,origin='https://agents.airarabia.com'}={}){
  const table=()=>({p:{colModel:[{name:'index'},{name:'flightNoList'},{name:'depatureList'},{name:'arrivalList'}]},querySelectorAll:()=>[1,2].map(n=>({
   querySelector:()=>({value:String(n),disabled:false,checked:n===1}),
   cells:[{innerText:''},{innerText:'G943'+n},{innerText:missingTime?'unconfirmed':'Wed 11Nov2026 0'+n+':15'},{innerText:'Wed 11Nov2026 12:30'}],
  }))});
- return{evaluate:async (fn,arg)=>JSON.parse(JSON.stringify(vm.runInNewContext('('+fn.toString()+')(arg)',{arg,location:{origin:'https://agents.airarabia.com'},document:{getElementById:table}})))};
+ return{evaluate:async (fn,arg)=>JSON.parse(JSON.stringify(vm.runInNewContext('('+fn.toString()+')(arg)',{arg,location:{origin},document:{getElementById:table}})))};
 }
 test('reads clocks by supplier colModel, retains separate timings and enumerates all round-trip combinations',async()=>{
  const choices=await readFlightTimes(frame());assert.equal(choices.out.length,2);assert.equal(flightPairs(choices).length,4);
@@ -58,4 +58,10 @@ test('professional coverage names the origin and verified dates without claiming
  const q={request:{departureDate:'2026-10-24'},timing:{out:{flight:'G9433',departure:'08:00',arrival:'10:00'}},price:{sellingTotal:'750.50',weights:[{kg:30}]}};
  const text=formatQuoteOptions(request,[q],{complete:false,attempted:3,totalDates:3});assert.match(text,/من مطار الشارقة/);assert.match(text,/هذه العروض تأكدت لتواريخ 2026-10-24/);assert.match(text,/قد تتوفر خيارات أوفر/);assert.match(text,/بدك نوسّع البحث/);
  const progress=formatQuoteOptions(request,[q],{complete:false,inProgress:true});assert.match(progress,/البحث مستمر/);assert.doesNotMatch(progress,/بدك نوسّع البحث/);
+});
+
+test('FlyCham first-page timing reads require its exact origin; unrelated origins are refused',async()=>{
+ const choices=await readFlightTimes(frame({origin:'https://reservations.flycham.com'}),true,'https://reservations.flycham.com');assert.equal(choices.out.length,2);
+ await assert.rejects(readFlightTimes(frame({origin:'https://other.example'}),true,'https://reservations.flycham.com'),/UNTRUSTED/);
+ await assert.rejects(readFlightTimes(frame(),true,'https://other.example'),/UNTRUSTED/);
 });

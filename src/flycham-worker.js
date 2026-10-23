@@ -5,13 +5,15 @@ const {startQuotePolling}=require('./quote-poller');
 const {submitProbe}=require('./portal-search-probe');
 const {validateLiveRequest,expandLiveRequests}=require('./live-quote');
 const {readFlyChamFirstPage}=require('./flycham-first-page');
+const {waitForFlightResults,readFlightTimes,selectFlightTimes,flightPairs}=require('./portal-flight-times');
 const {voucherPromise}=require('./flycham-pricing');
+const {flyChamBaggageAllowed}=require('./travel-language');
 const ORIGIN='https://reservations.flycham.com';
 const trusted=frame=>{try{return new URL(frame.url()).origin===ORIGIN;}catch{return false;}};
 function formatFlyChamOffers(request,offers,{complete=false,dates=[]}={}){
  if(!offers.length)return 'لم نتأكد من سعر فلاي شام لهذا الطلب بعد. لم يتم حجز أو إصدار أي تذكرة.';
  const sorted=offers.slice().sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
- return '*فلاي شام | مجموعة الرمال*\n'+sorted.map((q,i)=>`\n*الخيار ${q.reference||i+1}*\nالمطارات: ${q.timing.out.origin} ← ${q.timing.out.destination}\nالتاريخ: ${q.request.departureDate}\nرقم الرحلة: ${q.timing.out.flight}\nالإقلاع: ${q.timing.out.departure}\nالوصول: ${q.timing.out.arrival}${q.timing.back?`\nالعودة: ${q.request.returnDate}\n${q.timing.back.flight} — الإقلاع ${q.timing.back.departure} — الوصول ${q.timing.back.arrival}`:''}\n*الإجمالي: ${q.price.sellingTotal} درهم*\n${voucherPromise(q.price)}`).join('\n')+'\n\n'+(complete?'تم فحص الخيارات الظاهرة للفترة المطلوبة.':`تأكدت هذه الخيارات فقط؛ لم يكتمل فحص كامل الفترة والتواقيت. التواريخ التي تمت محاولتها: ${dates.join('، ')}.`)+'\nالسعر لشخص بالغ واحد، شامل الرسوم وعمولة الخدمة. الأمتعة ووزن اليد غير مؤكدين في هذا العرض. الفاوجر يصدر بعد تأكيد التذكرة ولا يخصم من السعر الحالي. السعر والتوفر قابلان للتغير حتى الإصدار؛ لم يتم إنشاء حجز.';
+ return '*فلاي شام | مجموعة الرمال*\n'+sorted.map((q,i)=>`\n*الخيار ${q.reference||i+1}*\nالمطارات: من ${q.timing.out.origin} إلى ${q.timing.out.destination}\nالتاريخ: ${q.request.departureDate}\nرقم الرحلة: ${q.timing.out.flight}\nالإقلاع: ${q.timing.out.departure}\nالوصول: ${q.timing.out.arrival}${q.timing.back?`\nالعودة: ${q.request.returnDate}\n${q.timing.back.flight} — الإقلاع ${q.timing.back.departure} — الوصول ${q.timing.back.arrival}`:''}\n*الإجمالي: ${q.price.sellingTotal} درهم*\n${voucherPromise(q.price)}`).join('\n')+'\n\n'+(complete?'تم فحص الخيارات الظاهرة للفترة المطلوبة.':`تأكدت هذه الخيارات فقط؛ لم يكتمل فحص كامل الفترة والتواقيت. التواريخ التي تمت محاولتها: ${dates.join('، ')}.`)+'\nالسعر لشخص بالغ واحد، شامل الرسوم وعمولة الخدمة. الوزن المشمول: 30 كيلو مسجل +10 كيلو حقيبة يد. الفاوجر يصدر بعد تأكيد التذكرة ولا يخصم من السعر الحالي. السعر والتوفر قابلان للتغير حتى الإصدار؛ لم يتم إنشاء حجز.';
 }
 class FlyChamPortalAdapter{
  constructor(page,{username,password,report=()=>{}}){this.page=page;this.username=username;this.password=password;this.report=report;this.protectedURL=null;}
@@ -78,7 +80,7 @@ class FlyChamPortalAdapter{
  }
  async searchFlightsForHeartbeat(){if(!this.protectedURL||new URL(this.protectedURL).origin!==ORIGIN)throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
  async search(request){
-  const config=validateLiveRequest(request);if(request.baggageRequest)throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
+  const config=validateLiveRequest(request);if(!flyChamBaggageAllowed(request))throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
   await this.searchFlightsForHeartbeat();const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
   const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
   let frame;for(let attempt=0;attempt<15;attempt++){for(const f of this.frames())if(await f.locator('#fAirport:visible').count()===1){frame=f;break;}if(frame)break;await this.page.waitForTimeout(500);}
@@ -90,15 +92,22 @@ class FlyChamPortalAdapter{
  }
  async runCustomerQuote(request,onProgress,isCurrent=async()=>{}){
   const offers=[],attempted=[],coverage=[];const dates=expandLiveRequests(request);
-  for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);try{
-   const frame=await this.search(dated),q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});
-   const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);
-   // This pilot verifies the supplier's selected first-page itinerary only.
-   // Do not imply that all timings or the entire period have been compared.
-   coverage.push({date:dated.departureDate,status:'partial',confirmed:1,failed:0});
-   if(onProgress)await onProgress(formatFlyChamOffers(dated,[offer],{dates:attempted}),{offer,coverage});
-  }catch(error){coverage.push({date:dated.departureDate,status:'unverified',confirmed:0,failed:1});this.report(/^FLYCHAM_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
-  return{reply:formatFlyChamOffers(request,offers,{dates:attempted}),outcome:offers.length?'partial':'failed',coverage};
+  for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);const day={date:dated.departureDate,status:'unverified',confirmed:0,failed:0};coverage.push(day);try{
+   const frame=await this.search(dated);await waitForFlightResults(frame,dated.tripType==='one_way',ORIGIN);
+   const choices=await readFlightTimes(frame,dated.tripType==='one_way',ORIGIN),pairs=flightPairs(choices);
+   if(!pairs.length)throw Error('FLYCHAM_TIMINGS_UNCONFIRMED');
+   for(const choice of pairs){await isCurrent();try{
+    await selectFlightTimes(frame,choice,ORIGIN);
+    const q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});
+    if(q.timing.out.flight!==choice.out.flight.replace(/\s/g,''))throw Error('FLYCHAM_TIMING_NOT_MATCHED');
+    const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);day.confirmed++;
+    if(onProgress)await onProgress('',{offer,coverage});
+   }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.failed++;this.report('FLYCHAM_TIMING_UNCONFIRMED');}}
+   day.status=day.failed?'partial':'confirmed';
+  }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^FLYCHAM_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
+  const complete=coverage.length===dates.length&&coverage.every(d=>['confirmed','no_flights'].includes(d.status));
+
+  return{reply:formatFlyChamOffers(request,offers,{dates:attempted,complete}),outcome:offers.length?(complete?'done':'partial'):'failed',coverage};
  }
 }
 async function readFlyChamConfig(env){

@@ -11,7 +11,7 @@ test('signed WhatsApp request queues privately and completes one reply using aut
  try{
   assert.equal((await post('/internal/quotes/claim',{})).status,401);
   assert.equal((await post('/internal/quotes/flycham-config',{})).status,401);
-  const auth={Authorization:'Bearer '+key};await post('/internal/quotes/claim',{},auth);
+  const auth={Authorization:'Bearer '+key};await post('/internal/quotes/heartbeat',{provider:'airarabia'},auth);
   const payload={entry:[{changes:[{field:'messages',value:{messages:[{from:'private-recipient',id:'unique-integration-test',type:'text',text:{body:'من الشارقة إلى دمشق، 11-11-2090، 18-11-2090، ذهاب وعودة، 1 بالغ، بدي 30 كيلو'}}]}}]}]};
   const signature='sha256='+crypto.createHmac('sha256',secret).update(JSON.stringify(payload)).digest('hex');
   assert.equal((await post('/webhooks/whatsapp',payload,{'x-hub-signature-256':signature})).status,200);
@@ -24,6 +24,6 @@ test('signed WhatsApp request queues privately and completes one reply using aut
   const complete={id:job.id,lease:job.lease,reply:'Verified test result'};
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,200);
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,409);
-  assert.equal(out.length,3);assert.equal(out[2].to,'private-recipient');
+  assert.equal(out.length,2);assert.equal(out[1].to,'private-recipient');
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);}
 });

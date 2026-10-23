@@ -35,6 +35,6 @@ test('cheapest month round-trip intent asks stay length and preserves the date r
 });
 
 test('cheapest-week request always asks for passenger count before pricing',()=>{
- resetSessions();const first=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع',{now});assert.equal(first.complete,false);assert.match(first.reply,/كم عدد المسافرين/);
+ resetSessions();const first=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع ذهاب فقط',{now});assert.equal(first.complete,false);assert.match(first.reply,/كم عدد المسافرين/);
  const r=handleMessage('week-auto','1 بالغ',{now});assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.end,'2026-10-25');assert.equal(r.request.passengers.adults,1);
 });

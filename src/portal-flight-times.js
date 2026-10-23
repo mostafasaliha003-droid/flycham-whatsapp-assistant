@@ -1,18 +1,20 @@
 'use strict';
-async function waitForFlightResults(frame,oneWay=false){
- await frame.waitForFunction(oneWay=>{
-  if(location.origin!=='https://agents.airarabia.com')return false;
+async function waitForFlightResults(frame,oneWay=false,origin='https://agents.airarabia.com'){
+ if(!['https://agents.airarabia.com','https://reservations.flycham.com'].includes(origin))throw Error('UNTRUSTED');
+ await frame.waitForFunction(({oneWay,origin})=>{
+  if(location.origin!==origin)return false;
   if(typeof jQuery==='undefined'||jQuery.active!==0||typeof UI_tabSearchFlights==='undefined'||!UI_tabSearchFlights.objResSrchParams)return false;
   const out=typeof jsonOutFlts==='undefined'?null:jsonOutFlts;
   const back=typeof jsonRetFlts==='undefined'?null:jsonRetFlts;
   return Array.isArray(out)&&(oneWay||Array.isArray(back));
- },oneWay,{timeout:45000});
+ },{oneWay,origin},{timeout:45000});
  const counts=await frame.evaluate(oneWay=>({out:jsonOutFlts.length,back:oneWay?null:jsonRetFlts.length}),oneWay);
  if(!counts.out||(!oneWay&&!counts.back))throw Error('NO_FLIGHTS_CONFIRMED');
 }
-async function readFlightTimes(frame,oneWay=false){
- return frame.evaluate(oneWay=>{
-  if(location.origin!=='https://agents.airarabia.com')throw Error('UNTRUSTED');
+async function readFlightTimes(frame,oneWay=false,origin='https://agents.airarabia.com'){
+ if(!['https://agents.airarabia.com','https://reservations.flycham.com'].includes(origin))throw Error('UNTRUSTED');
+ return frame.evaluate(({oneWay,origin})=>{
+  if(location.origin!==origin)throw Error('UNTRUSTED');
   const clean=v=>{const s=String(v||'').replace(/\s+/g,' ').trim();return s.length<=120&&/^[\p{L}\p{N}\s:.,/+()-]+$/u.test(s)?s:null;};
   const read=(id,name)=>{
     const table=document.getElementById(id),cols=table?.p?.colModel;
@@ -29,10 +31,10 @@ async function readFlightTimes(frame,oneWay=false){
     });
   };
   return {out:read('tblOutboundFlights','depatureSelection'),back:oneWay?[]:read('tblInboundFlights','returnSelection')};
- },oneWay);
+ },{oneWay,origin});
 }
-async function selectFlightTimes(frame,choice){
- const current=await readFlightTimes(frame,!choice.back);
+async function selectFlightTimes(frame,choice,origin='https://agents.airarabia.com'){
+ const current=await readFlightTimes(frame,!choice.back,origin);
  for(const [leg,name]of [['out','depatureSelection'],['back','returnSelection']]){
   const wanted=choice[leg];if(!wanted)continue;
   const found=current[leg].find(f=>f.row===wanted.row);
