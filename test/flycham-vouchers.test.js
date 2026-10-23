@@ -25,3 +25,7 @@ test('cancellation blocks future use, malformed tokens are invalid and ephemeral
 test('voucher image renders a named PNG with original logo and QR without network requests',async()=>{
  const {dir,s}=store();try{const v=s.issue(input),png=await voucherPNG(v,'https://flycham-whatsapp-assistant.onrender.com',{demo:true});assert.equal(png.subarray(1,4).toString(),'PNG');assert.ok(png.length>20000);}finally{s.close();fs.rmSync(dir,{recursive:true});}
 });
+
+test('staff overview aggregates actual ledger states and never discloses verification tokens',()=>{
+ const {dir,s}=store();try{const v=s.issue(input);s.issue({...input,bookingReference:'SECOND',tripType:'round_trip'});let overview=s.overview();assert.equal(overview.summary.totalCount,2);assert.equal(overview.summary.validCount,2);assert.equal(overview.summary.validValue,'35.00');assert.equal(overview.items[0].token,undefined);assert.equal(overview.items[0].customerName,input.customerName);s.redeem(v.id,'new-service-1');overview=s.overview();assert.equal(overview.summary.validValue,'25.00');assert.equal(overview.summary.usedCount,1);}finally{s.close();fs.rmSync(dir,{recursive:true});}
+});

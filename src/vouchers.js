@@ -31,6 +31,11 @@ class VoucherStore{
  get(id){const row=this.db.prepare('SELECT * FROM vouchers WHERE id=?').get(id);return row?{...this.public(row),...this.decrypt(row.secret)}:null;}
  redeem(id,reference){if(typeof reference!=='string'||reference.trim().length<3||reference.length>100)throw Error('VOUCHER_REDEMPTION_REFERENCE_REQUIRED');const result=this.db.prepare("UPDATE vouchers SET state='used',redeemed=?,redemption_ref=? WHERE id=? AND state='valid' AND expires>?").run(this.now(),this.encrypt({reference:reference.trim()}),id,this.now());if(result.changes!==1)throw Error('VOUCHER_NOT_REDEEMABLE');return this.public(this.db.prepare('SELECT * FROM vouchers WHERE id=?').get(id));}
  cancel(id){const r=this.db.prepare("UPDATE vouchers SET state='cancelled' WHERE id=? AND state='valid'").run(id);if(r.changes!==1)throw Error('VOUCHER_NOT_CANCELLABLE');return this.public(this.db.prepare('SELECT * FROM vouchers WHERE id=?').get(id));}
+ overview(){
+  const stamp=this.now(),counts=this.db.prepare("SELECT count(*) totalCount, coalesce(sum(CASE WHEN state='valid' AND expires>? THEN 1 ELSE 0 END),0) validCount, coalesce(sum(CASE WHEN state='used' THEN 1 ELSE 0 END),0) usedCount, coalesce(sum(CASE WHEN state='valid' AND expires>? THEN value ELSE 0 END),0) validValue FROM vouchers").get(stamp,stamp);
+  const items=this.db.prepare('SELECT * FROM vouchers ORDER BY issued DESC,id DESC LIMIT 100').all().map(row=>{const secret=this.decrypt(row.secret);return{...this.public(row),customerName:secret.customerName,tripType:secret.tripType};});
+  return {ready:true,updatedAt:new Date(stamp).toISOString(),summary:{...counts,validValue:formatAED(BigInt(counts.validValue))},items};
+ }
  close(){this.db.close();}
 }
 let active;

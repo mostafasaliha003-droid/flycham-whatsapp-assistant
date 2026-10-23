@@ -20,3 +20,9 @@
 6. Fly Cham worker session/secrets and multi-provider quote routing are still required before automatic Fly Cham WhatsApp quotes work. Cloud Browser login is not a Render worker login; do not copy cookies.
 
 No resource plans, disks, production hotel systems or secrets were changed. Do not claim vouchers are live or promise immediate issuance while durable storage/admin configuration is missing.
+
+## Employee dashboard
+
+Arabic RTL responsive dashboard at `/vouchers-admin`, with original REMAL logo, desktop sidebar/mobile navigation, real ledger totals, last 100 vouchers, name/reference search, state filters, sorting, named-image preview/download, staff-confirmed issuance/send/redeem/cancel dialogs and explicit offline/not-ready/empty/error states. Keys stay in memory; lock clears records and preview. No sample customer rows or invented statistics. Authenticated `/internal/vouchers/overview` aggregates actual ledger data and excludes QR tokens.
+
+Live behavior is polling every 15 seconds after successful authentication, paused when hidden and refreshed on returning; it is not WebSocket push. Network errors retain clearly stale data, stop issuance in the UI and expose the last successful sync time. Missing durable storage gives `ready:false` with null totals (displayed as dashes), not zero live balances.
