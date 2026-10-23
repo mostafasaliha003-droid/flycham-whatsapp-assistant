@@ -1,7 +1,7 @@
 'use strict';
 
-// Read-only, finite classifications: never return page text, input values,
-// account details, URLs, cookies or arbitrary DOM attributes in logs.
+// Read-only airport-menu diagnostics. No input values, account details,
+// URLs, cookies or arbitrary DOM attributes are returned.
 function inspectAirportMenu({ inputId, origin }) {
   if (origin !== 'https://reservations.flycham.com' || location.origin !== origin || !['fAirport','tAirport'].includes(inputId)) return { trusted: false };
   const visible = e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
@@ -12,6 +12,7 @@ function inspectAirportMenu({ inputId, origin }) {
   const nodes = Array.from(document.querySelectorAll('li,[role="option"],a,div,span,td')).filter(e => visible(e) && !e.querySelector('input,select,textarea,button'));
   const labels = nodes.map(e => (e.textContent || '').replace(/\s+/g,' ').trim().toUpperCase()).filter(t => t.length > 0 && t.length <= 120);
   const airportLabels = labels.filter(t => names.some(n => new RegExp('\\b'+n+'\\b').test(t)) || codes.some(c => new RegExp('\\b'+c+'\\b').test(t)));
+  const safeLabels = [...new Set(airportLabels.filter(t => codes.some(c => new RegExp('\\b'+c+'\\b').test(t)) && names.some(n => new RegExp('\\b'+n+'\\b').test(t)) && /^[A-Z0-9 (),.\-/:]+$/.test(t) && !/[0-9]{4}|[A-Z]{25}/.test(t)))].slice(0,8);
   const features = ['TERMINAL','INTL','INTERNATIONAL','AIRPORT','JEBEL','ALI','MAKTOUM','WORLD','CENTRAL','FREE','ZONE','CITY'];
   return {
     trusted: true, inputReady: true,
@@ -19,6 +20,7 @@ function inspectAirportMenu({ inputId, origin }) {
     codes: codes.filter(c => airportLabels.some(t => new RegExp('\\b'+c+'\\b').test(t))),
     names: names.filter(n => airportLabels.some(t => new RegExp('\\b'+n+'\\b').test(t))),
     features: features.filter(n => airportLabels.some(t => new RegExp('\\b'+n+'\\b').test(t))),
+    airportLabels: safeLabels,
     noMatches: labels.some(t => /^(?:NO (?:MATCHES|RESULTS|AIRPORTS)(?: FOUND)?|NOT FOUND)\.?$/.test(t)),
   };
 }
