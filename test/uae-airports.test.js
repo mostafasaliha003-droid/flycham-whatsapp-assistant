@@ -23,3 +23,9 @@ test('failed airport selection ends same-provider monthly lookup without marking
  const comparison=[...q.comparisons.values()][0];const failed=comparison.children.filter(c=>c.provider==='flycham');assert.ok(failed.every(c=>c.status==='unverified'));
  const {renderComparison}=require('../src/quote-comparison');const reply=renderComparison(comparison);assert.match(reply,/تعذر تأكيد اختيار المطار/);assert.doesNotMatch(reply,/الأسعار تشمل الرسوم/);assert.match(reply,/لا يعني عدم وجود رحلات/);
 });
+for(const text of ['شفلي من دبي','نفس الرحله'])test('explicit retry keeps known November range: '+text,async()=>{
+ const request={origin:'دبي',destination:'دمشق',departureDate:null,departureRange:{start:'2026-11-01',end:'2026-11-30'},tripType:'one_way',returnDate:null,passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,source:'default30',requestedByCustomer:false}};
+ const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>({intent:'explain',fields:{},question:'أي فترة بتناسبك؟',option:null})});
+ e.store.set('retry',{history:[],offers:[],base:{request,submitted:true,awaiting:null,at:now},status:'done'});
+ const r=await e.handle('retry',text,{now});assert.equal(r.complete,true);assert.deepEqual(r.request.departureRange,request.departureRange);assert.equal(r.request.origin,'دبي');assert.equal(r.request.passengers.adults,1);assert.doesNotMatch(r.reply,/أي فترة|اي فترة|طلبك السابق مسجل/);
+});
