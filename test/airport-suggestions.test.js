@@ -4,12 +4,12 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { airportSuggestionAction } = require('../src/airport-suggestions');
 
-function fixture(texts, { hidden = false, foreign = false } = {}) {
+function fixture(texts, { hidden = false, foreign = false, origin='https://agents.airarabia.com' } = {}) {
   let clicks = 0;
   const nodes = texts.map(text => ({ textContent: text, getClientRects: () => hidden ? [] : [1], parentElement: null, querySelectorAll: () => [], click: () => { clicks++; } }));
   const input = { getClientRects: () => [1], parentElement: null };
   const context = {
-    location: { origin: foreign ? 'https://other.example' : 'https://agents.airarabia.com' },
+    location: { origin: foreign ? 'https://other.example' : origin },
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     document: { querySelectorAll: selector => selector.startsWith('[id=') ? [input] : nodes },
   };
@@ -56,4 +56,10 @@ test('treats city and IATA spans inside one list option as one suggestion', () =
   });
   assert.equal(result, option);
   assert.equal(clicks, 0);
+});
+
+test('FlyCham suggestions are allowed only when the caller and page both name the trusted FlyCham origin',()=>{
+ const origin='https://reservations.flycham.com',f=fixture(['Sharjah'],{origin});
+ assert.equal(f.call({inputId:'fAirport',code:'SHJ',origin}).status,'READY');assert.equal(f.call({inputId:'fAirport',code:'SHJ'}).status,'UNTRUSTED');
+ assert.equal(f.call({inputId:'fAirport',code:'SHJ',origin:'https://other.example'}).status,'UNTRUSTED');
 });

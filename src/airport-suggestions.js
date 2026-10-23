@@ -1,8 +1,8 @@
 'use strict';
 
 // Normal UI selection only. No hidden airport field or supplier API is changed.
-function airportSuggestionAction({ inputId, code, operation = 'inspect' }) {
-  if (location.origin !== 'https://agents.airarabia.com') return { status: 'UNTRUSTED' };
+function airportSuggestionAction({ inputId, code, operation = 'inspect', origin = 'https://agents.airarabia.com' }) {
+  if (!['https://agents.airarabia.com','https://reservations.flycham.com'].includes(origin) || location.origin !== origin) return { status: 'UNTRUSTED' };
   const airports = {
     SHJ: ['SHJ', 'SHARJAH', 'AIRPORT', 'INTERNATIONAL', 'UNITED', 'ARAB', 'EMIRATES', 'UAE'],
     DAM: ['DAM', 'DAMASCUS', 'AIRPORT', 'INTERNATIONAL', 'SYRIA', 'SYRIAN', 'ARAB', 'REPUBLIC'],

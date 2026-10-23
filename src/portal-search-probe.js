@@ -14,7 +14,7 @@ function airportCodeConfirmed(value, code) {
 }
 
 // A bounded synthetic search only; this module has no booking/passenger actions.
-async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {} } = {}) {
+async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {}, origin='https://agents.airarabia.com' } = {}) {
   const names = { SHJ: 'Sharjah', DAM: 'Damascus' };
   if (!names[code] || !['fAirport', 'tAirport'].includes(inputId) || hiddenId !== (inputId === 'fAirport' ? 'fromAirport' : 'toAirport')) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
   const field = frame.locator(`#${inputId}`);
@@ -26,14 +26,14 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
     const deadline = now() + lookupMs;
     let lastState;
     do {
-      const state = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'inspect' });
+      const state = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'inspect',origin });
       if (['READY','NONE','AMBIGUOUS','INPUT_UNAVAILABLE'].includes(state?.status) && state.status !== lastState) {
         lastState = state.status;
         report(`PORTAL_AIRPORT_MENU_${state.status}`);
       }
       if (state?.status === 'AMBIGUOUS') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
       if (state?.status === 'READY') {
-        const handle = await frame.evaluateHandle(airportSuggestionAction, { inputId, code, operation: 'resolve' });
+        const handle = await frame.evaluateHandle(airportSuggestionAction, { inputId, code, operation: 'resolve',origin });
         try {
           const element = handle.asElement();
           if (!element) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
@@ -113,9 +113,9 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     if (requestTripType==='round_trip' && !/^\d{2}\/\d{2}\/\d{4}$/.test(requestedReturnDate || '')) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   }
   report('PORTAL_PROBE_STAGE_ORIGIN');
-  await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report });
+  await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
   report('PORTAL_PROBE_STAGE_DESTINATION');
-  await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report });
+  await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
   report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
   await frame.locator('#departureDate').fill(departureDate);
   if (returnDate!==null) await frame.locator('#returnDate').fill(returnDate);

@@ -109,7 +109,7 @@ class FlyChamPortalAdapter{
     if(onProgress)await onProgress('',{offer,coverage});
    }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.failed++;this.report('FLYCHAM_TIMING_UNCONFIRMED');}}
    day.status=day.failed?'partial':'confirmed';
-  }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^FLYCHAM_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
+  }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
   const complete=coverage.length===dates.length&&coverage.every(d=>['confirmed','no_flights'].includes(d.status));
 
   return{reply:formatFlyChamOffers(request,offers,{dates:attempted,complete}),outcome:offers.length?(complete?'done':'partial'):'failed',coverage};
