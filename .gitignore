@@ -4,3 +4,9 @@
 node_modules/
 npm-debug.log*
 .DS_Store
+
+# Runtime voucher ledgers and private exports
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*

@@ -6,7 +6,8 @@ const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { AssistantEngine } = require('./assistant-engine');
 const { MessageBatcher } = require('./message-batcher');
-const { sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
+const {handleVoucherRequest}=require('./voucher-http');
+const { sendImageMessage,sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const { expandLiveRequests } = require('./live-quote');
 const quoteJobs = new QuoteJobs();
@@ -84,6 +85,7 @@ function claimJob(){const j=quoteJobs.claim();if(j)assistant.jobState(quoteJobs.
 function createServer() {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
     if(url.pathname.startsWith('/internal/quotes/')){
       if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED!=='true' || !validQueueKey(request.headers.authorization,process.env.AIR_ARABIA_QUOTE_QUEUE_KEY)){
         response.writeHead(401).end('Unauthorized');return;

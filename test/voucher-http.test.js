@@ -1,0 +1,7 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http');
+const {handleVoucherRequest}=require('../src/voucher-http');
+test('voucher HTTP does not expose admin actions and refuses issuance on ephemeral storage',async()=>{
+ const env={ASSISTANT_ADMIN_KEY:'a'.repeat(40)};const server=http.createServer(async(req,res)=>{if(!await handleVoucherRequest(req,res,new URL(req.url,'http://localhost'),{env,readBody:async()=>Buffer.from('{}')}))res.writeHead(404).end();});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{assert.equal((await fetch(base+'/internal/vouchers/status')).status,401);const headers={Authorization:'Bearer '+env.ASSISTANT_ADMIN_KEY};const status=await(await fetch(base+'/internal/vouchers/status',{headers})).json();assert.equal(status.ready,false);const issue=await fetch(base+'/internal/vouchers/issue',{method:'POST',headers});assert.equal(issue.status,503);assert.equal((await issue.json()).error,'VOUCHER_DURABLE_STORAGE_REQUIRED');assert.equal((await fetch(base+'/vouchers-admin')).status,200);assert.equal((await fetch(base+'/vouchers/verify/'+'x'.repeat(32))).status,503);}finally{await new Promise(r=>server.close(r));}
+});
