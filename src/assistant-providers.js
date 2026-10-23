@@ -15,7 +15,19 @@ function retryDelay(response,now){const raw=response.headers?.get?.('retry-after
 async function failHTTP(response,p,now){let code='';if(p==='openai'){try{code=String((await response.json())?.error?.code||'').toUpperCase().replace(/[^A-Z0-9_]/g,'').slice(0,50);}catch{}}
  const error=Error('NLU_HTTP_'+response.status+(code?'_'+code:''));error.retryMs=retryDelay(response,now);throw error;
 }
-function parseDecision(output,validate){if(typeof output!=='string'||output.length>30000)throw Error('NLU_INVALID');const text=output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/,'$1');try{return validate(JSON.parse(text));}catch{throw Error('NLU_INVALID');}}
+function parseDecision(output,validate,schema){
+ if(typeof output!=='string'||output.length>30000)throw Error('NLU_INVALID_OUTPUT');
+ const text=output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/,'$1');
+ let d;try{d=JSON.parse(text);}catch{throw Error('NLU_INVALID_JSON');}
+ // Missing nullable extraction slots mean unchanged, never inferred travel facts.
+ if(d&&typeof d==='object'&&!Array.isArray(d)&&d.fields&&typeof d.fields==='object'&&!Array.isArray(d.fields)){
+  for(const [k,spec] of Object.entries(schema.properties.fields.properties)){
+   if(!Object.hasOwn(d.fields,k))d.fields[k]=spec.type==='array'?[]:null;
+  }
+  for(const k of ['question','option'])if(!Object.hasOwn(d,k))d[k]=null;
+ }
+ try{return validate(d);}catch{throw Error('NLU_INVALID_SCHEMA');}
+}
 async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision}){
  const model=modelFor(p,env),jsonInstructions=instructions+' Output one JSON object, no markdown, no reasoning. JSON schema: '+JSON.stringify(schema);
  let url,headers,body;
@@ -29,7 +41,7 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
   url='https://api.openai.com/v1/responses';headers={Authorization:'Bearer '+env.OPENAI_API_KEY,'Content-Type':'application/json'};
   body={model,store:false,instructions,input,max_output_tokens:1200,text:{format:{type:'json_schema',name:'travel_intent',strict:true,schema}}};
  }else throw Error('NLU_PROVIDER_NOT_ALLOWED');
- const response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(15000),body:JSON.stringify(body)});
+ let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(p==='cline'?45000:20000),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
  if(!response.ok)await failHTTP(response,p,now);
  const data=await response.json();let output;
  if(p==='cline'){
@@ -42,7 +54,7 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
  }else{
   if(data.status!=='completed')throw Error('NLU_INCOMPLETE');output=(data.output||[]).flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('');
  }
- return parseDecision(output,validateDecision);
+ return parseDecision(output,validateDecision,schema);
 }
 async function attempt(p,options){
  const state=stateFor(p,options.env),now=options.now;

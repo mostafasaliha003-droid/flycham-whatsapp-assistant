@@ -86,3 +86,17 @@ test('privacy minimization preserves dates, weights and offer rankings while rem
 test('NLU instructions do not share internal commission amounts with providers',async()=>{
  await understand('hello',{}, {env:{CLINE_API_KEY:'cline-no-margin'},fetchImpl:async(url,options)=>{const body=JSON.parse(options.body);assert.doesNotMatch(body.messages[0].content,/ticketMarginAED|extraWeightMarginAED|paidSeatMarginAED|paidMealMarginAED/);return clineResponse(decision());}});
 });
+
+test('sparse extraction fills unchanged slots but never invents trip facts',async()=>{
+ const d=await understand('ثلاثين كيلو',{}, {env:{GEMINI_API_KEY:'sparse-safe'},fetchImpl:async()=>googleResponse({intent:'change',fields:{weightKg:30}})});
+ assert.equal(d.fields.weightKg,30);assert.equal(d.fields.adults,null);assert.equal(d.fields.tripType,null);assert.deepEqual(d.fields.ages,[]);assert.equal(d.question,null);
+ for(const [key,value] of [['price',100],['tripType','invented']]){
+  await assert.rejects(understand('x',{}, {env:{GEMINI_API_KEY:'sparse-invalid-'+key},fetchImpl:async()=>googleResponse({intent:'change',fields:{[key]:value}})}),/NLU_INVALID_SCHEMA/);
+ }
+});
+test('provider timeout has a safe diagnostic and falls back without leaking exception text',async()=>{
+ let calls=0;
+ const d=await understand('مرحبا',{}, {env:{CLINE_API_KEY:'timeout-safe',GEMINI_API_KEY:'timeout-fallback'},fetchImpl:async url=>{
+  calls++;if(url.includes('api.cline.bot'))throw Object.assign(Error('PRIVATE_NETWORK_DETAIL'),{name:'TimeoutError'});return googleResponse(decision());
+ }});assert.equal(calls,2);assert.equal(d.intent,'change');
+});
