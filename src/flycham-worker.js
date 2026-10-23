@@ -20,30 +20,38 @@ class FlyChamPortalAdapter{
  async isAuthenticated(){return Boolean(await this.authenticatedFrame());}
  async signIn(){
   this.report('FLYCHAM_LOGIN_STARTED');
-  const context=this.page.context(),windows=[],onPage=p=>windows.push(p);context.on('page',onPage);
-  try{await this.page.goto(ORIGIN+'/xbe/',{waitUntil:'domcontentloaded',timeout:45000});}finally{context.removeListener('page',onPage);}
-  const automatic=windows.find(p=>trusted(p));if(automatic){this.page=automatic;await this.page.waitForLoadState('domcontentloaded');}
-  if(await this.isAuthenticated()){this.protectedURL=this.page.url();return;}
-  const link=this.page.getByRole('link',{name:'If pop-up blocked, Click here to login',exact:true});
-  if(await link.count()===1){
-   const popup=await Promise.all([this.page.waitForEvent('popup',{timeout:15000}),link.click()]).then(x=>x[0]);
-   this.page=popup;await this.page.waitForLoadState('domcontentloaded');
+  const root=this.page,context=root.context();
+  await root.goto(ORIGIN+'/xbe/',{waitUntil:'domcontentloaded',timeout:45000});
+  const suitable=p=>!p.isClosed()&&p.frames().some(trusted);
+  let popup;
+  for(let i=0;i<16;i++){popup=context.pages().find(p=>p!==root&&suitable(p));if(popup)break;await root.waitForTimeout(250);}
+  const link=root.getByRole('link',{name:'If pop-up blocked, Click here to login',exact:true});
+  if(!popup&&await link.count()===1){
+   this.report('FLYCHAM_LOGIN_POPUP_OPENING');
+   const opened=root.waitForEvent('popup',{timeout:10000}).catch(()=>null);await link.click();popup=await opened;
+   if(!popup)popup=context.pages().find(p=>p!==root&&suitable(p));
+   if(!popup)throw Error('FLYCHAM_LOGIN_POPUP_NOT_OPENED');
   }
-  if(!trusted(this.page))throw Error('FLYCHAM_UNTRUSTED_ORIGIN');
-  if(await this.isAuthenticated()){this.protectedURL=this.page.url();return;}
-  const password=this.page.locator('input[type="password"]:visible');
-  const users=this.page.locator('input[type="text"]:visible:not([readonly]),input[type="email"]:visible:not([readonly])');
+  if(popup){this.page=popup;await this.page.waitForLoadState('domcontentloaded');}
+  for(let i=0;i<20&&!this.frames().length;i++)await this.page.waitForTimeout(250);
+  if(!this.frames().length){this.report('FLYCHAM_LOGIN_WINDOW_FRAMES_'+this.page.frames().length);throw Error('FLYCHAM_UNTRUSTED_ORIGIN');}
+  if(await this.isAuthenticated()){this.protectedURL=trusted(this.page)?this.page.url():(await this.authenticatedFrame()).url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}
+  let loginFrame;for(let attempt=0;attempt<40&&!loginFrame;attempt++){for(const frame of this.frames())if(await frame.locator('input[type="password"]:visible').count()===1){if(loginFrame)throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');loginFrame=frame;}if(!loginFrame)await this.page.waitForTimeout(250);}
+  if(!loginFrame)throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');
+  this.report('FLYCHAM_LOGIN_FORM_READY');
+  const password=loginFrame.locator('input[type="password"]:visible');
+  const users=loginFrame.locator('input[type="text"]:visible:not([readonly]),input[type="email"]:visible:not([readonly])');
   if(await password.count()!==1||await users.count()!==1){this.report('FLYCHAM_LOGIN_TEXT_FIELDS_'+await users.count());this.report('FLYCHAM_LOGIN_PASSWORD_FIELDS_'+await password.count());throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');}
-  if(await this.page.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');
+  if(await loginFrame.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');
   await users.fill(this.username);await password.fill(this.password);
-  let submit=this.page.getByRole('button',{name:/^(?:log\s*in|sign\s*in)$/i});
-  if(await submit.count()!==1)submit=this.page.locator('input[type="submit"]:visible');
+  let submit=loginFrame.getByRole('button',{name:/^(?:log\s*in|sign\s*in)$/i});
+  if(await submit.count()!==1)submit=loginFrame.locator('input[type="submit"]:visible');
   if(await submit.count()!==1)throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');
   await submit.click();
-  for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=this.page.url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}if(await this.page.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
+  for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=trusted(this.page)?this.page.url():(await this.authenticatedFrame()).url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}for(const f of this.frames())if(await f.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
   throw Error('FLYCHAM_LOGIN_NOT_CONFIRMED');
  }
- async searchFlightsForHeartbeat(){if(!this.protectedURL||!trusted(this.page))throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
+ async searchFlightsForHeartbeat(){if(!this.protectedURL||new URL(this.protectedURL).origin!==ORIGIN)throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
  async search(request){
   const config=validateLiveRequest(request);if(request.baggageRequest)throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
   await this.searchFlightsForHeartbeat();const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
@@ -82,7 +90,7 @@ async function runFlyCham({env=process.env,launch=o=>chromium.launch(o),log=cons
   session=new PortalSession(adapter);session.start(()=>{log.log('FLYCHAM_SESSION_UNAVAILABLE');shutdown().catch(()=>{});});
   stop=startQuotePolling(session,{env,log,provider:'flycham'});
   await new Promise(resolve=>{process.once('SIGTERM',resolve);process.once('SIGINT',resolve);});
- }catch(e){log.log(/^FLYCHAM_[A-Z0-9_]+$/.test(e.message)?e.message:'FLYCHAM_PORTAL_UNAVAILABLE');}
+ }catch(e){log.log(/^FLYCHAM_[A-Z0-9_]+$/.test(e.message)?e.message:e.name==='TimeoutError'?'FLYCHAM_TIMEOUT':e.name==='TypeError'?'FLYCHAM_TYPE_ERROR':'FLYCHAM_PORTAL_UNAVAILABLE');}
  finally{await shutdown().catch(()=>{});}
 }
 module.exports={FlyChamPortalAdapter,runFlyCham,readFlyChamConfig,formatFlyChamOffers};

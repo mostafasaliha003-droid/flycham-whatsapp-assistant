@@ -29,3 +29,12 @@ test('explicit FlyCham preference is retained through a short amendment',()=>{
  const a=c.handleMessage('fly-preference','من الشارقة على الشام، 11-11-2026، ذهاب فقط، 1 بالغ، فلاي شام',{now});assert.equal(a.request.provider,'flycham');
  const b=c.handleMessage('fly-preference','12-11-2026',{now});assert.equal(b.request.provider,'flycham');assert.equal(b.request.departureDate,'2026-11-12');
 });
+
+test('login follows an automatically opened blank popup and fills only its trusted supplier frame',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let authenticated=false;const filled=[],events=[];
+ const frame={url:()=>authenticated?'https://reservations.flycham.com/xbe/private/home':'https://reservations.flycham.com/xbe/public/login',locator:selector=>({count:async()=>selector.includes('autocomplete')?0:1,fill:async value=>filled.push(value)}),getByRole:()=>({count:async()=>1,click:async()=>{authenticated=true;}})};
+ const popup={isClosed:()=>false,frames:()=>[frame],url:()=> 'about:blank',waitForLoadState:async()=>{},waitForTimeout:async()=>{}};
+ const root={goto:async()=>{},context:()=>({pages:()=>[root,popup]}),frames:()=>[],getByRole:()=>({count:async()=>1}),waitForTimeout:async()=>{}};
+ const adapter=new FlyChamPortalAdapter(root,{username:'fake-user',password:'fake-password',report:e=>events.push(e)});adapter.authenticatedFrame=async()=>authenticated?frame:null;
+ await adapter.signIn();assert.equal(adapter.page,popup);assert.deepEqual(filled,['fake-user','fake-password']);assert.match(adapter.protectedURL,/\/private\/home$/);assert.ok(events.includes('FLYCHAM_PORTAL_AUTHENTICATED'));
+});
