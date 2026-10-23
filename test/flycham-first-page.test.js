@@ -22,3 +22,7 @@ test('first-page total must match the requested route and dates before it can be
 test('FlyCham supplier dates can use a four-digit year without losing request validation',async()=>{
  const request={origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',tripType:'one_way'};const q=await readFlyChamFirstPage(frame({fullYear:true}),{tripType:'one_way',request});assert.equal(q.price.sellingTotal,'683.00');assert.match(q.timing.out.departure,/2026/);
 });
+
+test('Playwright-prefixed page errors retain only the known safe failure code',async()=>{
+ const f={evaluate:async()=>{throw Error('frame.evaluate: Error: FLYCHAM_FLIGHT_DETAILS_INCOMPLETE at private-page-details');}};await assert.rejects(readFlyChamFirstPage(f,{tripType:'one_way'}),error=>error.message==='FLYCHAM_FLIGHT_DETAILS_INCOMPLETE');
+});
