@@ -5,6 +5,7 @@ function airportSuggestionAction({ inputId, code, operation = 'inspect', origin 
   if (!['https://agents.airarabia.com','https://reservations.flycham.com'].includes(origin) || location.origin !== origin) return { status: 'UNTRUSTED' };
   const airports = {
     SHJ: ['SHJ', 'SHARJAH', 'AIRPORT', 'INTERNATIONAL', 'UNITED', 'ARAB', 'EMIRATES', 'UAE'],
+    ALP: ['ALP', 'ALEPPO', 'AIRPORT', 'INTERNATIONAL', 'SYRIA', 'SYRIAN', 'ARAB', 'REPUBLIC'],
     DAM: ['DAM', 'DAMASCUS', 'AIRPORT', 'INTERNATIONAL', 'SYRIA', 'SYRIAN', 'ARAB', 'REPUBLIC'],
   };
   if (!airports[code] || !['fAirport', 'tAirport'].includes(inputId)) return { status: 'INVALID' };

@@ -39,7 +39,7 @@ test('collects required details over turns and never claims a fare was checked',
   resetSessions();
   const first = handleMessage('customer-1', `من دبي إلى دمشق، ${futureDate(20)} ذهاب فقط`);
   assert.equal(first.complete, false);
-  assert.match(first.reply, /بالغين والأطفال/);
+  assert.match(first.reply, /كم عدد المسافرين/);
   const second = handleMessage('customer-1', '2 بالغين');
   assert.equal(second.complete, true);
   assert.match(second.reply, /طلب الاستعلام/);

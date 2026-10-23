@@ -7,13 +7,25 @@ const circuits=new Map();
 function aiProvider(env=process.env){return env.ASSISTANT_AI_PROVIDER||(env.CLINE_API_KEY?'cline':env.GEMINI_API_KEY?'gemma':'openai');}
 function keyFor(p,env){return p==='cline'?env.CLINE_API_KEY:p==='gemma'?env.GEMINI_API_KEY:p==='openai'?env.OPENAI_API_KEY:null;}
 function fallbackFor(env){return aiProvider(env)==='cline'&&env.ASSISTANT_AI_FALLBACK!=='none'?'gemma':null;}
-function aiConfigured(env=process.env){return Boolean(keyFor(aiProvider(env),env)||keyFor(fallbackFor(env),env));}
-function aiStatus(env=process.env){return{aiProvider:aiProvider(env),aiConfigured:aiConfigured(env),primaryConfigured:Boolean(keyFor(aiProvider(env),env)),fallbackProvider:fallbackFor(env),fallbackConfigured:Boolean(keyFor(fallbackFor(env),env))};}
+function aiConfigured(env=process.env){return Boolean(keyFor(aiProvider(env),env));}
+function aiStatus(env=process.env){return{aiProvider:aiProvider(env),aiConfigured:aiConfigured(env),primaryConfigured:Boolean(keyFor(aiProvider(env),env)),fallbackProvider:fallbackFor(env),fallbackConfigured:Boolean(keyFor(fallbackFor(env),env)),fallbackMode:aiProvider(env)==='cline'?'quota_only':null};}
 function modelFor(p,env){if(p==='cline'){const model=env.CLINE_MODEL||CLINE_MODEL;if(!CLINE_MODELS.has(model))throw Error('NLU_MODEL_NOT_ALLOWED');return model;}if(p==='gemma'){if(env.GEMINI_MODEL&&env.GEMINI_MODEL!==GEMMA_MODEL)throw Error('NLU_MODEL_NOT_ALLOWED');return GEMMA_MODEL;}return env.OPENAI_MODEL||'gpt-4o-mini';}
-function stateFor(p,env){const id=p+':'+createHash('sha256').update(String(keyFor(p,env))).digest('hex').slice(0,16)+':'+modelFor(p,env);if(!circuits.has(id)){if(circuits.size>=16)circuits.delete(circuits.keys().next().value);circuits.set(id,{until:0,failures:0,probing:false});}return circuits.get(id);}
+function stateFor(p,env){const id=p+':'+createHash('sha256').update(String(keyFor(p,env))).digest('hex').slice(0,16)+':'+modelFor(p,env);if(!circuits.has(id)){if(circuits.size>=16)circuits.delete(circuits.keys().next().value);circuits.set(id,{until:0,failures:0,probing:false,quotaExhausted:false});}return circuits.get(id);}
 function retryDelay(response,now){const raw=response.headers?.get?.('retry-after');if(raw){const ms=/^\d+(?:\.\d+)?$/.test(raw)?Number(raw)*1000:Date.parse(raw)-now;if(Number.isFinite(ms)&&ms>0)return Math.min(5*3600000,Math.max(1000,ms));}return response.status===429?300000:[401,402,403,404].includes(response.status)?900000:30000;}
-async function failHTTP(response,p,now){let code='';if(p==='openai'){try{code=String((await response.json())?.error?.code||'').toUpperCase().replace(/[^A-Z0-9_]/g,'').slice(0,50);}catch{}}
- const error=Error('NLU_HTTP_'+response.status+(code?'_'+code:''));error.retryMs=retryDelay(response,now);throw error;
+async function failHTTP(response,p,now){
+ let code='',quotaExhausted=false;
+ try{
+  const data=await response.json();
+  if(p==='openai')code=String(data?.error?.code||'').toUpperCase().replace(/[^A-Z0-9_]/g,'').slice(0,50);
+  if(p==='cline'&&[402,429].includes(response.status)){
+   const errorCode=String(data?.error?.code||data?.code||'').toLowerCase();
+   const message=String(data?.error?.message||data?.message||(typeof data?.error==='string'?data.error:'')).slice(0,2000).toLowerCase();
+   quotaExhausted=['insufficient_quota','quota_exceeded','quota_exhausted','usage_limit_reached','subscription_limit_reached','credits_exhausted','plan_limit_exceeded'].includes(errorCode)||
+    /(?:quota|credits?|(?:five|5)[ -]?hour(?:ly)?(?: usage)? limit|weekly (?:usage )?limit|monthly (?:usage )?limit|subscription (?:usage )?limit|clinepass (?:usage )?limit).{0,70}(?:exhausted|exceeded|depleted|reached|used up)|(?:exhausted|exceeded|depleted|reached|used up).{0,70}(?:quota|credits?|usage (?:cap|limit))/.test(message);
+  }
+ }catch{}
+ const error=Error('NLU_HTTP_'+response.status+(code?'_'+code:''));
+ error.retryMs=retryDelay(response,now);error.quotaExhausted=quotaExhausted;throw error;
 }
 function parseDecision(output,validate,schema){
  if(typeof output!=='string'||output.length>30000)throw Error('NLU_INVALID_OUTPUT');
@@ -41,7 +53,7 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
   url='https://api.openai.com/v1/responses';headers={Authorization:'Bearer '+env.OPENAI_API_KEY,'Content-Type':'application/json'};
   body={model,store:false,instructions,input,max_output_tokens:1200,text:{format:{type:'json_schema',name:'travel_intent',strict:true,schema}}};
  }else throw Error('NLU_PROVIDER_NOT_ALLOWED');
- let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(p==='cline'?45000:20000),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
+ let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(20000),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
  if(!response.ok)await failHTTP(response,p,now);
  const data=await response.json();let output;
  if(p==='cline'){
@@ -58,18 +70,26 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
 }
 async function attempt(p,options){
  const state=stateFor(p,options.env),now=options.now;
- if(state.until>now||state.probing)throw Error('NLU_COOLDOWN');
+ if(state.until>now||state.probing){const error=Error('NLU_COOLDOWN');error.quotaExhausted=state.quotaExhausted;throw error;}
  const probe=state.failures>0;if(probe)state.probing=true;
- try{const decision=await callProvider(p,options);state.failures=0;state.until=0;console.log('ASSISTANT_AI_OK_'+p.toUpperCase());return decision;}
- catch(error){state.failures++;state.until=now+(error.retryMs||30000);throw error;}
+ try{const decision=await callProvider(p,options);state.failures=0;state.until=0;state.quotaExhausted=false;console.log('ASSISTANT_AI_OK_'+p.toUpperCase());return decision;}
+ catch(error){state.failures++;state.quotaExhausted=error.quotaExhausted===true;state.until=now+(error.retryMs||30000);throw error;}
  finally{if(probe)state.probing=false;}
 }
 async function routeDecision(options){
- const primary=aiProvider(options.env),fallback=fallbackFor(options.env);let error;
- for(const p of [primary,fallback].filter(Boolean)){
-  if(!keyFor(p,options.env))continue;
-  try{return await attempt(p,p===primary?options:{...options,input:options.fallbackInput||options.input});}catch(e){error=e;console.log('ASSISTANT_AI_UNAVAILABLE_'+p.toUpperCase()+'_'+(/^NLU_[A-Z0-9_]+$/.test(e.message)?e.message:'NETWORK'));}
+ const primary=aiProvider(options.env),fallback=fallbackFor(options.env);
+ if(!keyFor(primary,options.env))return null;
+ try{return await attempt(primary,options);}
+ catch(error){
+  console.log('ASSISTANT_AI_UNAVAILABLE_'+primary.toUpperCase()+'_'+(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'NETWORK'));
+  // Only explicit Cline quota exhaustion authorizes Gemma, never latency,
+  // malformed replies, authentication problems or generic rate limiting.
+  if(primary==='cline'&&fallback&&keyFor(fallback,options.env)&&error.quotaExhausted===true){
+   console.log('ASSISTANT_AI_FALLBACK_QUOTA_CONFIRMED');
+   try{return await attempt(fallback,{...options,input:options.fallbackInput||options.input});}
+   catch(fallbackError){console.log('ASSISTANT_AI_UNAVAILABLE_'+fallback.toUpperCase()+'_'+(/^NLU_[A-Z0-9_]+$/.test(fallbackError.message)?fallbackError.message:'NETWORK'));throw fallbackError;}
+  }
+  throw error;
  }
- if(error)throw error;return null;
 }
 module.exports={aiProvider,aiConfigured,aiStatus,routeDecision,CLINE_MODEL,GEMMA_MODEL};

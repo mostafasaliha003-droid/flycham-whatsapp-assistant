@@ -11,7 +11,7 @@ const prompts = {
   departureDate: 'ما تاريخ الذهاب؟ اكتب التاريخ مثل 11-11-2026.',
   tripType: 'هل الرحلة ذهاب فقط أم ذهاب وعودة؟',
   returnDate: 'ما تاريخ العودة؟',
-  passengers: 'كم عدد المسافرين؟ اذكر البالغين والأطفال والرضع، وأعمار الأطفال والرضع.'
+  passengers: 'كم عدد المسافرين؟'
 };
 
 const digitMap = { '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9', '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4', '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9' };
@@ -242,7 +242,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
     state.awaiting=missing[0];
     if(routeClarification===missing[0])return{complete:false,clarification:'route_direction',reply:routeClarification==='destination'?`إي، المغادرة من ${request.origin} مسجّلة عندي. لوين${request.destinationCountry?' بسوريا':''} بدك توصل؟`:`تمام، الوجهة ${request.destination} مسجّلة عندي. من وين بدك تنطلق؟`};
     const prompt=missing[0]==='destination'&&request.origin?`مطار المغادرة ${request.origin} واضح. إلى أي مدينة${request.destinationCountry?' بسوريا':''} بدك تسافر؟ مثل دمشق أو حلب.`:missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
-    const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، فهمت تاريخ الذهاب ${request.departureDate}. `:'';
+    const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، موعد السفر ${request.departureDate}. `:'';
     return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. الربط الحالي يفحص الشارقة فقط، لذلك المقارنة لا تشمل باقي مطارات الإمارات. ':''}${understood}${prompt}` };
   }
   if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};

@@ -21,3 +21,9 @@ test('35 second default begins exactly at35000ms and explicit start flushes earl
  t.mock.timers.tick(1);await waiting;assert.equal(calls.length,1);
  const urgent=b.push('b',{text:'خلص ابحث'});t.mock.timers.tick(0);await urgent;assert.equal(calls.length,2);b.close();
 });
+test('interpretation starts during quiet collection without sending or acting before35seconds',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:0});const prepared=[],sent=[];
+ const b=new MessageBatcher(async(id,m)=>sent.push(m.map(x=>x.text)),{prepare:async(id,m)=>prepared.push(m.map(x=>x.text))});
+ const first=b.push('a',{text:'من الشارقة'});t.mock.timers.tick(10000);await drain();assert.deepEqual(prepared,[['من الشارقة']]);assert.equal(sent.length,0);
+ const second=b.push('a',{text:'لحلب'});t.mock.timers.tick(10000);await drain();assert.deepEqual(prepared.at(-1),['من الشارقة','لحلب']);t.mock.timers.tick(24999);await drain();assert.equal(sent.length,0);t.mock.timers.tick(1);await Promise.all([first,second]);assert.deepEqual(sent,[['من الشارقة','لحلب']]);b.close();
+});

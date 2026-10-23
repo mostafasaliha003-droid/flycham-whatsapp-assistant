@@ -51,19 +51,34 @@ function explainService(t,request={},status){
  return null;
 }
 class AssistantEngine{
- constructor({store=new AssistantState(),nlu=understand,env=process.env}={}){this.store=store;this.nlu=nlu;this.env=env;this.locks=new Map();}
- state(id){return this.store.get(id)||{history:[],offers:[],selected:null,base:null,previous:[],comparison:null,status:'idle',coverage:[]};}
+ constructor({store=new AssistantState(),nlu=understand,env=process.env}={}){this.store=store;this.nlu=nlu;this.env=env;this.locks=new Map();this.prepared=new Map();}
+ state(id){return {history:[],offers:[],selected:null,base:null,previous:[],comparison:null,status:'idle',coverage:[],...this.store.get(id)};}
  save(id,s){s.base=legacy.exportSession(id);this.store.set(id,s);}
+ preparationKey(s,text,turnMessages){return JSON.stringify([clean(text),s.base,s.history,s.questions,s.lastQuestion,s.offers,s.selected,s.status,turnMessages]);}
+ async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
+  if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
+  const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
+  if(this.prepared.get(id)?.key===key)return;
+  const snapshot=structuredClone(s);
+  const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
+  if(this.prepared.size>=100)this.prepared.delete(this.prepared.keys().next().value);
+  this.prepared.set(id,{key,promise,at:now});
+ }
  async handle(id,text,{now=Date.now(),quotedMessageId=null,turnMessages=[]}={}){
-  const before=this.locks.get(id)||Promise.resolve();const work=before.catch(()=>{}).then(()=>this.process(id,text,{now,quotedMessageId,turnMessages}));this.locks.set(id,work);try{return await work;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
+  const before=this.locks.get(id)||Promise.resolve();const work=before.catch(()=>{}).then(()=>this.process(id,text,{now,quotedMessageId,turnMessages}));this.locks.set(id,work);try{const result=await work;const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!result.reply.includes('معك أحمد')){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
  }
  async process(id,text,{now,quotedMessageId,turnMessages=[]}){
   const s=this.state(id),priorSelection=s.selected,priorBase=s.base;
+  const prepared=this.prepared.get(id),preparedKey=this.preparationKey(s,text,turnMessages);
+  const usePrepared=!quotedMessageId&&prepared?.key===preparedKey&&now-prepared.at<120000;
+  if(prepared)this.prepared.delete(id);
   const availableReferences=new Set(s.offers.map((o,i)=>o.reference||i+1));
   const mapped=quotedMessageId?s.offerMessages?.[quotedMessageId]:undefined;
   const direct=mapped===undefined&&quotedMessageId?s.offers.flatMap((o,i)=>o.messageId===quotedMessageId?[o.reference||i+1]:[]):[];
   const quotedOfferReferences=[...new Set([...(Array.isArray(mapped)?mapped:direct),...turnMessages.flatMap(m=>Array.isArray(m.quotedOfferReferences)?m.quotedOfferReferences:Number.isInteger(m.quotedOfferReference)?[m.quotedOfferReference]:[])])].filter(r=>Number.isInteger(r)&&availableReferences.has(r)).slice(0,80);
   if(quotedOfferReferences.length===1){const quoted=s.offers.find((o,i)=>(o.reference||i+1)===quotedOfferReferences[0]);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:{...quoted.request,providerExclusive:true},submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}
+  const recoveredRoute=s.status==='unsupported'&&s.base?.request&&!capabilityIssue(s.base.request);
+  if(recoveredRoute){s.base.submitted=false;s.base.awaiting=null;s.status='collecting';}
   legacy.importSession(id,s.base);
   s.questions ||= {};s.tripId ||= crypto.randomUUID();s.history.push({role:'user',text:clean(text)});s.history=s.history.slice(-24);
   const t=normalize(clean(text)),say=reply=>{
@@ -73,9 +88,17 @@ class AssistantEngine{
   if(s.humanOwned)return say('المحادثة الآن بمتابعة موظف الحجوزات.');
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
-  if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
+  if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
   let decision=null;
-  try{decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  const additional=decision?.intent==='additional_request'||/(?:طلب|رحل[هة]|سفر[هة])\s*(?:تاني|ثاني|تاني[هة]|ثاني[هة])|(?:وكمان|وكمان بدي)\s+(?:بدي\s+)?(?:رحل[هة]|من\s)/.test(t);
+  if(additional&&['queued','searching'].includes(s.status)){
+   s.pendingRequests ||= [];
+   if(s.pendingRequests.some(r=>normalize(r.text)===t))return say('طلبك التاني بانتظار نتيجة الأول، وبس أرسلك الأسعار ببدأ فيه.');
+   if(s.pendingRequests.length>=5)return say('عندي خمس طلبات إلك بانتظار البحث. خلّيني أخلصها بالترتيب، وبعدها منكمل باقي الرحلات.');
+   s.pendingRequests.push({text:clean(text),at:now});
+   return say('عم اشتغل حاليًا على طلبك الأول، وبس أرسلك الأسعار ببدأ بطلبك التاني.');
+  }
   const pendingQuote=s.pendingQuotedOffer?.expiresAt>=now?s.pendingQuotedOffer:null;
   const scopedReferences=quotedOfferReferences.length>1?quotedOfferReferences:pendingQuote?.references||[];
   if(scopedReferences.length>1){
@@ -130,11 +153,11 @@ class AssistantEngine{
    return say((s.offers.length||['searching','queued','done'].includes(s.status)?'تكرم عيونك، عمولة الخدمة ثابتة والسعر المعروض بعد التحقق بيكون نهائي. ':'تكرم عيونك، رح نراجع الخيارات حسب طلبك ونرتّبلك الأسعار المتحققة بوضوح. ')+(proposal?'فينا نقارن سبعة أيام بعد آخر موعد مع الحفاظ على المسار والوزن. بتناسبك نوسّع البحث لهالفترة؟':'فينا نقارن أيام أو تواقيت أوسع إذا بتناسبك، بدون تغيير تفاصيلك من عندنا.'));
   }
   if(!hasChange&&(socialIntent==='goodbye'||/برجع|بعدي?ن بحكي|بدي فكر|بدي افكر|سلام$/.test(t))){s.status='paused';return{...say('أهلًا وسهلًا فيك بأي وقت، شرّفتنا 🌷 لما ترجع بأي سؤال أو استفسار، نحنا بالخدمة.'),cancel:true};}
-  if(!hasChange&&(socialIntent==='status'||/بانتظار|بالانتظار|ناطر|منتظر|شو صار|وين وصلت|لسا|اصبر/.test(t))){
-   const busy=['searching','queued'].includes(s.status);const waiting=['شكرًا لانتظارك 🌷 طلبك قيد العمل، عم نراجع الخيارات حسب تفاصيل رحلتك، وأول ما تتأكد نتيجة منرسلها.','مقدّرين انتظارك 🌷 البحث مستمر على نفس طلبك، ومنبعتلك الأسعار والتواقيت بعد التحقق.','معك 🌷 طلبك محفوظ والبحث مستمر؛ أول ما يجهز عرض متحقق منبعته إلك.'];s.waitingCount=(s.waitingCount||0)+1;return say(busy?waiting[(s.waitingCount-1)%waiting.length]:s.status==='failed'?'لم يكتمل التحقق من الأسعار للطلب السابق. فينا نعيد المحاولة على نفس التفاصيل، أو نحدد فترة ثانية.':s.status==='done'?'نتائج البحث المتحققة موجودة بالعرض السابق. فينا نراجع الخيار اللي بناسبك أو نوسّع الفترة إذا حبيت.':s.base?.awaiting?'تفاصيلك محفوظة، وبانتظار جوابك على النقطة اللي سألتك عنها حتى أكمل على نفس الطلب.':'معك، ما في بحث جارٍ حاليًا. ابعتلي تفاصيل رحلتك ومنرتّب الخيارات المناسبة.');
+  if(!recoveredRoute&&!hasChange&&(socialIntent==='status'||/بانتظار|بالانتظار|ناطر|منتظر|شو صار|وين وصلت|لسا|اصبر/.test(t))){
+   const busy=['searching','queued'].includes(s.status);const waiting=['شكرًا لانتظارك 🌷 طلبك قيد العمل، عم نراجع الخيارات حسب تفاصيل رحلتك، وأول ما تتأكد نتيجة منرسلها.','مقدّرين انتظارك 🌷 البحث مستمر على نفس طلبك، ومنبعتلك الأسعار والتواقيت بعد التحقق.','معك 🌷 طلبك محفوظ والبحث مستمر؛ أول ما يجهز عرض متحقق منبعته إلك.'];s.waitingCount=(s.waitingCount||0)+1;return say(busy?waiting[(s.waitingCount-1)%waiting.length]:s.status==='failed'?'لم يكتمل التحقق من الأسعار للطلب السابق. فينا نعيد المحاولة على نفس التفاصيل، أو نحدد فترة ثانية.':s.status==='done'?'نتائج البحث المتحققة موجودة بالعرض السابق. فينا نراجع الخيار اللي بناسبك أو نوسّع الفترة إذا حبيت.':s.status==='unsupported'?'تفاصيل رحلتك موجودة، لكن ما تأكّد سعر لهالمسار بعد. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':s.base?.awaiting?'تفاصيلك محفوظة، وبانتظار جوابك على النقطة اللي سألتك عنها حتى أكمل على نفس الطلب.':'معك، ما في بحث جارٍ حاليًا. ابعتلي تفاصيل رحلتك ومنرتّب الخيارات المناسبة.');
   }
-  if(!hasChange&&(socialIntent==='thanks'||/^(?:شكرا|شكراً|يسلمو|مشكور|يعطيك العافيه|يعطيك العافية|تمام شكرا|👍)$/.test(t)))return say('أهلًا وسهلًا فيك 🌷');
-  if(socialIntent==='cancel'){s.status='cancelled';s.questions={};s.lastQuestion=null;legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار الحالي. إذا قصدك تذكرة صادرة، وضّحلي حتى نميّزها عن الاستعلام.'),cancel:true};}
+  if(!recoveredRoute&&!hasChange&&(socialIntent==='thanks'||/^(?:شكرا|شكراً|يسلمو|مشكور|يعطيك العافيه|يعطيك العافية|تمام شكرا|👍)$/.test(t)))return say('أهلًا وسهلًا فيك 🌷');
+  if(socialIntent==='cancel'){s.status='cancelled';s.pendingRequests=[];s.questions={};s.lastQuestion=null;legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار الحالي. إذا قصدك تذكرة صادرة، وضّحلي حتى نميّزها عن الاستعلام.'),cancel:true};}
   const selectOffer=(index,{announce=true}={})=>{
    const offer=s.offers.find(o=>o.reference===index+1)||s.offers[index];
    if(!offer)return say('أي عرض تقصد؟ اذكر تاريخ الرحلة أو رقم الخيار من آخر مقارنة.');
@@ -151,7 +174,7 @@ class AssistantEngine{
    const previous=s.previous.pop();if(!previous)return say('أي تفصيل بدك نرجعه: الوزن أو التاريخ أو المسار؟');legacy.importSession(id,previous);s.base=previous;s.status='queued';previous.submitted=false;legacy.importSession(id,previous);const result=legacy.handleMessage(id,'تابع نفس التفاصيل',{now});this.save(id,s);return result;
   }
   if(['اي','نعم','تمام','اوكي','حاضر','ok'].includes(t)&&['searching','queued'].includes(s.status)&&!s.lastQuestion)return say('تمام 🌷 البحث مستمر على نفس تفاصيل طلبك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
-  if(['اي','نعم','تمام'].includes(t)&&s.lastQuestion?.includes('أو'))return say('أكيد، أي خيار من المذكورين بتفضّل؟');
+  if(!recoveredRoute&&['اي','نعم','تمام'].includes(t)&&s.lastQuestion?.includes('أو'))return say('أكيد، أي خيار من المذكورين بتفضّل؟');
   if(decision?.intent==='select'&&decision.option!==null){const selected=selectOffer(decision.option-1,{announce:!hasDecisionFields});if(selected)return selected;}
   const book=decision?.intent==='booking'||(!hasDecisionFields&&/كيف.*(?:ثبت|تثبيت|حجز|ادفع)|بدي ثبت|ثبتلي|ثب[تّ]لي|احجزلي|احجز لي|رابط الدفع|بدي احكي.*موظف/.test(t));
   if(book){
@@ -171,7 +194,7 @@ class AssistantEngine{
    const facts=explainService(t,s.base?.request,s.status);
    if(facts)return say(facts);
   }
-  if(!hasDecisionFields&&['uncertain','other','explain'].includes(decision?.intent)&&decision?.question&&!knownQuestion(decision.question,s.base?.request)){
+  if(!recoveredRoute&&!hasDecisionFields&&['uncertain','other','explain'].includes(decision?.intent)&&decision?.question&&!knownQuestion(decision.question,s.base?.request)){
    const key='clarification',fingerprint=normalize(decision.question);const prior=s.questions[key];
    if(prior?.fingerprint===fingerprint&&!prior.answered)return say('أنا معك، والتفاصيل اللي اتفقنا عليها محفوظة. وضّحلي النقطة اللي قصدتها بكلمتين حتى أعطيك جواب مناسب.');
    s.questions[key]={field:key,tripId:s.tripId,askedAt:now,answered:false,status:'asked',reason:decision.intent,fingerprint};return say(decision.question);
@@ -201,13 +224,14 @@ class AssistantEngine{
   if(base?.request?.passengers){const p=base.request.passengers;if(p.children+p.infants>(p.ages?.length||0)){result={complete:false,reply:s.questions.childrenAges&&!s.questions.childrenAges.answered?'عدد المسافرين محفوظ؛ باقي أعمار الأطفال والرضّع وقت السفر حتى نميّز الفئة الصحيحة.':'كم أعمار الأطفال والرضّع وقت السفر؟ اذكر عمر كل واحد حتى ما نحسب سعرًا لفئة غير صحيحة.'};s.questions.childrenAges ||= {field:'childrenAges',tripId:s.tripId,askedAt:now,answered:false,status:'asked',reason:'passenger_category'};}}
   if(hypothetical&&result.complete){result.comparison=true;s.comparison={request:result.request,base:previous};legacy.importSession(id,previous);}
   else if(result.complete){delete s.pendingQuotedOffer;if(previous)s.previous.push(previous);s.previous=s.previous.slice(-5);s.offers=[];s.selected=null;s.comparison=null;}
-  if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص.':issue==='route'?'فهمت المسار المطلوب وحفظته. التسعير المتصل الحالي يغطي الشارقة ودمشق فقط؛ ما رح أعطيك سعر لمسار آخر قبل التحقق من ربطه.':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
+  if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';const blocked=legacy.exportSession(id);if(blocked){blocked.submitted=false;legacy.importSession(id,blocked);}result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص.':issue==='route'?'ما عندي سعر مؤكّد لهالمسار حاليًا. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
   if(!result.complete&&['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك. أي تعديل تبعته منضيفه على نفس الطلب.';
   if(result.complete)s.lastQuestion=null;else if(/[؟?]/.test(result.reply))s.lastQuestion=result.reply;
   if(/^(?:يسلمو|شكرا|شكراً|مشكور)/.test(t)&&result.complete)result.reply='تكرم عيونك. '+result.reply;
   s.history.push({role:'assistant',text:result.reply});s.history=s.history.slice(-24);
   this.save(id,s);return result;
  }
+ beginNextRequest(id){const s=this.state(id);if(!s.queueReady||!['done','failed'].includes(s.status)||!s.pendingRequests?.length)return null;const next=s.pendingRequests.shift();s.queueReady=false;s.previous ||= [];if(s.base)s.previous.push(s.base);s.previous=s.previous.slice(-5);s.base=null;s.lastQuestion=null;s.questions={};s.selected=null;s.offers=[];s.comparison=null;s.activeComparisonId=null;s.status='collecting';s.tripId=crypto.randomUUID();legacy.importSession(id,null);this.store.set(id,s);return next;}
  jobState(id,status){const s=this.state(id);s.status=status;this.store.set(id,s);}
  progress(id,data,messageId){const s=this.state(id);s.status='searching';if(data.coverage)s.coverage=data.coverage.slice(0,32);if(data.offer){const o=data.offer;if(o.request&&o.timing?.out?.flight&&/^\d+\.\d{2}$/.test(o.price?.sellingTotal||'')){const item={...o,id:offerId(o),messageId};const index=s.offers.findIndex(x=>x.id===item.id);if(index<0)s.offers.push(item);else s.offers[index]=item;s.offers=s.offers.slice(-80);}}this.store.set(id,s);}
  status(){return{policy:POLICY.version,aiConfigured:aiConfigured(this.env),aiProvider:aiProvider(this.env),...this.store.status(),humanRoutingConfigured:Boolean(this.env.HUMAN_HANDOFF_RECIPIENT),providers:POLICY.providers};}

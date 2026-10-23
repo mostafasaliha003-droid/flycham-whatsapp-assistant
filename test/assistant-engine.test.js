@@ -159,5 +159,5 @@ test('the latest screenshot sequence retains supplied route and party after trip
  assert.match(first.reply,/ذهاب فقط أم ذهاب وعودة/);
  const r=await e.handle('screenshot-new','فقط ذهاب',{now});const trip=e.state('screenshot-new').base.request;
  assert.equal(trip.origin,'الشارقة');assert.equal(trip.destination,'حلب');assert.equal(trip.passengers.adults,1);assert.equal(trip.departureDate,'2026-10-25');assert.equal(trip.tripType,'one_way');
- assert.doesNotMatch(r.reply,/من أي مدينة|عدد المسافرين/);assert.equal(e.state('screenshot-new').status,'unsupported');
+ assert.doesNotMatch(r.reply,/من أي مدينة|عدد المسافرين/);assert.equal(e.state('screenshot-new').status,'queued');assert.equal(r.complete,true);
 });

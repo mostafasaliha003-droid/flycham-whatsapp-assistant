@@ -3,8 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { AirArabiaPortalAdapter, AIRPORTS } = require('../src/airarabia-worker');
 
-test('keepalive adapter permits only the explicitly configured verified airport codes', () => {
-  assert.deepEqual(AIRPORTS, { SHJ: 'SHJ - Sharjah', DAM: 'DAM - Damascus' });
+test('keepalive adapter permits only registered search candidates; supplier must still confirm selection', () => {
+  assert.deepEqual(AIRPORTS, { SHJ: 'SHJ - Sharjah', DAM: 'DAM - Damascus', ALP:'ALP - Aleppo' });
   assert.throws(() => new AirArabiaPortalAdapter({}, {
     username: 'x', password: 'y', origin: 'DXB', destination: 'DAM',
   }), /PORTAL_CONFIGURATION_UNSUPPORTED_ROUTE/);

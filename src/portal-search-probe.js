@@ -1,4 +1,5 @@
 'use strict';
+const {AIRPORTS}=require('./airports');
 const { airportSuggestionAction } = require('./airport-suggestions');
 
 // The supplier's legacy autocomplete may store a display-form value (for
@@ -9,13 +10,12 @@ function airportCodeConfirmed(value, code) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return false;
   const hasToken = token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(normalized);
-  const other = code === 'SHJ' ? 'DAM' : 'SHJ';
-  return hasToken(code) && !hasToken(other);
+  return Boolean(AIRPORTS[code]) && hasToken(code) && !Object.keys(AIRPORTS).some(other=>other!==code&&hasToken(other));
 }
 
 // A bounded synthetic search only; this module has no booking/passenger actions.
 async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {}, origin='https://agents.airarabia.com' } = {}) {
-  const names = { SHJ: 'Sharjah', DAM: 'Damascus' };
+  const names = { SHJ: 'Sharjah', DAM: 'Damascus', ALP:'Aleppo' };
   if (!names[code] || !['fAirport', 'tAirport'].includes(inputId) || hiddenId !== (inputId === 'fAirport' ? 'fromAirport' : 'toAirport')) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
   const inputState = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'input', origin });
   if (inputState?.status !== 'INPUT_READY') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
@@ -68,7 +68,7 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
 }
 
 async function prepareSearch(frame, { origin, destination, departureDate, requestedReturnDate, requestTripType, supplier = 'airarabia', report = () => {} }) {
-  if (!['SHJ', 'DAM'].includes(origin) || !['SHJ', 'DAM'].includes(destination) || origin === destination) throw new Error('UNSUPPORTED_PROBE_ROUTE');
+  if (!AIRPORTS[origin] || !AIRPORTS[destination] || origin === destination) throw new Error('UNSUPPORTED_PROBE_ROUTE');
   if (!/^\d{2}\/\d{2}\/\d{4}$/.test(departureDate)) throw new Error('INVALID_PROBE_DATE');
   // Use the actual visible radio label, never guess the supplier's enum value.
   report('PORTAL_PROBE_STAGE_TRIP_MODE');
@@ -157,8 +157,7 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     const hasCode = (raw, code) => {
       const normalized = String(raw || '').trim().toUpperCase();
       const hasToken = token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(normalized);
-      const other = code === 'SHJ' ? 'DAM' : 'SHJ';
-      return hasToken(code) && !hasToken(other);
+      return ['SHJ','DAM','ALP'].includes(code) && hasToken(code) && !['SHJ','DAM','ALP'].some(other=>other!==code&&hasToken(other));
     };
     return hasCode(value('fromAirport'), origin) && hasCode(value('toAirport'), destination)
       && value('departureDate') === departureDate && value('adultCount') === '1'

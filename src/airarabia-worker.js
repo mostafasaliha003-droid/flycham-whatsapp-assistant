@@ -17,10 +17,7 @@ const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
 // Enter through the user-supplied protected portal route so the supplier can
 // save the requested destination before displaying its FORM login page.
 const LOGIN_ENTRY_URL = 'https://agents.airarabia.com/xbe/private/showXBEMain.action';
-const AIRPORTS = {
-  SHJ: 'SHJ - Sharjah',
-  DAM: 'DAM - Damascus',
-};
+const {AIRPORTS}=require('./airports');
 
 const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION', 'PROBE']);
 const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'VERIFICATION_EXPIRED', 'VERIFICATION_NOT_CONFIRMED', 'VERIFIED_NAVIGATION_PENDING', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);

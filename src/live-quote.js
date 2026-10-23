@@ -1,7 +1,8 @@
 'use strict';
 const {toFils,formatAED,MAX_FILS}=require('./money');
 const {addDays,iso}=require('./arabic-dates');
-const airports=new Map([['SHJ','SHJ'],['الشارقة','SHJ'],['الشارقه','SHJ'],['Sharjah','SHJ'],['DAM','DAM'],['دمشق','DAM'],['Damascus','DAM']].map(([a,b])=>[a.toLowerCase(),b]));
+const {airportCode}=require('./airports');
+const airports={get:airportCode};
 function validateLiveRequest(r,now=Date.now()){
   if(r?.constraints||r?.seatRequest||r?.baggageRequest?.pieces||r?.baggageRequest?.scope==='total')throw Error('LIVE_SCOPE_UNSUPPORTED');
   const origin=airports.get(String(r?.origin||'').trim().toLowerCase()),destination=airports.get(String(r?.destination||'').trim().toLowerCase());

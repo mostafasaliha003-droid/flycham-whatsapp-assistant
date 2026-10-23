@@ -1,4 +1,5 @@
 'use strict';
+const {airportCode}=require('./airports');
 const {flyChamBaggageAllowed}=require('./travel-language');
 const {priceFlyChamQuote,voucherPromise}=require('./flycham-pricing');
 // Read only the search-results DOM. Never enters passengers, ancillaries or payment.
@@ -28,7 +29,7 @@ async function readFlyChamFirstPage(frame,{tripType,passengerCount=1,request}={}
  })).catch(error=>{const code=String(error.message).match(/\bFLYCHAM_(?:UNTRUSTED_ORIGIN|AED_TOTAL_NOT_VISIBLE|AED_TOTAL_AMBIGUOUS|FLIGHT_DETAILS_INCOMPLETE)\b/)?.[0];throw Error(code||'FLYCHAM_FIRST_PAGE_UNCONFIRMED');});
  if(!observed.out||tripType==='round_trip'&&!observed.back||tripType==='one_way'&&observed.back)throw Error('FLYCHAM_ITINERARY_INCOMPLETE');
  if(request){
-  const codes=new Map([['الشارقة','SHJ'],['الشارقه','SHJ'],['SHJ','SHJ'],['دمشق','DAM'],['DAM','DAM']]);
+  const codes={get:airportCode};
   const date=value=>{const m=String(value).match(/\b(\d{1,2})[ \-/.]*([A-Za-z]{3})[ \-/.]*(\d{4}|\d{2})\b/);if(!m)return null;const month=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].findIndex(x=>x.toLowerCase()===m[2].toLowerCase())+1;return month?`${m[3].length===2?"20"+m[3]:m[3]}-${String(month).padStart(2,'0')}-${m[1].padStart(2,'0')}`:null;};
   const origin=codes.get(request.origin),destination=codes.get(request.destination);
   if(!origin||!destination||observed.out.origin!==origin||observed.out.destination!==destination||date(observed.out.departure)!==request.departureDate||request.tripType!==tripType||!flyChamBaggageAllowed(request))throw Error('FLYCHAM_REQUEST_NOT_MATCHED');

@@ -46,20 +46,17 @@ test('ClinePass receives nested trip facts and redacted context using subscripti
 });
 test('quota rejection switches to Gemma, honors cooldown, and probes Cline again after Retry-After',async()=>{
  const env={ASSISTANT_AI_PROVIDER:'cline',CLINE_API_KEY:'cline-quota',GEMINI_API_KEY:'google-quota',OPENAI_API_KEY:'paid'};const now=Date.now(),urls=[];let recovered=false;
- const fetchImpl=async(url,options)=>{urls.push(url);if(url.includes('api.cline.bot'))return recovered?clineResponse(decision()):{ok:false,status:429,headers:{get:()=> '60'}};const data=JSON.parse(JSON.parse(options.body).contents[0].parts[0].text);assert.deepEqual(data.context.history,[]);return googleResponse(decision());};
+ const fetchImpl=async(url,options)=>{urls.push(url);if(url.includes('api.cline.bot'))return recovered?clineResponse(decision()):{ok:false,status:429,headers:{get:()=> '60'},json:async()=>({error:{code:'quota_exhausted'}})};const data=JSON.parse(JSON.parse(options.body).contents[0].parts[0].text);assert.deepEqual(data.context.history,[]);return googleResponse(decision());};
  const context={history:[{role:'user',text:'TRAVEL_HISTORY'}]};
  await understand('بدي ثلاثين كيلو',context,{env,now,fetchImpl});assert.equal(urls.length,2);
  await understand('بدي نفس الأيام',context,{env,now:now+1000,fetchImpl});assert.equal(urls.filter(u=>u.includes('api.cline.bot')).length,1);
  recovered=true;await understand('نفس الطلب',context,{env,now:now+61000,fetchImpl});assert.equal(urls.filter(u=>u.includes('api.cline.bot')).length,2);assert.equal(urls.some(u=>u.includes('api.openai.com')),false);
 });
-test('Cline quota HTTP response need not have JSON; no quota duration is inferred from the error text',async()=>{
- const env={CLINE_API_KEY:'cline-htmlquota',GEMINI_API_KEY:'google-htmlquota'};let calls=0;
- const d=await understand('نفس الأيام',{}, {env,fetchImpl:async url=>{calls++;return url.includes('api.cline.bot')?{ok:false,status:429}:googleResponse(decision());}});assert.equal(d.intent,'change');assert.equal(calls,2);
+test('generic rate limiting never authorizes Gemma',async()=>{
+ let calls=0;await assert.rejects(understand('نفس الأيام',{}, {env:{CLINE_API_KEY:'cline-generic429',GEMINI_API_KEY:'google-notallowed'},fetchImpl:async()=>{calls++;return{ok:false,status:429};}}),/NLU_HTTP_429/);assert.equal(calls,1);
 });
-test('missing Cline key uses configured Gemma but never an existing paid key',async()=>{
- const env={ASSISTANT_AI_PROVIDER:'cline',GEMINI_API_KEY:'google-missingprimary',OPENAI_API_KEY:'paid'};
- await understand('نفس الأيام',{}, {env,fetchImpl:async url=>{assert.match(url,/generativelanguage.googleapis.com/);return googleResponse(decision());}});
- assert.equal(await understand('x',{}, {env:{ASSISTANT_AI_PROVIDER:'cline',OPENAI_API_KEY:'paid'}}),null);
+test('missing Cline key does not authorize another provider or paid OpenAI',async()=>{
+ let calls=0;assert.equal(await understand('نفس الأيام',{}, {env:{ASSISTANT_AI_PROVIDER:'cline',GEMINI_API_KEY:'google-missingprimary',OPENAI_API_KEY:'paid'},fetchImpl:async()=>{calls++;}}),null);assert.equal(calls,0);
 });
 test('usage billing model cannot be requested even with a valid Cline key',async()=>{
  let called=false;await assert.rejects(understand('x',{}, {env:{CLINE_API_KEY:'cline-badmodel',CLINE_MODEL:'anthropic/claude-sonnet-4-6'},fetchImpl:async()=>{called=true;}}),/NLU_MODEL_NOT_ALLOWED/);assert.equal(called,false);
@@ -68,13 +65,13 @@ test('nested Cline response is accepted while refusal, tool calls and truncated 
  const d=decision();assert.equal((await understand('x',{}, {env:{CLINE_API_KEY:'cline-nested'},fetchImpl:async()=>({ok:true,json:async()=>({success:true,data:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(d)}}]}})})})).intent,'change');
  for(const [suffix,body]of [['failure',{success:false,choices:[{finish_reason:'stop',message:{content:JSON.stringify(d)}}]}],['length',{choices:[{finish_reason:'length',message:{content:JSON.stringify(d)}}]}],['tool',{choices:[{finish_reason:'stop',message:{content:JSON.stringify(d),tool_calls:[{}]}}]}]])await assert.rejects(understand('x',{}, {env:{CLINE_API_KEY:'cline-'+suffix},fetchImpl:async()=>({ok:true,json:async()=>body})}),/NLU_INCOMPLETE/);
 });
-test('both providers unavailable use bounded attempts and expose no raw provider secrets',async()=>{
+test('a Cline server failure does not authorize Gemma',async()=>{
  const env={CLINE_API_KEY:'cline-bothfail',GEMINI_API_KEY:'google-bothfail',OPENAI_API_KEY:'paid'};let calls=0;
- await assert.rejects(understand('بدي ثلاثين كيلو',{}, {env,fetchImpl:async()=>{calls++;return{ok:false,status:503,json:async()=>({error:{message:'DO_NOT_LOG'}})};}}),/^Error: NLU_HTTP_503$/);assert.equal(calls,2);
+ await assert.rejects(understand('بدي ثلاثين كيلو',{}, {env,fetchImpl:async()=>{calls++;return{ok:false,status:503,json:async()=>({error:{message:'DO_NOT_LOG'}})};}}),/^Error: NLU_HTTP_503$/);assert.equal(calls,1);
 });
 test('after cooldown only one concurrent probe hits Cline while other requests use Gemma',async()=>{
  const env={CLINE_API_KEY:'cline-concurrent',GEMINI_API_KEY:'google-concurrent'},now=Date.now();
- await understand('x',{}, {env,now,fetchImpl:async url=>url.includes('api.cline.bot')?{ok:false,status:429,headers:{get:()=> '1'}}:googleResponse(decision())});
+ await understand('x',{}, {env,now,fetchImpl:async url=>url.includes('api.cline.bot')?{ok:false,status:429,headers:{get:()=> '1'},json:async()=>({error:{code:'usage_limit_reached'}})}:googleResponse(decision())});
  let release,calls=0;const gate=new Promise(r=>release=r);const fetchImpl=async url=>{if(url.includes('api.cline.bot')){calls++;await gate;return clineResponse(decision());}return googleResponse(decision());};
  const a=understand('x',{}, {env,now:now+1100,fetchImpl});const b=understand('y',{}, {env,now:now+1100,fetchImpl});await b;release();await a;assert.equal(calls,1);
 });
@@ -94,9 +91,9 @@ test('sparse extraction fills unchanged slots but never invents trip facts',asyn
   await assert.rejects(understand('x',{}, {env:{GEMINI_API_KEY:'sparse-invalid-'+key},fetchImpl:async()=>googleResponse({intent:'change',fields:{[key]:value}})}),/NLU_INVALID_SCHEMA/);
  }
 });
-test('provider timeout has a safe diagnostic and falls back without leaking exception text',async()=>{
- let calls=0;
- const d=await understand('مرحبا',{}, {env:{CLINE_API_KEY:'timeout-safe',GEMINI_API_KEY:'timeout-fallback'},fetchImpl:async url=>{
-  calls++;if(url.includes('api.cline.bot'))throw Object.assign(Error('PRIVATE_NETWORK_DETAIL'),{name:'TimeoutError'});return googleResponse(decision());
- }});assert.equal(calls,2);assert.equal(d.intent,'change');
+test('provider timeout has a safe diagnostic and never authorizes Gemma',async()=>{
+ let calls=0;await assert.rejects(understand('مرحبا',{}, {env:{CLINE_API_KEY:'timeout-safe',GEMINI_API_KEY:'timeout-fallback'},fetchImpl:async()=>{calls++;throw Object.assign(Error('PRIVATE_NETWORK_DETAIL'),{name:'TimeoutError'});}}),/^Error: NLU_TIMEOUT$/);assert.equal(calls,1);
+});
+test('explicit Cline subscription exhaustion permits Gemma with a bounded Cline timeout',async()=>{
+ let calls=0;const result=await understand('مرحبا',{}, {env:{CLINE_API_KEY:'quota402',GEMINI_API_KEY:'quota402-fallback'},fetchImpl:async(url,options)=>{calls++;assert.ok(options.signal);return url.includes('api.cline.bot')?{ok:false,status:402,json:async()=>({error:{message:'Your weekly usage limit has been reached'}})}:googleResponse(decision());}});assert.equal(result.intent,'change');assert.equal(calls,2);
 });

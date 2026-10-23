@@ -104,3 +104,9 @@ test('an owned dropdown with duplicate identifiers cannot fall back to unrelated
   });
   assert.equal(result.status, 'INPUT_UNAVAILABLE');
 });
+test('Aleppo selects only a unique observed airport suggestion on either supplier',()=>{
+ for(const origin of ['https://agents.airarabia.com','https://reservations.flycham.com']){
+  const f=fixture(['Aleppo International Airport (ALP), Syria'],{origin});assert.equal(f.call({inputId:'tAirport',code:'ALP',origin}).status,'READY');assert.equal(f.call({inputId:'tAirport',code:'ALP',origin,operation:'resolve'}).textContent,'Aleppo International Airport (ALP), Syria');
+  const wrong=fixture(['Damascus (DAM)'],{origin});assert.equal(wrong.call({inputId:'tAirport',code:'ALP',origin}).status,'NONE');
+ }
+});
