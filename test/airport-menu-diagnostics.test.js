@@ -1,17 +1,17 @@
 'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
-const {inspectAirportMenu,diagnoseFlyChamAirports}=require('../src/airport-menu-diagnostics');
-test('airport diagnostics emit fixed classifications and never raw text or credentials',()=>{
- const node=text=>({textContent:text,getClientRects:()=>[1],querySelector:()=>null,matches:()=>true});
- const nodes=['Dubai International Airport (DXB) Terminal 2','Maktoum (DWC)','private-user secret-token-123456 +971500000000','No results found'].map(node);
- const result=vm.runInNewContext('('+inspectAirportMenu.toString()+')(args)',{args:{origin:'https://reservations.flycham.com',inputId:'fAirport'},location:{origin:'https://reservations.flycham.com'},getComputedStyle:()=>({display:'block',visibility:'visible'}),document:{querySelectorAll:selector=>selector.startsWith('[id=')?[node('')]:nodes}});
- assert.deepEqual(Array.from(result.codes),['DXB','DWC']);assert.equal(result.noMatches,true);assert.ok(result.features.includes('TERMINAL'));
- assert.doesNotMatch(JSON.stringify(result),/private-user|secret-token|971500000000|Terminal 2/);
-});
-test('startup airport audit only types origin queries and restores search without submitting anything',async()=>{
- const queries=[],reports=[];let opens=0;
- const field={fill:async v=>assert.equal(v,''),pressSequentially:async q=>queries.push(q),press:async k=>assert.equal(k,'Tab')};
- const frame={locator:s=>{assert.equal(s,'#fAirport');return field;},evaluate:async()=>({trusted:true,inputReady:true,codes:[]})};
- await diagnoseFlyChamAirports({openSearchForm:async()=>{opens++;return frame;},page:{waitForTimeout:async()=>{}},report:x=>reports.push(x)});
- assert.equal(opens,2);assert.deepEqual(queries,['Dubai','Maktoum','Abu','Sharjah']);assert.equal(reports.length,4);
+const test=require('node:test'),assert=require('node:assert/strict');
+const {diagnoseFlyChamAirports}=require('../src/airport-menu-diagnostics');
+test('airport capability check confirms supplier IATA using pointer selection and never submits a search',async()=>{
+ let opens=0,code='',selected='',clicks=0;const reports=[];
+ const frame={
+  locator:s=>{
+   assert.ok(['#fAirport','#fromAirport'].includes(s));
+   return {fill:async v=>assert.equal(v,''),pressSequentially:async v=>{code=v;},inputValue:async()=>selected};
+  },
+  evaluate:async(fn,args)=>({status:args.operation==='input'?'INPUT_READY':'READY'}),
+  evaluateHandle:async()=>({asElement:()=>({click:async()=>{selected=code;clicks++;}}),dispose:async()=>{}}),
+ };
+ await diagnoseFlyChamAirports({openSearchForm:async()=>{opens++;return frame;},report:e=>reports.push(e)});
+ assert.equal(opens,2);assert.equal(clicks,4);
+ assert.deepEqual(reports,['DXB','DWC','AUH','SHJ'].map(c=>'FLYCHAM_ORIGIN_SELECTION_CONFIRMED_'+c));
 });

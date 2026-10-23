@@ -26,6 +26,24 @@ test('accepts supplier airport-name labels without depending on a CSS widget', (
   }
 });
 
+test('observed FlyCham Dubai T1 label resolves DXB separately from Al Maktoum DWC',()=>{
+ const origin='https://reservations.flycham.com';
+ const dxb='DXB - Dubai International Airport DXB T1';
+ const dwc='DWC - Dubai Al Maktoum International Airport DWC';
+ const f=fixture([dwc,dxb],{origin});
+ assert.equal(f.call({inputId:'fAirport',code:'DXB',origin,operation:'resolve'}).textContent,dxb);
+ assert.equal(f.call({inputId:'fAirport',code:'DWC',origin,operation:'resolve'}).textContent,dwc);
+ const composite=fixture([dwc+dxb],{origin});
+ assert.equal(composite.call({inputId:'fAirport',code:'DXB',origin}).status,'NONE');
+});
+
+test('terminal suffix support does not accept unrelated actions or ambiguous airport choices',()=>{
+ const origin='https://reservations.flycham.com';
+ for(const labels of [['DXB - Dubai T1 cancel booking'],['Dubai T1'],['DXB - Dubai T1','DXB - Dubai T2'],['DWC - Dubai Al Maktoum T1']]){
+  assert.notEqual(fixture(labels,{origin}).call({inputId:'fAirport',code:'DXB',origin}).status,'READY');
+ }
+});
+
 test('rejects unrelated, ambiguous, hidden and foreign suggestions without clicking', () => {
   for (const [texts, options] of [
     [['Sharjah cancel booking'], {}],

@@ -34,7 +34,14 @@ function airportSuggestionAction({ inputId, code, operation = 'inspect', origin 
     // A layout cell containing the input can have the same text as a menu
     // item. Clicking that cell's centre does not select the supplier option.
     if (element.querySelector?.('input,select,textarea,button') || element.getAttribute?.('aria-disabled') === 'true') return false;
-    const words = text.toUpperCase().replace(/[^A-Z]/g, ' ').trim().split(/\s+/);
+    // FlyCham's observed Dubai option is "DXB - Dubai International Airport
+    // DXB T1". Terminal identifiers are airport qualifiers, not another city.
+    // Strip only a standalone T<number> with an explicit requested IATA;
+    // all other words and the supplier-selected hidden IATA remain checked.
+    const upper = text.toUpperCase();
+    const hasRequestedCode = new RegExp('(?:^|[^A-Z])'+code+'(?:$|[^A-Z])').test(upper);
+    const label = hasRequestedCode ? upper.replace(/\bT[1-9][0-9]?\b/g, ' ') : upper;
+    const words = label.replace(/[^A-Z]/g, ' ').trim().split(/\s+/);
     return (words.includes(code) || (code==='DXB'?words.includes('DUBAI')&&!words.some(w=>['MAKTOUM','WORLD','CENTRAL','DWC'].includes(w)):code==='AUH'?words.includes('ABU')&&words.includes('DHABI'):code==='DWC'?words.includes('MAKTOUM'):words.includes(airports[code][1]))) && words.every(word => airports[code].includes(word));
   };
   const selector = 'li,[role="option"],a,div,span,td';
