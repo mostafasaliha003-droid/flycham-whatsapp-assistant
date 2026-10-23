@@ -71,3 +71,21 @@ test('a search form taking more than the old7.5s window is awaited within the bo
  const a=new FlyChamPortalAdapter(page,{username:'test',password:'test'});a.frames=()=>[frame];a.authenticatedFrame=async()=>({});a.reservationControl={click:async()=>{}};a.findControl=async()=>null;
  assert.equal(await a.openSearchForm(),frame);assert.equal(ticks,20);
 });
+
+test('Make Reservation result button is never mistaken for an authenticated navigation control',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+ const bad={isVisible:async()=>true,getAttribute:async()=> 'btnBook'},good={isVisible:async()=>true,getAttribute:async()=> 'reservationMenu'};
+ const group=items=>({count:async()=>items.length,nth:i=>items[i]});
+ const f={getByRole:role=>group(role==='button'?[bad,good]:[])};
+ const a=new FlyChamPortalAdapter({}, {username:'test',password:'test'});assert.equal(await a.findControl(f,/^make reservation$/i),good);
+});
+test('an accidentally supplied booking control is refused before any click',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let clicks=0;const a=new FlyChamPortalAdapter({}, {username:'test',password:'test'});a.authenticatedFrame=async()=>({});a.reservationControl={getAttribute:async()=> 'btnBook',click:async()=>clicks++};
+ await assert.rejects(a.openSearchForm(),/FLYCHAM_BOOKING_CONTROL_REFUSED/);assert.equal(clicks,0);
+});
+test('Search Flights tab reveals the existing form without entering the result reservation flow',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let visible=false,clicks=0;
+ const frame={locator:selector=>({count:async()=>selector==='#fAirport'?1:visible?1:0}),getByRole:()=>({count:async()=>1,isVisible:async()=>true,click:async()=>{visible=true;clicks++;}})};
+ const a=new FlyChamPortalAdapter({waitForTimeout:async()=>{}},{username:'test',password:'test'});a.frames=()=>[frame];a.authenticatedFrame=async()=>({});a.reservationControl={getAttribute:async()=> 'menu',click:async()=>{}};
+ assert.equal(await a.openSearchForm(),frame);assert.equal(clicks,1);
+});

@@ -21,7 +21,11 @@ class FlyChamPortalAdapter{
  async findControl(frame,pattern){
   const candidates=['link','button','img','menuitem'].map(role=>frame.getByRole(role,{name:pattern}));
   if(frame.getByAltText)candidates.push(frame.getByAltText(pattern));if(frame.getByTitle)candidates.push(frame.getByTitle(pattern));if(frame.getByText)candidates.push(frame.getByText(pattern));
-  for(const locator of candidates)for(let i=0;i<Math.min(await locator.count(),10);i++){const control=locator.nth(i);if(await control.isVisible())return control;}
+  for(const locator of candidates)for(let i=0;i<Math.min(await locator.count(),10);i++){const control=locator.nth(i);if(await control.isVisible()){
+   if(await control.getAttribute?.('id')==='btnBook')continue;
+   if(control.evaluate&&await control.evaluate(el=>Boolean(el.closest('#btnBook')||el.querySelector?.('#btnBook'))))continue;
+   return control;
+  }}
   return null;
  }
  async authenticatedFrame(){
@@ -94,10 +98,17 @@ class FlyChamPortalAdapter{
  }
  async openSearchForm(){
   const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
-  const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
+  const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');
+  if(await link.getAttribute?.('id')==='btnBook'||link.evaluate&&await link.evaluate(el=>Boolean(el.closest('#btnBook')||el.querySelector?.('#btnBook'))))throw Error('FLYCHAM_BOOKING_CONTROL_REFUSED');
+  await link.click();
   let recovered=false;
   for(let attempt=0;attempt<60;attempt++){
    for(const f of this.searchFrames())if(await f.locator('#fAirport:visible').count()===1)return f;
+   if(!recovered){for(const f of this.searchFrames()){
+    if(await f.locator('#fAirport').count()!==1)continue;
+    const tab=f.getByRole?.('link',{name:'Search Flights',exact:true});
+    if(tab&&await tab.count()===1&&await tab.isVisible()){await tab.click();recovered=true;this.report('FLYCHAM_SEARCH_FORM_TAB_OPENED');break;}
+   }}
    if(attempt===15&&!recovered){for(const f of this.searchFrames()){const control=await this.findControl(f,/^(?:new|modify|change)\s+search$/i);if(control){await control.click();recovered=true;this.report('FLYCHAM_SEARCH_RESET_NAVIGATION_COMPLETED');break;}}}
    await this.page.waitForTimeout(500);
   }
