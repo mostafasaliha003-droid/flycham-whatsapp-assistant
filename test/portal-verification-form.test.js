@@ -1,0 +1,64 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { verificationFormAction, verificationResultAction } = require('../src/portal-verification-form');
+
+function fixture({ duplicate = false, hiddenParent = false, disabled = false, foreign = false } = {}) {
+  const events = [];
+  let clicks = 0, value;
+  class Input {}
+  Object.defineProperty(Input.prototype, 'value', { set(next) { value = next; } });
+  const form = {};
+  const parent = { hidden: hiddenParent, parentElement: null };
+  const input = Object.assign(new Input(), { tagName: 'INPUT', type: 'text', disabled, form, parentElement: parent, getClientRects: () => [1], focus() {}, dispatchEvent(event) { events.push(event.type); }, checkValidity: () => true });
+  const button = { type: 'submit', form, parentElement: parent, getClientRects: () => [1], click() { clicks++; } };
+  const view = {}; view.top = view;
+  const context = { location: { origin: foreign ? 'https://other.example' : 'https://agents.airarabia.com' }, window: view, HTMLInputElement: Input, Event: class { constructor(type) { this.type = type; } }, getComputedStyle: el => ({ display: el.hidden ? 'none' : 'block', visibility: 'visible' }), document: { querySelectorAll: selector => selector.includes('userOtp') ? (duplicate ? [input, input] : [input]) : [button] } };
+  const call = options => vm.runInNewContext(`(${verificationFormAction.toString()})(options)`, { ...context, options });
+  return { call, events, clicks: () => clicks, value: () => value };
+}
+
+test('operator submission uses the real form events exactly once without exposing the code', () => {
+  const f = fixture();
+  assert.equal(f.call({ operation: 'inspect' }).ready, true);
+  assert.equal(f.clicks(), 0);
+  const result = f.call({ operation: 'submit', code: '123456' });
+  assert.equal(result.submitted, true);
+  assert.equal(f.value(), '123456');
+  assert.deepEqual(f.events, ['input', 'change']);
+  assert.equal(f.clicks(), 1);
+  assert.ok(!JSON.stringify(result).includes('123456'));
+});
+
+test('refuses ambiguous, hidden, disabled and foreign verification forms', () => {
+  for (const config of [{ duplicate: true }, { hiddenParent: true }, { disabled: true }, { foreign: true }]) {
+    const f = fixture(config);
+    assert.equal(f.call({ operation: 'submit', code: '123456' }).ready, false);
+    assert.equal(f.clicks(), 0);
+    assert.equal(f.value(), undefined);
+  }
+});
+
+test('resumes the supplier navigation only after a true supplier verification flag', () => {
+  for (const flag of [false, undefined, 'true', 'false', true]) {
+    let reloads = 0;
+    const context = { location: { origin: 'https://agents.airarabia.com', pathname: '/xbe/private/verifyOTP.action' },
+      window: { otpVerified: flag, parent: { location: { origin: 'https://agents.airarabia.com' }, reloadMain: () => reloads++ } },
+      document: { getElementById: () => null }, getComputedStyle: () => ({ visibility: 'visible' }) };
+    const result = vm.runInNewContext('(' + verificationResultAction.toString() + ')({operation:"resume"})', context);
+    assert.equal(reloads, flag === true ? 1 : 0);
+    assert.equal(result.status, flag === true ? 'CONFIRMED' : 'UNCONFIRMED');
+  }
+});
+
+test('classifies the visible supplier response without returning OTP or private text', () => {
+  for (const [message, status] of [['Invalid OTP 123456', 'INVALID_CODE'], ['OTP expired', 'EXPIRED'], ['', 'UNCONFIRMED'], ['Please contact private@example.com', 'SUPPLIER_MESSAGE']]) {
+    const result = vm.runInNewContext('(' + verificationResultAction.toString() + ')()', {
+      location: { origin: 'https://agents.airarabia.com', pathname: '/xbe/private/verifyOTP.action' }, window: {},
+      document: { getElementById: () => ({ getClientRects: () => [1], textContent: message }) }, getComputedStyle: () => ({ visibility: 'visible' }),
+    });
+    assert.equal(result.status, status);
+    assert.deepEqual(Object.keys(result), ['status']);
+  }
+});
