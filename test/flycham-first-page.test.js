@@ -1,8 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
 const {readFlyChamFirstPage}=require('../src/flycham-first-page');
-function frame({total='ER: AED 1.00 = USD 0.2717 AED 643.00',origin='https://reservations.flycham.com',back=false,fullYear=false}={}){
+function frame({total='ER: AED 1.00 = USD 0.2717 AED 643.00',origin='https://reservations.flycham.com',back=false,fullYear=false,spaced=false}={}){
  const row={textContent:'SHJ/DAM i XH744 XH Wed 11Nov26 05:30 Wed 11Nov26 08:00 1+/1+',getClientRects:()=>[1]},ret={...row,textContent:'DAM/SHJ i XH745 XH Wed 18Nov26 09:00 Wed 18Nov26 13:30 1+/1+'};
+ if(spaced)row.textContent=row.textContent.replaceAll('11Nov26','11 Nov 2026').replace('SHJ/DAM','SHJ - DAM');
  if(fullYear)row.textContent=row.textContent.replaceAll('Nov26','Nov2026');
  const nodes={divFQTxnCurr:{textContent:total,getClientRects:()=>[1]},tblOutboundFlights:{querySelector:()=>({closest:()=>row})},...(back?{tblInboundFlights:{querySelector:()=>({closest:()=>ret})}}:{})};
  return {evaluate:fn=>vm.runInNewContext('('+fn.toString()+')()',{location:{origin},document:{getElementById:id=>nodes[id]},getComputedStyle:()=>({visibility:'visible'})})};
@@ -25,4 +26,8 @@ test('FlyCham supplier dates can use a four-digit year without losing request va
 
 test('Playwright-prefixed page errors retain only the known safe failure code',async()=>{
  const f={evaluate:async()=>{throw Error('frame.evaluate: Error: FLYCHAM_FLIGHT_DETAILS_INCOMPLETE at private-page-details');}};await assert.rejects(readFlyChamFirstPage(f,{tripType:'one_way'}),error=>error.message==='FLYCHAM_FLIGHT_DETAILS_INCOMPLETE');
+});
+
+test('supplier-spaced dates and explicit hyphenated airport pairs remain request-verified',async()=>{
+ const request={origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',tripType:'one_way'};const q=await readFlyChamFirstPage(frame({spaced:true}),{tripType:'one_way',request});assert.equal(q.timing.out.origin,'SHJ');assert.equal(q.price.sellingTotal,'683.00');
 });
