@@ -16,7 +16,32 @@ function formatFlyChamOffers(request,offers,{complete=false,dates=[]}={}){
 class FlyChamPortalAdapter{
  constructor(page,{username,password,report=()=>{}}){this.page=page;this.username=username;this.password=password;this.report=report;this.protectedURL=null;}
  frames(){return this.page.frames().filter(trusted);}
- async authenticatedFrame(){for(const frame of this.frames()){for(const name of [/^make\s*reservation$/i,/^log\s*out$/i,/^logout$/i]){const link=frame.getByRole('link',{name});if(await link.count()===1&&await link.isVisible())return frame;}}return null;}
+ async findControl(frame,pattern){
+  const candidates=['link','button','img','menuitem'].map(role=>frame.getByRole(role,{name:pattern}));
+  if(frame.getByAltText)candidates.push(frame.getByAltText(pattern));if(frame.getByTitle)candidates.push(frame.getByTitle(pattern));
+  for(const locator of candidates)for(let i=0;i<Math.min(await locator.count(),10);i++){const control=locator.nth(i);if(await control.isVisible())return control;}
+  return null;
+ }
+ async authenticatedFrame(){
+  for(const page of this.page.context().pages()){
+   if(page.isClosed())continue;let signout=false,reservation=null,password=false,control=null;
+   for(const frame of page.frames().filter(trusted)){try{
+    signout ||= Boolean(await this.findControl(frame,/^(?:sign|log)\s*out$/i));
+    password ||= await frame.locator('input[type="password"]:visible').count()>0;
+    const candidate=await this.findControl(frame,/^make\s*reservation$/i);if(candidate){reservation=frame;control=candidate;}
+   }catch{}}
+   if(signout&&reservation&&!password){this.page=page;this.reservationControl=control;return reservation;}
+  }
+  return null;
+ }
+ async loginFailure(){
+  for(const page of this.page.context().pages())for(const frame of page.frames().filter(trusted)){try{
+   const state=await frame.evaluate(()=>{const text=document.body?.innerText||'';return{invalid:/invalid.{0,30}(password|user)|incorrect.{0,30}(password|user)/i.test(text),change:/change (your )?password|password.{0,20}expir/i.test(text),session:/already logged|active session|another session|concurrent session/i.test(text),verify:/captcha|verify (you|that you) are human|security challenge|one.time.password|verification code/i.test(text),login:Boolean(document.querySelector('input[type="password"]'))};});
+   this.report('FLYCHAM_LOGIN_STATE_'+JSON.stringify(state));
+   if(state.invalid)return 'FLYCHAM_LOGIN_BAD_CREDENTIALS';if(state.change)return 'FLYCHAM_PASSWORD_CHANGE_REQUIRED';if(state.session)return 'FLYCHAM_EXISTING_SESSION';if(state.verify)return 'FLYCHAM_MANUAL_VERIFICATION';
+  }catch{}}
+  return 'FLYCHAM_LOGIN_NOT_CONFIRMED';
+ }
  async isAuthenticated(){return Boolean(await this.authenticatedFrame());}
  async signIn(){
   this.report('FLYCHAM_LOGIN_STARTED');
@@ -49,13 +74,13 @@ class FlyChamPortalAdapter{
   if(await submit.count()!==1)throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');
   await submit.click();
   for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=trusted(this.page)?this.page.url():(await this.authenticatedFrame()).url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}for(const f of this.frames())if(await f.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
-  throw Error('FLYCHAM_LOGIN_NOT_CONFIRMED');
+  throw Error(await this.loginFailure());
  }
  async searchFlightsForHeartbeat(){if(!this.protectedURL||new URL(this.protectedURL).origin!==ORIGIN)throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
  async search(request){
   const config=validateLiveRequest(request);if(request.baggageRequest)throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
   await this.searchFlightsForHeartbeat();const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
-  let link=menu.getByRole('link',{name:/^make\s*reservation$/i});if(await link.count()!==1)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
+  const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
   let frame;for(let attempt=0;attempt<15;attempt++){for(const f of this.frames())if(await f.locator('#fAirport:visible').count()===1){frame=f;break;}if(frame)break;await this.page.waitForTimeout(500);}
   if(!frame)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
   const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});

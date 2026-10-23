@@ -38,3 +38,11 @@ test('login follows an automatically opened blank popup and fills only its trust
  const adapter=new FlyChamPortalAdapter(root,{username:'fake-user',password:'fake-password',report:e=>events.push(e)});adapter.authenticatedFrame=async()=>authenticated?frame:null;
  await adapter.signIn();assert.equal(adapter.page,popup);assert.deepEqual(filled,['fake-user','fake-password']);assert.match(adapter.protectedURL,/\/private\/home$/);assert.ok(events.includes('FLYCHAM_PORTAL_AUTHENTICATED'));
 });
+
+test('authentication requires sign-out and reservation markers across trusted frames in the same window',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let password=false;
+ const locator=visible=>({count:async()=>visible?1:0,nth(){return this;},isVisible:async()=>visible});
+ const frame=kind=>({url:()=> 'https://reservations.flycham.com/xbe/private/'+kind,locator:()=>({count:async()=>password?1:0}),getByRole:(role,{name})=>locator(kind==='header'&&role==='img'&&name.test('Sign Out')||kind==='menu'&&role==='img'&&name.test('Make Reservation'))});
+ const header=frame('header'),menu=frame('menu');const page={isClosed:()=>false,frames:()=>[header,menu],context:()=>({pages:()=>[page]})};const adapter=new FlyChamPortalAdapter(page,{});
+ assert.equal(await adapter.authenticatedFrame(),menu);password=true;assert.equal(await adapter.authenticatedFrame(),null);
+});
