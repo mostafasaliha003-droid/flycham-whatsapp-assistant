@@ -24,5 +24,36 @@ function languagePatch(raw,awaiting){
  return out;
 }
 function applyDefaultBaggage(request){if(!request.baggageRequest)request.baggageRequest={checkedWeightKg:30,source:'default30',requestedByCustomer:false};return request;}
+function reconcileRoute(request,previous={},raw,awaiting){
+ const canonical=v=>city(v)||v||null;
+ const known={origin:canonical(previous.origin),destination:canonical(previous.destination)};
+ const t=normalize(String(raw)).replace(/[،,.!؟?]+$/g,'').replace(/^(?:اي|نعم|تمام|قصدي)\s+/,'').trim();
+ const bare=city(t),direct=languagePatch(raw);
+ const shortDirection=city(t.replace(/^(?:من|from|الى|على|ع|to)\s+/i,''));
+ const directed=!/(?:^|\s)(?:مو|مش|ليس|لا|بدون|الا)(?:\s|$)/.test(t);
+ let clarify=null;
+ // A repeated airport confirms the known endpoint. It never supplies the other endpoint.
+ if(bare&&(known.origin===bare||known.destination===bare||['origin','destination'].includes(awaiting))){
+  Object.assign(request,known);
+  if(['origin','destination'].includes(awaiting)){
+   const opposite=awaiting==='origin'?'destination':'origin';
+   if(known[opposite]===bare){if(!known[awaiting])clarify=awaiting;}
+   else request[awaiting]=bare;
+  }
+ }else if(shortDirection&&directed&&(direct.origin||direct.destination)){
+  Object.assign(request,known);
+  if(direct.origin===known.origin&&!known.destination)clarify='destination';
+  if(direct.destination===known.destination&&!known.origin)clarify='origin';
+ }
+ // Explicit direction in the customer's wording outranks a conflicting model extraction.
+ if(directed)for(const k of ['origin','destination'])if(direct[k])request[k]=direct[k];
+ request.origin=canonical(request.origin);request.destination=canonical(request.destination);
+ // Validate AFTER all model/local patches, before deciding the request is complete.
+ if(request.origin&&request.origin===request.destination){
+  clarify=directed&&direct.destination&&!direct.origin?'origin':'destination';
+  request[clarify]=null;
+ }
+ return clarify;
+}
 function flyChamBaggageAllowed(r){return !r?.baggageRequest||(!r.baggageRequest.pieces&&r.baggageRequest.scope!=='total'&&r.baggageRequest.checkedWeightKg<=30);}
-module.exports={city,languagePatch,applyDefaultBaggage,flyChamBaggageAllowed};
+module.exports={city,languagePatch,applyDefaultBaggage,flyChamBaggageAllowed,reconcileRoute};

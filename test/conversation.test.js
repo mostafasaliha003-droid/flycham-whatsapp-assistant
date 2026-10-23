@@ -101,13 +101,13 @@ test('repeating the departure airport while asked for destination never creates 
  resetSessions();const h=t=>handleMessage('screenshot-repro',t);
  h('مرحبا');h('لا لا بدي بهل اسبوع ذهاب فقط ماكسيموم');
  assert.match(h('من الشارجه').reply,/مطار المغادرة الشارقة واضح/);
- for(const name of ['شارقه','الشارقة','SHJ']){const r=h(name);assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة/);}
+ for(const name of ['شارقه','الشارقة','SHJ']){const r=h(name);assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة|لوين بدك توصل/);}
  h('الشام');const done=h('1 بالغ');assert.equal(done.complete,true);assert.equal(done.request.origin,'الشارقة');assert.equal(done.request.destination,'دمشق');
 });
 test('vague Syria request still asks destination city after origin is repeated',()=>{
  resetSessions();const h=t=>handleMessage('country-repro',t);
  h('خيو بدي انزل على سوريا بهل اسبوع شوفي اسعار');h('من الشارجه');
- const r=h('شارقه');assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة بسوريا/);
+ const r=h('شارقه');assert.equal(r.complete,false);assert.match(r.reply,/إلى أي مدينة بسوريا|لوين بسوريا بدك توصل/);
 });
 
 test('a baggage follow-up amends the same weekly request after submission',()=>{

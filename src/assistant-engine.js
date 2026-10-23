@@ -100,11 +100,15 @@ class AssistantEngine{
    const r=base?.request;const answered=field==='passengers'?Number.isInteger(r?.passengers?.adults):field==='departureDate'?Boolean(r?.departureDate||r?.departureRange):field==='returnDate'?Boolean(r?.returnDate||r?.stayNights):Boolean(r?.[field]);
    if(answered)q.answered=true;
   }
-  if(decision?.intent==='clarify'&&!hasDecisionFields&&!changed&&!knownQuestion(decision.question,base?.request)&&decision.question)result.reply=decision.question;
+  if(!result.clarification&&decision?.intent==='clarify'&&!hasDecisionFields&&!changed&&!knownQuestion(decision.question,base?.request)&&decision.question)result.reply=decision.question;
 
   if(!result.complete&&base?.awaiting){
    const field=base.awaiting,prior=s.questions[field];
-   if(prior&&!prior.answered&&!changed)result.reply='تفاصيلك اللي وصلتني محفوظة 🌷 بنكمل أول ما يوصل التفصيل الناقص، بدون ما نعيد المعلومات السابقة.';
+   if(prior&&!prior.answered&&!changed&&!result.clarification){
+    const r=base.request;
+    const reminders={origin:r.destination?`الوجهة ${r.destination} واضحة؛ ناقصني مدينة الانطلاق فقط.`:'ناقصني مدينة الانطلاق حتى أحدد المسار.',destination:r.origin?`المغادرة من ${r.origin} واضحة؛ ناقصني المدينة اللي بدك توصل إلها فقط.`:'ناقصني المدينة اللي بدك توصل إلها.',departureDate:'تفاصيل المسار محفوظة؛ ناقصني يوم السفر أو فترة مناسبة مثل هالأسبوع.',tripType:'المسار والموعد محفوظين؛ ناقصني إذا بدك ذهاب بس أو مع رجعة.',returnDate:'تفاصيل الذهاب محفوظة؛ ناقصني موعد الرجعة أو مدة الإقامة.',passengers:'تفاصيل الرحلة محفوظة؛ ناقصني عدد المسافرين فقط، مثل «شخص واحد». إذا معك أطفال اذكر أعمارهن.'};
+    result.reply=reminders[field]||result.reply;
+   }
    else{s.questions[field]={askedAt:now,answered:false};s.lastQuestion=result.reply;}
   }
   if(result.complete){s.lastQuestion=null;s.revision=(s.revision||0)+1;}

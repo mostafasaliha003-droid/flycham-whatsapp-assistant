@@ -1,7 +1,7 @@
 'use strict';
 
 const sessions = new Map();
-const {languagePatch,applyDefaultBaggage}=require('./travel-language');
+const {languagePatch,applyDefaultBaggage,reconcileRoute}=require('./travel-language');
 const { pricingDemo } = require('./pricing-demo');
 const {naturalDate,normalize,dubaiDay,addDays,iso}=require('./arabic-dates');
 
@@ -216,6 +216,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   if(language.destination===request.origin&&!/(?:لل|الى|إلى|على)\s*/.test(normalized))delete language.destination;
   if(language.origin===request.destination&&!/(?:من|from)\s/i.test(normalized))delete language.origin;
   const invalidDate = applyDecisionPatch(request,language,now)||applyDecisionPatch(request,patch,now)||parsedInvalid;
+  const routeClarification=reconcileRoute(request,state.request,normalized,state.awaiting);
   applyDefaultBaggage(request);
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
@@ -228,6 +229,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
 
   if (missing.length) {
     state.awaiting=missing[0];
+    if(routeClarification===missing[0])return{complete:false,clarification:'route_direction',reply:routeClarification==='destination'?`إي، المغادرة من ${request.origin} مسجّلة عندي. لوين${request.destinationCountry?' بسوريا':''} بدك توصل؟`:`تمام، الوجهة ${request.destination} مسجّلة عندي. من وين بدك تنطلق؟`};
     const prompt=missing[0]==='destination'&&request.origin?`مطار المغادرة ${request.origin} واضح. إلى أي مدينة${request.destinationCountry?' بسوريا':''} بدك تسافر؟ مثل دمشق أو حلب.`:missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
     const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، فهمت تاريخ الذهاب ${request.departureDate}. `:'';
     return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. الربط الحالي يفحص الشارقة فقط، لذلك المقارنة لا تشمل باقي مطارات الإمارات. ':''}${understood}${prompt}` };

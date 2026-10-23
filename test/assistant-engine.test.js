@@ -135,3 +135,29 @@ test('explicit singular passenger answers complete the party without repeating t
   const r=await e.handle('singular',reply,{now});assert.equal(r.complete,true,reply);assert.deepEqual(r.request.passengers,{adults:1,children:0,infants:0,ages:[]},reply);
  }
 });
+
+test('repeated origin is acknowledged and clarified without losing the week or inventing a destination',async()=>{
+ for(const model of [false,true]){
+  let repeated=false;
+  const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>model&&repeated?nluDecision({destination:'SHJ'}):null});
+  await e.handle('route-repeat','لا لا بدي بهل اسبوع ماكسيموم',{now});
+  await e.handle('route-repeat','من الشارجه',{now});const range=structuredClone(e.state('route-repeat').base.request.departureRange);
+  repeated=true;const r=await e.handle('route-repeat','شارقه',{now});repeated=false;
+  assert.equal(r.complete,false);assert.match(r.reply,/المغادرة من الشارقة/);assert.match(r.reply,/لوين بدك توصل/);assert.doesNotMatch(r.reply,/موظف|يدعم|التفصيل الناقص/);
+  assert.equal(e.state('route-repeat').base.request.destination,null);assert.deepEqual(e.state('route-repeat').base.request.departureRange,range);
+  const next=await e.handle('route-repeat','الشام',{now});assert.match(next.reply,/ذهاب/);assert.equal(e.state('route-repeat').base.request.destination,'دمشق');
+ }
+});
+test('directional wording cannot be swapped by the model and equal airport endpoints never complete',async()=>{
+ const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>nluDecision({origin:'DAM',destination:'SHJ',adults:1,tripType:'one_way'})});
+ const r=await e.handle('route-swap','من الشارقة للشام 11-11-2026',{now});assert.equal(r.complete,true);assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
+ const bad=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>nluDecision({origin:'SHJ',destination:'الشارقه',departureDate:'2026-11-11',tripType:'one_way',adults:1})});
+ const same=await bad.handle('same-model-route','بدي رحلة',{now});assert.equal(same.complete,false);assert.match(same.reply,/لوين بدك توصل/);assert.equal(bad.state('same-model-route').base.request.destination,null);
+});
+test('the latest screenshot sequence retains supplied route and party after trip-type reply',async()=>{
+ const e=make();const first=await e.handle('screenshot-new','سلام، بدي من الشارقه لحلب الاحد القادم، أنا شخص واحد',{now});
+ assert.match(first.reply,/ذهاب فقط أم ذهاب وعودة/);
+ const r=await e.handle('screenshot-new','فقط ذهاب',{now});const trip=e.state('screenshot-new').base.request;
+ assert.equal(trip.origin,'الشارقة');assert.equal(trip.destination,'حلب');assert.equal(trip.passengers.adults,1);assert.equal(trip.departureDate,'2026-10-25');assert.equal(trip.tripType,'one_way');
+ assert.doesNotMatch(r.reply,/من أي مدينة|عدد المسافرين/);assert.equal(e.state('screenshot-new').status,'unsupported');
+});
