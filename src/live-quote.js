@@ -58,7 +58,7 @@ function expandLiveRequests(request){
  if(!request.departureRange){validateLiveRequest(request);return [request];}
  const {start,end}=request.departureRange;
  const first=new Date(start+'T00:00:00Z'),last=new Date(end+'T00:00:00Z');
- if(!Number.isFinite(+first)||!Number.isFinite(+last)||iso(first)!==start||iso(last)!==end||last<first||last-first>31*86400000)throw Error('LIVE_SCOPE_UNSUPPORTED');
+ if(!Number.isFinite(+first)||!Number.isFinite(+last)||iso(first)!==start||iso(last)!==end||last<first||last-first>61*86400000)throw Error('LIVE_SCOPE_UNSUPPORTED');
  const dates=[];
  for(let d=first;d<=last;d=addDays(d,1)){
   const candidate={...request,departureDate:iso(d),departureRange:null,returnDate:request.tripType==='one_way'?null:request.stayNights?iso(addDays(d,request.stayNights)):request.returnDate};

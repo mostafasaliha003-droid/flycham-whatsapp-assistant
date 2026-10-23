@@ -3,7 +3,7 @@ const {aiConfigured,aiProvider}=require('./assistant-nlu');
 
 const crypto=require('node:crypto');
 const legacy=require('./conversation');
-const {normalize}=require('./arabic-dates');
+const {normalize,naturalDate}=require('./arabic-dates');
 const {understand}=require('./assistant-nlu');
 const {AssistantState}=require('./assistant-state');
 const {POLICY,capabilityIssue}=require('./assistant-policy');
@@ -91,6 +91,17 @@ class AssistantEngine{
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
   let decision=null;
   try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  // Explicit requests to change/expand dates take precedence over model explanations
+  // of already displayed fares. Preserve every other trip fact.
+  const dateAmendment=/(?:تواريخ|تاريخ|موعد|ايام|شهر|اسبوع)/.test(t)&&/(?:غير|تاني|ثاني|ارخص|اقل سعر|ابحث|دور|شوف|شفلي|عطيني|اعطيني|اريد|بدي)/.test(t);
+  if(dateAmendment){
+   const parsed=naturalDate(t,now);
+   const fields={...(decision?.fields||{})};
+   if(parsed.range){fields.rangeStart=parsed.range.start;fields.rangeEnd=parsed.range.end;fields.departureDate=null;}
+   else if(parsed.dates?.[0]&&!parsed.invalid)fields.departureDate=parsed.dates[0];
+   if(fields.rangeStart&&fields.rangeEnd||fields.departureDate)decision={...(decision||{}),intent:'change',fields,question:null,option:null};
+   else return say('أكيد 🌷 منبحث عن تواريخ تانية على نفس المسار وعدد المسافرين والوزن. أي فترة بتناسبك: هالشهر، الشهر الجاي، أو الاتنين؟');
+  }
   const additional=decision?.intent==='additional_request'||/(?:طلب|رحل[هة]|سفر[هة])\s*(?:تاني|ثاني|تاني[هة]|ثاني[هة])|(?:وكمان|وكمان بدي)\s+(?:بدي\s+)?(?:رحل[هة]|من\s)/.test(t);
   if(additional&&['queued','searching'].includes(s.status)){
    s.pendingRequests ||= [];
@@ -225,6 +236,7 @@ class AssistantEngine{
   if(hypothetical&&result.complete){result.comparison=true;s.comparison={request:result.request,base:previous};legacy.importSession(id,previous);}
   else if(result.complete){delete s.pendingQuotedOffer;if(previous)s.previous.push(previous);s.previous=s.previous.slice(-5);s.offers=[];s.selected=null;s.comparison=null;}
   if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';const blocked=legacy.exportSession(id);if(blocked){blocked.submitted=false;legacy.importSession(id,blocked);}result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص.':issue==='route'?'ما عندي سعر مؤكّد لهالمسار حاليًا. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
+  if(!result.complete&&!['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='أكيد 🌷 فينا نراجع نفس الرحلة أو نبحث بتواريخ تانية. أي فترة بتناسبك للبحث؟';
   if(!result.complete&&['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك. أي تعديل تبعته منضيفه على نفس الطلب.';
   if(result.complete)s.lastQuestion=null;else if(/[؟?]/.test(result.reply))s.lastQuestion=result.reply;
   if(/^(?:يسلمو|شكرا|شكراً|مشكور)/.test(t)&&result.complete)result.reply='تكرم عيونك. '+result.reply;

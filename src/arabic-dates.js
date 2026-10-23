@@ -15,6 +15,15 @@ function naturalDate(text,now=Date.now()){
  const names=[['الاحد',0],['الاثنين',1],['الاتنين',1],['الثلاثاء',2],['التلاتا',2],['الثلاثا',2],['الاربعاء',3],['الاربعا',3],['الخميس',4],['الجمعة',5],['الجمعه',5],['السبت',6]];
  const weekday=names.find(([name])=>t.includes(name));
  if(weekday){let delta=(weekday[1]-today.getUTCDay()+7)%7;if(delta===0)delta=7;return {dates:[iso(addDays(today,delta))]};}
+ // Explicit consecutive months describe a period, never a single departure day.
+ const monthNumbers=t.match(/(?:خلال|ضمن|بـ?|في)?\s*(?:شهر|الشهر|اشهر|شهور|شهرين)\s*(1[0-2]|[1-9])(?:\s*(?:و|او|،|,)\s*(?:شهر\s*)?(1[0-2]|[1-9]))?(?!\d|\s*[-/.]\s*\d)/);
+ if(monthNumbers){
+   const firstMonth=Number(monthNumbers[1]),lastMonth=Number(monthNumbers[2]||monthNumbers[1]);
+   let year=today.getUTCFullYear();if(firstMonth<today.getUTCMonth()+1)year++;
+   const lastYear=year+(lastMonth<firstMonth?1:0);
+   const start=new Date(Date.UTC(year,firstMonth-1,1)),end=new Date(Date.UTC(lastYear,lastMonth,0));
+   return {dates:[],range:{start:iso(start)<day?day:iso(start),end:iso(end),kind:'explicit_months'}};
+ }
  const next=/(?:الجاي|القادم|المقبل|اللي بعده)/.test(t);
  if(/(?:هالاسبوع|هل اسبوع|هال اسبوع|بهل اسبوع|هذا الاسبوع|هال اسبوع|الاسبوع)/.test(t)){
    // Monday-start calendar week, Dubai dates. Never include past days.

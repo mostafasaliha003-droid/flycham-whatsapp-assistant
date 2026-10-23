@@ -15,7 +15,7 @@ class QuoteJobs {
     this.prune();
     const previous=[...this.jobs.entries()].filter(([,j])=>j.recipient===recipient&&['pending','claimed'].includes(j.state));
     if(!['airarabia','flycham'].includes(request.provider||'airarabia'))throw Error('QUEUE_PROVIDER_INVALID');
-    if((!this.ready(request.provider||'airarabia')&&!previous.some(([,j])=>(j.request.provider||'airarabia')===(request.provider||'airarabia')))||this.jobs.size>=100)throw Error('QUEUE_UNAVAILABLE');
+    if((!this.ready(request.provider||'airarabia')&&!previous.some(([,j])=>(j.request.provider||'airarabia')===(request.provider||'airarabia')))||this.jobs.size>=300)throw Error('QUEUE_UNAVAILABLE');
     this.cancel(recipient);
     const id=randomUUID();this.jobs.set(id,{recipient,request:structuredClone(request),expires:this.now()+this.ttl,state:'pending'});this.save();return id;
   }
@@ -25,7 +25,7 @@ class QuoteJobs {
     const dated=expandLiveRequests(request),needed=dated.length*providers.length;
     const own=[...this.jobs.values()].filter(j=>j.recipient===recipient).length;
     const ownComparisons=[...this.comparisons.values()].filter(c=>c.recipient===recipient).length;
-    if(this.jobs.size-own+needed>100||this.comparisons.size-ownComparisons>=100)throw Error('QUEUE_UNAVAILABLE');
+    if(this.jobs.size-own+needed>300||this.comparisons.size-ownComparisons>=100)throw Error('QUEUE_UNAVAILABLE');
     this.cancel(recipient);
     const id=randomUUID(),revision=this.revisions.get(recipient),parent={id,recipient,revision,request:structuredClone(request),providers,children:[],phase:'exact',createdAt:this.now(),deadline:this.now()+this.comparisonTimeoutMs,expires:this.now()+this.ttl,allowAlternatives,version:0,nextReference:1,deliveredVersion:-1,delivered:false};
     this.comparisons.set(id,parent);
@@ -38,7 +38,7 @@ class QuoteJobs {
   addComparisonChild(parent,request,phase,delta=0,seeds=[]){
     const id=randomUUID(),provider=request.provider,child={id,provider,phase,delta,request,status:'pending',offers:[]};parent.children.push(child);
     if(seeds.length){for(const o of new Map(seeds.map(o=>[offerKey(o),o])).values())if(this.canAddComparisonOffer(parent,provider))child.offers.push({...o,reference:parent.nextReference++});child.status=child.offers.length?'partial':'unverified';return child;}
-    if(!this.ready(provider)||this.jobs.size>=100){child.status='unverified';return child;}
+    if(!this.ready(provider)||this.jobs.size>=300){child.status='unverified';return child;}
     this.jobs.set(id,{recipient:parent.recipient,request:structuredClone(request),expires:parent.expires,state:'pending',comparisonId:parent.id,revision:parent.revision,comparisonPhase:phase});return child;
   }
   canAddComparisonOffer(parent,provider){const all=parent.children.flatMap(c=>c.offers);return all.length<80&&all.filter(o=>o.provider===provider).length<(parent.providers.length>1?40:80);}
@@ -96,3 +96,4 @@ class QuoteJobs {
 }
 function validQueueKey(header,secret){if(!secret || secret.length<32 || typeof header!=='string')return false;const a=Buffer.from(header),b=Buffer.from('Bearer '+secret);return a.length===b.length && timingSafeEqual(a,b);}
 module.exports={QuoteJobs,validQueueKey};
+

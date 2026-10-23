@@ -73,7 +73,7 @@ async function attempt(p,options){
  if(state.until>now||state.probing){const error=Error('NLU_COOLDOWN');error.quotaExhausted=state.quotaExhausted;throw error;}
  const probe=state.failures>0;if(probe)state.probing=true;
  try{const decision=await callProvider(p,options);state.failures=0;state.until=0;state.quotaExhausted=false;console.log('ASSISTANT_AI_OK_'+p.toUpperCase());return decision;}
- catch(error){state.failures++;state.quotaExhausted=error.quotaExhausted===true;state.until=now+(error.retryMs||30000);throw error;}
+ catch(error){state.failures++;state.quotaExhausted=error.quotaExhausted===true;state.until=now+(error.retryMs||(error.message==='NLU_TIMEOUT'?3000:30000));throw error;}
  finally{if(probe)state.probing=false;}
 }
 async function routeDecision(options){
