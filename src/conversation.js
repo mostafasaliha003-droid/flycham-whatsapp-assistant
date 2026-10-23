@@ -51,6 +51,12 @@ function parsePassengerCount(text) {
   return { adults, children, infants, ages };
 }
 
+function parseTripType(text){
+ const t=normalize(normalizeDigits(String(text))).trim();
+ if(/ذهاب\s*(?:فقط|بس)|روح[هة]\s*(?:فقط|بس)|رايح\s*(?:فقط|بس)|(?:بس|فقط)\s*(?:روح[هة]|ذهاب)|اتجاه\s*واحد|one\s*way|ون\s*واي/i.test(t)||/^(?:ذهاب|روح[هة])$/.test(t))return 'one_way';
+ if(/ذهاب\s*(?:و|مع)?\s*(?:عود[هة]|اياب)|روح[هة]\s*(?:و|مع)\s*رجع[هة]|رايح\s*(?:و)?\s*راجع|مع\s*رجع[هة]|round\s*trip|return\s*flight/i.test(t))return 'round_trip';
+ return null;
+}
 function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const previousDepartureDate=request.departureDate;
   text = normalizeDigits(text);
@@ -96,8 +102,10 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
-  const hasReturn = /ذهاب\s*(?:و|مع)\s*عود|ذهاب\s*عودة|روحة\s*(?:و|مع)\s*رجعة|رايح\s*(?:و)?راجع|مع\s*رجعة|round\s*trip|return\s*flight/i.test(text);
-  const oneWay = /ذهاب\s*(?:فقط|بس)|روحة\s*(?:فقط|بس)|one\s*way/i.test(text) || plain==='ذهاب';
+  if(/فلاي\s*شام|fly\s*cham/i.test(text))request.provider='flycham';
+  else if(/العربي[هة]|air\s*arabia/i.test(text))request.provider='airarabia';
+  const hasReturn = parseTripType(text)==='round_trip';
+  const oneWay = parseTripType(text)==='one_way';
   if (dates.length && !invalidDate) {
     if (dates.length > 1 && dates[1] < dates[0]) invalidDate = true;
     else {
@@ -157,7 +165,25 @@ function summarize(request) {
   ].join('\n');
 }
 
-function handleMessage(sender, text, {now=Date.now()}={}) {
+function applyDecisionPatch(request, patch, now) {
+  if (!patch) return false;
+  for (const k of ['origin','destination','tripType','provider']) if (patch[k]) request[k]=patch[k];
+  if (patch.departureDate) {request.departureDate=patch.departureDate;request.departureRange=null;}
+  if (patch.rangeStart && patch.rangeEnd) {request.departureRange={start:patch.rangeStart,end:patch.rangeEnd,kind:'customer_range'};request.departureDate=null;}
+  if (patch.returnDate) request.returnDate=patch.returnDate;
+  if (request.tripType==='one_way') {request.returnDate=null;request.stayNights=null;}
+  if (['adults','children','infants'].some(k=>patch[k]!=null)||patch.ages?.length) {
+    const party={adults:null,children:0,infants:0,ages:[],...request.passengers};
+    for(const k of ['adults','children','infants'])if(patch[k]!=null)party[k]=patch[k];
+    if(patch.ages?.length)party.ages=patch.ages;
+    request.passengers=party;
+  }
+  if(patch.weightKg!=null||patch.pieces!=null||patch.weightScope)request.baggageRequest={...request.baggageRequest,...(patch.weightKg!=null?{checkedWeightKg:patch.weightKg,requestedByCustomer:true}:{}),...(patch.pieces!=null?{pieces:patch.pieces}:{}),...(patch.weightScope?{scope:patch.weightScope}:{})};
+  if(patch.excludedDates?.length||patch.latestArrival)request.constraints={...request.constraints,...(patch.excludedDates?.length?{excludedDates:patch.excludedDates}:{}),...(patch.latestArrival?{latestArrival:patch.latestArrival}:{})};
+  const today=iso(dubaiDay(now));
+  return Boolean(request.departureDate&&request.departureDate<today||request.departureRange&&(request.departureRange.start<today||request.departureRange.end<request.departureRange.start)||request.returnDate&&request.departureDate&&request.returnDate<request.departureDate);
+}
+function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   const normalized = String(text ?? '').trim();
   if (normalized === 'اختبار التسعير') return {complete:false,reply:pricingDemo()};
   if (/^(إلغاء|الغاء|إلغاء الطلب|الغاء الطلب|cancel|restart|ابدأ من جديد)$/i.test(normalized)) {
@@ -184,7 +210,8 @@ function handleMessage(sender, text, {now=Date.now()}={}) {
     }
   }
 
-  const invalidDate = applyParsed(request, normalized,{now,awaiting:state.awaiting});
+  const parsedInvalid = applyParsed(request, normalized,{now,awaiting:state.awaiting});
+  const invalidDate = applyDecisionPatch(request,patch,now)||parsedInvalid;
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};
   const missing = missingFields(request);
   if(!invalidDate)state.request=request;
@@ -215,4 +242,4 @@ function resetSessions() { sessions.clear(); }
 
 function exportSession(id){return sessions.has(id)?structuredClone(sessions.get(id)):null;}
 function importSession(id,value){if(value)sessions.set(id,structuredClone(value));else sessions.delete(id);}
-module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,exportSession,importSession }; 
+module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,parseTripType,exportSession,importSession }; 

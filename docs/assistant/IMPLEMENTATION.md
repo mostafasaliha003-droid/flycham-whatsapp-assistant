@@ -49,3 +49,10 @@ Deploy web first (worker metadata is backward-compatible), verify live health/ru
 ## Required end-to-end acceptance script
 
 Greeting → route/week request without count → ask count → one adult → start quote → waiting does not enqueue duplicate → weight amendment → stale result suppressed → hypothetical lower-weight comparison preserves original → quoted offer selection → booking intent → staff queue/notification (if configured) → staff claim silences bot → staff release resumes. Separately test missing map versus confirmed inactive service, paid and free weight upgrades, partial coverage, failed Meta sending, queue cancellation and restart behavior.
+
+
+## Conversation extraction fix (2026-10-23)
+
+Structured model fields now update the existing request directly after local parsing. The original message remains available to the local relative-date parser; partially extracted fields no longer replace the whole message. Baggage changes preserve route, dates and party, and ages can update an existing party without repeating the count question. Greeting classifications with travel fields do not discard the request. Both user and assistant turns are retained in bounded conversation context. Missing fields still require clarification; unsupported supplier capabilities remain blocked.
+
+NLU diagnostics report success intent or safe HTTP/error codes only, without message text, keys or provider error messages. Configuration presence is not proof of a successful live model request. No reasoning-effort override, budget cap, or change to the portal worker is included in this fix.

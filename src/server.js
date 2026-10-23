@@ -1,4 +1,6 @@
 'use strict';
+const {aiStatus}=require('./assistant-nlu');
+
 
 const http = require('node:http');
 const { readFileSync } = require('node:fs');
@@ -6,7 +8,8 @@ const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { AssistantEngine } = require('./assistant-engine');
 const { MessageBatcher } = require('./message-batcher');
-const { sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
+const {handleVoucherRequest}=require('./voucher-http');
+const { sendImageMessage,sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const { expandLiveRequests } = require('./live-quote');
 const quoteJobs = new QuoteJobs();
@@ -79,11 +82,12 @@ async function handleWebhookPost(request, response) {
   }
 }
 
-function claimJob(){const j=quoteJobs.claim();if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||{};}
+function claimJob(provider){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||{};}
 
 function createServer() {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
     if(url.pathname.startsWith('/internal/quotes/')){
       if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED!=='true' || !validQueueKey(request.headers.authorization,process.env.AIR_ARABIA_QUOTE_QUEUE_KEY)){
         response.writeHead(401).end('Unauthorized');return;
@@ -92,7 +96,7 @@ function createServer() {
       try{
         const data=JSON.parse((await readBody(request)).toString('utf8'));
         if(url.pathname==='/internal/quotes/claim'){
-          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob()));return;
+          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob(data.provider)));return;
         }
         if(url.pathname==='/internal/quotes/current'){
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({current:quoteJobs.current(data.id,data.lease)}));return;
@@ -139,7 +143,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.1',aiConfigured:Boolean(process.env.OPENAI_API_KEY),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT)}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.2',...aiStatus(process.env),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),flychamWorkerReady:quoteJobs.ready('flycham')}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {

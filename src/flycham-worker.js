@@ -1,0 +1,88 @@
+'use strict';
+const {chromium}=require('playwright');
+const {PortalSession}=require('./portal-session');
+const {startQuotePolling}=require('./quote-poller');
+const {submitProbe}=require('./portal-search-probe');
+const {validateLiveRequest,expandLiveRequests}=require('./live-quote');
+const {readFlyChamFirstPage}=require('./flycham-first-page');
+const {voucherPromise}=require('./flycham-pricing');
+const ORIGIN='https://reservations.flycham.com';
+const trusted=frame=>{try{return new URL(frame.url()).origin===ORIGIN;}catch{return false;}};
+function formatFlyChamOffers(request,offers,{complete=false,dates=[]}={}){
+ if(!offers.length)return 'لم نتأكد من سعر فلاي شام لهذا الطلب بعد. لم يتم حجز أو إصدار أي تذكرة.';
+ const sorted=offers.slice().sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+ return '*فلاي شام | مجموعة الرمال*\n'+sorted.map((q,i)=>`\n*الخيار ${q.reference||i+1}*\nالمطارات: ${q.timing.out.origin} ← ${q.timing.out.destination}\nالتاريخ: ${q.request.departureDate}\nرقم الرحلة: ${q.timing.out.flight}\nالإقلاع: ${q.timing.out.departure}\nالوصول: ${q.timing.out.arrival}${q.timing.back?`\nالعودة: ${q.request.returnDate}\n${q.timing.back.flight} — الإقلاع ${q.timing.back.departure} — الوصول ${q.timing.back.arrival}`:''}\n*الإجمالي: ${q.price.sellingTotal} درهم*\n${voucherPromise(q.price)}`).join('\n')+'\n\n'+(complete?'تم فحص الخيارات الظاهرة للفترة المطلوبة.':`تأكدت هذه الخيارات فقط؛ لم يكتمل فحص كامل الفترة والتواقيت. التواريخ التي تمت محاولتها: ${dates.join('، ')}.`)+'\nالسعر لشخص بالغ واحد، شامل الرسوم وعمولة الخدمة. الأمتعة ووزن اليد غير مؤكدين في هذا العرض. الفاوجر يصدر بعد تأكيد التذكرة ولا يخصم من السعر الحالي. السعر والتوفر قابلان للتغير حتى الإصدار؛ لم يتم إنشاء حجز.';
+}
+class FlyChamPortalAdapter{
+ constructor(page,{username,password,report=()=>{}}){this.page=page;this.username=username;this.password=password;this.report=report;this.protectedURL=null;}
+ frames(){return this.page.frames().filter(trusted);}
+ async authenticatedFrame(){for(const frame of this.frames()){for(const name of [/^make\s*reservation$/i,/^log\s*out$/i,/^logout$/i]){const link=frame.getByRole('link',{name});if(await link.count()===1&&await link.isVisible())return frame;}}return null;}
+ async isAuthenticated(){return Boolean(await this.authenticatedFrame());}
+ async signIn(){
+  this.report('FLYCHAM_LOGIN_STARTED');
+  const context=this.page.context(),windows=[],onPage=p=>windows.push(p);context.on('page',onPage);
+  try{await this.page.goto(ORIGIN+'/xbe/',{waitUntil:'domcontentloaded',timeout:45000});}finally{context.removeListener('page',onPage);}
+  const automatic=windows.find(p=>trusted(p));if(automatic){this.page=automatic;await this.page.waitForLoadState('domcontentloaded');}
+  if(await this.isAuthenticated()){this.protectedURL=this.page.url();return;}
+  const link=this.page.getByRole('link',{name:'If pop-up blocked, Click here to login',exact:true});
+  if(await link.count()===1){
+   const popup=await Promise.all([this.page.waitForEvent('popup',{timeout:15000}),link.click()]).then(x=>x[0]);
+   this.page=popup;await this.page.waitForLoadState('domcontentloaded');
+  }
+  if(!trusted(this.page))throw Error('FLYCHAM_UNTRUSTED_ORIGIN');
+  if(await this.isAuthenticated()){this.protectedURL=this.page.url();return;}
+  const password=this.page.locator('input[type="password"]:visible');
+  const users=this.page.locator('input[type="text"]:visible:not([readonly]),input[type="email"]:visible:not([readonly])');
+  if(await password.count()!==1||await users.count()!==1){this.report('FLYCHAM_LOGIN_TEXT_FIELDS_'+await users.count());this.report('FLYCHAM_LOGIN_PASSWORD_FIELDS_'+await password.count());throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');}
+  if(await this.page.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');
+  await users.fill(this.username);await password.fill(this.password);
+  let submit=this.page.getByRole('button',{name:/^(?:log\s*in|sign\s*in)$/i});
+  if(await submit.count()!==1)submit=this.page.locator('input[type="submit"]:visible');
+  if(await submit.count()!==1)throw Error('FLYCHAM_LOGIN_FORM_UNCONFIRMED');
+  await submit.click();
+  for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=this.page.url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}if(await this.page.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
+  throw Error('FLYCHAM_LOGIN_NOT_CONFIRMED');
+ }
+ async searchFlightsForHeartbeat(){if(!this.protectedURL||!trusted(this.page))throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
+ async search(request){
+  const config=validateLiveRequest(request);if(request.baggageRequest)throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
+  await this.searchFlightsForHeartbeat();const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
+  let link=menu.getByRole('link',{name:/^make\s*reservation$/i});if(await link.count()!==1)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
+  let frame;for(let attempt=0;attempt<15;attempt++){for(const f of this.frames())if(await f.locator('#fAirport:visible').count()===1){frame=f;break;}if(frame)break;await this.page.waitForTimeout(500);}
+  if(!frame)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
+  const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});
+  if(prepared.tripKind!==(request.tripType==='one_way'?'one-way':'return'))throw Error('FLYCHAM_TRIP_NOT_CONFIRMED');
+  await frame.locator('#divFQTxnCurr:visible').waitFor({state:'visible',timeout:45000});
+  return frame;
+ }
+ async runCustomerQuote(request,onProgress,isCurrent=async()=>{}){
+  const offers=[],attempted=[],coverage=[];const dates=expandLiveRequests(request);
+  for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);try{
+   const frame=await this.search(dated),q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});
+   const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);
+   // This pilot verifies the supplier's selected first-page itinerary only.
+   // Do not imply that all timings or the entire period have been compared.
+   coverage.push({date:dated.departureDate,status:'partial',confirmed:1,failed:0});
+   if(onProgress)await onProgress(formatFlyChamOffers(dated,[offer],{dates:attempted}),{offer,coverage});
+  }catch(error){coverage.push({date:dated.departureDate,status:'unverified',confirmed:0,failed:1});this.report(/^FLYCHAM_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_QUOTE_UNCONFIRMED');}}
+  return{reply:formatFlyChamOffers(request,offers,{dates:attempted}),outcome:offers.length?'partial':'failed',coverage};
+ }
+}
+async function readFlyChamConfig(env){
+ if(typeof env.FLYCHAM_AGENT_USERNAME!=='string'||!env.FLYCHAM_AGENT_USERNAME.trim()||typeof env.FLYCHAM_AGENT_PASSWORD!=='string'||!env.FLYCHAM_AGENT_PASSWORD)throw Error('FLYCHAM_CONFIG_MISSING');
+ return {username:env.FLYCHAM_AGENT_USERNAME,password:env.FLYCHAM_AGENT_PASSWORD};
+}
+async function runFlyCham({env=process.env,launch=o=>chromium.launch(o),log=console}={}){
+ if(env.FLYCHAM_PORTAL_ENABLED!=='true')return;
+ let browser,session,stop;
+ const shutdown=async()=>{if(stop)await stop();if(session)await session.stop();if(browser)await browser.close();};
+ try{
+  const credentials=await readFlyChamConfig(env);browser=await launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage();page.setDefaultTimeout(15000);
+  const adapter=new FlyChamPortalAdapter(page,{...credentials,report:c=>log.log(c)});await adapter.signIn();
+  session=new PortalSession(adapter);session.start(()=>{log.log('FLYCHAM_SESSION_UNAVAILABLE');shutdown().catch(()=>{});});
+  stop=startQuotePolling(session,{env,log,provider:'flycham'});
+  await new Promise(resolve=>{process.once('SIGTERM',resolve);process.once('SIGINT',resolve);});
+ }catch(e){log.log(/^FLYCHAM_[A-Z0-9_]+$/.test(e.message)?e.message:'FLYCHAM_PORTAL_UNAVAILABLE');}
+ finally{await shutdown().catch(()=>{});}
+}
+module.exports={FlyChamPortalAdapter,runFlyCham,readFlyChamConfig,formatFlyChamOffers};

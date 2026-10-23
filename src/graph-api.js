@@ -37,4 +37,12 @@ async function sendTextMessage(to, body, env = process.env) {
   return response.json();
 }
 
-module.exports = { sendTextMessage,checkWhatsAppConnection,safeGraphFailure };
+async function sendImageMessage(to,png,caption,env=process.env){
+ if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return {dryRun:true};
+ if(!env.WHATSAPP_ACCESS_TOKEN||!env.WHATSAPP_PHONE_NUMBER_ID)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');
+ const base='https://graph.facebook.com/'+(env.WHATSAPP_GRAPH_API_VERSION||'v23.0')+'/'+env.WHATSAPP_PHONE_NUMBER_ID;
+ const headers={Authorization:'Bearer '+env.WHATSAPP_ACCESS_TOKEN},body=new FormData();body.set('messaging_product','whatsapp');body.set('type','image/png');body.set('file',new Blob([png],{type:'image/png'}),'remal-voucher.png');
+ const upload=await fetch(base+'/media',{method:'POST',headers,body,signal:AbortSignal.timeout(30000)});if(!upload.ok)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');const media=await upload.json();if(typeof media.id!=='string')throw Error('VOUCHER_DELIVERY_UNAVAILABLE');
+ const response=await fetch(base+'/messages',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to,type:'image',image:{id:media.id,caption}}),signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');return response.json();
+}
+module.exports = {sendImageMessage, sendTextMessage,checkWhatsAppConnection,safeGraphFailure };
