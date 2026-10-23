@@ -82,7 +82,7 @@ async function handleWebhookPost(request, response) {
   }
 }
 
-function claimJob(){const j=quoteJobs.claim();if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||{};}
+function claimJob(provider){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||{};}
 
 function createServer() {
   return http.createServer(async (request, response) => {
@@ -96,7 +96,7 @@ function createServer() {
       try{
         const data=JSON.parse((await readBody(request)).toString('utf8'));
         if(url.pathname==='/internal/quotes/claim'){
-          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob()));return;
+          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob(data.provider)));return;
         }
         if(url.pathname==='/internal/quotes/current'){
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({current:quoteJobs.current(data.id,data.lease)}));return;
@@ -143,7 +143,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.2',...aiStatus(process.env),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD)}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.2',...aiStatus(process.env),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),flychamWorkerReady:quoteJobs.ready('flycham')}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {

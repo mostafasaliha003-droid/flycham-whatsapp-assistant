@@ -1,7 +1,7 @@
 'use strict';
 const {priceFlyChamQuote,voucherPromise}=require('./flycham-pricing');
 // Read only the search-results DOM. Never enters passengers, ancillaries or payment.
-async function readFlyChamFirstPage(frame,{tripType,passengerCount=1}={}){
+async function readFlyChamFirstPage(frame,{tripType,passengerCount=1,request}={}){
  const observed=await frame.evaluate(()=>{
   if(location.origin!=='https://reservations.flycham.com')throw Error('FLYCHAM_UNTRUSTED_ORIGIN');
   const visible=e=>e&&e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden';
@@ -12,6 +12,13 @@ async function readFlyChamFirstPage(frame,{tripType,passengerCount=1}={}){
   return {baseTotal:amount[1].replace(/,/g,''),out:flight('tblOutboundFlights','depatureSelection'),back:flight('tblInboundFlights','returnSelection')};
  });
  if(!observed.out||tripType==='round_trip'&&!observed.back||tripType==='one_way'&&observed.back)throw Error('FLYCHAM_ITINERARY_INCOMPLETE');
+ if(request){
+  const codes=new Map([['الشارقة','SHJ'],['الشارقه','SHJ'],['SHJ','SHJ'],['دمشق','DAM'],['DAM','DAM']]);
+  const date=value=>{const m=String(value).match(/\b(\d{1,2})([A-Za-z]{3})(\d{2})\b/);if(!m)return null;const month=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].findIndex(x=>x.toLowerCase()===m[2].toLowerCase())+1;return month?`20${m[3]}-${String(month).padStart(2,'0')}-${m[1].padStart(2,'0')}`:null;};
+  const origin=codes.get(request.origin),destination=codes.get(request.destination);
+  if(!origin||!destination||observed.out.origin!==origin||observed.out.destination!==destination||date(observed.out.departure)!==request.departureDate||request.tripType!==tripType||request.baggageRequest)throw Error('FLYCHAM_REQUEST_NOT_MATCHED');
+  if(tripType==='round_trip'&&(observed.back.origin!==destination||observed.back.destination!==origin||date(observed.back.departure)!==request.returnDate))throw Error('FLYCHAM_REQUEST_NOT_MATCHED');
+ }
  const price=priceFlyChamQuote({currency:'AED',baseTotal:observed.baseTotal,tripType,passengerCount,verifiedFirstPage:true});
  return {provider:'flycham',price,timing:{out:observed.out,back:observed.back},voucherMessage:voucherPromise(price),verifiedAt:new Date().toISOString()};
 }

@@ -7,9 +7,10 @@ test('signed WhatsApp request queues privately and completes one reply using aut
  Object.assign(process.env,{ASSISTANT_DEBOUNCE_MS:'0',NODE_ENV:'production',WHATSAPP_APP_SECRET:secret,DRY_RUN:'false',WHATSAPP_ACCESS_TOKEN:'fake-test-token',WHATSAPP_PHONE_NUMBER_ID:'fake-test-id',AIR_ARABIA_QUOTE_QUEUE_ENABLED:'true',AIR_ARABIA_QUOTE_QUEUE_KEY:key});
  global.fetch=async(url,options)=>{assert.ok(String(url).startsWith('https://graph.facebook.com/'));out.push(JSON.parse(options.body));return{ok:true,json:async()=>({messages:[{id:'test'}]})};};
  const server=createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
- const post=(path,data,headers={})=>new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:server.address().port,path,method:'POST',headers:{'Content-Type':'application/json',...headers}},res=>{let body='';res.on('data',c=>body+=c);res.on('end',()=>resolve({status:res.statusCode,body}));});req.on('error',reject);req.end(JSON.stringify(data));});
+ const post=(path,data,headers={})=>new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:server.address().port,path,method:'POST',headers:{'Content-Type':'application/json',...headers}},res=>{let body='';res.on('data',c=>body+=c);res.on('end',()=>resolve({status:res.statusCode,body,headers:res.headers}));});req.on('error',reject);req.end(JSON.stringify(data));});
  try{
   assert.equal((await post('/internal/quotes/claim',{})).status,401);
+  assert.equal((await post('/internal/quotes/flycham-config',{})).status,401);
   const auth={Authorization:'Bearer '+key};await post('/internal/quotes/claim',{},auth);
   const payload={entry:[{changes:[{field:'messages',value:{messages:[{from:'private-recipient',id:'unique-integration-test',type:'text',text:{body:'من الشارقة إلى دمشق، 11-11-2090، 18-11-2090، ذهاب وعودة، 1 بالغ، بدي 30 كيلو'}}]}}]}]};
   const signature='sha256='+crypto.createHmac('sha256',secret).update(JSON.stringify(payload)).digest('hex');

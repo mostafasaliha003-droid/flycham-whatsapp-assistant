@@ -102,6 +102,8 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
+  if(/فلاي\s*شام|fly\s*cham/i.test(text))request.provider='flycham';
+  else if(/العربي[هة]|air\s*arabia/i.test(text))request.provider='airarabia';
   const hasReturn = parseTripType(text)==='round_trip';
   const oneWay = parseTripType(text)==='one_way';
   if (dates.length && !invalidDate) {
@@ -165,7 +167,7 @@ function summarize(request) {
 
 function applyDecisionPatch(request, patch, now) {
   if (!patch) return false;
-  for (const k of ['origin','destination','tripType']) if (patch[k]) request[k]=patch[k];
+  for (const k of ['origin','destination','tripType','provider']) if (patch[k]) request[k]=patch[k];
   if (patch.departureDate) {request.departureDate=patch.departureDate;request.departureRange=null;}
   if (patch.rangeStart && patch.rangeEnd) {request.departureRange={start:patch.rangeStart,end:patch.rangeEnd,kind:'customer_range'};request.departureDate=null;}
   if (patch.returnDate) request.returnDate=patch.returnDate;

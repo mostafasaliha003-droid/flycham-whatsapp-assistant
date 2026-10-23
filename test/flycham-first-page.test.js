@@ -9,3 +9,11 @@ function frame({total='ER: AED 1.00 = USD 0.2717 AED 643.00',origin='https://res
 test('first page uses the displayed AED final equivalent, not USD or the AED 1 exchange-rate numerator',async()=>{const q=await readFlyChamFirstPage(frame(),{tripType:'one_way'});assert.equal(q.price.baseTotal,'643.00');assert.equal(q.price.sellingTotal,'683.00');assert.equal(q.timing.out.flight,'XH744');assert.match(q.timing.out.departure,/05:30/);});
 test('return quote carries both timings, 90 margin and 25 future gift',async()=>{const q=await readFlyChamFirstPage(frame({back:true}),{tripType:'round_trip'});assert.equal(q.price.sellingTotal,'733.00');assert.equal(q.price.voucherValue,'25.00');assert.equal(q.timing.back.flight,'XH745');});
 test('unknown currency, foreign origin, missing return or inconsistent itinerary cannot become a quote',async()=>{await assert.rejects(readFlyChamFirstPage(frame({total:'USD 174.69'}),{tripType:'one_way'}));await assert.rejects(readFlyChamFirstPage(frame({origin:'https://other.example'}),{tripType:'one_way'}));await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'round_trip'}));await assert.rejects(readFlyChamFirstPage(frame({back:true}),{tripType:'one_way'}));});
+
+test('first-page total must match the requested route and dates before it can be quoted',async()=>{
+ const request={origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',tripType:'one_way'};
+ const q=await readFlyChamFirstPage(frame(),{tripType:'one_way',request});assert.equal(q.price.sellingTotal,'683.00');
+ await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,departureDate:'2026-11-12'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
+ await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,origin:'دمشق',destination:'الشارقة'}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
+ await assert.rejects(readFlyChamFirstPage(frame(),{tripType:'one_way',request:{...request,baggageRequest:{checkedWeightKg:30}}}),/FLYCHAM_REQUEST_NOT_MATCHED/);
+});

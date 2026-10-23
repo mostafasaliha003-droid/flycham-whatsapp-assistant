@@ -1,12 +1,13 @@
 'use strict';
 const {POLICY}=require('./assistant-policy');
 const nullableString={type:['string','null']},nullableInt={type:['integer','null']};
-const fields={origin:nullableString,destination:nullableString,departureDate:nullableString,returnDate:nullableString,rangeStart:nullableString,rangeEnd:nullableString,tripType:{type:['string','null'],enum:['one_way','round_trip',null]},adults:nullableInt,children:nullableInt,infants:nullableInt,ages:{type:'array',items:{type:'integer'}},weightKg:nullableInt,pieces:nullableInt,weightScope:{type:['string','null'],enum:['per_person','total',null]},excludedDates:{type:'array',items:{type:'string'}},latestArrival:nullableString};
+const fields={provider:{type:['string','null'],enum:['airarabia','flycham',null]},origin:nullableString,destination:nullableString,departureDate:nullableString,returnDate:nullableString,rangeStart:nullableString,rangeEnd:nullableString,tripType:{type:['string','null'],enum:['one_way','round_trip',null]},adults:nullableInt,children:nullableInt,infants:nullableInt,ages:{type:'array',items:{type:'integer'}},weightKg:nullableInt,pieces:nullableInt,weightScope:{type:['string','null'],enum:['per_person','total',null]},excludedDates:{type:'array',items:{type:'string'}},latestArrival:nullableString};
 const INTENTS=['request','change','compare','status','thanks','greeting','goodbye','negotiate','booking','cancel','select','clarify','other'];
 const schema={type:'object',additionalProperties:false,required:['intent','fields','question','option'],properties:{intent:{type:'string',enum:INTENTS},fields:{type:'object',additionalProperties:false,required:Object.keys(fields),properties:fields},question:nullableString,option:nullableInt}};
 function validateDecision(d){
  if(!d||!INTENTS.includes(d.intent)||!d.fields||Object.keys(d).some(k=>!schema.required.includes(k))||Object.keys(d.fields).some(k=>!(k in fields)))throw Error('NLU_INVALID');
  if(schema.required.some(k=>!(k in d))||Array.isArray(d.fields))throw Error('NLU_INVALID');
+ if(![null,'airarabia','flycham'].includes(d.fields.provider))throw Error('NLU_INVALID');
  if(![null,'one_way','round_trip'].includes(d.fields.tripType)||![null,'per_person','total'].includes(d.fields.weightScope))throw Error('NLU_INVALID');
  if(Object.keys(fields).some(k=>!(k in d.fields)))throw Error('NLU_INVALID');
  for(const k of ['adults','children','infants'])if(d.fields[k]!==null&&(!Number.isInteger(d.fields[k])||d.fields[k]<0||d.fields[k]>9))throw Error('NLU_INVALID');

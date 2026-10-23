@@ -1,12 +1,12 @@
 'use strict';
-function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console}={}){
+function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console,provider='airarabia'}={}){
   const url=env.AIR_ARABIA_QUOTE_QUEUE_URL,secret=env.AIR_ARABIA_QUOTE_QUEUE_KEY;
   if(!url || !secret || secret.length<32 || new URL(url).origin!=='https://flycham-whatsapp-assistant.onrender.com')throw Error('QUEUE_CONFIG_INVALID');
   let stopped=false,timer,inFlight=Promise.resolve();
   async function call(path,body){const r=await fetchImpl(url+path,{method:'POST',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error('QUEUE_HTTP_ERROR');return r.json();}
   async function poll(){
     try{
-      const job=await call('/claim',{});
+      const job=await call('/claim',provider==='airarabia'?{}:{provider});
       if(job?.id){
         log.log('PORTAL_CUSTOMER_QUOTE_STARTED');
         let reply,outcome='done',coverage=[];
