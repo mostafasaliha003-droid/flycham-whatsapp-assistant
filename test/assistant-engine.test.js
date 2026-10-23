@@ -73,3 +73,41 @@ test('structured child ages update the existing party rather than repeating the 
  assert.match((await e.handle('nlu-child','معي ابني',{now})).reply,/أعمار/);
  const r=await e.handle('nlu-child','عمره سبعة',{now});assert.doesNotMatch(r.reply,/كم أعمار/);assert.deepEqual(e.state('nlu-child').base.request.passengers.ages,[7]);
 });
+
+test('model-selected offer becomes the context for later baggage amendments',async()=>{
+ let select=false;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>select?{...nluDecision({},'select'),option:2}:null});
+ await e.handle('select-context',initial+'، 1 بالغ',{now});const request=e.state('select-context').base.request;
+ for(const [date,reference]of [['2026-10-24',1],['2026-10-25',2]])e.progress('select-context',{offer:{reference,request:{...request,departureDate:date,departureRange:null},timing:{out:{flight:'G9433'}},price:{sellingTotal:'750.50',weights:[{kg:20}]}}},'offer-'+reference);
+ select=true;const picked=await e.handle('select-context','عجبني التاني خلينا عليه',{now});assert.equal(picked.complete,false);assert.match(picked.reply,/الخيار 2/);
+ select=false;const amendment=await e.handle('select-context','بدي 30 كيلو',{now});assert.equal(amendment.complete,true);assert.equal(amendment.request.departureDate,'2026-10-25');assert.equal(amendment.request.departureRange,null);assert.equal(amendment.request.baggageRequest.checkedWeightKg,30);
+});
+test('brief acknowledgements while queued or searching retain the request without a new search',async()=>{
+ const e=make();await e.handle('queued-ack',initial+'، 1 بالغ',{now});const before=JSON.stringify(e.state('queued-ack').base.request);
+ for(const state of ['queued','searching']){e.jobState('queued-ack',state);for(const text of ['تمام','اوكي','حاضر']){const r=await e.handle('queued-ack',text,{now});assert.equal(r.complete,false);assert.match(r.reply,/البحث مستمر/);assert.doesNotMatch(r.reply,/أي خيار|طلبك السابق/);}}
+ assert.equal(JSON.stringify(e.state('queued-ack').base.request),before);
+});
+test('waiting words cannot swallow a concrete dated amendment',async()=>{
+ let calls=0;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>{calls++;return calls===1?null:nluDecision({departureDate:'2026-11-02'},'change');}});
+ await e.handle('status-amend',initial+'، 1 بالغ',{now});e.jobState('status-amend','searching');const r=await e.handle('status-amend','ناطر بس خلينا 2 نوفمبر',{now});assert.equal(r.complete,true);assert.equal(r.request.departureDate,'2026-11-02');assert.equal(calls,2);
+});
+test('pending duplicate intent retains the queued job and replies with progress',async()=>{
+ const e=make();await e.handle('duplicate',initial+'، 1 بالغ',{now});
+ const r=await e.handle('duplicate','لحالي',{now});assert.equal(r.complete,false);assert.match(r.reply,/البحث مستمر/);assert.equal(e.state('duplicate').status,'queued');
+});
+test('semantic booking intent sends a verified selection to staff without claiming issuance',async()=>{
+ let booking=false;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>booking?nluDecision({},'booking'):null});await e.handle('semantic-book',initial+'، 1 بالغ',{now});
+ const request=e.state('semantic-book').base.request;e.progress('semantic-book',{offer:{reference:1,request:{...request,departureDate:'2026-10-24',departureRange:null},timing:{out:{flight:'G9433'}},price:{sellingTotal:'750.50',weights:[{kg:20}]}}},'offer');
+ booking=true;const r=await e.handle('semantic-book','شو الخطوة اللي بعدها لحتى تصير التذكرة باسمي',{now});assert.ok(r.handoff);assert.match(r.reply,/لم يتم حجز أو إصدار/);assert.equal(e.store.data.handoffs.length,1);
+});
+test('selecting an offer with a baggage amendment applies both instructions',async()=>{
+ let amend=false;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>amend?{...nluDecision({weightKg:30},'select'),option:1}:null});await e.handle('select-amend',initial+'، 1 بالغ',{now});
+ const request=e.state('select-amend').base.request;e.progress('select-amend',{offer:{reference:1,request:{...request,departureDate:'2026-10-25',departureRange:null},timing:{out:{flight:'G9433'}},price:{sellingTotal:'750.50',weights:[{kg:20}]}}},'offer');
+ amend=true;const r=await e.handle('select-amend','بدي هاد الخيار بس مع ثلاثين كيلو',{now});assert.equal(r.complete,true);assert.equal(r.request.departureDate,'2026-10-25');assert.equal(r.request.baggageRequest.checkedWeightKg,30);
+});
+test('NLU sees bounded verified offer identities and price ranks without prices or customer payloads',async()=>{
+ let captured=null;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async(text,context)=>{captured=context;return null;}});
+ await e.handle('offer-context',initial+'، 1 بالغ',{now});const request=e.state('offer-context').base.request;
+ for(const [reference,total,time]of [[1,'750.50','08:00'],[2,'700.01','13:00'],[3,'700.01','21:00']])e.progress('offer-context',{offer:{reference,customerName:'PRIVATE_NAME',rawPayload:'PRIVATE_RAW',request:{...request,customerName:'PRIVATE_REQUEST_NAME',departureDate:'2026-10-25',departureRange:null},timing:{out:{flight:'G943'+reference,departure:time,arrival:'23:00'},back:null},price:{sellingTotal:total,private:'PRIVATE_PRICE'}}},'offer-'+reference);
+ await e.handle('offer-context','بفضل الرحلة الصبح',{now});assert.equal(captured.offerSummaries.length,3);assert.deepEqual(captured.offerSummaries.map(o=>[o.reference,o.cheapestRank]),[[1,2],[2,1],[3,1]]);assert.equal(captured.offerSummaries[0].departureTime,'08:00');assert.equal(captured.offerSummaries[0].flight,'G9431');
+ const serialized=JSON.stringify(captured.offerSummaries);assert.doesNotMatch(serialized,/PRIVATE_|750\.50|700\.01|sellingTotal|price|rawPayload|customerName/);
+});
