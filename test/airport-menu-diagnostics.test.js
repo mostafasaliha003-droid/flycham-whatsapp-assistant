@@ -12,6 +12,6 @@ test('airport capability check confirms supplier IATA using pointer selection an
   evaluateHandle:async()=>({asElement:()=>({click:async()=>{selected=code;clicks++;}}),dispose:async()=>{}}),
  };
  await diagnoseFlyChamAirports({openSearchForm:async()=>{opens++;return frame;},report:e=>reports.push(e)});
- assert.equal(opens,2);assert.equal(clicks,4);
+ assert.equal(opens,5);assert.equal(clicks,4);
  assert.deepEqual(reports,['DXB','DWC','AUH','SHJ'].map(c=>'FLYCHAM_ORIGIN_SELECTION_CONFIRMED_'+c));
 });

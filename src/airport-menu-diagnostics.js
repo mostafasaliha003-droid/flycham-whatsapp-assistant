@@ -6,9 +6,11 @@ const {chooseAirport}=require('./portal-search-probe');
 // Fixed event codes only: no page text, credentials or customer data in logs.
 async function diagnoseFlyChamAirports(adapter) {
   const origin='https://reservations.flycham.com';
-  const frame=await adapter.openSearchForm();
   for(const code of ['DXB','DWC','AUH','SHJ']){
     try{
+      // Match customer searches: start from a fresh supplier form. Once an
+      // origin is selected, retyping in the old widget may show no options.
+      const frame=await adapter.openSearchForm();
       await chooseAirport(frame,'fAirport','fromAirport',code,{origin,lookupMs:2000});
       adapter.report('FLYCHAM_ORIGIN_SELECTION_CONFIRMED_'+code);
     }catch{
