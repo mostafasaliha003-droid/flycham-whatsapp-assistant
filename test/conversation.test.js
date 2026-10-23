@@ -125,3 +125,9 @@ test('search-expansion replies clarify the window and retain route and requested
  assert.equal(h('حصرا بهل ايام').complete,false);
  assert.equal(h('شوفلي').complete,false);const next=h('الشهر الجاي');assert.equal(next.complete,true);assert.equal(next.request.departureRange.start,'2026-11-01');
 });
+
+test('singular party means one adult; hypothetical, negated or child-only text does not',()=>{
+ for(const text of ['شخص واحد','شخص بالغ','بالغ واحد','مسافر واحد','شخص بالغ فقط'])assert.deepEqual(parsePassengerCount(text),{adults:1,children:0,infants:0,ages:[]},text);
+ for(const text of ['مو شخص بالغ','لو شخص بالغ','طفل واحد','هل السعر لشخص بالغ؟'])assert.equal(parsePassengerCount(text),null,text);
+ assert.deepEqual(parsePassengerCount('1 بالغ وأطفال 1 عمره 8'),{adults:1,children:1,infants:0,ages:[8]});
+});

@@ -41,9 +41,10 @@ function parsePassengerCount(text) {
   const adult = text.match(/(?:بالغ(?:ين)?\s*[:：]?\s*(\d+)|(\d+)\s*بالغ(?:ين)?)/i);
   const child = text.match(/أطفال?\s*[:：]?\s*(\d+)/i);
   const infant = text.match(/رضع?\s*[:：]?\s*(\d+)/i);
+  const singular = /^(?:(?:انا|بدي|نحن|العدد|عددنا)\s+)?(?:شخص(?:\s+بالغ)?(?:\s+(?:واحد|1))?|بالغ(?:\s+(?:واحد|1))?|مسافر(?:\s+(?:واحد|1))?|واحد\s+(?:بالغ|شخص|مسافر))(?:\s+(?:بس|فقط))?[،,.!؟?]*$/.test(normalize(text).trim());
   const generic = text.match(/(?:نحن|عددنا|لـ|for)?\s*(\d+)\s*(?:مسافرين|مسافر|أشخاص|شخص)/i);
-  if (!adult && !child && !infant && !generic) return null;
-  const adults = adult ? Number(adult[1] || adult[2]) : (generic ? Number(generic[1]) : null);
+  if (!adult && !child && !infant && !generic && !singular) return null;
+  const adults = adult ? Number(adult[1] || adult[2]) : (generic ? Number(generic[1]) : singular ? 1 : null);
   const children = child ? Number(child[1]) : 0;
   const infants = infant ? Number(infant[1]) : 0;
   const ages = [...text.matchAll(/(?:عمر|أعمار|عمره|عمرها)\s*(\d{1,2})/g)].map((m) => Number(m[1]));

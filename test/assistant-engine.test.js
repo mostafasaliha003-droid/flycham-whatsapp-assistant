@@ -128,3 +128,10 @@ test('trip type synonyms parse without needing an external model',()=>{
  for(const text of ['روحة ورجعة','روحه و رجعه','ذهاب واياب','رايح وراجع','ذهاب وعودة'])assert.equal(parseTripType(text),'round_trip',text);
  assert.equal(parseTripType('نعم'),null);
 });
+
+test('explicit singular passenger answers complete the party without repeating the count question',async()=>{
+ for(const reply of ['شخص واحد','شخص بالغ','شخص بالغ واحد','بالغ واحد','شخص ١','واحد بالغ','أنا شخص بالغ']){
+  const e=make();assert.match((await e.handle('singular',initial,{now})).reply,/كم.*(?:شخص|عدد المسافرين)/);
+  const r=await e.handle('singular',reply,{now});assert.equal(r.complete,true,reply);assert.deepEqual(r.request.passengers,{adults:1,children:0,infants:0,ages:[]},reply);
+ }
+});
