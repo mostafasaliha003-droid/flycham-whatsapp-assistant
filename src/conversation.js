@@ -51,6 +51,12 @@ function parsePassengerCount(text) {
   return { adults, children, infants, ages };
 }
 
+function parseTripType(text){
+ const t=normalize(normalizeDigits(String(text))).trim();
+ if(/ذهاب\s*(?:فقط|بس)|روح[هة]\s*(?:فقط|بس)|رايح\s*(?:فقط|بس)|(?:بس|فقط)\s*(?:روح[هة]|ذهاب)|اتجاه\s*واحد|one\s*way|ون\s*واي/i.test(t)||/^(?:ذهاب|روح[هة])$/.test(t))return 'one_way';
+ if(/ذهاب\s*(?:و|مع)?\s*(?:عود[هة]|اياب)|روح[هة]\s*(?:و|مع)\s*رجع[هة]|رايح\s*(?:و)?\s*راجع|مع\s*رجع[هة]|round\s*trip|return\s*flight/i.test(t))return 'round_trip';
+ return null;
+}
 function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const previousDepartureDate=request.departureDate;
   text = normalizeDigits(text);
@@ -96,8 +102,8 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
-  const hasReturn = /ذهاب\s*(?:و|مع)\s*عود|ذهاب\s*عودة|روحة\s*(?:و|مع)\s*رجعة|رايح\s*(?:و)?راجع|مع\s*رجعة|round\s*trip|return\s*flight/i.test(text);
-  const oneWay = /ذهاب\s*(?:فقط|بس)|روحة\s*(?:فقط|بس)|one\s*way/i.test(text) || plain==='ذهاب';
+  const hasReturn = parseTripType(text)==='round_trip';
+  const oneWay = parseTripType(text)==='one_way';
   if (dates.length && !invalidDate) {
     if (dates.length > 1 && dates[1] < dates[0]) invalidDate = true;
     else {
@@ -234,4 +240,4 @@ function resetSessions() { sessions.clear(); }
 
 function exportSession(id){return sessions.has(id)?structuredClone(sessions.get(id)):null;}
 function importSession(id,value){if(value)sessions.set(id,structuredClone(value));else sessions.delete(id);}
-module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,exportSession,importSession }; 
+module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,parseTripType,exportSession,importSession }; 

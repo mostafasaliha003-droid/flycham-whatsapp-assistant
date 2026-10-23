@@ -111,3 +111,20 @@ test('NLU sees bounded verified offer identities and price ranks without prices 
  await e.handle('offer-context','بفضل الرحلة الصبح',{now});assert.equal(captured.offerSummaries.length,3);assert.deepEqual(captured.offerSummaries.map(o=>[o.reference,o.cheapestRank]),[[1,2],[2,1],[3,1]]);assert.equal(captured.offerSummaries[0].departureTime,'08:00');assert.equal(captured.offerSummaries[0].flight,'G9431');
  const serialized=JSON.stringify(captured.offerSummaries);assert.doesNotMatch(serialized,/PRIVATE_|750\.50|700\.01|sellingTotal|price|rawPayload|customerName/);
 });
+
+test('model cannot ask trip type again after an explicit one-way answer',async()=>{
+ const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>({...nluDecision({origin:'الشارقة',destination:'دمشق',adults:1},'clarify'),question:'هل الرحلة ذهاب وعودة؟'})});
+ const r=await e.handle('trip-repeat','من الشارقة للشام الأسبوع الجاي، لشخص واحد، ذهاب بس',{now});
+ assert.equal(r.complete,true);assert.equal(r.request.tripType,'one_way');assert.doesNotMatch(r.reply,/هل الرحلة/);
+});
+test('stored trip type survives a redundant model question on the next turn',async()=>{
+ let first=true;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>first?(first=false,null):({...nluDecision({},'clarify'),question:'ذهاب فقط أو ذهاب وعودة؟'})});
+ const a=await e.handle('trip-stored',initial,{now});assert.match(a.reply,/عدد المسافرين/);
+ const b=await e.handle('trip-stored','شخص واحد',{now});assert.equal(b.complete,true);assert.equal(b.request.tripType,'one_way');
+});
+test('trip type synonyms parse without needing an external model',()=>{
+ const {parseTripType}=require('../src/conversation');
+ for(const text of ['ذهاب بس','بس روحة','روحه','اتجاه واحد','رايح فقط'])assert.equal(parseTripType(text),'one_way',text);
+ for(const text of ['روحة ورجعة','روحه و رجعه','ذهاب واياب','رايح وراجع','ذهاب وعودة'])assert.equal(parseTripType(text),'round_trip',text);
+ assert.equal(parseTripType('نعم'),null);
+});

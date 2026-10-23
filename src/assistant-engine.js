@@ -72,7 +72,9 @@ class AssistantEngine{
    if(!s.handoffId)s.handoffId=this.store.handoff(id,{request:offer.request,offer,verificationRequired:true});s.status='handoff_pending';
    return{...say('سجّلت رغبتك بمتابعة تثبيت الخيار المحدد. التثبيت والإصدار مع موظف الحجوزات بعد إعادة التحقق من السعر والتوفر؛ لم يتم حجز أو إصدار تذكرة بعد.'),cancel:true,handoff:s.handoffId};
   }
-  if(decision?.intent==='clarify')return say(decision.question||'قصدك نعدّل الطلب، أو نعمل مقارنة إضافية بدون تغيير اختيارك؟');
+  const knownTripType=decision?.fields?.tripType||legacy.parseTripType(clean(text))||s.base?.request?.tripType;
+  const repeatsKnownTrip=Boolean(knownTripType&&/ذهاب|عود[هة]|رجع[هة]|نوع الرحل/.test(normalize(decision?.question||'')));
+  if(decision?.intent==='clarify'&&!repeatsKnownTrip)return say(decision.question||'قصدك نعدّل الطلب، أو نعمل مقارنة إضافية بدون تغيير اختيارك؟');
   const hypothetical=decision?.intent==='compare'||(/لو |قديش.*(?:بيصير|بصير|بوفر|الفرق)|بس قلي|بس قولي|بكم/.test(t)&&Boolean(s.base?.submitted));
   if(/كيلو|كغ/.test(t)&&/معنا|سوا|مجموع/.test(t)&&!/(?:لكل|للشخص|اجمالي|مجموع)/.test(t))return say('الوزن المطلوب لكل شخص، أو مجموع الوزن للمسافرين سوا؟');
   if(/زيادة|اضافي|إضافي/.test(t)&&/كيلو|كغ/.test(t)&&!s.base?.request?.baggageRequest)return say('قصدك الوزن الإجمالي للشنط، أو زيادة فوق الوزن الموجود بالعرض؟');
