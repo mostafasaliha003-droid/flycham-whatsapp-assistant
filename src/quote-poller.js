@@ -7,13 +7,14 @@ function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console,
   const heartbeat=setInterval(()=>{if(!stopped&&!session.authBlocked)call('/heartbeat',{provider}).catch(()=>{});},10000);
   async function poll(){
     try{
+      if(session.authBlocked){stopped=true;clearInterval(heartbeat);log.log('PORTAL_QUOTE_AUTHENTICATION_REQUIRED_'+provider.toUpperCase());return;}
       const job=await call('/claim',provider==='airarabia'?{}:{provider});
       if(job?.id){
         log.log(job.catalog?'PORTAL_CATALOG_SEARCH_STARTED_'+provider.toUpperCase():'PORTAL_CUSTOMER_QUOTE_STARTED');
         let reply,outcome='done',coverage=[];
         let seq=0;
         try{reply=await session.run(p=>p.runCustomerQuote(job.request,(reply,metadata)=>call('/progress',{id:job.id,lease:job.lease,seq:++seq,reply,metadata}),async()=>{const state=await call('/current',{id:job.id,lease:job.lease});if(!state.current)throw Error('QUOTE_SUPERSEDED');}));if(reply&&typeof reply==='object'){outcome=reply.outcome;coverage=reply.coverage||[];reply=reply.reply;}log.log('PORTAL_CUSTOMER_QUOTE_PRICED');}
-        catch{outcome='failed';reply='تعذر التحقق من السعر لهذا الطلب حاليًا. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء أي حجز.';log.log('PORTAL_CUSTOMER_QUOTE_UNCONFIRMED');}
+        catch{outcome='failed';reply='تعذر التحقق من السعر لهذا الطلب حاليًا. يرجى مراجعة موظف المبيعات؛ لم يتم إجراء أي حجز.';log.log(job.catalog?'PORTAL_CATALOG_SEARCH_UNCONFIRMED_'+provider.toUpperCase():'PORTAL_CUSTOMER_QUOTE_UNCONFIRMED');}
         // One completion attempt: never duplicate a WhatsApp reply after an
         // ambiguous network failure. The server consumes each lease once.
         const current=await call('/current',{id:job.id,lease:job.lease});

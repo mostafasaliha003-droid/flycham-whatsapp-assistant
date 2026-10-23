@@ -52,3 +52,10 @@ test('legacy plain-text navigation controls can confirm authentication without A
  const frame={url:()=> 'https://reservations.flycham.com/xbe/private/nav',locator:()=>empty,getByRole:()=>empty,getByText:pattern=>pattern.test('Sign Out')||pattern.test('Make Reservation')?visible:empty};
  const page={isClosed:()=>false,frames:()=>[frame],context:()=>({pages:()=>[page]})};const adapter=new FlyChamPortalAdapter(page,{});assert.equal(await adapter.authenticatedFrame(),frame);
 });
+
+test('FlyCham keepalive uses the authenticated reservation menu without reloading a popup child URL',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+ const events=[],form={locator:()=>({count:async()=>1})};let clicked=0;const page={goto:()=>{throw Error('must not reload popup shell');},waitForTimeout:async()=>{}};
+ const a=new FlyChamPortalAdapter(page,{username:'test',password:'test',report:x=>events.push(x)});a.authenticatedFrame=async()=>({});a.reservationControl={click:async()=>clicked++};a.frames=()=>[form];a.isAuthenticated=async()=>true;
+ await a.searchFlightsForHeartbeat();assert.equal(clicked,1);assert.ok(events.includes('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED'));
+});

@@ -78,13 +78,18 @@ class FlyChamPortalAdapter{
   for(let attempt=0;attempt<20;attempt++){if(await this.isAuthenticated()){this.protectedURL=trusted(this.page)?this.page.url():(await this.authenticatedFrame()).url();this.report('FLYCHAM_PORTAL_AUTHENTICATED');return;}for(const f of this.frames())if(await f.locator('input[autocomplete="one-time-code"]:visible,iframe[src*="captcha"]:visible').count())throw Error('FLYCHAM_MANUAL_VERIFICATION');await this.page.waitForTimeout(1000);}
   throw Error(await this.loginFailure());
  }
- async searchFlightsForHeartbeat(){if(!this.protectedURL||new URL(this.protectedURL).origin!==ORIGIN)throw Error('FLYCHAM_SESSION_UNAVAILABLE');await this.page.goto(this.protectedURL,{waitUntil:'domcontentloaded',timeout:45000});if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_REFRESH_COMPLETED');}
- async search(request){
-  const config=validateLiveRequest(request);if(!flyChamBaggageAllowed(request))throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
-  await this.searchFlightsForHeartbeat();const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
+ async openSearchForm(){
+  const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
   const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');await link.click();
   let frame;for(let attempt=0;attempt<15;attempt++){for(const f of this.frames())if(await f.locator('#fAirport:visible').count()===1){frame=f;break;}if(frame)break;await this.page.waitForTimeout(500);}
-  if(!frame)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
+  if(!frame)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');return frame;
+ }
+ async searchFlightsForHeartbeat(){await this.openSearchForm();if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.report('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED');}
+ async search(request){
+  const config=validateLiveRequest(request);if(!flyChamBaggageAllowed(request))throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
+  // Legacy popup shell spans several frames; navigating a child/menu URL in
+  // the top-level page destroys that shell. Use its authenticated menu only.
+  const frame=await this.openSearchForm();
   const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});
   if(prepared.tripKind!==(request.tripType==='one_way'?'one-way':'return'))throw Error('FLYCHAM_TRIP_NOT_CONFIRMED');
   await frame.locator('#divFQTxnCurr:visible').waitFor({state:'visible',timeout:45000});
