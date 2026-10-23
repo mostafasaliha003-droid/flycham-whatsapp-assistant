@@ -198,10 +198,13 @@ test('confirms title-based navigation and can refresh an authenticated private p
   adapter.isAuthenticated = async () => true;
   const codes = [];
   adapter.report = code => codes.push(code);
+  let activities = 0;
+  adapter.onAuthenticatedActivity = () => { activities++; };
   await adapter.searchFlightsForHeartbeat({ departureDate: '01/12/2026' });
   assert.ok(page.calls.some(([op, , url]) => op === 'goto' && url.endsWith('/private/showXBEMain.action')));
   assert.ok(codes.includes('PORTAL_HEARTBEAT_REFRESH_COMPLETED'));
   assert.ok(!page.calls.some(([op]) => op === 'click'));
+  assert.equal(activities, 1);
 });
 
 
@@ -243,6 +246,68 @@ test('heartbeat cannot submit a code or continue through a verification challeng
   adapter.verificationProvider = async () => { supplied++; return '123456'; };
   await assert.rejects(adapter.waitForAuthentication(0), /PORTAL_VERIFICATION_MANUAL_VERIFICATION/);
   assert.equal(supplied, 0);
+});
+
+test('visible CAPTCHA vetoes stale authenticated navigation and cannot use the OTP handoff', async () => {
+  const page = fakePage({ captcha: true });
+  const adapter = adapterFor(page);
+  let supplied = 0;
+  adapter.verificationProvider = async () => { supplied++; return '123456'; };
+  assert.equal(await adapter.hasVerificationChallenge(), true);
+  assert.equal(await adapter.isAuthenticated(), false);
+  await assert.rejects(adapter.resumeVerification(), /MANUAL_VERIFICATION/);
+  assert.equal(supplied, 0);
+  assert.equal(page.calls.filter(([op]) => ['fill', 'click', 'goto'].includes(op)).length, 0);
+});
+
+test('existing OTP recovery uses one operator code without opening login or resubmitting credentials', async () => {
+  const page = fakePage();
+  let pending = true, supplied = 0, submitted = 0;
+  const verification = {
+    url: () => pending ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/verified.action',
+    locator: selector => ({
+      isVisible: async () => pending && selector.startsWith('#userOtp'),
+      count: async () => 0,
+      fill: async () => { submitted++; },
+      click: async () => { pending = false; },
+    }),
+  };
+  const navigation = page.frames();
+  page.frames = () => [...navigation, verification];
+  const adapter = adapterFor(page);
+  adapter.verificationProvider = async () => { supplied++; return '123456'; };
+  assert.equal(await adapter.hasVerificationChallenge(), true);
+  await adapter.resumeVerification();
+  assert.equal(supplied, 1);
+  assert.equal(submitted, 1);
+  assert.equal(await adapter.isAuthenticated(), true);
+  assert.equal(page.calls.filter(([op]) => ['fill', 'click', 'goto'].includes(op)).length, 0);
+  pending = true;
+  await adapter.resumeVerification();
+  assert.equal(supplied, 2);
+  assert.equal(submitted, 2);
+});
+
+test('an OTP verification-result route blocks stale navigation even before its form is ready', async () => {
+  const page = fakePage();
+  const navigation = page.frames();
+  page.frames = () => [...navigation, { url: () => 'https://agents.airarabia.com/xbe/private/verifyOTP.action' }];
+  assert.equal(await adapterFor(page).isAuthenticated(), false);
+});
+
+test('protected refresh reports only bounded transient HTTP failures and never searches', async () => {
+  for (const [status, transient] of [[503, true], [408, true], [429, true], [403, false], [404, false]]) {
+    const page = fakePage();
+    let navigations = 0;
+    page.goto = async () => { navigations++; return { status: () => status }; };
+    const adapter = adapterFor(page);
+    let activities = 0;
+    adapter.onAuthenticatedActivity = () => { activities++; };
+    await assert.rejects(adapter.refreshProtectedPage(), error => error.message === 'PORTAL_SESSION_HTTP_ERROR' && error.transient === transient);
+    assert.equal(navigations, 1);
+    assert.equal(page.calls.filter(([op]) => op === 'click').length, 0);
+    assert.equal(activities, 0);
+  }
 });
 
 test('supplier-confirmed OTP resumes normal navigation and still requires authenticated controls', async () => {

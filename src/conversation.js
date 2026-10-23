@@ -104,8 +104,8 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
-  if(/فلاي\s*شام|fly\s*cham/i.test(text))request.provider='flycham';
-  else if(/العربي[هة]|air\s*arabia/i.test(text))request.provider='airarabia';
+  if(/فلاي\s*شام|fly\s*cham/i.test(text)){if(request.provider!=='flycham')request.providerExclusive=false;request.provider='flycham';}
+  else if(/العربي[هة]|air\s*arabia/i.test(text)){if(request.provider!=='airarabia')request.providerExclusive=false;request.provider='airarabia';}
   const hasReturn = parseTripType(text)==='round_trip';
   const oneWay = parseTripType(text)==='one_way';
   if (dates.length && !invalidDate) {
@@ -168,21 +168,29 @@ function summarize(request) {
 
 function applyDecisionPatch(request, patch, now) {
   if (!patch) return false;
-  for (const k of ['origin','destination','tripType','provider']) if (patch[k]) request[k]=patch[k];
+  for (const k of ['origin','destination','tripType','provider']) if (patch[k]){if(k==='provider'&&request.provider!==patch[k]&&typeof patch.providerExclusive!=='boolean')request.providerExclusive=false;request[k]=patch[k];}
+  if(typeof patch.providerExclusive==='boolean')request.providerExclusive=patch.providerExclusive;
   if (patch.departureDate) {request.departureDate=patch.departureDate;request.departureRange=null;}
   if (patch.rangeStart && patch.rangeEnd) {request.departureRange={start:patch.rangeStart,end:patch.rangeEnd,kind:'customer_range'};request.departureDate=null;}
   if (patch.returnDate) request.returnDate=patch.returnDate;
+  if(patch.stayNights!=null){request.stayNights=patch.stayNights;if(request.departureDate)request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),patch.stayNights));}
   if (request.tripType==='one_way') {request.returnDate=null;request.stayNights=null;}
   if (['adults','children','infants'].some(k=>patch[k]!=null)||patch.ages?.length) {
     const party={adults:null,children:0,infants:0,ages:[],...request.passengers};
     for(const k of ['adults','children','infants'])if(patch[k]!=null)party[k]=patch[k];
-    if(patch.ages?.length)party.ages=patch.ages;
+    if(patch.ages?.length)party.ages=patch.ages;else if(patch.children===0&&patch.infants===0)party.ages=[];
     request.passengers=party;
   }
   if(patch.weightKg!=null||patch.pieces!=null||patch.weightScope)request.baggageRequest={...request.baggageRequest,...(patch.weightKg!=null?{checkedWeightKg:patch.weightKg,requestedByCustomer:true,source:'explicit'}:{}),...(patch.pieces!=null?{pieces:patch.pieces}:{}),...(patch.weightScope?{scope:patch.weightScope}:{})};
   if(patch.excludedDates?.length||patch.latestArrival)request.constraints={...request.constraints,...(patch.excludedDates?.length?{excludedDates:patch.excludedDates}:{}),...(patch.latestArrival?{latestArrival:patch.latestArrival}:{})};
   const today=iso(dubaiDay(now));
   return Boolean(request.departureDate&&request.departureDate<today||request.departureRange&&(request.departureRange.start<today||request.departureRange.end<request.departureRange.start)||request.returnDate&&request.departureDate&&request.returnDate<request.departureDate);
+}
+function proposeExpansion(sender,{now=Date.now(),days=7}={}){
+ const state=sessions.get(sender),request=state?.request,last=request?.departureRange?.end||request?.departureDate;
+ if(!state?.submitted||!last||!Number.isInteger(days)||days<1||days>31)return null;
+ const proposal={kind:'extend_after_last_date',start:iso(addDays(new Date(last+'T00:00:00Z'),1)),end:iso(addDays(new Date(last+'T00:00:00Z'),days)),createdAt:now,expiresAt:now+30*60000,choiceCount:1,requestFingerprint:JSON.stringify(request)};
+ state.proposal=proposal;sessions.set(sender,state);return structuredClone(proposal);
 }
 function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   const normalized = String(text ?? '').trim();
@@ -198,7 +206,10 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   const request=structuredClone(state.request);
   const before=JSON.stringify(request);
   const follow=normalize(normalized).replace(/[؟?!،,.]+$/g,'');
-  if(state.submitted&&/^(?:شفلي|شوفلي|شوف لي|شوف|اي شفلي|اي شوفلي|تابع|كمل|نعم|اي|شفلي بعد بكم يوم|شوفلي بعد بكم يوم|بعد بكم يوم|بعد كم يوم)$/.test(follow)){
+  const proposal=state.proposal;
+  const acceptsProposal=/^(?:شفلي|شوفلي|شوف لي|اي شفلي|اي شوفلي|نعم|اي|تابع|كمل|تمام)$/.test(follow)&&proposal?.choiceCount===1&&proposal.expiresAt>=now&&proposal.requestFingerprint===before;
+  if(acceptsProposal){request.departureRange={start:proposal.start,end:proposal.end,kind:'accepted_proposal'};request.departureDate=null;state.awaiting=null;delete state.proposal;}
+  if(!acceptsProposal&&state.submitted&&/^(?:شفلي|شوفلي|شوف لي|شوف|اي شفلي|اي شوفلي|تابع|كمل|نعم|اي|شفلي بعد بكم يوم|شوفلي بعد بكم يوم|بعد بكم يوم|بعد كم يوم)$/.test(follow)){
     state.awaiting='searchExpansion';sessions.set(sender,state);
     return{complete:false,reply:'أكيد، منكمل على نفس المسار والوزن. بتحب نبحث بالأسبوع الجاي، أو الشهر الجاي؟ وإذا بدك بعد كم يوم، حدد قديش منوسّع بعد آخر تاريخ، مثل 3 أيام أو أسبوع.'};
   }
@@ -236,6 +247,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   }
   if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};
   const amendment=state.submitted&&before!==JSON.stringify(request);
+  if(amendment)delete state.proposal;
   state.submitted=true;state.awaiting=null;
   return {
     complete: true,
@@ -249,4 +261,4 @@ function resetSessions() { sessions.clear(); }
 
 function exportSession(id){return sessions.has(id)?structuredClone(sessions.get(id)):null;}
 function importSession(id,value){if(value)sessions.set(id,structuredClone(value));else sessions.delete(id);}
-module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,parseTripType,exportSession,importSession }; 
+module.exports = { handleMessage, resetSessions, parseDate, parsePassengerCount, normalizeDigits,parseTripType,proposeExpansion,exportSession,importSession }; 

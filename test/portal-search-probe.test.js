@@ -20,6 +20,7 @@ function fixture({ wrongAirport = false, missingOneWay = false, missingOption = 
   const frame = {
     evaluate: async (fn, args) => {
       if (!args) return missingOneWay ? -1 : 0;
+      if (args.operation === 'input') return { status: 'INPUT_READY' };
       if (args.operation === 'default-return') return defaultReturn;
       if (args.operation === 'inspect') return { status: 'READY' };
       if (args.operation === 'click') return { status: 'CLICKED' };
@@ -31,6 +32,7 @@ function fixture({ wrongAirport = false, missingOneWay = false, missingOption = 
       const field = {
         fill: async value => { values[selector] = value; calls.push(['fill', selector]); },
         pressSequentially: async value => { values[selector] = value; calls.push(['type', selector]); },
+        press: async key => calls.push(['key', selector, key]),
         nth: () => field,
         check: async () => calls.push(['check', selector]),
         selectOption: async () => calls.push(['select', selector]),
@@ -158,8 +160,8 @@ test('airport confirmation follows a real pointer click and disposes its element
   const { chooseAirport } = require('../src/portal-search-probe');
   let hidden = '', disposed = 0, pointerClicks = 0;
   const frame = {
-    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, inputValue: async () => hidden }),
-    evaluate: async () => ({ status: 'READY' }),
+    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, press: async () => {}, inputValue: async () => hidden }),
+    evaluate: async (fn, args) => ({ status: args.operation === 'input' ? 'INPUT_READY' : 'READY' }),
     evaluateHandle: async (fn, args) => {
       assert.equal(args.operation, 'resolve');
       return { asElement: () => ({ click: async () => { pointerClicks++; hidden = 'SHJ'; } }), dispose: async () => { disposed++; } };
@@ -173,12 +175,57 @@ test('airport confirmation accepts a formatted supplier value only after the poi
   const { chooseAirport } = require('../src/portal-search-probe');
   let hidden = '', pointerClicks = 0;
   const frame = {
-    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, inputValue: async () => hidden }),
-    evaluate: async () => ({ status: 'READY' }),
+    locator: selector => ({ fill: async () => {}, pressSequentially: async () => {}, press: async () => {}, inputValue: async () => hidden }),
+    evaluate: async (fn, args) => ({ status: args.operation === 'input' ? 'INPUT_READY' : 'READY' }),
     evaluateHandle: async () => ({ asElement: () => ({ click: async () => { pointerClicks++; hidden = 'SHJ - Sharjah'; } }), dispose: async () => {} }),
   };
   await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
   assert.equal(pointerClicks, 1);
+});
+
+test('airport selection verifies the trusted input before typing', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  let fills = 0;
+  const frame = { evaluate: async () => ({ status: 'UNTRUSTED' }), locator: () => ({ fill: async () => { fills++; } }) };
+  await assert.rejects(chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 }), /AIRPORT_SELECTION_NOT_CONFIRMED/);
+  assert.equal(fills, 0);
+});
+
+test('airport selection leaves the field normally when the supplier commits on blur', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  let hidden = '', tabs = 0, clicks = 0;
+  const frame = {
+    evaluate: async (fn, args) => ({ status: args.operation === 'input' ? 'INPUT_READY' : 'READY' }),
+    locator: () => ({ fill: async () => {}, pressSequentially: async () => {}, inputValue: async () => hidden, press: async key => { assert.equal(key, 'Tab'); tabs++; hidden = 'SHJ'; } }),
+    evaluateHandle: async () => ({ asElement: () => ({ click: async () => { clicks++; } }), dispose: async () => {} }),
+  };
+  await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
+  assert.equal(tabs, 1); assert.equal(clicks, 1);
+});
+
+test('an empty code selection retries the city once without writing the supplier field', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  let hidden = '', query = '', clicks = 0;
+  const typed = [];
+  const frame = {
+    evaluate: async (fn, args) => ({ status: args.operation === 'input' ? 'INPUT_READY' : 'READY' }),
+    locator: selector => ({ fill: async () => { assert.equal(selector, '#fAirport'); }, pressSequentially: async value => { query = value; typed.push(value); }, inputValue: async () => hidden, press: async key => assert.equal(key, 'Tab') }),
+    evaluateHandle: async () => ({ asElement: () => ({ click: async () => { clicks++; if (query === 'Sharjah') hidden = 'SHJ'; } }), dispose: async () => {} }),
+  };
+  await chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 });
+  assert.deepEqual(typed, ['SHJ', 'Sharjah']); assert.equal(clicks, 2);
+});
+
+test('a conflicting supplier airport never retries or searches', async () => {
+  const { chooseAirport } = require('../src/portal-search-probe');
+  const typed = [];
+  const frame = {
+    evaluate: async (fn, args) => ({ status: args.operation === 'input' ? 'INPUT_READY' : 'READY' }),
+    locator: () => ({ fill: async () => {}, pressSequentially: async value => typed.push(value), inputValue: async () => 'DAM', press: async () => {} }),
+    evaluateHandle: async () => ({ asElement: () => ({ click: async () => {} }), dispose: async () => {} }),
+  };
+  await assert.rejects(chooseAirport(frame, 'fAirport', 'fromAirport', 'SHJ', { lookupMs: 0 }), /AIRPORT_SELECTION_NOT_CONFIRMED/);
+  assert.deepEqual(typed, ['SHJ']);
 });
 
 test('FlyCham accepts its visible search control without requiring AirArabia input type',async()=>{

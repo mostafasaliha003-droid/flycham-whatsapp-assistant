@@ -17,6 +17,8 @@ function airportCodeConfirmed(value, code) {
 async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {}, origin='https://agents.airarabia.com' } = {}) {
   const names = { SHJ: 'Sharjah', DAM: 'Damascus' };
   if (!names[code] || !['fAirport', 'tAirport'].includes(inputId) || hiddenId !== (inputId === 'fAirport' ? 'fromAirport' : 'toAirport')) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
+  const inputState = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'input', origin });
+  if (inputState?.status !== 'INPUT_READY') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
   const field = frame.locator(`#${inputId}`);
   // Key events are needed by legacy autocomplete widgets. Two bounded queries:
   // exact IATA code, then city name if the supplier does not search by code.
@@ -40,6 +42,9 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
           await element.click({ timeout: 15000 });
           report('PORTAL_AIRPORT_POINTER_CLICK_COMPLETED');
         } finally { await handle.dispose(); }
+        // Leaving the field is a normal UI action. Some legacy widgets commit
+        // their selected airport on blur rather than on the pointer event.
+        if (!airportCodeConfirmed(await frame.locator(`#${hiddenId}`).inputValue(), code)) await field.press('Tab');
         const confirmDeadline = now() + Math.min(lookupMs, 5000);
         do {
           if (airportCodeConfirmed(await frame.locator(`#${hiddenId}`).inputValue(), code)) return;
@@ -48,6 +53,10 @@ async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, p
         } while (now() < confirmDeadline);
         const actual = (await frame.locator(`#${hiddenId}`).inputValue()).trim();
         report(!actual ? 'PORTAL_AIRPORT_CODE_EMPTY' : /^[A-Za-z]{3}$/.test(actual) ? 'PORTAL_AIRPORT_CODE_OTHER_AIRPORT' : 'PORTAL_AIRPORT_CODE_OTHER_FORMAT');
+        // A code query may display a label without committing a selection.
+        // Try the city query once when nothing was selected; a conflicting
+        // supplier value still fails closed immediately.
+        if (!actual && query === code) break;
         throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
       }
       if (state?.status && !['NONE'].includes(state.status)) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');

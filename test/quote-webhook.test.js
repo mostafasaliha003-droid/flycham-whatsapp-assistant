@@ -17,13 +17,14 @@ test('signed WhatsApp request queues privately and completes one reply using aut
   assert.equal((await post('/webhooks/whatsapp',payload,{'x-hub-signature-256':signature})).status,200);
   const claimed=await post('/internal/quotes/claim',{},auth),job=JSON.parse(claimed.body);
   assert.ok(job.id);assert.ok(!claimed.body.includes('private-recipient'));assert.equal(job.request.baggageRequest.checkedWeightKg,30);
-  const progress={id:job.id,lease:job.lease,seq:1,reply:'First verified date and timing'};
+  const offer={request:job.request,timing:{out:{flight:'G9433',departure:'11 Nov2090 08:00',arrival:'11 Nov2090 10:00'},back:{flight:'G9434',departure:'18 Nov2090 08:00',arrival:'18 Nov2090 10:00'}},price:{currency:'AED',sellingTotal:'700.00',weights:[{kg:30}]}};
+  const progress={id:job.id,lease:job.lease,seq:1,reply:'First verified date and timing',metadata:{offer}};
   assert.equal((await post('/internal/quotes/progress',{...progress,lease:'wrong'},auth)).status,409);
   assert.equal((await post('/internal/quotes/progress',progress,auth)).status,200);
   assert.equal((await post('/internal/quotes/progress',progress,auth)).status,409);
-  const complete={id:job.id,lease:job.lease,reply:'Verified test result'};
+  const complete={id:job.id,lease:job.lease,reply:'MODEL_PRICE_MUST_NOT_BE_USED',outcome:'done',coverage:[{date:'2090-11-11',status:'confirmed'}]};
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,200);
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,409);
-  assert.equal(out.length,2);assert.equal(out[1].to,'private-recipient');
+  await new Promise(r=>setTimeout(r,30));assert.equal(out.length,2);assert.equal(out[1].to,'private-recipient');assert.match(out[1].text.body,/700.00/);assert.doesNotMatch(out[1].text.body,/MODEL_PRICE_MUST_NOT_BE_USED/);
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);}
 });

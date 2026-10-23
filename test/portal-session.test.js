@@ -4,11 +4,11 @@ const assert = require('node:assert/strict');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS } = require('../src/portal-session');
 function fixture() {
   let now = 0, authenticated = true, logins = 0, heartbeats = 0;
-  const adapter = { isAuthenticated: async () => authenticated, signIn: async () => { logins++; authenticated = true; }, searchFlightsForHeartbeat: async ({ departureDate }) => { assert.equal(departureDate.split('/').length, 3); heartbeats++; } };
+  const adapter = { isAuthenticated: async () => authenticated, signIn: async () => { logins++; authenticated = true; }, refreshProtectedPage: async (...args) => { assert.equal(args.length, 0); heartbeats++; } };
   const session = new PortalSession(adapter, { now: () => now, random: () => 0, idleMs: 120000, checkMs: 1000 });
   return { session, adapter, advance: n => { now += n; }, expire: () => { authenticated = false; }, stats: () => ({ logins, heartbeats }) };
 }
-test('searches on an idle heartbeat and not after recent activity', async () => {
+test('refreshes the protected page on an idle heartbeat without a synthetic search', async () => {
   const f = fixture();
   assert.equal(await f.session.heartbeat(), false);
   f.advance(120000);
@@ -16,6 +16,95 @@ test('searches on an idle heartbeat and not after recent activity', async () => 
   await f.session.tail;
   assert.equal(await f.session.heartbeat(), false);
   assert.deepEqual(f.stats(), { logins: 0, heartbeats: 1 });
+  await f.session.stop();
+});
+test('readiness requires successful protected initialization and expires when stale', async () => {
+  const f = fixture();
+  assert.equal(f.session.isReady(), false);
+  await f.session.initialize();
+  assert.equal(f.session.isReady(), true);
+  assert.equal(f.session.healthStatus().lastSuccessfulActivityAt, 0);
+  f.advance(122001);
+  assert.equal(f.session.isReady(), false);
+  assert.equal(f.session.healthStatus().state, 'stale');
+  await f.session.stop();
+});
+test('failed work and failed discovery do not postpone the protected heartbeat', async () => {
+  const f = fixture();
+  await f.session.initialize();
+  f.advance(119000);
+  await assert.rejects(f.session.run(async () => { throw Error('unverified fare'); }));
+  await f.session.run(async () => ({ outcome: 'failed' }));
+  await f.session.tail;
+  assert.equal(f.session.lastSuccessfulActivityAt, 0);
+  f.advance(1000);
+  assert.equal(await f.session.heartbeat(), true);
+  assert.equal(f.stats().heartbeats, 2);
+  await f.session.stop();
+});
+test('verified adapter activity keeps a long quote healthy without an idle navigation', async () => {
+  const f = fixture();
+  await f.session.initialize();
+  f.advance(121000);
+  f.adapter.onAuthenticatedActivity();
+  assert.equal(f.session.isReady(), true);
+  assert.equal(await f.session.heartbeat(), false);
+  await f.session.stop();
+});
+test('one transient refresh failure withdraws readiness and retries once without repeated credentials', async () => {
+  const f = fixture(), events = [];
+  f.session.report = event => events.push(event);
+  await f.session.initialize();
+  let attempts = 0;
+  f.adapter.refreshProtectedPage = async () => { if (++attempts === 1) throw Object.assign(Error('sensitive network detail'), { name: 'TimeoutError' }); };
+  f.advance(120000);
+  assert.equal(await f.session.heartbeat(), false);
+  assert.equal(f.session.isReady(), false);
+  f.advance(59999);
+  assert.equal(await f.session.heartbeat(), false);
+  f.advance(1);
+  assert.equal(await f.session.heartbeat(), true);
+  assert.equal(f.session.isReady(), true);
+  assert.equal(f.stats().logins, 0);
+  assert.ok(events.includes('PORTAL_PROTECTED_REFRESH_RETRY_SCHEDULED'));
+  assert.ok(!events.join(' ').includes('sensitive'));
+  await f.session.stop();
+});
+test('a second transient refresh failure terminates the bounded retry', async () => {
+  const f = fixture();
+  await f.session.initialize();
+  let attempts = 0;
+  f.adapter.refreshProtectedPage = async () => { attempts++; throw Object.assign(Error('timeout'), { name: 'TimeoutError' }); };
+  f.advance(120000);
+  assert.equal(await f.session.heartbeat(), false);
+  f.advance(60000);
+  await assert.rejects(f.session.heartbeat(), /timeout/);
+  assert.equal(attempts, 2);
+  assert.equal(f.session.isReady(), false);
+  await f.session.stop();
+});
+test('a security challenge never enters the transient retry path', async () => {
+  const f = fixture();
+  await f.session.initialize();
+  f.adapter.refreshProtectedPage = async () => { throw Error('FLYCHAM_MANUAL_VERIFICATION'); };
+  f.advance(120000);
+  await assert.rejects(f.session.heartbeat(), /MANUAL_VERIFICATION/);
+  assert.equal(f.session.authBlocked, true);
+  assert.equal(f.session.isReady(), false);
+  f.advance(60000);
+  assert.equal(await f.session.heartbeat(), false);
+  await f.session.stop();
+});
+test('an existing verification challenge uses operator recovery without submitting credentials', async () => {
+  const f = fixture();
+  f.expire();
+  let challenges = 0;
+  f.adapter.hasVerificationChallenge = async () => true;
+  f.adapter.resumeVerification = async () => { challenges++; f.adapter.isAuthenticated = async () => true; };
+  await f.session.initialize();
+  assert.equal(challenges, 1);
+  assert.equal(f.stats().logins, 0);
+  assert.equal(f.session.isReady(), true);
   await f.session.stop();
 });
 test('uses a randomized date 30 to 90 days in the future and defaults to a 15-minute interval', () => {

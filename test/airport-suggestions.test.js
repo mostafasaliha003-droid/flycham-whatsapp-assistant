@@ -63,3 +63,44 @@ test('FlyCham suggestions are allowed only when the caller and page both name th
  assert.equal(f.call({inputId:'fAirport',code:'SHJ',origin}).status,'READY');assert.equal(f.call({inputId:'fAirport',code:'SHJ'}).status,'UNTRUSTED');
  assert.equal(f.call({inputId:'fAirport',code:'SHJ',origin:'https://other.example'}).status,'UNTRUSTED');
 });
+
+test('does not promote a dropdown label to a layout cell containing the airport input', () => {
+  const base = { getClientRects: () => [1], parentElement: null, querySelectorAll: () => [] };
+  const input = { ...base };
+  const cell = { ...base, textContent: 'Sharjah (SHJ)', querySelector: () => input };
+  const option = { ...base, textContent: 'Sharjah (SHJ)', closest: () => cell };
+  const result = vm.runInNewContext(`(${airportSuggestionAction.toString()})(args)`, {
+    args: { inputId: 'fAirport', code: 'SHJ', operation: 'resolve' },
+    location: { origin: 'https://agents.airarabia.com' },
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    document: { querySelectorAll: selector => selector.startsWith('[id=') ? [input] : [cell, option] },
+  });
+  assert.equal(result, option);
+});
+
+test('uses only suggestions inside the active airport input owned dropdown', () => {
+  const base = { getClientRects: () => [1], parentElement: null, querySelectorAll: () => [] };
+  const input = { ...base, getAttribute: name => name === 'aria-controls' ? 'origin-options' : null };
+  const intended = { ...base, textContent: 'Sharjah (SHJ)' };
+  const unrelated = { ...base, textContent: 'Sharjah (SHJ)' };
+  const menu = { ...base, textContent: 'Sharjah (SHJ)', querySelectorAll: () => [intended] };
+  const result = vm.runInNewContext(`(${airportSuggestionAction.toString()})(args)`, {
+    args: { inputId: 'fAirport', code: 'SHJ', operation: 'resolve' },
+    location: { origin: 'https://agents.airarabia.com' },
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    document: { querySelectorAll: selector => selector === '[id="fAirport"]' ? [input] : selector === '[id="origin-options"]' ? [menu] : [menu, intended, unrelated] },
+  });
+  assert.equal(result, intended);
+});
+
+test('an owned dropdown with duplicate identifiers cannot fall back to unrelated page labels', () => {
+  const base = { getClientRects: () => [1], parentElement: null };
+  const input = { ...base, getAttribute: name => name === 'aria-controls' ? 'origin-options' : null };
+  const result = vm.runInNewContext(`(${airportSuggestionAction.toString()})(args)`, {
+    args: { inputId: 'fAirport', code: 'SHJ', operation: 'resolve' },
+    location: { origin: 'https://agents.airarabia.com' },
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    document: { querySelectorAll: selector => selector === '[id="fAirport"]' ? [input] : [base, base] },
+  });
+  assert.equal(result.status, 'INPUT_UNAVAILABLE');
+});

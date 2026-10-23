@@ -89,3 +89,62 @@ test('Search Flights tab reveals the existing form without entering the result r
  const a=new FlyChamPortalAdapter({waitForTimeout:async()=>{}},{username:'test',password:'test'});a.frames=()=>[frame];a.authenticatedFrame=async()=>({});a.reservationControl={getAttribute:async()=> 'menu',click:async()=>{}};
  assert.equal(await a.openSearchForm(),frame);assert.equal(clicks,1);
 });
+
+test('an OTP route vetoes stale sign-out and reservation controls across the portal windows',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+ const visible={count:async()=>1,nth(){return this;},isVisible:async()=>true};
+ const nav={url:()=> 'https://reservations.flycham.com/xbe/private/nav',locator:()=>({count:async()=>0}),getByRole:()=>visible};
+ const otp={url:()=> 'https://reservations.flycham.com/xbe/private/sendOTP.action',locator:()=>({count:async()=>0})};
+ const page={isClosed:()=>false,frames:()=>[nav,otp],context:()=>({pages:()=>[page]})};
+ const adapter=new FlyChamPortalAdapter(page,{});
+ assert.equal(await adapter.authenticatedFrame(),null);
+ assert.equal(await adapter.isAuthenticated(),false);
+});
+
+test('FlyCham consumes one operator code using its isolated handoff and ordinary form controls',async()=>{
+ const {FlyChamPortalAdapter,FLYCHAM_VERIFICATION_FILE}=require('../src/flycham-worker');
+ let pending=true,supplied=0,clicked=0;const events=[],filled=[];
+ const frame={url:()=>pending?'https://reservations.flycham.com/xbe/private/sendOTP.action':'https://reservations.flycham.com/xbe/private/home',evaluate:async()=>true,locator:selector=>({count:async()=>selector.includes('captcha')?0:1,isVisible:async()=>pending,fill:async code=>filled.push(code),click:async()=>{clicked++;pending=false;}})};
+ const page={isClosed:()=>false,frames:()=>[frame],context:()=>({pages:()=>[page]}),waitForTimeout:async()=>{}};
+ const adapter=new FlyChamPortalAdapter(page,{report:event=>events.push(event),verificationProvider:async options=>{supplied++;assert.equal(options.path,FLYCHAM_VERIFICATION_FILE);assert.equal(typeof options.requestedAt,'number');return '123456';}});
+ adapter.authenticatedFrame=async()=>pending?null:frame;
+ await adapter.resumeVerification();
+ assert.equal(supplied,1);assert.equal(clicked,1);assert.deepEqual(filled,['123456']);
+ assert.ok(events.includes('FLYCHAM_VERIFICATION_WAITING_FOR_OPERATOR'));
+ assert.ok(!events.join(' ').includes('123456'));
+});
+
+test('FlyCham verification timeout cannot reuse a code, refill credentials or retry the handoff',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');let supplied=0,submissions=0;
+ const frame={url:()=> 'https://reservations.flycham.com/xbe/private/sendOTP.action',evaluate:async()=>true,locator:selector=>({count:async()=>selector.includes('captcha')?0:1,isVisible:async()=>true,fill:async()=>submissions++,click:async()=>submissions++})};
+ const page={isClosed:()=>false,frames:()=>[frame],context:()=>({pages:()=>[page]}),waitForTimeout:async()=>{}};
+ const adapter=new FlyChamPortalAdapter(page,{verificationProvider:async()=>{supplied++;throw Object.assign(Error('private value'),{code:'VERIFICATION_TIMEOUT'});}});
+ await assert.rejects(adapter.resumeVerification(),/FLYCHAM_VERIFICATION_TIMEOUT/);
+ await assert.rejects(adapter.resumeVerification(),/FLYCHAM_MANUAL_VERIFICATION/);
+ assert.equal(supplied,1);assert.equal(submissions,0);
+});
+
+test('FlyCham OTP form validation rejects foreign actions, ambiguous controls, passwords and booking controls',()=>{
+ const vm=require('node:vm'),{inspectVerificationForm}=require('../src/flycham-worker');
+ const run=change=>{
+  const form={action:'https://reservations.flycham.com/xbe/private/verifyOTP.action',querySelector:()=>null};
+  const input={type:'text',form,getClientRects:()=>[1]};
+  const button={type:'submit',form,id:'btnSubmit',textContent:'Verify',getClientRects:()=>[1],closest:()=>null,getAttribute:()=>null};
+  const controls={input:[input],button:[button]};let origin='https://reservations.flycham.com';
+  change?.({form,input,button,controls,setOrigin:value=>{origin=value;}});
+  return vm.runInNewContext('('+inspectVerificationForm.toString()+')()',{location:{origin,href:origin+'/xbe/private/sendOTP.action'},URL,getComputedStyle:()=>({visibility:'visible'}),document:{querySelectorAll:selector=>selector.startsWith('input[autocomplete')?controls.input:controls.button}});
+ };
+ assert.equal(run(),true);
+ assert.equal(run(({form})=>{form.action='https://foreign.example/verify';}),false);
+ assert.equal(run(({button})=>{button.form={};}),false);
+ assert.equal(run(({form})=>{form.querySelector=()=>({});}),false);
+ assert.equal(run(({button})=>{button.id='btnBook';}),false);
+ assert.equal(run(({controls,input})=>{controls.input=[input,input];}),false);
+ assert.equal(run(({setOrigin})=>setOrigin('https://foreign.example')),false);
+});
+
+test('FlyCham quote authentication loss is distinct from evidence of no flights',async()=>{
+ const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+ const adapter=new FlyChamPortalAdapter({},{});adapter.isAuthenticated=async()=>false;adapter.hasVerificationChallenge=async()=>true;
+ await assert.rejects(adapter.assertQuoteSession([{date:'2026-11-11',status:'unverified',confirmed:0,failed:1}]),error=>error.code==='PORTAL_SESSION_EXPIRED'&&error.coverage[0].status==='authentication_required');
+});

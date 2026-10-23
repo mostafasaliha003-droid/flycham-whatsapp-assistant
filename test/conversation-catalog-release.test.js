@@ -10,18 +10,18 @@ const {capabilityIssue}=require('../src/assistant-policy');
 const now=Date.parse('2026-10-23T08:00:00Z');
 const request={provider:'airarabia',origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-11',returnDate:null,tripType:'one_way',passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,source:'default30',requestedByCustomer:false}};
 const offer=(r=request,price='700.00')=>({request:r,timing:{out:{flight:r.provider==='flycham'?'XH744':'G9433',departure:'Wed 11Nov26 08:00',arrival:'Wed 11Nov26 10:00'},back:r.tripType==='round_trip'?{flight:'G9434',departure:'Wed 18Nov26 08:00',arrival:'Wed 18Nov26 10:00'}:null},price:{sellingTotal:price,weights:[{kg:30}],voucherValue:'10.00'}});
-test('quiet window really waits90s and groups separately delivered fragments',async t=>{
+test('quiet window really waits35s and groups separately delivered fragments',async t=>{
  t.mock.timers.enable({apis:['setTimeout','Date'],now});const calls=[];
  const b=new MessageBatcher(async(id,m)=>calls.push(m.map(x=>x.text)),{now:Date.now});
- const first=b.push('a',{text:'من الشام'});t.mock.timers.tick(80000);assert.equal(calls.length,0);
- const next=b.push('a',{text:'للشارقة'});t.mock.timers.tick(89999);assert.equal(calls.length,0);t.mock.timers.tick(1);await Promise.all([first,next]);assert.deepEqual(calls,[['من الشام','للشارقة']]);b.close();
+ const first=b.push('a',{text:'من الشام'});t.mock.timers.tick(34000);assert.equal(calls.length,0);
+ const next=b.push('a',{text:'للشارقة'});t.mock.timers.tick(34999);assert.equal(calls.length,0);t.mock.timers.tick(1);await Promise.all([first,next]);assert.deepEqual(calls,[['من الشام','للشارقة']]);b.close();
 });
 test('continuous messages hit180s cap; next customer is independent',async t=>{
- t.mock.timers.enable({apis:['setTimeout','Date'],now});const calls=[];const b=new MessageBatcher(async(id,m)=>calls.push([id,m.length]));
+ t.mock.timers.enable({apis:['setTimeout','Date'],now});const calls=[];const b=new MessageBatcher(async(id,m)=>calls.push([id,m.length]),{delay:90000});
  const a=b.push('a',{text:'route'});t.mock.timers.tick(80000);const a2=b.push('a',{text:'date'});const other=b.push('b',{text:'other'});t.mock.timers.tick(80000);const a3=b.push('a',{text:'count'});t.mock.timers.tick(10000);await other;assert.deepEqual(calls,[['b',1]]);t.mock.timers.tick(10000);await Promise.all([a,a2,a3]);assert.deepEqual(calls,[['b',1],['a',3]]);b.close();
 });
 test('pending messages restore from the configured snapshot and completion clears inbox',async t=>{
- t.mock.timers.enable({apis:['setTimeout','Date'],now});const store=new AssistantState({now:Date.now});const first=new MessageBatcher(async()=>{}, {store});first.push('a',{id:'one',text:'من الشام'});first.close();const calls=[];const restored=new MessageBatcher(async(id,m)=>calls.push(m[0].text),{store});t.mock.timers.tick(90000);await restored.settled('a');assert.deepEqual(calls,['من الشام']);assert.deepEqual(store.data.inbox,{});restored.close();
+ t.mock.timers.enable({apis:['setTimeout','Date'],now});const store=new AssistantState({now:Date.now});const first=new MessageBatcher(async()=>{}, {store});first.push('a',{id:'one',text:'من الشام'});first.close();const calls=[];const restored=new MessageBatcher(async(id,m)=>calls.push(m[0].text),{store});t.mock.timers.tick(35000);await restored.settled('a');assert.deepEqual(calls,['من الشام']);assert.deepEqual(store.data.inbox,{});restored.close();
 });
 test('flexible dates ask type and count rather than assuming either',()=>{
  resetSessions();const r=handleMessage('no-assumption','من الشارقة للشام بهل اسبوع',{now});assert.equal(r.complete,false);assert.match(r.reply,/ذهاب/);const n=handleMessage('no-assumption','ذهاب بس',{now});assert.match(n.reply,/عدد المسافرين/);const done=handleMessage('no-assumption','شخص واحد',{now});assert.equal(done.complete,true);assert.equal(done.request.baggageRequest.checkedWeightKg,30);assert.equal(done.request.baggageRequest.source,'default30');

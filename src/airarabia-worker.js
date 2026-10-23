@@ -153,15 +153,47 @@ class AirArabiaPortalAdapter {
           // A wrapper frame can share the OTP route. Prefer the frame that
           // actually owns a visible input over an earlier route-only match.
           if (await this.verificationFormReady(frame)) return frame;
-          if (/\/sendOTP(?:\.action)?$/.test(url.pathname)) pendingRoute = frame;
+          if (/\/(?:sendOTP|verifyOTP)(?:\.action)?$/.test(url.pathname)) pendingRoute = frame;
         } catch {}
       }
     }
     return pendingRoute;
   }
 
+  async hasCaptchaChallenge() {
+    const pages = this.page.context ? this.page.context().pages() : [this.page];
+    for (const candidate of pages) {
+      if (candidate.isClosed?.()) continue;
+      for (const frame of candidate.frames()) {
+        try {
+          if (new URL(frame.url()).origin !== new URL(LOGIN_URL).origin) continue;
+          if (await frame.locator?.('#captcha_txt:visible,iframe[src*="captcha"]:visible').count()) return true;
+        } catch {}
+      }
+    }
+    return Boolean(await this.page.locator?.('#captcha_txt').isVisible().catch(() => false));
+  }
+
+  async hasVerificationChallenge() {
+    return Boolean(await this.findVerificationFrame()) || await this.hasCaptchaChallenge();
+  }
+
+  async resumeVerification() {
+    // Resume only the supplier's existing challenge; never open a new login or
+    // resend credentials while the operator is completing verification.
+    if (await this.hasCaptchaChallenge() || !await this.findVerificationFrame()) {
+      throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION');
+    }
+    if (!await this.waitForAuthentication(30000, { operatorVerification: true })) {
+      throw new PortalError('VERIFICATION', 'VERIFICATION_NOT_CONFIRMED');
+    }
+    this.verificationAttempted = false;
+    this.verificationNavigationResumed = false;
+    this.report('PORTAL_AUTHENTICATED');
+  }
+
   async isAuthenticated() {
-    if (await this.findVerificationFrame()) {
+    if (await this.hasVerificationChallenge()) {
       this.navigationFrame = null;
       this.reservationControl = null;
       return false;
@@ -303,6 +335,8 @@ class AirArabiaPortalAdapter {
   }
 
   async signIn() {
+    this.verificationAttempted = false;
+    this.verificationNavigationResumed = false;
     this.report('PORTAL_STAGE_OPEN_LOGIN_PAGE');
     await atStage('OPEN_LOGIN_PAGE', async () => {
       // The supplier's fullScreen2() opens its real login in a named winCC
@@ -350,6 +384,8 @@ class AirArabiaPortalAdapter {
         throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
       }
     });
+    this.verificationAttempted = false;
+    this.verificationNavigationResumed = false;
     this.report('PORTAL_AUTHENTICATED');
   }
 
@@ -512,7 +548,7 @@ class AirArabiaPortalAdapter {
   async runCustomerQuoteVariant(request,choice,discoverOnly=false) {
     const config=validateLiveRequest(request);
     // New protected page for every request, serialized by PortalSession.run.
-    await this.searchFlightsForHeartbeat();
+    await this.refreshProtectedPage();
     if(!await this.inspectReservationSearch())throw Error('SEARCH_NOT_READY');
     const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,report:this.report});
     const oneWay=request.tripType==='one_way';
@@ -522,6 +558,8 @@ class AirArabiaPortalAdapter {
     this.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');
     if(oneWay&&!await this.searchFrame.evaluate(()=>UI_tabSearchFlights.strRetDate===''))throw Error('ONE_WAY_NOT_CONFIRMED');
     const choices=await readFlightTimes(this.searchFrame,oneWay);
+    if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
+    this.onAuthenticatedActivity?.();
     if(discoverOnly)return{choices};
     const timing=choice?await selectFlightTimes(this.searchFrame,choice):{
       out:choices.out.find(f=>f.selected)||choices.out[0],back:choices.back.find(f=>f.selected)||choices.back[0]};
@@ -534,7 +572,10 @@ class AirArabiaPortalAdapter {
     await continueWithTestPassenger(this.searchFrame,this.report);
     const seats=await scanSeatPrices(this.searchFrame,this.page,this.report);
     const catalogs=await scanAncillaryCatalogs(this.searchFrame,this.page,this.report);
-    return {request,choices,timing,price:quoteFromScans(request,seats,catalogs)};
+    const price=quoteFromScans(request,seats,catalogs);
+    if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
+    this.onAuthenticatedActivity?.();
+    return {request,choices,timing,price};
   }
 
   async runSearchProbe({ departureDate }) {
@@ -567,16 +608,24 @@ class AirArabiaPortalAdapter {
     }
   }
 
-  async searchFlightsForHeartbeat() {
+  async refreshProtectedPage() {
     if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
     // Keepalive always refreshes the protected page. A bounded flight-search
     // probe is a separate explicitly reported step, never an idle search loop.
     const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    if (response && response.status() >= 400) throw new PortalError('SESSION', 'HTTP_ERROR');
+    if (response && response.status() >= 400) {
+      const status = response.status();
+      throw Object.assign(new PortalError('SESSION', 'HTTP_ERROR'), { transient: status >= 500 || status === 408 || status === 429 });
+    }
     if (!await this.waitForAuthentication()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
+    if (!await this.isAuthenticated()) throw new PortalError('SESSION', 'LOGIN_NOT_CONFIRMED');
     this.searchFrame = null;
+    this.onAuthenticatedActivity?.();
     this.report('PORTAL_HEARTBEAT_REFRESH_COMPLETED');
   }
+
+  // Compatibility for callers predating the protected-page heartbeat name.
+  async searchFlightsForHeartbeat() { return this.refreshProtectedPage(); }
 
 }
 
@@ -626,8 +675,8 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     const adapter = new AirArabiaPortalAdapter(page, config);
     await adapter.signIn();
     log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
-    await adapter.searchFlightsForHeartbeat({ departureDate: randomHeartbeatDate() });
-    session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS });
+    session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS, report: code => log.log(code) });
+    await session.initialize();
     if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') {
       await session.run(async portal => {
         if (await portal.inspectReservationSearch()) await portal.runSearchProbe({ departureDate: randomHeartbeatDate() });

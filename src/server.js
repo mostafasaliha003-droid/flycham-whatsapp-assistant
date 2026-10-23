@@ -8,6 +8,7 @@ const { join } = require('node:path');
 const { verifyWebhookChallenge, verifySignature, extractIncomingMessages } = require('./whatsapp');
 const { AssistantEngine } = require('./assistant-engine');
 const {FareCatalog}=require('./fare-catalog');
+const {POLICY}=require('./assistant-policy');
 const { MessageBatcher } = require('./message-batcher');
 const {handleVoucherRequest}=require('./voucher-http');
 const { sendImageMessage,sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
@@ -18,6 +19,37 @@ const quoteJobs = new QuoteJobs({store:assistant.store});
 const catalog=new FareCatalog({store:assistant.store,enabled:process.env.FARE_CATALOG_ENABLED!=='false'});
 const deliveries=new Map();
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
+
+async function deliverComparison(id,{partial=false}={}){
+ const first=quoteJobs.comparisonResult(id);if(!first)return;
+ return orderedDelivery(first.recipient,async()=>{
+  // A newly received amendment always gets understood before an older offer.
+  await batcher.settled(first.recipient);
+  const current=quoteJobs.comparisonResult(id);if(!current)return;
+  const final=current.ready;
+  if(!final&&(!partial||!current.hasVerifiedOffers))return;
+  if(!quoteJobs.markComparisonDelivered(id,{final,fingerprint:current.deliveryFingerprint,version:current.version}))return;
+  for(const offer of current.offers)assistant.progress(current.recipient,{offer});
+  try{
+   for(const text of messageChunks(current.reply)){
+    const delivery=await sendTextMessage(current.recipient,text),messageId=delivery?.messages?.[0]?.id;
+    if(messageId){const state=assistant.state(current.recipient);state.offerMessages||={};state.offerMessages[messageId]=[...text.matchAll(/\*الخيار (\d+) —/g)].map(m=>Number(m[1]));state.offerMessages=Object.fromEntries(Object.entries(state.offerMessages).slice(-100));assistant.store.set(current.recipient,state);}
+   }
+   assistant.jobState(current.recipient,final?(current.offers.length?'done':'failed'):'searching');
+   console.log(final?'WHATSAPP_COMPARISON_FINAL_ACCEPTED_BY_META':'WHATSAPP_COMPARISON_PARTIAL_ACCEPTED_BY_META');
+  }catch{assistant.jobState(current.recipient,'failed');console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED');}
+ });
+}
+
+function messageChunks(text){
+ const chunks=[];let current='';
+ for(const part of text.split('\n\n')){
+  if(current&&current.length+part.length+2>3500){chunks.push(current);current='';}
+  if(part.length>3500){if(current){chunks.push(current);current='';}for(let i=0;i<part.length;i+=3500)chunks.push(part.slice(i,i+3500));}
+  else current+=(current?'\n\n':'')+part;
+ }
+ if(current)chunks.push(current);return chunks;
+}
 
 async function processCustomerMessages(sender,messages){
   messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);
@@ -35,9 +67,14 @@ async function processCustomerMessages(sender,messages){
   if(result.cancel)quoteJobs.cancel(sender);
   if(result.complete&&process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true'){
     try{
-      expandLiveRequests(result.request);quoteJobs.enqueue(sender,result.request);assistant.jobState(sender,'queued');
+      expandLiveRequests(result.request);
+      const providers=result.request.providerExclusive&&result.request.provider?[result.request.provider]:POLICY.providers;
+      const seeds=catalog.find({...result.request,provider:null});
+      const comparison=quoteJobs.enqueueComparison(sender,result.request,{providers,seedOffers:seeds});
+      const conversation=assistant.state(sender);conversation.previousComparisonOffers=conversation.offers.slice(-80);conversation.offers=[];conversation.selected=null;conversation.activeComparisonId=comparison.id;conversation.status='queued';assistant.store.set(sender,conversation);
+      if(comparison.ready)setTimeout(()=>deliverComparison(comparison.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED')),0).unref();
       const r=result.request;
-      reply=`${result.comparison?'رح نقارن الخيار الجديد مع الحفاظ على طلبك الأساسي.':result.amendment?'تم تعديل طلبك مع الحفاظ على التفاصيل الأخرى.':'وصل طلبك.'}\nمن مطار ${r.origin} إلى ${r.destination}\nالفترة: ${r.departureRange?`${r.departureRange.start} إلى ${r.departureRange.end}`:r.departureDate}\n${r.passengers.adults} بالغ — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${r.baggageRequest?` — الوزن المطلوب ${r.baggageRequest.checkedWeightKg} كغ`:''}\nعم نفحص الخيارات المتاحة والأسعار والإضافات. أول ما تتأكد نتيجة منرسلها؛ الاستعلام لا ينشئ حجزًا.`;
+      reply=`${result.comparison?'رح نقارن الخيار الجديد مع الحفاظ على طلبك الأساسي.':result.amendment?'تم تعديل طلبك مع الحفاظ على التفاصيل الأخرى.':'وصل طلبك.'}\nمن مطار ${r.origin} إلى ${r.destination}\nالفترة: ${r.departureRange?`${r.departureRange.start} إلى ${r.departureRange.end}`:r.departureDate}\n${r.passengers.adults} بالغ — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${r.baggageRequest?` — الوزن المطلوب ${r.baggageRequest.checkedWeightKg} كغ`:''}\nعم نقارن الخيارات المتاحة لدى ${providers.map(p=>p==='flycham'?'فلاي شام':'العربية للطيران').join(' وفـ')} حسب تفاصيلك، مع الأسعار والإضافات. أول ما تتأكد نتيجة منرسلها؛ الاستعلام لا ينشئ حجزًا.`;
       console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
     }catch{assistant.jobState(sender,'failed');reply='تفاصيل طلبك محفوظة، لكن البحث غير جاهز الآن أو تعذر التحقق من الفترة المطلوبة. لم يتأكد سعر جديد؛ فينا نعيد المحاولة على نفس التفاصيل.';}
   }
@@ -47,7 +84,7 @@ async function processCustomerMessages(sender,messages){
   }
   console.log(delivery?.dryRun?'WHATSAPP_TEST_REPLY_SUPPRESSED':'WHATSAPP_REPLY_ACCEPTED_BY_META');
 }
-const batcher=new MessageBatcher(processCustomerMessages,{store:assistant.store,delay:process.env.ASSISTANT_DEBOUNCE_MS===undefined?90000:Math.min(180000,Math.max(0,Number(process.env.ASSISTANT_DEBOUNCE_MS)||0)),maxWait:180000,onError:()=>console.error('WHATSAPP_REPLY_FAILED')});
+const batcher=new MessageBatcher(processCustomerMessages,{store:assistant.store,delay:process.env.ASSISTANT_DEBOUNCE_MS===undefined?35000:Math.min(180000,Math.max(0,Number(process.env.ASSISTANT_DEBOUNCE_MS)||0)),maxWait:180000,onError:()=>console.error('WHATSAPP_REPLY_FAILED')});
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -103,7 +140,7 @@ async function handleWebhookPost(request, response) {
 function claimJob(provider){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||catalog.claim(provider||'airarabia')||{};}
 
 function createServer() {
-  return http.createServer(async (request, response) => {
+  const server=http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
     if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
     if(url.pathname.startsWith('/internal/quotes/')){
@@ -115,7 +152,7 @@ function createServer() {
         const data=JSON.parse((await readBody(request)).toString('utf8'));
         if(url.pathname==='/internal/quotes/heartbeat'){
           if(!['airarabia','flycham'].includes(data.provider)){response.writeHead(400).end();return;}
-          quoteJobs.providerAt.set(data.provider,Date.now());if(data.provider==='airarabia')quoteJobs.workerAt=Date.now();
+          const at=data.ready===false?0:Date.now();quoteJobs.providerAt.set(data.provider,at);if(data.provider==='airarabia')quoteJobs.workerAt=at;
           response.writeHead(200,{'Content-Type':'application/json'}).end('{"ok":true}');return;
         }
         if(url.pathname==='/internal/quotes/claim'){
@@ -136,6 +173,14 @@ function createServer() {
           if(progress){
             if(!quoteJobs.takeProgress(data.id,data.lease,data.seq)){response.writeHead(409).end();return;}
             if(data.metadata?.offer)catalog.acceptOffer(data.metadata.offer,candidate.request.provider||'airarabia');
+          }
+          if(candidate.comparisonId){
+            let comparison;
+            if(progress){quoteJobs.comparisonProgress(data.id,data.lease,data.metadata||{});comparison=quoteJobs.comparisonResult(candidate.comparisonId);}
+            else comparison=quoteJobs.completeComparisonChild(data.id,data.lease,data);
+            response.writeHead(200,{'Content-Type':'application/json'}).end('{"accepted":true,"deferred":true}');
+            if(comparison?.ready)deliverComparison(candidate.comparisonId).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
+            return;
           }
           const deliver=()=>orderedDelivery(candidate.recipient,async()=>{
             await batcher.settled(candidate.recipient);
@@ -179,7 +224,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.3',...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),flychamWorkerReady:quoteJobs.ready('flycham')}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.4',...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {
@@ -198,6 +243,10 @@ function createServer() {
     }
     response.writeHead(404).end('Not found');
   });
+  const sweep=setInterval(()=>{
+   for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
+   for(const c of quoteJobs.comparisons.values())if(!c.delivered&&Date.now()-c.createdAt>=60000)deliverComparison(c.id,{partial:true}).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
+  },5000);sweep.unref();server.once('close',()=>clearInterval(sweep));return server;
 }
 
 if (require.main === module) {
