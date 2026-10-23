@@ -1,4 +1,6 @@
 'use strict';
+const {aiConfigured,aiProvider}=require('./assistant-nlu');
+
 const crypto=require('node:crypto');
 const legacy=require('./conversation');
 const {normalize}=require('./arabic-dates');
@@ -67,6 +69,6 @@ class AssistantEngine{
  }
  jobState(id,status){const s=this.state(id);s.status=status;this.store.set(id,s);}
  progress(id,data,messageId){const s=this.state(id);s.status='searching';if(data.coverage)s.coverage=data.coverage.slice(0,32);if(data.offer){const o=data.offer;if(o.request&&o.timing?.out?.flight&&/^\d+\.\d{2}$/.test(o.price?.sellingTotal||'')){const item={...o,id:offerId(o),messageId};const index=s.offers.findIndex(x=>x.id===item.id);if(index<0)s.offers.push(item);else s.offers[index]=item;s.offers=s.offers.slice(-80);}}this.store.set(id,s);}
- status(){return{policy:POLICY.version,aiConfigured:Boolean(this.env.OPENAI_API_KEY),...this.store.status(),humanRoutingConfigured:Boolean(this.env.HUMAN_HANDOFF_RECIPIENT),providers:POLICY.providers};}
+ status(){return{policy:POLICY.version,aiConfigured:aiConfigured(this.env),aiProvider:aiProvider(this.env),...this.store.status(),humanRoutingConfigured:Boolean(this.env.HUMAN_HANDOFF_RECIPIENT),providers:POLICY.providers};}
 }
 module.exports={AssistantEngine,offerId};
