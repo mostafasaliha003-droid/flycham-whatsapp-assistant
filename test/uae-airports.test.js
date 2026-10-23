@@ -14,3 +14,12 @@ for(const [code,label]of [['DXB','Dubai'],['AUH','Abu Dhabi'],['DWC','Al Maktoum
  let hidden='';const frame={evaluate:async(fn,args)=>({status:args.operation==='input'?'INPUT_READY':'READY'}),locator:()=>({fill:async()=>{},pressSequentially:async()=>{},press:async()=>{},inputValue:async()=>hidden}),evaluateHandle:async()=>({asElement:()=>({click:async()=>{hidden=code+' - '+label;}}),dispose:async()=>{}})};
  await chooseAirport(frame,'fAirport','fromAirport',code,{lookupMs:0});assert.equal(hidden,code+' - '+label);
 });
+test('failed airport selection ends same-provider monthly lookup without marking flights unavailable',()=>{
+ const {QuoteJobs}=require('../src/quote-jobs');const q=new QuoteJobs({now:()=>now});q.workerAt=now;q.providerAt.set('flycham',now);
+ const request={origin:'دبي',destination:'دمشق',departureDate:null,departureRange:{start:'2026-11-01',end:'2026-11-30'},tripType:'one_way',returnDate:null,passengers:{adults:1,children:0,infants:0,ages:[]}};
+ const parent=q.enqueueComparison('u',request);const job=q.claim('flycham');assert.ok(job.id);
+ q.completeComparisonChild(job.id,job.lease,{status:'airport_unconfirmed',outcome:'failed'});
+ const rest=[...q.jobs.values()];assert.equal(rest.length,30);assert.ok(rest.every(j=>j.request.provider==='airarabia'));
+ const comparison=[...q.comparisons.values()][0];const failed=comparison.children.filter(c=>c.provider==='flycham');assert.ok(failed.every(c=>c.status==='unverified'));
+ const {renderComparison}=require('../src/quote-comparison');const reply=renderComparison(comparison);assert.match(reply,/تعذر تأكيد اختيار المطار/);assert.doesNotMatch(reply,/الأسعار تشمل الرسوم/);assert.match(reply,/لا يعني عدم وجود رحلات/);
+});

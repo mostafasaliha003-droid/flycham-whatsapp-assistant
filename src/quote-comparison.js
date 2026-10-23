@@ -67,7 +67,9 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
   const children=exact.filter(c=>c.provider===provider),allOffers=children.flatMap(c=>c.offers||[]),offers=allOffers.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
   parts.push(`\n*${LABELS[provider]} — التاريخ المطلوب*`);
   if(offers.length)parts.push(offers.map(formatOffer).join('\n\n'));else if(allOffers.length)parts.push('العروض المتأكدة لهذه الشركة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.');
-  const statuses=[...new Set(children.map(c=>c.status))];if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
+  const statuses=[...new Set(children.map(c=>c.status))];
+  if(!allOffers.length&&children.some(c=>c.failureReason==='airport_selection_unconfirmed'))parts.push(`تعذر تأكيد اختيار المطار لمسار ${parent.request.origin} إلى ${parent.request.destination} لدى هذه الشركة، لذلك لم يتأكد سعر للفترة المطلوبة. هذا لا يعني عدم وجود رحلات أو امتلاء المقاعد. بتحب نجرّب من مطار الشارقة أو مطار تاني بتختاره؟`);
+  else if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
  }
  if(alternatives.length){
   parts.push('\n*بدائل قريبة من التاريخ المطلوب*');
@@ -76,7 +78,7 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
   else parts.push(allOffers.length?'البدائل المتأكدة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.':alternatives.some(c=>c.status==='pending')?'عم نفحص الأيام القريبة؛ منرسل فقط الأسعار المتأكدة.':'لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي تعذر فحصها.');
   const uncertain=alternatives.filter(c=>['partial','unverified','auth_required','pending'].includes(c.status));if(uncertain.length&&offers.length)parts.push('هذه البدائل تأكدت؛ بعض الأيام أو التواقيت القريبة لم يكتمل فحصها.');
  }
- parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');
+ if(parent.children.some(c=>c.offers?.length))parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');
  return parts.join('\n');
 }
 module.exports={PROVIDERS,NEGATIVE,STATUSES,sameRequest,offerKey,verifiedOffer,nearbyRequests,completionStatus,renderComparison,formatOffer};

@@ -220,10 +220,10 @@ class FlyChamPortalAdapter{
     if(onProgress)await onProgress('',{offer,coverage});
    }catch(error){if(error.message==='QUOTE_SUPERSEDED')throw error;await this.assertQuoteSession(coverage);day.failed++;this.report(/^(?:FLYCHAM|FLIGHT)_[A-Z0-9_]+$/.test(error.message)?error.message:'FLYCHAM_TIMING_UNCONFIRMED');}}
    day.status=day.failed?'partial':'confirmed';
-  }catch(error){if(error.message==='QUOTE_SUPERSEDED'||error.code==='PORTAL_SESSION_EXPIRED')throw error;await this.assertQuoteSession(coverage);day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:error.name==='TimeoutError'?'FLYCHAM_SEARCH_RESULTS_TIMEOUT':'FLYCHAM_QUOTE_UNCONFIRMED');}}
+  }catch(error){if(error.message==='QUOTE_SUPERSEDED'||error.code==='PORTAL_SESSION_EXPIRED')throw error;await this.assertQuoteSession(coverage);day.status=error.message==='NO_FLIGHTS_CONFIRMED'?'no_flights':'unverified';day.failed++;if(error.message==='AIRPORT_SELECTION_NOT_CONFIRMED')day.reason='airport_selection_unconfirmed';this.report(/^(?:FLYCHAM|AIRPORT|SEARCH|ONE_WAY|FLIGHT|NO_FLIGHTS|INVALID_PROBE|UNSUPPORTED_PROBE)_[A-Z0-9_]+$/.test(error.message)?'FLYCHAM_'+error.message:error.name==='TimeoutError'?'FLYCHAM_SEARCH_RESULTS_TIMEOUT':'FLYCHAM_QUOTE_UNCONFIRMED');}}
   const complete=coverage.length===dates.length&&coverage.every(d=>['confirmed','no_flights'].includes(d.status));
 
-  return{reply:formatFlyChamOffers(request,offers,{dates:attempted,complete}),outcome:offers.length?(complete?'done':'partial'):'failed',coverage};
+  return{status:coverage.some(d=>d.reason==='airport_selection_unconfirmed')&&!offers.length?'airport_unconfirmed':null,reply:formatFlyChamOffers(request,offers,{dates:attempted,complete}),outcome:offers.length?(complete?'done':'partial'):'failed',coverage};
  }
 }
 async function readFlyChamConfig(env){

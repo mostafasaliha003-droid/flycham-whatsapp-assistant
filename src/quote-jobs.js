@@ -3,6 +3,7 @@ const { randomUUID, timingSafeEqual,createHash } = require('node:crypto');
 const {expandLiveRequests}=require('./live-quote');
 const {PROVIDERS,NEGATIVE,offerKey,verifiedOffer,nearbyRequests,completionStatus,renderComparison}=require('./quote-comparison');
 
+const sameRoute=(a,b)=>a.origin===b.origin&&a.destination===b.destination;
 // Bounded pilot queue, persisted through the encrypted state store when configured.
 // The worker only receives trip details, never the WhatsApp recipient number.
 class QuoteJobs {
@@ -54,6 +55,16 @@ class QuoteJobs {
     const j=this.jobs.get(id);if(!j?.comparisonId||!this.current(id,lease))return {accepted:false};
     const parent=this.comparisons.get(j.comparisonId);if(!parent||!this.isComparisonCurrent(parent.id))return {accepted:false};
     const child=parent.children.find(c=>c.id===id);child.status=completionStatus(data,child.offers,child.request);child.coverage=Array.isArray(data.coverage)?data.coverage.map(c=>({date:c.date,status:c.status})).slice(0,32):[];
+    // Airport selection happens before date search. One failed route lookup must
+    // not be repeated for every day in the same monthly comparison.
+    if(data.status==='airport_unconfirmed'&&!child.offers.length){
+      child.failureReason='airport_selection_unconfirmed';
+      for(const sibling of parent.children){
+        if(sibling.provider===child.provider&&sameRoute(sibling.request,child.request)&&sibling.status==='pending'&&!sibling.offers.length){
+          sibling.status='unverified';sibling.failureReason='airport_selection_unconfirmed';this.jobs.delete(sibling.id);
+        }
+      }
+    }
     this.jobs.delete(id);this.advanceComparison(parent);this.save();return {accepted:true,...this.comparisonResult(parent.id)};
   }
   advanceComparison(parent){
