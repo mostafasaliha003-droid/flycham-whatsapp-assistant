@@ -143,7 +143,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.2',...aiStatus(process.env),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT)}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.2',...aiStatus(process.env),persistentStorageConfigured:Boolean(process.env.ASSISTANT_STATE_PATH),humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD)}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {
