@@ -11,7 +11,7 @@ function scans(){return{
  {available:true,checkedWeightKg:20,price:{amount:0,currency:'AED'}},{available:true,checkedWeightKg:30,price:{amount:35,currency:'AED'}}]}))}))}};}
 test('live supported itinerary keeps exact dates and rejects substitutions or passenger counts',()=>{
  const r=request(),v=validateLiveRequest(r);assert.equal(v.returnDate,'18/11/2090');assert.equal(v.origin,'SHJ');
- for(const change of [{origin:'دبي'},{tripType:'unknown'},{returnDate:'2090-11-10'},{passengers:{adults:2,children:0,infants:0}}])assert.throws(()=>validateLiveRequest({...r,...change}));
+ for(const change of [{origin:'المنامة'},{tripType:'unknown'},{returnDate:'2090-11-10'},{passengers:{adults:2,children:0,infants:0}}])assert.throws(()=>validateLiveRequest({...r,...change}));
 });
 test('uses displayed tax-inclusive total, adds supplier costs once and extra weight margin once',()=>{
  const {seats,catalogs}=scans(),r=request();assert.equal(quoteFromScans(r,seats,catalogs).sellingTotal,'1025.00');

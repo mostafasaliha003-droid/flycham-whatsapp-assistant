@@ -4,7 +4,7 @@ const PROVIDERS=Object.freeze(['airarabia','flycham']);
 const LABELS={airarabia:'العربية للطيران',flycham:'فلاي شام'};
 const NEGATIVE=new Set(['no_flights','sold_out']);
 const STATUSES=new Set(['available','no_flights','sold_out','unverified','auth_required','partial']);
-const city=v=>({ALP:'حلب',Aleppo:'حلب',حلاب:'حلب',SHJ:'الشارقة',Sharjah:'الشارقة',الشارقه:'الشارقة',DAM:'دمشق',Damascus:'دمشق',الشام:'دمشق',شام:'دمشق'}[v]||v);
+const city=v=>({DXB:'دبي',Dubai:'دبي',AUH:'أبوظبي','Abu Dhabi':'أبوظبي',ابوظبي:'أبوظبي','ابو ظبي':'أبوظبي',DWC:'آل مكتوم','Al Maktoum':'آل مكتوم','ال مكتوم':'آل مكتوم',المكتوم:'آل مكتوم',ALP:'حلب',Aleppo:'حلب',حلاب:'حلب',SHJ:'الشارقة',Sharjah:'الشارقة',الشارقه:'الشارقة',DAM:'دمشق',Damascus:'دمشق',الشام:'دمشق',شام:'دمشق'}[v]||v);
 function sameRequest(a,b){
  return ['origin','destination'].every(k=>city(a?.[k])===city(b?.[k]))&&['departureDate','returnDate','tripType'].every(k=>(a?.[k]||null)===(b?.[k]||null))&&
   (a?.baggageRequest?.checkedWeightKg??30)===(b?.baggageRequest?.checkedWeightKg??30)&&

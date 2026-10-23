@@ -91,6 +91,10 @@ class AssistantEngine{
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
   let decision=null;
   try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  const directedRoute=require('./travel-language').languagePatch(clean(text));
+  if(directedRoute.origin||directedRoute.destination){
+   decision={...(decision||{}),intent:decision?.intent==='additional_request'?'additional_request':'change',fields:{...(decision?.fields||{}),...(directedRoute.origin?{origin:directedRoute.origin}:{}),...(directedRoute.destination?{destination:directedRoute.destination}:{})},question:null,option:null};
+  }
   // Explicit requests to change/expand dates take precedence over model explanations
   // of already displayed fares. Preserve every other trip fact.
   const dateAmendment=/(?:تواريخ|تاريخ|موعد|ايام|شهر|اسبوع)/.test(t)&&/(?:غير|تاني|ثاني|ارخص|اقل سعر|ابحث|دور|شوف|شفلي|عطيني|اعطيني|اريد|بدي)/.test(t);

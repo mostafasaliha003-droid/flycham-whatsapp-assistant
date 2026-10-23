@@ -15,7 +15,7 @@ function airportCodeConfirmed(value, code) {
 
 // A bounded synthetic search only; this module has no booking/passenger actions.
 async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {}, origin='https://agents.airarabia.com' } = {}) {
-  const names = { SHJ: 'Sharjah', DAM: 'Damascus', ALP:'Aleppo' };
+  const names = { SHJ: 'Sharjah', DAM: 'Damascus', ALP:'Aleppo',DXB:'Dubai',AUH:'Abu Dhabi',DWC:'Al Maktoum' };
   if (!names[code] || !['fAirport', 'tAirport'].includes(inputId) || hiddenId !== (inputId === 'fAirport' ? 'fromAirport' : 'toAirport')) throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
   const inputState = await frame.evaluate(airportSuggestionAction, { inputId, code, operation: 'input', origin });
   if (inputState?.status !== 'INPUT_READY') throw new Error('AIRPORT_SELECTION_NOT_CONFIRMED');
@@ -157,7 +157,7 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     const hasCode = (raw, code) => {
       const normalized = String(raw || '').trim().toUpperCase();
       const hasToken = token => new RegExp(`(?:^|[^A-Z])${token}(?:$|[^A-Z])`).test(normalized);
-      return ['SHJ','DAM','ALP'].includes(code) && hasToken(code) && !['SHJ','DAM','ALP'].some(other=>other!==code&&hasToken(other));
+      return ['SHJ','DAM','ALP','DXB','AUH','DWC'].includes(code) && hasToken(code) && !['SHJ','DAM','ALP','DXB','AUH','DWC'].some(other=>other!==code&&hasToken(other));
     };
     return hasCode(value('fromAirport'), origin) && hasCode(value('toAirport'), destination)
       && value('departureDate') === departureDate && value('adultCount') === '1'

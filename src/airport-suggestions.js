@@ -4,6 +4,9 @@
 function airportSuggestionAction({ inputId, code, operation = 'inspect', origin = 'https://agents.airarabia.com' }) {
   if (!['https://agents.airarabia.com','https://reservations.flycham.com'].includes(origin) || location.origin !== origin) return { status: 'UNTRUSTED' };
   const airports = {
+    DXB: ['DXB','DUBAI','AIRPORT','INTERNATIONAL','UNITED','ARAB','EMIRATES','UAE'],
+    AUH: ['AUH','ABU','DHABI','ZAYED','AIRPORT','INTERNATIONAL','UNITED','ARAB','EMIRATES','UAE'],
+    DWC: ['DWC','AL','MAKTOUM','DUBAI','WORLD','CENTRAL','AIRPORT','INTERNATIONAL','UNITED','ARAB','EMIRATES','UAE'],
     SHJ: ['SHJ', 'SHARJAH', 'AIRPORT', 'INTERNATIONAL', 'UNITED', 'ARAB', 'EMIRATES', 'UAE'],
     ALP: ['ALP', 'ALEPPO', 'AIRPORT', 'INTERNATIONAL', 'SYRIA', 'SYRIAN', 'ARAB', 'REPUBLIC'],
     DAM: ['DAM', 'DAMASCUS', 'AIRPORT', 'INTERNATIONAL', 'SYRIA', 'SYRIAN', 'ARAB', 'REPUBLIC'],
@@ -32,7 +35,7 @@ function airportSuggestionAction({ inputId, code, operation = 'inspect', origin 
     // item. Clicking that cell's centre does not select the supplier option.
     if (element.querySelector?.('input,select,textarea,button') || element.getAttribute?.('aria-disabled') === 'true') return false;
     const words = text.toUpperCase().replace(/[^A-Z]/g, ' ').trim().split(/\s+/);
-    return words.some(word => word === code || word === airports[code][1]) && words.every(word => airports[code].includes(word));
+    return (words.includes(code) || (code==='DXB'?words.includes('DUBAI')&&!words.some(w=>['MAKTOUM','WORLD','CENTRAL','DWC'].includes(w)):code==='AUH'?words.includes('ABU')&&words.includes('DHABI'):code==='DWC'?words.includes('MAKTOUM'):words.includes(airports[code][1]))) && words.every(word => airports[code].includes(word));
   };
   const selector = 'li,[role="option"],a,div,span,td';
   const elements = owned.length ? owned.flatMap(root => [root, ...Array.from(root.querySelectorAll(selector))]) : Array.from(document.querySelectorAll(selector));
