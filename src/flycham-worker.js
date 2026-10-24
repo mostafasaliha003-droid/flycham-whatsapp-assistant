@@ -14,7 +14,7 @@ const FLYCHAM_VERIFICATION_FILE='/tmp/flycham-verification-code';
 const OTP_INPUT='input[autocomplete="one-time-code"]:visible,input[id="userOtp"]:visible';
 const OTP_SUBMIT='button[type="submit"]:visible,input[type="submit"]:visible,button[id="btnSubmit"]:visible,input[id="btnSubmit"]:visible';
 const trusted=frame=>{try{return new URL(frame.url()).origin===ORIGIN;}catch{return false;}};
-const recoverableSearchError=error=>error?.name==='TimeoutError'||error?.message==='FLYCHAM_SEARCH_FORM_UNCONFIRMED';
+const recoverableSearchError=error=>error?.name==='TimeoutError'||['FLYCHAM_SEARCH_FORM_UNCONFIRMED','AIRPORT_SELECTION_NOT_CONFIRMED'].includes(error?.message);
 function inspectVerificationForm(){
  if(location.origin!=='https://reservations.flycham.com')return false;
  const visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden';

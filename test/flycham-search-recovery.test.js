@@ -56,6 +56,13 @@ function recoveryFixture({challenge=false,secondFailure=false,error='FLYCHAM_SEA
 }
 
 const retryRequest={origin:'أبوظبي',destination:'دمشق',departureDate:'2099-11-18',tripType:'one_way',returnDate:null,passengers:{adults:1,children:0,infants:0},baggageRequest:{checkedWeightKg:30,requestedByCustomer:true}};
+test('a transient airport selection failure recovers once and retries the same route without substituting airports',async()=>{
+ const f=recoveryFixture();let attempts=0;f.a.searchAttempt=async(r,config)=>{assert.equal(config.origin,'AUH');assert.equal(config.destination,'DAM');assert.deepEqual(r,retryRequest);if(++attempts===1)throw Error('AIRPORT_SELECTION_NOT_CONFIRMED');return 'confirmed-airport-results';};
+ assert.equal(await f.a.search(retryRequest),'confirmed-airport-results');assert.equal(attempts,2);assert.equal(f.events.filter(e=>e==='signIn').length,1);
+});
+test('a persistent airport selection failure remains unconfirmed after exactly one recovery',async()=>{
+ const f=recoveryFixture();let attempts=0;f.a.searchAttempt=async()=>{attempts++;throw Error('AIRPORT_SELECTION_NOT_CONFIRMED');};await assert.rejects(f.a.search(retryRequest),/AIRPORT_SELECTION_NOT_CONFIRMED/);assert.equal(attempts,2);assert.equal(f.events.filter(e=>e==='signIn').length,1);
+});
 const timeout=()=>Object.assign(Error('Synthetic timeout'),{name:'TimeoutError'});
 for(const stage of ['NAVIGATION','SUBMISSION','RESULTS'])test('a '+stage+' timeout retries the exact requested flight once on the recovered page',async()=>{
  const f=recoveryFixture();let attempts=0;
