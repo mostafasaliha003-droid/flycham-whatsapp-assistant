@@ -164,21 +164,55 @@ class FlyChamPortalAdapter{
   const menu=await this.authenticatedFrame();if(!menu)throw Error('FLYCHAM_SESSION_UNAVAILABLE');
   const link=this.reservationControl||await this.findControl(menu,/^make\s*reservation$/i);if(!link)throw Error('FLYCHAM_SEARCH_CONTROL_UNCONFIRMED');
   if(await link.getAttribute?.('id')==='btnBook'||link.evaluate&&await link.evaluate(el=>Boolean(el.closest('#btnBook')||el.querySelector?.('#btnBook'))))throw Error('FLYCHAM_BOOKING_CONTROL_REFUSED');
-  await link.click();
-  let recovered=false;
-  for(let attempt=0;attempt<60;attempt++){
-   for(const f of this.searchFrames())if(await f.locator('#fAirport:visible').count()===1){if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();return f;}
-   if(!recovered){for(const f of this.searchFrames()){
-    if(await f.locator('#fAirport').count()!==1)continue;
-    const tab=f.getByRole?.('link',{name:'Search Flights',exact:true});
-    if(tab&&await tab.count()===1&&await tab.isVisible()){await tab.click();recovered=true;this.report('FLYCHAM_SEARCH_FORM_TAB_OPENED');break;}
-   }}
-   if(attempt===15&&!recovered){for(const f of this.searchFrames()){const control=await this.findControl(f,/^(?:new|modify|change)\s+search$/i);if(control){await control.click();recovered=true;this.report('FLYCHAM_SEARCH_RESET_NAVIGATION_COMPLETED');break;}}}
-   await this.page.waitForTimeout(500);
-  }
-  await this.inspectSearchState();throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
+  // Menu navigation targets a sibling frame. Its old origin input can remain
+  // visible while the replacement document loads; never type into that input.
+  const previousInputs=new Map();
+  try{
+   for(const f of this.searchFrames())try{
+    const input=f.locator('#fAirport:visible');
+    if(await input.count()===1&&typeof input.elementHandle==='function'){
+     const handle=await input.elementHandle();if(handle)previousInputs.set(f,handle);
+    }
+   }catch{}
+   await link.click();
+   let recovered=false;
+   for(let attempt=0;attempt<60;attempt++){
+    for(const f of this.searchFrames())try{
+     if(await f.locator('#fAirport:visible').count()!==1)continue;
+     const previous=previousInputs.get(f);
+     if(previous&&await previous.evaluate(el=>el.isConnected).catch(()=>false))continue;
+     if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');
+     this.onAuthenticatedActivity?.();return f;
+    }catch(error){if(error.message==='FLYCHAM_SESSION_UNAVAILABLE')throw error;}
+    if(!recovered){for(const f of this.searchFrames()){
+     if(await f.locator('#fAirport').count()!==1)continue;
+     const tab=f.getByRole?.('link',{name:'Search Flights',exact:true});
+     if(tab&&await tab.count()===1&&await tab.isVisible()){await tab.click();recovered=true;this.report('FLYCHAM_SEARCH_FORM_TAB_OPENED');break;}
+    }}
+    if(attempt===15&&!recovered){for(const f of this.searchFrames()){const control=await this.findControl(f,/^(?:new|modify|change)\s+search$/i);if(control){await control.click();recovered=true;this.report('FLYCHAM_SEARCH_RESET_NAVIGATION_COMPLETED');break;}}}
+    await this.page.waitForTimeout(500);
+   }
+   await this.inspectSearchState();throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
+  }finally{await Promise.allSettled([...previousInputs.values()].map(handle=>handle.dispose()));}
  }
- async refreshProtectedPage(){await this.openSearchForm();if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();this.report('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED');}
+ async openSearchFormWithRecovery(){
+  try{return await this.openSearchForm();}
+  catch(error){
+   if(error.message!=='FLYCHAM_SEARCH_FORM_UNCONFIRMED')throw error;
+   // One recovery of a missing search document, within the same browser
+   // context (and cookies). Verification and rejected sign-in are never retried.
+   if(await this.hasVerificationChallenge())throw Error('FLYCHAM_MANUAL_VERIFICATION');
+   this.report('FLYCHAM_SEARCH_PAGE_RECOVERY_STARTED');
+   const context=this.page.context(),previous=context.pages().filter(p=>!p.isClosed());
+   const fresh=await context.newPage();fresh.setDefaultTimeout?.(15000);
+   this.page=fresh;this.reservationControl=null;this.protectedURL=null;
+   for(const page of previous)if(!page.isClosed())await page.close();
+   await this.signIn();
+   const frame=await this.openSearchForm();
+   this.report('FLYCHAM_SEARCH_PAGE_RECOVERY_COMPLETED');return frame;
+  }
+ }
+ async refreshProtectedPage(){await this.openSearchFormWithRecovery();if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();this.report('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED');}
  async searchFlightsForHeartbeat(){return this.refreshProtectedPage();}
  async assertQuoteSession(coverage){
   if(await this.isAuthenticated())return;
@@ -189,7 +223,7 @@ class FlyChamPortalAdapter{
   const config=validateLiveRequest(request);if(!flyChamBaggageAllowed(request))throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
   // Legacy popup shell spans several frames; navigating a child/menu URL in
   // the top-level page destroys that shell. Use its authenticated menu only.
-  const frame=await this.openSearchForm();
+  const frame=await this.openSearchFormWithRecovery();
   const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});
   if(prepared.tripKind!==(request.tripType==='one_way'?'one-way':'return'))throw Error('FLYCHAM_TRIP_NOT_CONFIRMED');
   // Flight inventory can arrive before any fare is selected. Waiting for the
