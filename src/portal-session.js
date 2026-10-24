@@ -14,7 +14,8 @@ function transientFailure(error) {
     || /ERR_(?:NAME_NOT_RESOLVED|CONNECTION_|INTERNET_|NETWORK_|PROXY_|TIMED_OUT)|ECONN|ENOTFOUND|frame was detached|execution context was destroyed/i.test(String(error?.message || ''));
 }
 function securityFailure(error) {
-  return /MANUAL_VERIFICATION|VERIFICATION_(?:REJECTED|EXPIRED|TIMEOUT|NOT_CONFIRMED|FORM_UNAVAILABLE)|BAD_CREDENTIALS|PASSWORD_CHANGE_REQUIRED|EXISTING_SESSION|UNTRUSTED_ORIGIN/.test(String(error?.message || ''));
+  const classification=[error?.code,error?.reason,error?.message].filter(v=>typeof v==='string').join(' ');
+  return /CAPTCHA|MANUAL_VERIFICATION|VERIFICATION_(?:REJECTED|EXPIRED|TIMEOUT|NOT_CONFIRMED|FORM_UNAVAILABLE)|BAD_CREDENTIALS|PASSWORD_CHANGE_REQUIRED|EXISTING_SESSION|UNTRUSTED_ORIGIN/.test(classification);
 }
 
 function randomHeartbeatDate(now = Date.now, random = Math.random) {
@@ -97,8 +98,10 @@ class PortalSession {
     if (await this.adapter.isAuthenticated()) return;
     // The real adapter must stop for CAPTCHA, verification and rejected login;
     // it must never retry those challenges automatically or bypass them.
+    let verificationChallenge = false;
     try {
       if (await this.adapter.hasVerificationChallenge?.()) {
+        verificationChallenge = true;
         this.state = 'verification';
         this.report('PORTAL_VERIFICATION_OPERATOR_REQUIRED');
         if (typeof this.adapter.resumeVerification !== 'function') throw new Error('MANUAL_VERIFICATION');
@@ -109,7 +112,12 @@ class PortalSession {
         await this.adapter.signIn();
       }
       if (!await this.adapter.isAuthenticated()) throw new Error('Portal sign-in was not verified');
-    } catch {
+    } catch (error) {
+      // A navigation timeout or lost frame during ordinary sign-in is not a
+      // rejected credential. Preserve that typed failure for the existing
+      // bounded initialize/heartbeat retry. Verification challenges themselves
+      // remain operator-controlled even if their DOM operation times out.
+      if (!verificationChallenge && !securityFailure(error) && transientFailure(error)) throw error;
       this.blockAuthentication();
       throw new Error('Portal authentication requires operator review');
     }

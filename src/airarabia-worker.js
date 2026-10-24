@@ -331,6 +331,67 @@ class AirArabiaPortalAdapter {
     this.report('PORTAL_LOGIN_RESULT_AUTHENTICATION_MARKERS_NOT_CONFIRMED');
   }
 
+  trustedLoginDocument(target) {
+    try {
+      const url = new URL(target.url());
+      return url.origin === new URL(LOGIN_URL).origin
+        && url.pathname.split(';')[0] === new URL(LOGIN_URL).pathname;
+    } catch { return false; }
+  }
+
+  async findLoginForm() {
+    // Reusing the supplier's named winCC window does not emit a new popup.
+    // Inspect only its trusted login documents, never hidden launcher inputs.
+    const pages = this.page.context ? this.page.context().pages() : [this.page];
+    const candidates = [];
+    for (const candidate of pages) {
+      if (candidate.isClosed?.()) continue;
+      try { if (new URL(candidate.url()).origin !== new URL(LOGIN_URL).origin) continue; }
+      catch { continue; }
+      const main = candidate.mainFrame?.();
+      const targets = [candidate, ...(candidate.frames?.() || []).filter(frame => frame !== main)];
+      for (const target of targets) {
+        if (!this.trustedLoginDocument(target)) continue;
+        try {
+          const visible = await Promise.all(['#username_txt', '#j_password', '#btnLogin'].map(selector => target.locator(selector).isVisible()));
+          if (!visible.every(Boolean)) continue;
+          const name = typeof candidate.evaluate === 'function'
+            ? await candidate.evaluate(() => window.name).catch(() => '') : '';
+          candidates.push({ page: candidate, target, named: name === 'winCC' });
+        } catch {}
+      }
+    }
+    const named = candidates.filter(candidate => candidate.named);
+    const matches = named.length ? named : candidates;
+    if (matches.length > 1) throw new PortalError('LOGIN_FORM', 'SELECTOR_AMBIGUOUS');
+    return matches[0] || null;
+  }
+
+  async acquireLoginForm({ timeoutMs = 30000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.hasVerificationChallenge()) throw new PortalError('LOGIN_CONFIRM', 'MANUAL_VERIFICATION');
+      const found = await this.findLoginForm();
+      if (found) {
+        if (this.page !== found.page || found.target !== found.page) this.report('PORTAL_LOGIN_FORM_REACQUIRED');
+        this.page = found.page;
+        this.page.setDefaultTimeout?.(15000);
+        return found.target;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    } while (Date.now() <= deadline);
+    throw new PortalError('LOGIN_FORM', 'TIMEOUT');
+  }
+
+  async assertLoginTargetSafe(target) {
+    if (!this.trustedLoginDocument(target) || new URL(this.page.url()).origin !== new URL(LOGIN_URL).origin) {
+      throw new PortalError('LOGIN_FORM', 'UNEXPECTED');
+    }
+    if (await this.hasVerificationChallenge()) throw new PortalError('LOGIN_CONFIRM', 'MANUAL_VERIFICATION');
+    await this.assertNoChallenge(target);
+  }
+
   async signIn() {
     this.verificationAttempted = false;
     this.verificationNavigationResumed = false;
@@ -357,11 +418,11 @@ class AirArabiaPortalAdapter {
     });
     this.report('PORTAL_STAGE_LOGIN_FORM');
     await atStage('LOGIN_FORM', async () => {
-      await this.page.locator('#username_txt').waitFor({ state: 'visible', timeout: 30000 });
-      await this.page.locator('#j_password').waitFor({ state: 'visible', timeout: 30000 });
-      await this.assertNoChallenge();
-      await this.page.locator('#username_txt').fill(this.username);
-      await this.page.locator('#j_password').fill(this.password);
+      this.loginTarget = await this.acquireLoginForm();
+      await this.assertLoginTargetSafe(this.loginTarget);
+      await this.loginTarget.locator('#username_txt').fill(this.username);
+      await this.assertLoginTargetSafe(this.loginTarget);
+      await this.loginTarget.locator('#j_password').fill(this.password);
     });
     this.page.on?.('response', response => {
       try {
@@ -372,7 +433,10 @@ class AirArabiaPortalAdapter {
       } catch {}
     });
     this.report('PORTAL_STAGE_LOGIN_SUBMIT');
-    await atStage('LOGIN_SUBMIT', () => this.page.locator('#btnLogin').click({ noWaitAfter: true }));
+    await atStage('LOGIN_SUBMIT', async () => {
+      await this.assertLoginTargetSafe(this.loginTarget);
+      await this.loginTarget.locator('#btnLogin').click({ noWaitAfter: true });
+    });
     this.report('PORTAL_STAGE_LOGIN_CONFIRM');
     await atStage('LOGIN_CONFIRM', async () => {
       if (!await this.waitForAuthentication(30000, { operatorVerification: true })) {
@@ -386,11 +450,11 @@ class AirArabiaPortalAdapter {
     this.report('PORTAL_AUTHENTICATED');
   }
 
-  async assertNoChallenge() {
-    const captcha = await this.page.locator('#captcha_txt').isVisible().catch(() => false);
+  async assertNoChallenge(scope = this.page) {
+    const captcha = await scope.locator('#captcha_txt').isVisible().catch(() => false);
     // Supplier Browser.js overrides innerText with textContent, including hidden
     // scripts/error catalogs. Read only the supplier's visible error element.
-    const errorMessage = this.page.locator('#errorMSG');
+    const errorMessage = scope.locator('#errorMSG');
     const text = await errorMessage.isVisible().catch(() => false)
       ? await errorMessage.textContent({ timeout: 5000 }).catch(() => '') : '';
     if (captcha || /captcha|verify you are human|verification|one[- ]time|\botp\b|security code|looked like a bot/i.test(text)) {

@@ -38,7 +38,7 @@ function fakePage({ captcha = false, navigationError, confirmError, popup = null
       waitFor: async () => {},
       fill: async () => { calls.push(['fill', selector]); },
       click: async () => { calls.push(['click', selector]); },
-      isVisible: async () => selector === '#captcha_txt' && captcha,
+      isVisible: async () => selector === '#captcha_txt' ? captcha : ['#username_txt', '#j_password', '#btnLogin'].includes(selector),
       innerText: async () => 'hidden script says captcha and looked like a bot',
       textContent: async () => '',
     }),
@@ -398,4 +398,96 @@ test('reservation inspection never accepts a foreign-origin form or missing navi
   adapter.reservationControl = { click: async () => {} };
   assert.equal(await adapter.inspectReservationSearch({ timeoutMs: 0 }), false);
   assert.equal(evaluations, 0);
+});
+
+function hiddenLoginLauncher(pages) {
+  const page = fakePage();
+  const locator = page.locator;
+  page.url = () => 'https://agents.airarabia.com/xbe/';
+  page.context = () => ({ pages: () => [page, ...pages] });
+  page.locator = selector => {
+    const found = locator(selector);
+    return { ...found, isVisible: async () => false };
+  };
+  return page;
+}
+
+test('reauthentication reacquires a reused named login window when no popup event fires', async () => {
+  const reused = fakePage();
+  reused.evaluate = async () => 'winCC';
+  const launcher = hiddenLoginLauncher([reused]);
+  const events = [], adapter = adapterFor(launcher, code => events.push(code));
+  await adapter.signIn();
+  assert.equal(adapter.page, reused);
+  assert.equal(adapter.loginTarget, reused);
+  assert.equal(launcher.calls.filter(([op]) => ['fill', 'click'].includes(op)).length, 0);
+  assert.deepEqual(reused.calls.filter(([op]) => op === 'fill').map(([,selector]) => selector), ['#username_txt', '#j_password']);
+  assert.equal(reused.calls.filter(([op]) => op === 'click').length, 1);
+  assert.ok(events.includes('PORTAL_LOGIN_FORM_REACQUIRED'));
+  assert.ok(events.includes('PORTAL_AUTHENTICATED'));
+});
+
+test('reused trusted login child frame is selected while its page stays the owner', async () => {
+  const owner = fakePage();
+  owner.url = () => 'https://agents.airarabia.com/xbe/';
+  const navigation = owner.frames();
+  const fills = [];let pending = true;
+  const form = {
+    url: () => 'https://agents.airarabia.com/xbe/public/showLogin.action',
+    locator: selector => ({
+      isVisible: async () => pending && ['#username_txt', '#j_password', '#btnLogin'].includes(selector),
+      fill: async () => fills.push(selector),
+      click: async () => { pending = false; },
+      textContent: async () => '',
+    }),
+  };
+  owner.frames = () => [...navigation, form];
+  const launcher = hiddenLoginLauncher([owner]);
+  const adapter = adapterFor(launcher);
+  await adapter.signIn();
+  assert.equal(adapter.page, owner);
+  assert.equal(adapter.loginTarget, form);
+  assert.deepEqual(fills, ['#username_txt', '#j_password']);
+  assert.equal(owner.calls.filter(([op]) => ['fill', 'click'].includes(op)).length, 0);
+});
+
+test('multiple visible unnamed trusted login forms are rejected before credentials are entered', async () => {
+  const first = fakePage(), second = fakePage();
+  const launcher = hiddenLoginLauncher([first, second]);
+  await assert.rejects(adapterFor(launcher).signIn(), /PORTAL_LOGIN_FORM_SELECTOR_AMBIGUOUS/);
+  for (const page of [launcher, first, second]) assert.equal(page.calls.filter(([op]) => ['fill', 'click'].includes(op)).length, 0);
+});
+
+test('reacquisition ignores a foreign window even when its frame mimics the trusted login route', async () => {
+  const foreign = fakePage();
+  foreign.url = () => 'https://foreign.example/';
+  let inspected = 0;
+  foreign.frames = () => { inspected++; return [{ url: () => 'https://agents.airarabia.com/xbe/public/showLogin.action' }]; };
+  const launcher = hiddenLoginLauncher([foreign]);
+  const adapter = adapterFor(launcher);
+  await assert.rejects(adapter.acquireLoginForm({ timeoutMs: 0 }), /PORTAL_LOGIN_FORM_TIMEOUT/);
+  // Challenge detection may check frame URLs, but no foreign form may be used.
+  assert.equal(foreign.calls.filter(([op]) => ['fill', 'click'].includes(op)).length, 0);
+  assert.notEqual(adapter.page, foreign);
+});
+
+test('reused popup CAPTCHA blocks all credential entry', async () => {
+  const challenge = fakePage({ captcha: true });
+  const launcher = hiddenLoginLauncher([challenge]);
+  await assert.rejects(adapterFor(launcher).signIn(), /MANUAL_VERIFICATION/);
+  assert.equal(challenge.calls.filter(([op]) => ['fill', 'click'].includes(op)).length, 0);
+});
+
+test('origin is rechecked between username, password and submit operations', async () => {
+  const reused = fakePage();let route = 'https://agents.airarabia.com/xbe/public/showLogin.action';
+  reused.url = () => route;
+  const locator = reused.locator;
+  reused.locator = selector => {
+    const control = locator(selector);
+    return { ...control, fill: async () => { reused.calls.push(['fill', selector]); route = 'https://foreign.example/login'; } };
+  };
+  const launcher = hiddenLoginLauncher([reused]);
+  await assert.rejects(adapterFor(launcher).signIn(), /PORTAL_LOGIN_FORM_UNEXPECTED/);
+  assert.deepEqual(reused.calls.filter(([op]) => op === 'fill').map(([,selector]) => selector), ['#username_txt']);
+  assert.equal(reused.calls.filter(([op]) => op === 'click').length, 0);
 });
