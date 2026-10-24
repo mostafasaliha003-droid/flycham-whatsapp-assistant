@@ -166,7 +166,7 @@ class FlyChamPortalAdapter{
   if(await link.getAttribute?.('id')==='btnBook'||link.evaluate&&await link.evaluate(el=>Boolean(el.closest('#btnBook')||el.querySelector?.('#btnBook'))))throw Error('FLYCHAM_BOOKING_CONTROL_REFUSED');
   // Menu navigation targets a sibling frame. Its old origin input can remain
   // visible while the replacement document loads; never type into that input.
-  const previousInputs=new Map();
+  const previousInputs=new Map(),reactivatedFrames=new Set();
   try{
    for(const f of this.searchFrames())try{
     const input=f.locator('#fAirport:visible');
@@ -180,14 +180,14 @@ class FlyChamPortalAdapter{
     for(const f of this.searchFrames())try{
      if(await f.locator('#fAirport:visible').count()!==1)continue;
      const previous=previousInputs.get(f);
-     if(previous&&await previous.evaluate(el=>el.isConnected).catch(()=>false))continue;
+     if(previous&&!reactivatedFrames.has(f)&&await previous.evaluate(el=>el.isConnected).catch(()=>false))continue;
      if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');
      this.onAuthenticatedActivity?.();return f;
     }catch(error){if(error.message==='FLYCHAM_SESSION_UNAVAILABLE')throw error;}
     if(!recovered){for(const f of this.searchFrames()){
      if(await f.locator('#fAirport').count()!==1)continue;
      const tab=f.getByRole?.('link',{name:'Search Flights',exact:true});
-     if(tab&&await tab.count()===1&&await tab.isVisible()){await tab.click();recovered=true;this.report('FLYCHAM_SEARCH_FORM_TAB_OPENED');break;}
+     if(tab&&await tab.count()===1&&await tab.isVisible()){await tab.click();reactivatedFrames.add(f);recovered=true;this.report('FLYCHAM_SEARCH_FORM_TAB_OPENED');break;}
     }}
     if(attempt===15&&!recovered){for(const f of this.searchFrames()){const control=await this.findControl(f,/^(?:new|modify|change)\s+search$/i);if(control){await control.click();recovered=true;this.report('FLYCHAM_SEARCH_RESET_NAVIGATION_COMPLETED');break;}}}
     await this.page.waitForTimeout(500);

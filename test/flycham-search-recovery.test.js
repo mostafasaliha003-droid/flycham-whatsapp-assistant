@@ -61,3 +61,13 @@ test('untrusted origins, refused booking controls and rejected credentials never
   assert.equal(f.attempts(),1);assert.deepEqual(f.events,[]);
  }
 });
+
+test('explicit Search Flights tab activation can safely reuse the existing search document',async()=>{
+ let tabClicks=0,disposed=0;
+ const old={evaluate:async()=>true,dispose:async()=>disposed++};
+ const frame={locator:()=>({count:async()=>1,elementHandle:async()=>old}),getByRole:()=>({count:async()=>1,isVisible:async()=>true,click:async()=>tabClicks++})};
+ const a=new FlyChamPortalAdapter({waitForTimeout:async()=>{}},{});
+ a.authenticatedFrame=async()=>({});a.isAuthenticated=async()=>true;a.searchFrames=()=>[frame];
+ a.reservationControl={click:async()=>{}};a.findControl=async()=>null;
+ assert.equal(await a.openSearchForm(),frame);assert.equal(tabClicks,1);assert.equal(disposed,1);
+});
