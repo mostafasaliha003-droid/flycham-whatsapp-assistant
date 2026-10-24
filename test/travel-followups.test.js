@@ -10,14 +10,14 @@ function make({r=request,status='failed',awaiting=null}={}){
  e.store.set('followup',{introduced:true,history:[],offers:[],selected:null,base:{request:structuredClone(r),submitted:true,awaiting,at:now},status});
  return{e,calls:()=>calls};
 }
-for(const text of ['في من ابوظبي','اي نفس التواريخ','بدي من ابوظبي لسوريا','بدي نفس التاريخ','بدي من ابو ظبي إلى دمشق'])test('known trip is rechecked without NLU or a repeated date question: '+text,async()=>{
+for(const text of ['في من ابوظبي','اي نفس التواريخ','بدي من ابوظبي لسوريا','بدي نفس التاريخ','بدي من ابو ظبي إلى دمشق','أعد البحث','اعد البحث','عيد البحث','أعد البحث.'])test('known trip is rechecked without NLU or a repeated date question: '+text,async()=>{
  const {e,calls}=make();await e.prepare('followup',text,{now});const result=await e.handle('followup',text,{now});
  assert.equal(result.complete,true);assert.equal(calls(),0);for(const key of Object.keys(request))assert.deepEqual(result.request[key],request[key]);
  assert.doesNotMatch(result.reply,/أي فترة|اي فترة|أي تاريخ|طلبك السابق مسجل/);assert.equal(e.state('followup').status,'queued');
 });
 test('repeated confirmations during the same search do not enqueue duplicate requests',async()=>{
  const {e}=make();assert.equal((await e.handle('followup','في من ابوظبي',{now})).complete,true);
- for(const text of ['اي نفس التواريخ','بدي من ابوظبي لسوريا']){const r=await e.handle('followup',text,{now});assert.equal(r.complete,false);assert.ok(!r.cancel);assert.match(r.reply,/البحث مستمر/);assert.doesNotMatch(r.reply,/أي فترة/);}
+ for(const text of ['اي نفس التواريخ','بدي من ابوظبي لسوريا','أعد البحث']){const r=await e.handle('followup',text,{now});assert.equal(r.complete,false);assert.ok(!r.cancel);assert.match(r.reply,/البحث مستمر/);assert.doesNotMatch(r.reply,/أي فترة/);}
 });
 test('same dates retains the whole date range and return while clearing a stale expansion prompt',async()=>{
  const r={...request,departureDate:null,departureRange:{start:'2026-11-18',end:'2026-11-24'},tripType:'round_trip',returnDate:'2026-12-05',searchMode:'cheapest'};
@@ -32,7 +32,7 @@ test('a country reference never invents a Syrian city when none is known',async(
  const {e}=make({r:{...request,destination:null}});const result=await e.handle('followup','بدي من ابوظبي لسوريا',{now});assert.equal(result.complete,false);assert.equal(e.state('followup').base.request.destination,null);
 });
 test('negation, booking, new dates and another trip are not mistaken for an exact confirmation',()=>{
- for(const text of ['لا بدي نفس التاريخ','بدي من ابوظبي بكرا','بدي تواريخ تانية','ثبتلي نفس التواريخ','رحلة تانية من ابوظبي','اذا من ابوظبي ارخص؟'])assert.equal(knownTripFollowup(text,request),null,text);
+ for(const text of ['لا بدي نفس التاريخ','بدي من ابوظبي بكرا','بدي تواريخ تانية','ثبتلي نفس التواريخ','رحلة تانية من ابوظبي','اذا من ابوظبي ارخص؟','لا تعيد البحث','اعد البحث من دبي بكرا'])assert.equal(knownTripFollowup(text,request),null,text);
  assert.equal(knownTripFollowup('نفس التواريخ',{...request,departureDate:null}),null);
 });
 test('unrecognised text does not erase the date or ask for it again',async()=>{

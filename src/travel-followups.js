@@ -9,7 +9,8 @@ function knownTripFollowup(raw,request){
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
  const lead='(?:(?:اي|نعم|تمام|طيب|لو سمحت|بدي|بدنا|اريد|في|فيه|موجود|عندكن|عندك|هل|رحله|رحلة|رحلات|طيران)\\s+)*';
  const same=new RegExp('^'+lead+'(?:على\\s+)?نفس\\s+(?:التواريخ|تواريخ|التاريخ|تاريخ|الموعد|موعد|الايام|ايام|الفتر[هة]|الرحل[هة]|التفاصيل)(?:\\s+(?:نفسها|بس|تماما))?$');
- if(same.test(t)&&(request.departureDate||request.departureRange))return{fields:{},sameDates:true};
+ const retry=/^(?:اعد|عيد|كرر)\s+(?:البحث|التحقق)(?:\s+على\s+نفس\s+(?:التفاصيل|التواريخ|التاريخ|الرحل[هة]))?$/;
+ if((same.test(t)||retry.test(t))&&(request.departureDate||request.departureRange))return{fields:{},sameDates:true};
  const tail=t.replace(new RegExp('^'+lead),'');
  if(!/^(?:من|from)\s+/.test(tail)){
   const bare=city(t);return bare&&bare===city(request.origin)?{fields:{origin:bare},sameDates:true}:null;

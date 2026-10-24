@@ -13,6 +13,7 @@ const { MessageBatcher } = require('./message-batcher');
 const {handleVoucherRequest}=require('./voucher-http');
 const { sendImageMessage,sendTextMessage,checkWhatsAppConnection } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
+const {recordDeliveryStatuses,comparisonDeliverySummary}=require('./delivery-status');
 const { expandLiveRequests } = require('./live-quote');
 const assistant=new AssistantEngine();
 const quoteJobs = new QuoteJobs({store:assistant.store});
@@ -130,9 +131,7 @@ async function handleWebhookPost(request, response) {
   catch { response.writeHead(400).end('Invalid JSON'); return; }
 
   response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ received: true }));
-  for(const entry of payload.entry||[])for(const change of entry.changes||[])for(const status of change.value?.statuses||[]){
-    if(typeof status.id==='string'&&['sent','delivered','read','failed'].includes(status.status))assistant.store.delivery(status.id,status.status);
-  }
+  recordDeliveryStatuses(payload,assistant.store);
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
     quoteJobs.save();
@@ -142,7 +141,7 @@ async function handleWebhookPost(request, response) {
   }
 }
 
-function claimJob(provider){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||catalog.claim(provider||'airarabia')||{};}
+function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||(includeCatalog?catalog.claim(provider||'airarabia'):null)||{};}
 
 function createServer() {
   const server=http.createServer(async (request, response) => {
@@ -161,7 +160,7 @@ function createServer() {
           response.writeHead(200,{'Content-Type':'application/json'}).end('{"ok":true}');return;
         }
         if(url.pathname==='/internal/quotes/claim'){
-          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob(data.provider)));return;
+          response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(claimJob(data.provider,{includeCatalog:data.includeCatalog!==false})));return;
         }
         if(url.pathname==='/internal/quotes/current'){
           response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({current:String(data.id).startsWith('catalog-')?catalog.current(data.id,data.lease)&&![...quoteJobs.jobs.values()].some(j=>['pending','claimed'].includes(j.state)&&(j.request.provider||'airarabia')===(catalog.leases.get(data.id)?.request.provider)):quoteJobs.current(data.id,data.lease)}));return;
@@ -258,7 +257,9 @@ function createServer() {
 if (require.main === module) {
   checkWhatsAppConnection().then(code=>console.log(code));
   console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay}));
+  console.log('WHATSAPP_COMPARISON_DELIVERY_HISTORY_'+JSON.stringify(comparisonDeliverySummary(assistant.store)));
   createServer().listen(PORT, () => console.log(`FlyCham WhatsApp Assistant listening on port ${PORT}`));
 }
 
 module.exports = { createServer, handleWebhookPost };
+

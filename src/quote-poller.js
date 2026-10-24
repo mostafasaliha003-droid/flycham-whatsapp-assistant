@@ -2,7 +2,7 @@
 function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console,provider='airarabia'}={}){
   const url=env.AIR_ARABIA_QUOTE_QUEUE_URL,secret=env.AIR_ARABIA_QUOTE_QUEUE_KEY;
   if(!url || !secret || secret.length<32 || new URL(url).origin!=='https://flycham-whatsapp-assistant.onrender.com')throw Error('QUEUE_CONFIG_INVALID');
-  let stopped=false,timer,inFlight=Promise.resolve();
+  let stopped=false,timer,inFlight=Promise.resolve(),catalogResumeAt=0;
   async function call(path,body){const r=await fetchImpl(url+path,{method:'POST',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error('QUEUE_HTTP_ERROR');return r.json();}
   const ready=()=>!session.closed&&!session.authBlocked&&(typeof session.isReady!=='function'||session.isReady());
   const health=()=>typeof session.healthStatus==='function'?session.healthStatus().state:session.authBlocked?'authentication_required':session.closed?'closed':'unverified';
@@ -13,7 +13,7 @@ function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console,
     try{
       if(session.authBlocked||session.closed){await publishHealth().catch(()=>{});stopped=true;clearInterval(heartbeat);log.log('PORTAL_QUOTE_AUTHENTICATION_REQUIRED_'+provider.toUpperCase());return;}
       if(!ready()){await publishHealth().catch(()=>{});return;}
-      const job=await call('/claim',provider==='airarabia'?{}:{provider});
+      const job=await call('/claim',{...(provider==='airarabia'?{}:{provider}),...(Date.now()<catalogResumeAt?{includeCatalog:false}:{})});
       if(job?.id){
         log.log(job.catalog?'PORTAL_CATALOG_SEARCH_STARTED_'+provider.toUpperCase():'PORTAL_CUSTOMER_QUOTE_STARTED');
         let reply,outcome='done',coverage=[],status=null,availabilityEvidence=null;
@@ -25,7 +25,9 @@ function startQuotePolling(session,{env=process.env,fetchImpl=fetch,log=console,
         const current=await call('/current',{id:job.id,lease:job.lease});
         if(!current.current){log.log('PORTAL_CUSTOMER_QUOTE_SUPERSEDED');return;}
         await call('/complete',{id:job.id,lease:job.lease,reply,outcome,coverage,status,availabilityEvidence});
-        if(job.catalog&&outcome==='failed')nextPollMs=60000;
+        // Pause failed background catalog work, while still checking customer
+        // requests on the normal 3-second interval.
+        if(job.catalog&&outcome==='failed')catalogResumeAt=Date.now()+60000;
         log.log(job.catalog?'PORTAL_CATALOG_SEARCH_COMPLETED_'+provider.toUpperCase():'PORTAL_CUSTOMER_QUOTE_REPLY_SUBMITTED');
       }
     }catch{log.log('PORTAL_QUOTE_QUEUE_UNAVAILABLE');}
