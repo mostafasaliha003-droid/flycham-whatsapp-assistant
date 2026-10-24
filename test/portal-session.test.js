@@ -152,6 +152,40 @@ test('stops repeated authentication attempts after a rejected login', async () =
   assert.equal(tasks, 0);
   await f.session.stop();
 });
+test('ordinary sign-in navigation timeout preserves its type and retries once on initialization', async () => {
+  const f = fixture(),events=[];
+  f.expire();f.session.report=event=>events.push(event);f.session.pause=async()=>{};
+  let attempts=0,authenticated=false;
+  f.adapter.isAuthenticated=async()=>authenticated;
+  f.adapter.signIn=async()=>{if(++attempts===1)throw Object.assign(Error('private selector detail'),{name:'PortalError',stage:'LOGIN_FORM',reason:'TIMEOUT'});authenticated=true;};
+  await f.session.initialize();
+  assert.equal(attempts,2);assert.equal(f.session.authBlocked,false);assert.equal(f.session.isReady(),true);
+  assert.ok(events.includes('PORTAL_PROTECTED_REFRESH_RETRY_SCHEDULED'));assert.ok(!events.join(' ').includes('private'));await f.session.stop();
+});
+test('a network failure during reauthentication uses bounded heartbeat retry without blocking credentials', async () => {
+  const f=fixture();await f.session.initialize();f.expire();let attempts=0,authenticated=false;
+  f.adapter.isAuthenticated=async()=>authenticated;
+  f.adapter.signIn=async()=>{if(++attempts===1)throw Object.assign(Error('private network details'),{name:'PortalError',stage:'LOGIN_SUBMIT',reason:'NETWORK'});authenticated=true;};
+  f.advance(120000);assert.equal(await f.session.heartbeat(),false);assert.equal(f.session.authBlocked,false);assert.equal(f.session.isReady(),false);
+  f.advance(59999);assert.equal(await f.session.heartbeat(),false);assert.equal(attempts,1);
+  f.advance(1);assert.equal(await f.session.heartbeat(),true);assert.equal(attempts,2);assert.equal(f.session.isReady(),true);await f.session.stop();
+});
+test('two sign-in timeouts terminate the heartbeat retry and never execute protected work', async () => {
+  const f=fixture();await f.session.initialize();f.expire();let attempts=0,tasks=0;
+  f.adapter.signIn=async()=>{attempts++;throw Object.assign(Error('timeout'),{name:'TimeoutError'});};
+  f.adapter.refreshProtectedPage=async()=>{tasks++;};f.advance(120000);assert.equal(await f.session.heartbeat(),false);f.advance(60000);
+  await assert.rejects(f.session.heartbeat(),/timeout/);assert.equal(attempts,2);assert.equal(tasks,0);assert.equal(f.session.authBlocked,false);assert.equal(f.session.state,'unavailable');await f.session.stop();
+});
+test('verification timeout and typed security failures never retry sign-in despite a transient flag', async () => {
+  for(const reason of ['CAPTCHA','BAD_CREDENTIALS','VERIFICATION_REJECTED']){
+    const f=fixture();f.expire();let attempts=0;f.session.pause=async()=>{};
+    f.adapter.signIn=async()=>{attempts++;throw Object.assign(Error('supplier response'),{reason,transient:true});};
+    await assert.rejects(f.session.initialize(),/operator review/);assert.equal(attempts,1);assert.equal(f.session.authBlocked,true);await f.session.stop();
+  }
+  const f=fixture();f.expire();let verifies=0;f.session.pause=async()=>{};f.adapter.hasVerificationChallenge=async()=>true;
+  f.adapter.resumeVerification=async()=>{verifies++;throw Object.assign(Error('DOM timeout'),{name:'TimeoutError'});};
+  await assert.rejects(f.session.initialize(),/operator review/);assert.equal(verifies,1);assert.equal(f.stats().logins,0);assert.equal(f.session.authBlocked,true);await f.session.stop();
+});
 test('graceful stop drains current work and rejects new jobs', async () => {
   const f = fixture();
   let release, entered;

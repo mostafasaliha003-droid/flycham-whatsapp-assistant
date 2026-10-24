@@ -1,12 +1,19 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,schema}=require('../src/consultant-brain');
+const {understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,CONSULTANT_CLINE_MODEL,schema}=require('../src/consultant-brain');
 function decision(extra={}){
  const fields=Object.fromEntries(Object.entries(schema.properties.fields.properties).map(([k,v])=>[k,v.type==='array'?[]:null]));
  return {intent:'greeting',fields,question:null,option:null,consultant:{action:'answer',reply:'أهلًا وسهلًا فيك 🌷 كيف فيني ساعدك برحلتك؟',preferences:{priority:null,airportFlexibility:null},nextStep:'ask_missing',knowledgeQuery:null},...extra};
 }
 const env=()=>({ASSISTANT_AI_PROVIDER:'cline',ASSISTANT_AI_FALLBACK:'none',CLINE_API_KEY:'synthetic-'+Math.random()});
 const response=d=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(d)}}]})});
+function smokeDecision(index){
+ const d=decision();
+ if(index===2){d.intent='request';Object.assign(d.fields,{origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',adults:1,children:0,infants:0,weightKg:30});d.consultant.action='search';d.consultant.nextStep='search';d.consultant.reply=null;}
+ if(index===3){d.intent='change';d.fields.weightKg=30;d.consultant.action='amend';d.consultant.nextStep='search';d.consultant.reply=null;}
+ if(index===4){d.intent='request';Object.assign(d.fields,{adults:1,children:0,infants:0});d.consultant.action='search';d.consultant.nextStep='search';d.consultant.reply=null;}
+ return d;
+}
 test('consultant returns compatible typed legacy fields and nullable preference patch',()=>{
  const d=decision();assert.deepEqual(validateConsultantDecision(d),d);d.consultant.preferences.priority='cheapest';d.consultant.preferences.airportFlexibility='flexible';assert.equal(validateConsultantDecision(d).consultant.preferences.priority,'cheapest');
  for(const mutate of [x=>x.consultant.preferences.discount=true,x=>x.consultant.action='shell',x=>x.consultant.nextStep='pay',x=>x.fields.origin={city:'Damascus'},x=>x.consultant.preferences.priority='profitable']){const x=decision();mutate(x);assert.throws(()=>validateConsultantDecision(x));}
@@ -39,21 +46,21 @@ test('provider tool_calls and malformed structured decisions fail without second
  await assert.rejects(understandConsultant('مرحبا',{}, {env:env(),fetchImpl:async()=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'{}',tool_calls:[{function:{name:'send_money'}}]}}]})})}),/NLU_INCOMPLETE/);
  await assert.rejects(understandConsultant('مرحبا',{}, {env:env(),fetchImpl:async()=>response({intent:'greeting',fields:{}})}),/NLU_INVALID_SCHEMA/);
 });
-test('smoke performs exactly two synthetic cases and returns booleans only',async()=>{
+test('smoke performs exactly four synthetic cases and checks context patches as well as complete search',async()=>{
  const requests=[];
  const result=await runConsultantSmoke({env:env(),fetchImpl:async(url,opt)=>{
-  requests.push({url,body:JSON.parse(opt.body)});const d=decision();
-  if(requests.length===2){d.intent='request';Object.assign(d.fields,{origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',adults:1,children:0,infants:0,weightKg:30});d.consultant.action='search';d.consultant.nextStep='search';d.consultant.reply=null;}
-  return response(d);
+  requests.push({url,body:JSON.parse(opt.body)});return response(smokeDecision(requests.length));
  }});
- assert.deepEqual(result,{greeting:true,search:true,ran:true});assert.equal(requests.length,2);assert.ok(requests.every(x=>x.url==='https://api.cline.bot/api/v1/chat/completions'));assert.ok(requests[1].body.messages[1].content.includes('2090'));
+ assert.deepEqual(result,{greeting:true,search:true,context:true,ran:true});assert.equal(requests.length,4);assert.ok(requests.every(x=>x.url==='https://api.cline.bot/api/v1/chat/completions'&&x.body.model===CONSULTANT_CLINE_MODEL));assert.ok(requests[1].body.messages[1].content.includes('2090'));
+ const amendment=JSON.parse(requests[2].body.messages[1].content),single=JSON.parse(requests[3].body.messages[1].content);
+ assert.equal(amendment.context.request.passengers.adults,1);assert.equal(amendment.context.request.baggageRequest.checkedWeightKg,20);assert.equal(single.context.request.tripType,'one_way');assert.equal(single.context.awaiting,'passengers');
 });
 test('smoke skips without Cline and preserves provider cooldown after first fails',async()=>{
  let calls=0;
- assert.deepEqual(await runConsultantSmoke({env:{},fetchImpl:async()=>{calls++;throw Error('must not call');}}),{greeting:false,search:false,ran:false});assert.equal(calls,0);
- // Both logical cases are contained; a failed provider's circuit is respected.
+ assert.deepEqual(await runConsultantSmoke({env:{},fetchImpl:async()=>{calls++;throw Error('must not call');}}),{greeting:false,search:false,context:false,ran:false});assert.equal(calls,0);
+ // All logical cases are contained; a failed provider's circuit is respected.
  const result=await runConsultantSmoke({env:env(),fetchImpl:async()=>{calls++;return response(calls===1?{invalid:true}:decision());}});
- assert.equal(calls,1);assert.deepEqual(result,{greeting:false,search:false,ran:true});
+ assert.equal(calls,1);assert.deepEqual(result,{greeting:false,search:false,context:false,ran:true});
 });
 test('consultant explicitly extends only its Cline transport budget, preserving legacy body and timeout',async()=>{
  const timeout=AbortSignal.timeout,seen=[],bodies=[];AbortSignal.timeout=ms=>{seen.push(ms);return new AbortController().signal;};
@@ -61,14 +68,29 @@ test('consultant explicitly extends only its Cline transport budget, preserving 
   await understandConsultant('مرحبا',{}, {env:env(),fetchImpl:async(url,opt)=>{bodies.push(JSON.parse(opt.body));return response(decision());}});
   const {understand}=require('../src/assistant-nlu');const d=decision();delete d.consultant;
   await understand('مرحبا',{}, {env:env(),fetchImpl:async(url,opt)=>{bodies.push(JSON.parse(opt.body));return response(d);}});
-  assert.deepEqual(seen,[35000,20000]);assert.ok(bodies.every(b=>b.max_tokens===4096&&b.temperature===0&&b.model==='cline-pass/qwen3.8-max'));
+  assert.deepEqual(seen,[35000,20000]);assert.ok(bodies.every(b=>b.max_tokens===4096&&b.temperature===0));assert.equal(bodies[0].model,CONSULTANT_CLINE_MODEL);assert.equal(bodies[1].model,'cline-pass/qwen3.8-max');
  }finally{AbortSignal.timeout=timeout;}
 });
 test('smoke starts second case only after first completes and uses an advanced clock',async()=>{
  const dateNow=Date.now,base=Date.parse('2026-10-25T19:59:50Z'),seen=[];let clock=base,release;Date.now=()=>clock;
  const held=new Promise(resolve=>{release=resolve;});
  try{
-  const running=runConsultantSmoke({env:env(),now:base,fetchImpl:async(url,opt)=>{seen.push(JSON.parse(JSON.parse(opt.body).messages[1].content));if(seen.length===1){await held;clock+=40000;}const d=decision();if(seen.length===2){d.intent='request';Object.assign(d.fields,{origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',adults:1,children:0,infants:0,weightKg:30});d.consultant.action='search';d.consultant.reply=null;}return response(d);}});
-  await new Promise(resolve=>setImmediate(resolve));assert.equal(seen.length,1);release();assert.deepEqual(await running,{greeting:true,search:true,ran:true});assert.equal(seen[0].todayDubai,'2026-10-25');assert.equal(seen[1].todayDubai,'2026-10-26');
+  const running=runConsultantSmoke({env:env(),now:base,fetchImpl:async(url,opt)=>{seen.push(JSON.parse(JSON.parse(opt.body).messages[1].content));if(seen.length===1){await held;clock+=40000;}return response(smokeDecision(seen.length));}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(seen.length,1);release();assert.deepEqual(await running,{greeting:true,search:true,context:true,ran:true});assert.equal(seen.length,4);assert.equal(seen[0].todayDubai,'2026-10-25');assert.equal(seen[1].todayDubai,'2026-10-26');
  }finally{release();Date.now=dateNow;}
+});
+test('consultant-only model override is allowlisted and leaves legacy environment and model unchanged',async()=>{
+ const configured={...env(),CLINE_MODEL:'cline-pass/qwen3.7-max',CLINE_CONSULTANT_MODEL:'cline-pass/qwen3.7-plus'},models=[];
+ await understandConsultant('مرحبا',{}, {env:configured,fetchImpl:async(url,opt)=>{models.push(JSON.parse(opt.body).model);return response(decision());}});
+ const {understand}=require('../src/assistant-nlu');const legacy=decision();delete legacy.consultant;
+ await understand('مرحبا',{}, {env:configured,fetchImpl:async(url,opt)=>{models.push(JSON.parse(opt.body).model);return response(legacy);}});
+ assert.deepEqual(models,['cline-pass/qwen3.7-plus','cline-pass/qwen3.7-max']);assert.equal(configured.CLINE_MODEL,'cline-pass/qwen3.7-max');
+ await assert.rejects(understandConsultant('مرحبا',{}, {env:{...env(),CLINE_CONSULTANT_MODEL:'unsupported/model'},fetchImpl:async()=>{throw Error('must not call');}}),/NLU_MODEL_NOT_ALLOWED/);
+});
+test('context smoke cannot pass when the model changes the route or re-asks a known fact',async()=>{
+ for(const invalidCase of [3,4]){
+  let calls=0;
+  const result=await runConsultantSmoke({env:env(),fetchImpl:async()=>{const d=smokeDecision(++calls);if(calls===invalidCase){if(calls===3)d.fields.origin='دبي';else{d.intent='clarify';d.question='بدك ذهاب ولا ذهاب وعودة؟';d.consultant.action='clarify';d.consultant.reply=d.question;}}return response(d);}});
+  assert.deepEqual(result,{greeting:true,search:true,context:false,ran:true});assert.equal(calls,4);
+ }
 });

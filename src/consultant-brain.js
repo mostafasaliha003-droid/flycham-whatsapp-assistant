@@ -5,6 +5,7 @@
 const {schema:legacySchema,validateDecision,safeContext,aiConfigured,aiProvider}=require('./assistant-nlu');
 const {routeDecision}=require('./assistant-providers');
 const {airportCode}=require('./airports');
+const CONSULTANT_CLINE_MODEL='cline-pass/glm-5.3-flash';
 const ACTIONS=Object.freeze(['search','clarify','status','amend','compare','knowledge','handoff','answer','cancel']);
 const NEXT_STEPS=Object.freeze(['ask_missing','search','await_results','compare_options','explain_options','confirm_choice','handoff','research','none']);
 const PRIORITIES=Object.freeze(['cheapest','time','airport','balanced']);
@@ -66,17 +67,22 @@ async function understandConsultant(text,context={}, {env=process.env,fetchImpl=
  const source=context.consultantMemory||{},objections=(Array.isArray(source.objections)?source.objections:[]).map(v=>typeof v==='string'?v:v?.type).map(v=>({waiting:'delay',considering:'undecided'})[v]||v),next=({await_verified_offers:'await_results',choose_offer:'confirm_choice',confirm_booking_intent:'confirm_choice',await_staff:'handoff'})[source.lastNextStep]||source.lastNextStep;
  const memory={preferences,stage:STAGES.has(source.stage)?source.stage:null,objections:[...new Set(objections.filter(v=>OBJECTIONS.has(v)))].slice(-8),lastNextStep:NEXT_STEPS.includes(next)?next:null};
  const payload={todayDubai:new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai'}).format(new Date(now)),context:{...safe,preferences,consultantMemory:memory},text:cleanText};
- return routeDecision({env,fetchImpl,now,timeoutMs:35000,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
+ // Consultant planning has its own allowlisted Cline model. Do not alter the
+ // caller's environment or legacy extraction's CLINE_MODEL setting. Provider
+ // validation, circuit isolation and quota-only fallback remain authoritative.
+ const providerEnv=aiProvider(env)==='cline'?{...env,CLINE_MODEL:consultantModel(env)}:env;
+ return routeDecision({env:providerEnv,fetchImpl,now,timeoutMs:35000,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
 }
-// Two bounded synthetic cases exercise the configured understanding provider.
+function consultantModel(env=process.env){return env.CLINE_CONSULTANT_MODEL||CONSULTANT_CLINE_MODEL;}
+// Four bounded synthetic cases exercise the configured understanding provider.
 // Nothing is enqueued, no customer state is used, and only booleans escape.
 async function runConsultantSmoke({env=process.env,fetchImpl=fetch,now=Date.now()}={}){
- if(aiProvider(env)!=='cline'||!env.CLINE_API_KEY)return {greeting:false,search:false,ran:false};
+ if(aiProvider(env)!=='cline'||!env.CLINE_API_KEY)return {greeting:false,search:false,context:false,ran:false};
  // Keep startup probes serial: a provider may throttle concurrent generations.
  // Advance the logical timestamp after the first case, so circuit bookkeeping
  // does not reuse a timestamp captured before a potentially long request.
  const clockStart=Date.now(),freshNow=()=>now+Math.max(0,Date.now()-clockStart);
- let greeting=false,search=false;
+ let greeting=false,search=false,amendment=false,singleAdult=false;
  try{
   const d=await understandConsultant('مرحبا، كيفك؟',{status:'idle'},{env,fetchImpl,now});
   greeting=Boolean(d?.intent==='greeting'&&d.consultant?.action==='answer'&&(d.consultant.reply===null||canUseReply(d.consultant.reply,{status:'idle'})));
@@ -84,8 +90,22 @@ async function runConsultantSmoke({env=process.env,fetchImpl=fetch,now=Date.now(
  try{
   const d=await understandConsultant('بدي رحلة ذهاب فقط من الشارقة إلى دمشق بتاريخ 11-11-2090، شخص بالغ واحد لحالي، وزن ثلاثين كيلو.',{status:'collecting'},{env,fetchImpl,now:freshNow()});
   const f=d?.fields;
-  search=Boolean(d?.intent==='request'&&d.consultant?.action==='search'&&airportCode(f?.origin)==='SHJ'&&airportCode(f?.destination)==='DAM'&&f?.departureDate==='2090-11-11'&&f?.tripType==='one_way'&&f?.adults===1&&f?.children===0&&f?.infants===0&&f?.weightKg===30);
+  search=Boolean(d?.intent==='request'&&d.consultant?.action==='search'&&d.question===null&&airportCode(f?.origin)==='SHJ'&&airportCode(f?.destination)==='DAM'&&f?.departureDate==='2090-11-11'&&f?.tripType==='one_way'&&f?.returnDate===null&&f?.rangeStart===null&&f?.rangeEnd===null&&f?.adults===1&&f?.children===0&&f?.infants===0&&f?.weightKg===30&&f?.ages.length===0);
  }catch{}
- return {greeting,search,ran:true};
+ const knownRequest={origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',baggageRequest:{checkedWeightKg:20}};
+ // A patch may repeat an unchanged known fact, but cannot replace it or invent
+ // return dates, a different date range or a different party.
+ const preservesKnownTrip=f=>Boolean(f&&(f.origin===null||airportCode(f.origin)==='SHJ')&&(f.destination===null||airportCode(f.destination)==='DAM')&&(f.departureDate===null||f.departureDate==='2090-11-11')&&(f.tripType===null||f.tripType==='one_way')&&f.returnDate===null&&f.rangeStart===null&&f.rangeEnd===null&&f.stayNights===null&&f.ages.length===0&&f.excludedDates.length===0);
+ try{
+  const d=await understandConsultant('نفس الرحلة ونفس التاريخ، بس خلّي الوزن ثلاثين كيلو.',{status:'searching',request:{...knownRequest,passengers:{adults:1,children:0,infants:0,ages:[]}}},{env,fetchImpl,now:freshNow()});
+  const f=d?.fields;
+  amendment=Boolean(d?.intent==='change'&&d.consultant?.action==='amend'&&d.question===null&&preservesKnownTrip(f)&&f.weightKg===30&&(f.adults===null||f.adults===1)&&(f.children===null||f.children===0)&&(f.infants===null||f.infants===0));
+ }catch{}
+ try{
+  const d=await understandConsultant('شخص واحد لحالي',{status:'collecting',request:knownRequest,awaiting:'passengers',lastQuestion:'كم شخص مسافر؟',questions:{passengers:{field:'passengers',answered:false}}},{env,fetchImpl,now:freshNow()});
+  const f=d?.fields;
+  singleAdult=Boolean(['request','change'].includes(d?.intent)&&d?.consultant?.action==='search'&&d.question===null&&preservesKnownTrip(f)&&f.adults===1&&f.children===0&&f.infants===0&&(f.weightKg===null||f.weightKg===20));
+ }catch{}
+ return {greeting,search,context:amendment&&singleAdult,ran:true};
 }
-module.exports={understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,schema,ACTIONS,NEXT_STEPS};
+module.exports={understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,consultantModel,CONSULTANT_CLINE_MODEL,schema,ACTIONS,NEXT_STEPS};
