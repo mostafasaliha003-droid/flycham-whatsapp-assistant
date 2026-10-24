@@ -1,0 +1,4 @@
+'use strict';const test=require('node:test'),assert=require('node:assert/strict');
+const {knownTripFollowup}=require('../src/travel-followups'),{QuoteJobs}=require('../src/quote-jobs');
+test('customer exact Arabic-only retry preserves trip facts and needs no model',()=>{const r=knownTripFollowup('عيد البحث بس بدي طيران العربية',{origin:'أبوظبي',destination:'دمشق',departureRange:{start:'2090-12-01',end:'2090-12-31'}});assert.deepEqual(r.fields,{provider:'airarabia',providerExclusive:true});});
+test('production queue waits for disconnected or busy provider rather than finalizing unpriced',()=>{const q=new QuoteJobs();const p=q.enqueueComparison('test',{origin:'أبوظبي',destination:'دمشق',departureDate:'2090-12-01',tripType:'one_way',passengers:{adults:1,children:0,infants:0}},{providers:['airarabia'],waitForProviders:true});assert.equal(p.ready,false);assert.equal(p.pending.length,1);assert.ok(q.claim('airarabia').id);});

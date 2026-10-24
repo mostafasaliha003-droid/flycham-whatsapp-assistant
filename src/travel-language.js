@@ -22,7 +22,9 @@ function languagePatch(raw,awaiting){
  if(/بدون\s*(?:وزن|شنط[هة]|امتع[هة])|بلا\s*(?:وزن|شنط[هة])/.test(t))out.weightKg=0;
  if(/ارخص/.test(t)&&/(?:20|٢٠|عشرين|بدون وزن|بدون شنط)/.test(t))out.provider='airarabia';
  if(/(?:اي|ايا)\s*شركه|الشركتين|كل\s*الشركات|ما\s*بتفرق\s*(?:معي\s*)?الشركه/.test(t))out.providerExclusive=false;
- else if(/(?:حصرا|بس|فقط)(?:\s+(?:على|مع))?\s*(?:فلاي\s*شام|العربي[هة])|(?:فلاي\s*شام|العربي[هة])\s*(?:حصرا|بس|فقط)/.test(t))out.providerExclusive=true;
+ else if(/(?:حصرا|بس|فقط)(?:\s+(?:بدي|بدنا|اريد))?(?:\s+(?:على|مع|طيران))?\s*(?:فلاي\s*شام|العربي[هة])|(?:فلاي\s*شام|العربي[هة])\s*(?:حصرا|بس|فقط)/.test(t))out.providerExclusive=true;
+ if(/العربي[هة]|air\s*arabia/.test(t))out.provider='airarabia';
+ else if(/فلاي\s*شام|fly\s*cham/.test(t))out.provider='flycham';
  return out;
 }
 function applyDefaultBaggage(request){if(!request.baggageRequest)request.baggageRequest={checkedWeightKg:30,source:'default30',requestedByCustomer:false};return request;}

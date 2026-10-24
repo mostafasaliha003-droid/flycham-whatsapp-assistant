@@ -22,7 +22,7 @@ class QuoteJobs {
     const id=randomUUID();this.jobs.set(id,{recipient,request:structuredClone(request),expires:this.now()+this.ttl,state:'pending'});this.save();return id;
   }
   cancel(recipient){for(const [id,j]of this.jobs)if(j.recipient===recipient)this.jobs.delete(id);for(const [id,c]of this.comparisons)if(c.recipient===recipient)this.comparisons.delete(id);this.revisions.set(recipient,(this.revisions.get(recipient)||0)+1);this.save();}
-  enqueueComparison(recipient,request,{providers=PROVIDERS,seedOffers=[],allowAlternatives=true,compareFlyChamAirports=false}={}){
+  enqueueComparison(recipient,request,{providers=PROVIDERS,seedOffers=[],allowAlternatives=true,compareFlyChamAirports=false,waitForProviders=false}={}){
     this.prune();providers=[...new Set(providers)];if(!providers.length||providers.some(p=>!PROVIDERS.includes(p)))throw Error('QUEUE_PROVIDER_INVALID');
     const dated=expandLiveRequests(request),airportRequests=compareFlyChamAirports&&providers.includes('flycham')?flyChamAirportRequests(request):[],needed=dated.length*(providers.length+airportRequests.length);
     if(compareFlyChamAirports)providers.sort((a,b)=>Number(b==='flycham')-Number(a==='flycham'));
@@ -30,7 +30,7 @@ class QuoteJobs {
     const ownComparisons=[...this.comparisons.values()].filter(c=>c.recipient===recipient).length;
     if(this.jobs.size-own+needed>300||this.comparisons.size-ownComparisons>=100)throw Error('QUEUE_UNAVAILABLE');
     this.cancel(recipient);
-    const id=randomUUID(),revision=this.revisions.get(recipient),parent={id,recipient,revision,request:structuredClone(request),providers,children:[],phase:'exact',createdAt:this.now(),deadline:this.now()+this.comparisonTimeoutMs,expires:this.now()+this.ttl,allowAlternatives,compareFlyChamAirports,version:0,nextReference:1,deliveredVersion:-1,delivered:false};
+    const id=randomUUID(),revision=this.revisions.get(recipient),parent={id,recipient,revision,request:structuredClone(request),providers,children:[],phase:'exact',createdAt:this.now(),deadline:this.now()+this.comparisonTimeoutMs,expires:this.now()+this.ttl,allowAlternatives,compareFlyChamAirports,waitForProviders,version:0,nextReference:1,deliveredVersion:-1,delivered:false};
     this.comparisons.set(id,parent);
     if(airportRequests.length)parent.deadline=this.now()+Math.max(this.comparisonTimeoutMs,20*60*1000);
     for(const airportRequest of airportRequests)for(const date of expandLiveRequests(airportRequest)){
@@ -46,7 +46,7 @@ class QuoteJobs {
   addComparisonChild(parent,request,phase,delta=0,seeds=[]){
     const id=randomUUID(),provider=request.provider,child={id,provider,phase,delta,request,status:'pending',offers:[]};parent.children.push(child);
     if(seeds.length){for(const o of new Map(seeds.map(o=>[offerKey(o),o])).values())if(this.canAddComparisonOffer(parent,provider))child.offers.push({...o,reference:parent.nextReference++});child.status=child.offers.length?'partial':'unverified';return child;}
-    if(!this.ready(provider)||this.jobs.size>=300){child.status='unverified';return child;}
+    if((!parent.waitForProviders&&!this.ready(provider))||this.jobs.size>=300){child.status='unverified';return child;}
     this.jobs.set(id,{recipient:parent.recipient,request:structuredClone(request),expires:parent.expires,state:'pending',comparisonId:parent.id,revision:parent.revision,comparisonPhase:phase});return child;
   }
   canAddComparisonOffer(parent,provider){const all=parent.children.flatMap(c=>c.offers);return all.length<80&&all.filter(o=>o.provider===provider).length<(parent.providers.length>1?40:80);}

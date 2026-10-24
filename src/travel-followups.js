@@ -8,6 +8,8 @@ function knownTripFollowup(raw,request,now=Date.now()){
  if(!request)return null;
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
  if(/^(?:(?:انا|بدي|بدنا|قصدي)\s+)?من\s+سوري[اةه]$/.test(t))return{fields:{},sameDates:true};
+ const carrier=languagePatch(raw);
+ if(carrier.providerExclusive===true&&carrier.provider&&/(?:عيد|اعد|ابحث|بدي|بس|فقط|حصرا)/.test(t)&&!naturalDate(t,now).range&&!/\d|من |الى |كيلو|شخص/.test(t))return {fields:{provider:carrier.provider,providerExclusive:true},sameDates:true};
  const originCity=city(t);
  if(request.originCountry==='سوريا'&&!request.origin&&['دمشق','حلب','اللاذقية'].includes(originCity))return{fields:{origin:originCity,destination:request.destination},sameDates:true};
  const period=naturalDate(t,now);
