@@ -38,7 +38,12 @@ function parseDecision(output,validate,schema){
   }
   for(const k of ['question','option'])if(!Object.hasOwn(d,k))d[k]=null;
  }
- try{return validate(d);}catch{throw Error('NLU_INVALID_SCHEMA');}
+ try{return validate(d);}catch(error){
+  // Fixed validation classifications only; never log the generated text or
+  // customer fields. This distinguishes a rejected claim from bad structure.
+  const allowed=new Set(['CONSULTANT_INVALID','CONSULTANT_INVALID_PREFERENCES','CONSULTANT_UNSAFE_REPLY','CONSULTANT_INVALID_QUERY','CONSULTANT_INVALID_ACTION','CONSULTANT_ACTION_INTENT_MISMATCH','CONSULTANT_CLARIFICATION_REQUIRED','CONSULTANT_QUESTION_MISMATCH']);
+  throw Error('NLU_INVALID_SCHEMA'+(allowed.has(error?.message)?'_'+error.message:''));
+ }
 }
 async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision,timeoutMs=20000}){
  const model=modelFor(p,env),jsonInstructions=instructions+' Output one JSON object, no markdown, no reasoning. JSON schema: '+JSON.stringify(schema);
