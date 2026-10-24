@@ -3,7 +3,10 @@ const {createHash}=require('node:crypto');
 const GEMMA_MODEL='gemma-4-26b-a4b-it';
 const CLINE_MODEL='cline-pass/qwen3.8-max';
 const CLINE_MODELS=new Set(['cline-pass/qwen3.8-max','cline-pass/qwen3.7-max','cline-pass/qwen3.7-plus','cline-pass/glm-5.3','cline-pass/glm-5.3-flash','cline-pass/kimi-k3','cline-pass/deepseek-v4.1-flash']);
+const REPAIR_HINT='The previous response did not satisfy the JSON/schema contract. Generate a fresh decision for the original input. Return exactly one JSON object matching the supplied schema, without markdown, commentary or extra keys. Dates must be ISO YYYY-MM-DD in date fields only. Use null for unchanged nullable fields and arrays for array fields. Keep action and intent compatible; operational replies and complete-search questions must be null. Do not invent facts or repeat a known question.';
 const circuits=new Map();
+function clineBudget(timeoutMs){return Number.isFinite(timeoutMs)?Math.max(20000,Math.min(35000,Math.trunc(timeoutMs))):20000;}
+function invalidDecision(error){return /^NLU_INVALID_(?:JSON|OUTPUT|SCHEMA(?:_[A-Z0-9_]+)?)$/.test(error?.message||'');}
 function aiProvider(env=process.env){return env.ASSISTANT_AI_PROVIDER||(env.CLINE_API_KEY?'cline':env.GEMINI_API_KEY?'gemma':'openai');}
 function keyFor(p,env){return p==='cline'?env.CLINE_API_KEY:p==='gemma'?env.GEMINI_API_KEY:p==='openai'?env.OPENAI_API_KEY:null;}
 function fallbackFor(env){return aiProvider(env)==='cline'&&env.ASSISTANT_AI_FALLBACK!=='none'?'gemma':null;}
@@ -45,7 +48,7 @@ function parseDecision(output,validate,schema){
   throw Error('NLU_INVALID_SCHEMA'+(allowed.has(error?.message)?'_'+error.message:''));
  }
 }
-async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision,timeoutMs=20000}){
+async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision,timeoutMs=20000,remainingMs}){
  const model=modelFor(p,env),jsonInstructions=instructions+' Output one JSON object, no markdown, no reasoning. JSON schema: '+JSON.stringify(schema);
  let url,headers,body;
  if(p==='cline'){
@@ -60,7 +63,7 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
  }else throw Error('NLU_PROVIDER_NOT_ALLOWED');
  // Only an explicit application-side consultant option may extend Cline's
  // request budget. Legacy extraction and other providers retain twenty seconds.
- const requestTimeout=p==='cline'&&Number.isFinite(timeoutMs)?Math.max(20000,Math.min(35000,Math.trunc(timeoutMs))):20000;
+ const requestTimeout=p==='cline'?(Number.isFinite(remainingMs)?Math.max(1,Math.min(35000,Math.trunc(remainingMs))):clineBudget(timeoutMs)):20000;
  let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(requestTimeout),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
  if(!response.ok)await failHTTP(response,p,now);
  const data=await response.json();let output;
@@ -80,8 +83,31 @@ async function attempt(p,options){
  const state=stateFor(p,options.env),now=options.now;
  if(state.until>now||state.probing){const error=Error('NLU_COOLDOWN');error.quotaExhausted=state.quotaExhausted;throw error;}
  const probe=state.failures>0;if(probe)state.probing=true;
- try{const decision=await callProvider(p,options);state.failures=0;state.until=0;state.quotaExhausted=false;console.log('ASSISTANT_AI_OK_'+p.toUpperCase());return decision;}
- catch(error){state.failures++;state.quotaExhausted=error.quotaExhausted===true;state.until=now+(error.retryMs||(error.message==='NLU_TIMEOUT'?3000:30000));throw error;}
+ const repair=p==='cline'&&options.repairInvalid===true,startedAt=Date.now(),budget=clineBudget(options.timeoutMs);
+ const generate=async repairing=>{
+  if(!repair)return callProvider(p,options);
+  const remainingMs=budget-Math.max(0,Date.now()-startedAt);
+  if(remainingMs<=0){const error=Error('NLU_TIMEOUT');error.turnBudgetExhausted=true;throw error;}
+  return callProvider(p,{...options,remainingMs,instructions:options.instructions+(repairing?' '+REPAIR_HINT:'')});
+ };
+ try{
+  let decision;
+  try{decision=await generate(false);}
+  catch(error){
+   if(!repair||!invalidDecision(error))throw error;
+   console.log('ASSISTANT_AI_REPAIR_CLINE');
+   decision=await generate(true);
+  }
+  state.failures=0;state.until=0;state.quotaExhausted=false;console.log('ASSISTANT_AI_OK_'+p.toUpperCase());return decision;
+ }
+ catch(error){
+  // A rejected turn is not evidence of a provider outage. Other customers
+  // may try immediately; real transport/auth/quota failures still open the
+  // existing circuit. Exhausting the shared turn budget before a retry also
+  // requires no provider-wide penalty.
+  if(!(repair&&(invalidDecision(error)||error.turnBudgetExhausted===true))){state.failures++;state.quotaExhausted=error.quotaExhausted===true;state.until=now+(error.retryMs||(error.message==='NLU_TIMEOUT'?3000:30000));}
+  throw error;
+ }
  finally{if(probe)state.probing=false;}
 }
 async function routeDecision(options){
