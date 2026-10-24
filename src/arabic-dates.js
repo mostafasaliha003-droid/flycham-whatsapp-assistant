@@ -25,7 +25,7 @@ function naturalDate(text,now=Date.now()){
    return {dates:[],range:{start:iso(start)<day?day:iso(start),end:iso(end),kind:'explicit_months'}};
  }
  const next=/(?:الجاي|القادم|المقبل|اللي بعده)/.test(t);
- if(/(?:هالاسبوع|هل اسبوع|هال اسبوع|بهل اسبوع|هذا الاسبوع|هال اسبوع|الاسبوع)/.test(t)){
+ if(/(?:هالاسبوع|هل اسبوع|هال اسبوع|بهل اسبوع|هذا الاسبوع|هال اسبوع|الاسبوع|اسبوع\s+(?:الجاي|القادم|المقبل))/.test(t)){
    // Monday-start calendar week, Dubai dates. Never include past days.
    const monday=addDays(today,-((today.getUTCDay()+6)%7));
    const start=next?addDays(monday,7):today,end=addDays(monday,next?13:6);

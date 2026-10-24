@@ -44,3 +44,9 @@ test('complex amendments still use the language model',async()=>{
 test('a real origin change during searching is still applied and keeps the known dates',async()=>{
  const {e}=make({status:'searching'});const result=await e.handle('followup','بدي من دبي',{now});assert.equal(result.complete,true);assert.equal(result.request.origin,'دبي');assert.equal(result.request.destination,'دمشق');assert.equal(result.request.departureDate,'2026-11-18');
 });
+for(const text of ['بالأسبوع القادم','اسبوع الجاي','فيك تشيك لي من ابوظبي إلى سوريا، بالأسبوع القادم'])test('week amendment preserves Abu Dhabi and the known Syrian city without NLU: '+text,async()=>{
+ const {e,calls}=make();await e.prepare('followup',text,{now});const r=await e.handle('followup',text,{now});assert.equal(r.complete,true);assert.equal(calls(),0);assert.equal(r.request.origin,'أبوظبي');assert.equal(r.request.destination,'دمشق');assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.start,'2026-10-26');assert.equal(r.request.departureRange.end,'2026-11-01');assert.equal(r.request.passengers.adults,1);assert.equal(r.request.baggageRequest.checkedWeightKg,30);
+});
+test('asking available dates asks only the missing period, then uses the next week',async()=>{
+ const {e}=make();const a=await e.handle('followup','اي تواريخ موجود ؟ من ابوظبي',{now});assert.equal(a.complete,false);assert.match(a.reply,/أي فترة/);assert.doesNotMatch(a.reply,/18-11|الشارقة/);const b=await e.handle('followup','بالأسبوع القادم',{now});assert.equal(b.complete,true);assert.equal(b.request.destination,'دمشق');assert.equal(b.request.origin,'أبوظبي');assert.equal(b.request.departureRange.start,'2026-10-26');
+});

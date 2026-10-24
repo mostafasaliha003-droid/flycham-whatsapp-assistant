@@ -1,12 +1,17 @@
 'use strict';
-const {normalize}=require('./arabic-dates');
-const {city}=require('./travel-language');
+const {normalize,naturalDate}=require('./arabic-dates');
+const {city,languagePatch}=require('./travel-language');
 
 // Resolve short references against saved facts before asking the model again.
 // This recognises a request to CHECK availability, never availability itself.
-function knownTripFollowup(raw,request){
+function knownTripFollowup(raw,request,now=Date.now()){
  if(!request)return null;
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
+ const period=naturalDate(t,now);
+ if(period.range&&request.origin&&request.destination&&!/\d|كيلو|شخص|بالغ|طفل|رضيع|وزن|تثبيت|حجز|الغاء|(?:^|\s)(?:لا|مو|مش)(?:\s|$)|طلب\s+(?:تاني|ثاني)|فلاي|العربي/.test(t)){
+  const route=languagePatch(raw);
+  return{fields:{origin:route.origin||request.origin,destination:route.destination||request.destination,rangeStart:period.range.start,rangeEnd:period.range.end},sameDates:false};
+ }
  const lead='(?:(?:اي|نعم|تمام|طيب|لو سمحت|بدي|بدنا|اريد|في|فيه|موجود|عندكن|عندك|هل|رحله|رحلة|رحلات|طيران)\\s+)*';
  const same=new RegExp('^'+lead+'(?:على\\s+)?نفس\\s+(?:التواريخ|تواريخ|التاريخ|تاريخ|الموعد|موعد|الايام|ايام|الفتر[هة]|الرحل[هة]|التفاصيل)(?:\\s+(?:نفسها|بس|تماما))?$');
  const retry=/^(?:اعد|عيد|كرر)\s+(?:البحث|التحقق)(?:\s+على\s+نفس\s+(?:التفاصيل|التواريخ|التاريخ|الرحل[هة]))?$/;
@@ -26,7 +31,7 @@ function knownTripFollowup(raw,request){
   if(destination)return{fields:{origin,destination},sameDates:true};
   // A country reference can retain an already known Syrian destination;
   // a new request that says only Syria still needs its destination city.
-  if(/^سوري[اةه]$/.test(to[1])&&['دمشق','حلب','اللاذقية'].includes(city(request.destination)))return{fields:{origin},sameDates:true};
+  if(/^سوري[اةه]$/.test(to[1])&&['دمشق','حلب','اللاذقية'].includes(city(request.destination)))return{fields:{origin,destination:request.destination},sameDates:true};
  }
  return null;
 }

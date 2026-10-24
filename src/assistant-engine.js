@@ -59,7 +59,7 @@ class AssistantEngine{
  async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
   if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
   const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
-  if(!s.pendingQuotedOffer&&knownTripFollowup(text,s.base?.request))return;
+  if(!s.pendingQuotedOffer&&knownTripFollowup(text,s.base?.request,now))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
   const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
@@ -88,10 +88,15 @@ class AssistantEngine{
    s.history.push({role:'assistant',text:reply});s.history=s.history.slice(-24);this.save(id,s);return{complete:false,reply};
   };
   if(s.humanOwned)return say('المحادثة الآن بمتابعة موظف الحجوزات.');
+  if(s.base?.request&&/(?:اي|شو)\s*(?:تواريخ|مواعيد)|(?:تواريخ|مواعيد)\s*(?:متاح[هة]|موجود[هة]?)/.test(t)&&!naturalDate(t,now).range&&!/\d|حجز|تثبيت|الغاء/.test(t)){
+   const next=legacy.exportSession(id),route=require('./travel-language').languagePatch(text);
+   Object.assign(next.request,route);next.request.departureDate=null;next.request.departureRange=null;next.submitted=false;next.awaiting='departureDate';delete next.proposal;legacy.importSession(id,next);s.base=next;s.status='collecting';
+   return {...say(`أكيد 🌷 بشيكلك التواريخ المتاحة من ${next.request.origin} إلى ${next.request.destination}. أي فترة بتناسبك: هالأسبوع، الأسبوع الجاي، أو الشهر الجاي؟`),cancel:true};
+  }
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
-  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?knownTripFollowup(text,s.base?.request):null;
+  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?knownTripFollowup(text,s.base?.request,now):null;
   if(followup&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
   if(!followup)try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
