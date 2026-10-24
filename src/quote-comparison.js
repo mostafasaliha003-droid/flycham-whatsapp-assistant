@@ -54,7 +54,7 @@ function completionStatus(data={},offers=[],request={}){
  if(supplied==='no_flights'&&data.availabilityEvidence==='supplier-explicit')return 'no_flights';
  return 'unverified';
 }
-function statusText(status){return {available:'سعر متأكد',partial:'تأكدت عروض؛ بقية التواقيت لم يكتمل فحصها',no_flights:'لم تظهر رحلات في نتائج المصدر لهذا التاريخ',sold_out:'المصدر يؤكد عدم توفر مقاعد لهذا الطلب',auth_required:'تعذر فحص الشركة الآن لأن البوابة تحتاج تحقق دخول',unverified:'لم يتأكد عرض الشركة الآن'}[status]||'الفحص جارٍ';}
+function statusText(status){return {available:'سعر متأكد',partial:'تأكدت عروض؛ بقية التواقيت لم يكتمل فحصها',no_flights:'راجعت الفترة المطلوبة؛ ما في رحلات متاحة على هالمسار بهالتواريخ',sold_out:'راجعت الرحلة المطلوبة؛ ما في مقاعد متاحة لهالطلب حاليًا',auth_required:'عرض هالشركة لسه غير مؤكد؛ منرسل لك السعر بعد التحقق، حتى تختار على أساس واضح',unverified:'لم يتأكد عرض الشركة الآن'}[status]||'الفحص جارٍ';}
 function formatOffer(o){
  const r=o.request,t=o.timing,checkedAt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'}).format(new Date(o.checkedAt||Date.now())),weights=o.price.weights.map(w=>w.kg===0?'بدون أمتعة مسجلة':w.kg+' كيلو مسجل').join(' / ');
  return `*الخيار ${o.reference} — ${LABELS[o.provider]}*\nالمسار: من مطار ${r.origin} إلى مطار ${r.destination}\n📅 الذهاب: ${r.departureDate}\nرقم الرحلة: ${t.out.flight}\nالإقلاع: ${t.out.departure}\nالوصول: ${t.out.arrival}${t.back?`\n📅 العودة: ${r.returnDate}\nرقم الرحلة: ${t.back.flight}\nالإقلاع: ${t.back.departure}\nالوصول: ${t.back.arrival}`:''}\n🧳 ${weights}${o.provider==='flycham'?' +10 كيلو يد':''}\n💰 *الإجمالي: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${checkedAt} بتوقيت دبي${o.provider==='flycham'?`\n🎁 فاوجر ${o.price.voucherValue} درهم بعد إصدار التذكرة، صالح سنة للاستخدام القادم ضمن خدماتنا؛ لا يخصم من السعر الحالي.`:''}`;
@@ -69,7 +69,14 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
   if(offers.length)parts.push(offers.map(formatOffer).join('\n\n'));else if(allOffers.length)parts.push('العروض المتأكدة لهذه الشركة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.');
   const statuses=[...new Set(children.map(c=>c.status))];
   if(!allOffers.length&&children.some(c=>c.failureReason==='airport_selection_unconfirmed'))parts.push(`تعذر تأكيد اختيار المطار لمسار ${parent.request.origin} إلى ${parent.request.destination} لدى هذه الشركة، لذلك لم يتأكد سعر للفترة المطلوبة. هذا لا يعني عدم وجود رحلات أو امتلاء المقاعد. بتحب نجرّب من مطار الشارقة أو مطار تاني بتختاره؟`);
-  else if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
+  else if(!allOffers.length&&children.length&&children.every(c=>c.status==='no_flights')){
+   parts.push(`راجعت الفترة المطلوبة من مطار ${city(parent.request.origin)} إلى مطار ${city(parent.request.destination)} على ${LABELS[provider]}؛ ما في رحلات متاحة بهالتواريخ على هالمسار. هالنتيجة تخص هالشركة والفترة اللي شيّكتها.`);
+   if(city(parent.request.origin)==='أبوظبي'){
+    const other=exact.filter(c=>c.provider!==provider).flatMap(c=>c.offers||[]);
+    if(other.length)parts.push(`والخبر الحلو، لقيتلك بديل متأكد على ${[...new Set(other.map(o=>LABELS[o.provider]))].join(' و')} من أبوظبي؛ تفاصيل المواعيد والأسعار موضحة ضمن الخيارات.`);
+    parts.push('وإذا بتناسبك المغادرة من دبي أو الشارقة، بتحب قارنلك المتاح منهما لنشوف الأنسب إلك؟');
+   }
+  }else if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
  }
  if(alternatives.length){
   parts.push('\n*بدائل قريبة من التاريخ المطلوب*');
