@@ -1,6 +1,26 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+const {FlyChamPortalAdapter,createFlyChamPage,runFlyCham}=require('../src/flycham-worker');
+
+test('runtime creates an explicit context before any page so recovery does not hit Playwright owned-context restrictions',async()=>{
+ let contexts=0,pages=0,closed=0;
+ await runFlyCham({env:{FLYCHAM_PORTAL_ENABLED:'true',FLYCHAM_AGENT_USERNAME:'test',FLYCHAM_AGENT_PASSWORD:'test'},log:{log:()=>{}},launch:async()=>({
+  newPage:async()=>{throw Error('browser.newPage must never own the session context');},
+  newContext:async()=>{contexts++;return{newPage:async()=>{pages++;throw Error('TEST_STOP_BEFORE_LOGIN');}};},
+  close:async()=>closed++
+ })});
+ assert.equal(contexts,1);assert.equal(pages,1);assert.equal(closed,1);
+});
+
+test('recovering from the runtime page preserves its explicit context after closing the old page',async()=>{
+ let closed=false,pageCount=0,attempts=0;const pages=[],events=[];
+ const context={pages:()=>pages.filter(p=>!p.isClosed()),newPage:async()=>{assert.equal(closed,false);pageCount++;let pageClosed=false;const p={context:()=>context,setDefaultTimeout:()=>{},isClosed:()=>pageClosed,close:async()=>{pageClosed=true;}};pages.push(p);return p;}};
+ const page=await createFlyChamPage({newPage:async()=>{throw Error('Please use browser.newContext()');},newContext:async()=>context});
+ const a=new FlyChamPortalAdapter(page,{report:e=>events.push(e)});a.hasVerificationChallenge=async()=>false;
+ a.openSearchForm=async()=>{if(++attempts===1)throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');return 'restored';};
+ a.signIn=async()=>{assert.equal(a.page.context(),context);assert.equal(page.isClosed(),true);assert.equal(closed,false);};
+ assert.equal(await a.openSearchFormWithRecovery(),'restored');assert.equal(pageCount,2);assert.equal(a.page.isClosed(),false);assert.ok(events.includes('FLYCHAM_SEARCH_PAGE_RECOVERY_COMPLETED'));
+});
 
 test('search navigation waits for the old origin input to detach before accepting the new form',async()=>{
  let ticks=0,disposed=0,clicked=0;

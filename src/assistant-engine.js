@@ -8,6 +8,7 @@ const {understand}=require('./assistant-nlu');
 const {AssistantState}=require('./assistant-state');
 const {POLICY,capabilityIssue}=require('./assistant-policy');
 const {formatOffer,verifiedOffer}=require('./quote-comparison');
+const {knownTripFollowup}=require('./travel-followups');
 const dateText=d=>d.split('-').reverse().join('-');
 const clean=t=>String(t||'').replace(/[\u0000-\u001f]/g,' ').slice(0,9000);
 function offerId(o){return crypto.createHash('sha256').update(JSON.stringify([o.request,o.timing,o.price?.weights])).digest('hex').slice(0,12);}
@@ -30,7 +31,7 @@ function questionField(question){
  if(/عدد|كم.*(?:شخص|مسافر|بالغ)/.test(t))return 'passengers';
  if(/من اي|مغادر|من وين/.test(t))return 'origin';
  if(/الى اي|وجه[هة]|(?:وين|لوين).*(?:رايح|مسافر|توصل)|لوين/.test(t))return 'destination';
- if(/تاريخ.*(?:ذهاب|سفر)|ايمت|متي.*(?:سفر|ذهاب)/.test(t))return 'departureDate';
+ if(/تاريخ.*(?:ذهاب|سفر)|ايمت|متي.*(?:سفر|ذهاب)|اي (?:فتر[هة]|تاريخ|تواريخ|موعد)|فتر[هة].*بتناسب/.test(t))return 'departureDate';
  if(/ذهاب|عود[هة]|رجع[هة]|نوع الرحل/.test(t))return 'tripType';
  return null;
 }
@@ -58,6 +59,7 @@ class AssistantEngine{
  async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
   if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
   const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
+  if(!s.pendingQuotedOffer&&knownTripFollowup(text,s.base?.request))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
   const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
@@ -89,12 +91,14 @@ class AssistantEngine{
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
-  let decision=null;
-  try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
-  const repeatSearch=Boolean(s.base?.submitted&&['done','failed'].includes(s.status)&&/(?:شفلي|شوفلي|شوف لي|شيك|ابحث|عيد البحث|اعد البحث|نفس الرحل[هة]|نفس التفاصيل)/.test(t));
+  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?knownTripFollowup(text,s.base?.request):null;
+  if(followup&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
+  let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
+  if(!followup)try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  const repeatSearch=Boolean(s.base?.submitted&&['done','failed','paused'].includes(s.status)&&(followup||/(?:شفلي|شوفلي|شوف لي|شيك|ابحث|عيد البحث|اعد البحث|نفس الرحل[هة]|نفس التفاصيل)/.test(t)));
   if(repeatSearch){
    // A complete known itinerary can be checked again without collecting its dates.
-   const retry=legacy.exportSession(id);retry.submitted=false;retry.awaiting=null;
+   const retry=legacy.exportSession(id);retry.submitted=false;if(followup){retry.awaiting=null;delete retry.proposal;}
    legacy.importSession(id,retry);s.base=retry;
    decision={...(decision||{}),intent:'change',fields:{...(decision?.fields||{})},question:null,option:null};
   }
@@ -104,7 +108,7 @@ class AssistantEngine{
   }
   // Explicit requests to change/expand dates take precedence over model explanations
   // of already displayed fares. Preserve every other trip fact.
-  const dateAmendment=/(?:تواريخ|تاريخ|موعد|ايام|شهر|اسبوع)/.test(t)&&/(?:غير|تاني|ثاني|ارخص|اقل سعر|ابحث|دور|شوف|شفلي|عطيني|اعطيني|اريد|بدي)/.test(t);
+  const dateAmendment=!followup&&/(?:تواريخ|تاريخ|موعد|ايام|شهر|اسبوع)/.test(t)&&/(?:غير|تاني|ثاني|ارخص|اقل سعر|ابحث|دور|شوف|شفلي|عطيني|اعطيني|اريد|بدي)/.test(t);
   if(dateAmendment){
    const parsed=naturalDate(t,now);
    const fields={...(decision?.fields||{})};
@@ -247,7 +251,10 @@ class AssistantEngine{
   if(hypothetical&&result.complete){result.comparison=true;s.comparison={request:result.request,base:previous};legacy.importSession(id,previous);}
   else if(result.complete){delete s.pendingQuotedOffer;if(previous)s.previous.push(previous);s.previous=s.previous.slice(-5);s.offers=[];s.selected=null;s.comparison=null;}
   if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';const blocked=legacy.exportSession(id);if(blocked){blocked.submitted=false;legacy.importSession(id,blocked);}result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص.':issue==='route'?'ما عندي سعر مؤكّد لهالمسار حاليًا. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
-  if(!result.complete&&!['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='أكيد 🌷 فينا نراجع نفس الرحلة أو نبحث بتواريخ تانية. أي فترة بتناسبك للبحث؟';
+  if(!result.complete&&!['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply)){
+   const r=base.request,dates=r.departureRange?`من ${dateText(r.departureRange.start)} إلى ${dateText(r.departureRange.end)}`:r.departureDate?dateText(r.departureDate):null;
+   result.reply=`تفاصيل رحلتك عندي 🌷 من ${r.origin} إلى ${r.destination}${dates?'، '+dates:''}. إذا بدك أعيد التحقق من السعر على نفس التفاصيل، قلّي «أعد البحث».`;
+  }
   if(!result.complete&&['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك. أي تعديل تبعته منضيفه على نفس الطلب.';
   if(result.complete)s.lastQuestion=null;else if(/[؟?]/.test(result.reply))s.lastQuestion=result.reply;
   if(/^(?:يسلمو|شكرا|شكراً|مشكور)/.test(t)&&result.complete)result.reply='تكرم عيونك. '+result.reply;

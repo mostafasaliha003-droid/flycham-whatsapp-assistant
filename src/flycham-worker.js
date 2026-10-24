@@ -264,12 +264,18 @@ async function readFlyChamConfig(env){
  if(typeof env.FLYCHAM_AGENT_USERNAME!=='string'||!env.FLYCHAM_AGENT_USERNAME.trim()||typeof env.FLYCHAM_AGENT_PASSWORD!=='string'||!env.FLYCHAM_AGENT_PASSWORD)throw Error('FLYCHAM_CONFIG_MISSING');
  return {username:env.FLYCHAM_AGENT_USERNAME,password:env.FLYCHAM_AGENT_PASSWORD};
 }
+async function createFlyChamPage(browser){
+ // An explicit context allows fresh recovery pages and keeps the session alive
+ // when the old page closes. browser.newPage() owns and closes its context.
+ const context=await browser.newContext();
+ const page=await context.newPage();page.setDefaultTimeout(15000);return page;
+}
 async function runFlyCham({env=process.env,launch=o=>chromium.launch(o),log=console}={}){
  if(env.FLYCHAM_PORTAL_ENABLED!=='true')return;
  let browser,session,stop;
  const shutdown=async()=>{if(stop)await stop();if(session)await session.stop();if(browser)await browser.close();};
  try{
-  const credentials=await readFlyChamConfig(env);browser=await launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage();page.setDefaultTimeout(15000);
+  const credentials=await readFlyChamConfig(env);browser=await launch({headless:true,args:['--no-sandbox']});const page=await createFlyChamPage(browser);
   const adapter=new FlyChamPortalAdapter(page,{...credentials,report:c=>log.log(c)});await adapter.signIn();
   // Bounded airport capability check before consuming customer jobs. It never
   // clicks Search or a booking control and logs only fixed result codes.
@@ -280,4 +286,4 @@ async function runFlyCham({env=process.env,launch=o=>chromium.launch(o),log=cons
  }catch(e){log.log(/^FLYCHAM_[A-Z0-9_]+$/.test(e.message)?e.message:e.name==='TimeoutError'?'FLYCHAM_TIMEOUT':e.name==='TypeError'?'FLYCHAM_TYPE_ERROR':'FLYCHAM_PORTAL_UNAVAILABLE');}
  finally{await shutdown().catch(()=>{});}
 }
-module.exports={FlyChamPortalAdapter,runFlyCham,readFlyChamConfig,formatFlyChamOffers,FLYCHAM_VERIFICATION_FILE,inspectVerificationForm};
+module.exports={FlyChamPortalAdapter,runFlyCham,createFlyChamPage,readFlyChamConfig,formatFlyChamOffers,FLYCHAM_VERIFICATION_FILE,inspectVerificationForm};
