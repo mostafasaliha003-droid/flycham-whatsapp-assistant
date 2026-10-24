@@ -1,5 +1,7 @@
 'use strict';
 const {aiStatus}=require('./assistant-nlu');
+const {GmailOTP,gmailHandler}=require('./gmail-otp');
+const handleGmail=gmailHandler(new GmailOTP());
 
 
 const http = require('node:http');
@@ -146,6 +148,7 @@ function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(pro
 function createServer() {
   const server=http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if(await handleGmail(request,response,url,{readBody}))return;
     if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
     if(url.pathname.startsWith('/internal/quotes/')){
       if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED!=='true' || !validQueueKey(request.headers.authorization,process.env.AIR_ARABIA_QUOTE_QUEUE_KEY)){

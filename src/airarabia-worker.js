@@ -1,7 +1,7 @@
 'use strict';
 
 const { chromium } = require('playwright');
-const { waitForVerificationCode } = require('./operator-verification');
+const { waitForAirArabiaCode } = require('./gmail-verification-provider');
 const { verificationFormAction, verificationResultAction } = require('./portal-verification-form');
 const { submitProbe } = require('./portal-search-probe');
 const { openPassengerOptions } = require('./portal-options-probe');
@@ -59,7 +59,7 @@ function requiredEnv(name) {
 }
 
 class AirArabiaPortalAdapter {
-  constructor(page, { username, password, origin, destination, report = () => {}, verificationProvider = waitForVerificationCode }) {
+  constructor(page, { username, password, origin, destination, report = () => {}, verificationProvider = waitForAirArabiaCode }) {
     if (!AIRPORTS[origin] || !AIRPORTS[destination] || origin === destination) {
       throw new PortalError('CONFIGURATION', 'UNSUPPORTED_ROUTE');
     }
