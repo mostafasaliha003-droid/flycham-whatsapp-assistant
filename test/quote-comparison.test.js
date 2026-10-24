@@ -24,12 +24,53 @@ test('a ready airline remains useful when the other airline is offline; errors n
  const offline=new QuoteJobs({now:()=>NOW});const r=offline.enqueueComparison('b',request());assert.ok(r.ready);assert.equal(r.offers.length,0);assert.equal(r.statuses.length,2);
 });
 
-test('verified no-flight exact results start six nearby dates only for the unavailable supplier',()=>{
+test('verified no-flight results search adjacent dates first and stop after finding a verified nearby option',()=>{
  const q=queue();const parent=q.enqueueComparison('a',request());const a=q.claim(),f=q.claim('flycham');
  q.comparisonProgress(a.id,a.lease,{offer:offer(a.request,'airarabia')});done(q,a);const next=done(q,f,'no_flights');assert.equal(next.phase,'alternatives');assert.equal(next.ready,false);
- assert.deepEqual(next.pending.map(p=>p.date),['2090-11-10','2090-11-12','2090-11-09','2090-11-13','2090-11-08','2090-11-14']);assert.ok(next.pending.every(p=>p.provider==='flycham'));assert.equal(q.claim(),null);
- for(let n=0;n<6;n++){const j=q.claim('flycham');assert.ok(j.id);if(n===0)q.comparisonProgress(j.id,j.lease,{offer:offer(j.request,'flycham','550.00')});done(q,j,n===0?'confirmed':'no_flights');}
+ assert.deepEqual(next.pending.map(p=>p.date),['2090-11-10','2090-11-12']);assert.ok(next.pending.every(p=>p.provider==='flycham'));assert.equal(q.claim(),null);
+ for(let n=0;n<2;n++){const j=q.claim('flycham');assert.ok(j.id);if(n===0)q.comparisonProgress(j.id,j.lease,{offer:offer(j.request,'flycham','550.00')});done(q,j,n===0?'confirmed':'no_flights');}
  const result=q.comparisonResult(parent.id);assert.ok(result.ready);assert.match(result.reply,/بدائل قريبة/);assert.match(result.reply,/2090-11-10/);assert.match(result.reply,/550\.00/);assert.match(result.reply,/التاريخ المطلوب: 2090-11-11/);
+ assert.match(result.reply,/قبل موعدك بيوم/);assert.match(result.reply,/06:00/);assert.match(result.reply,/30 كيلو/);assert.match(result.reply,/أي خيار/);assert.equal(q.claim('flycham'),null);assert.equal(result.request.departureDate,'2090-11-11');
+});
+
+test('nearby discovery widens in day pairs and never beyond three days',()=>{
+ const q=queue(),p=q.enqueueComparison('wave-customer',request(),{providers:['flycham']});done(q,q.claim('flycham'),'no_flights');
+ for(const distance of [1,2,3]){
+  const pending=q.comparisonResult(p.id).pending;assert.equal(pending.length,2);
+  assert.deepEqual(pending.map(x=>x.date),[11-distance,11+distance].map(day=>'2090-11-'+String(day).padStart(2,'0')));
+  for(let i=0;i<2;i++)done(q,q.claim('flycham'),'no_flights');
+ }
+ const final=q.comparisonResult(p.id);assert.equal(final.ready,true);assert.equal(final.statuses.length,7);assert.equal(q.claim('flycham'),null);assert.match(final.reply,/ما ظهر خيار متاح/);assert.match(final.reply,/فترة أبعد/);
+});
+
+test('one supplier starts nearby work while another still checks the requested date',()=>{
+ const q=queue(),p=q.enqueueComparison('independent-customer',request()),a=q.claim(),f=q.claim('flycham');done(q,f,'no_flights');
+ assert.equal(q.current(a.id,a.lease),true);assert.deepEqual(q.comparisonResult(p.id).pending.filter(x=>x.provider==='flycham').map(x=>x.date),['2090-11-10','2090-11-12']);
+ const before=q.claim('flycham'),after=q.claim('flycham');q.comparisonProgress(before.id,before.lease,{offer:offer(before.request,'flycham','620.00')});done(q,before);q.comparisonProgress(after.id,after.lease,{offer:offer(after.request,'flycham','610.00')});done(q,after);
+ done(q,a,'no_flights');const nearAir=q.claim();done(q,nearAir,'no_flights');done(q,q.claim(),'no_flights');
+ const current=q.comparisonResult(p.id);assert.ok(current.pending.every(x=>x.provider==='airarabia'));assert.deepEqual(current.pending.map(x=>x.date),['2090-11-09','2090-11-13']);assert.equal(q.claim('flycham'),null);assert.match(current.reply,/قبل موعدك بيوم/);assert.match(current.reply,/بعد موعدك بيوم/);
+});
+
+test('authentication or airport-selection failure during nearby discovery stops widening that supplier',()=>{
+ for(const status of ['authentication_required','airport_unconfirmed']){
+  const q=queue(),p=q.enqueueComparison('blocked-'+status,request(),{providers:['flycham']});done(q,q.claim('flycham'),'no_flights');
+  const first=q.claim('flycham');q.completeComparisonChild(first.id,first.lease,{status,outcome:'failed'});
+  const other=q.claim('flycham');if(other)done(q,other,'no_flights');
+  const result=q.comparisonResult(p.id);assert.equal(result.ready,true);assert.equal(result.statuses.length,3);assert.equal(q.claim('flycham'),null);assert.doesNotMatch(result.reply,/ما ظهر خيار متاح لدى الشركات المفحوصة ضمن الأيام/);
+ }
+});
+
+test('a restarted nearby wave retains trip facts and does not repeat already attempted dates',()=>{
+ const store={data:{},save(){}};let q=queue({store});const r=request({tripType:'round_trip',returnDate:'2090-11-20',passengers:{adults:1,children:0,infants:0},baggageRequest:{checkedWeightKg:30,requestedByCustomer:true}}),p=q.enqueueComparison('restart-nearby',r,{providers:['flycham']});done(q,q.claim('flycham'),'no_flights');
+ const first=q.claim('flycham');done(q,first,'no_flights');q=new QuoteJobs({now:()=>NOW,store});const second=q.claim('flycham');assert.equal(second.request.departureDate,'2090-11-12');assert.equal(second.request.returnDate,r.returnDate);assert.deepEqual(second.request.passengers,r.passengers);assert.deepEqual(second.request.baggageRequest,r.baggageRequest);done(q,second,'no_flights');
+ assert.deepEqual(q.comparisonResult(p.id).pending.map(x=>x.date),['2090-11-09','2090-11-13']);assert.equal(q.comparisonResult(p.id).request.departureDate,r.departureDate);
+});
+
+test('an unverified adjacent day never becomes a claim that a farther option is the closest available',()=>{
+ const q=queue(),p=q.enqueueComparison('uncertain-nearby',request(),{providers:['flycham']});done(q,q.claim('flycham'),'no_flights');
+ const uncertain=q.claim('flycham');q.completeComparisonChild(uncertain.id,uncertain.lease,{outcome:'failed'});done(q,q.claim('flycham'),'no_flights');
+ const farther=q.claim('flycham');q.comparisonProgress(farther.id,farther.lease,{offer:offer(farther.request,'flycham')});done(q,farther);done(q,q.claim('flycham'),'no_flights');
+ const result=q.comparisonResult(p.id);assert.equal(result.ready,true);assert.match(result.reply,/قبل موعدك بيومين/);assert.match(result.reply,/بعض الأيام أو التواقيت القريبة لم يكتمل فحصها/);assert.doesNotMatch(result.reply,/الأقرب المتاح/);
 });
 
 test('timeouts and unsupported sold-out claims do not trigger nearby searches',()=>{

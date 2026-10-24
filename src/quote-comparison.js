@@ -74,8 +74,12 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
  if(alternatives.length){
   parts.push('\n*بدائل قريبة من التاريخ المطلوب*');
   const allOffers=alternatives.flatMap(c=>(c.offers||[]).map(o=>({o,delta:c.delta}))),offers=allOffers.filter(({o})=>!sent.has(offerKey(o))).sort((a,b)=>Math.abs(a.delta)-Math.abs(b.delta)||Number(a.o.price.sellingTotal)-Number(b.o.price.sellingTotal));
-  if(offers.length)parts.push(offers.map(({o,delta})=>`*${delta<0?'قبل':'بعد'} موعدك بـ${Math.abs(delta)} يوم*\n${formatOffer(o)}`).join('\n\n'));
-  else parts.push(allOffers.length?'البدائل المتأكدة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.':alternatives.some(c=>c.status==='pending')?'عم نفحص الأيام القريبة؛ منرسل فقط الأسعار المتأكدة.':'لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي تعذر فحصها.');
+  if(offers.length){
+   parts.push('لقيتلك هالبدائل القريبة والمتأكدة أسعارها 👇');
+   parts.push(offers.map(({o,delta})=>`*${delta<0?'قبل':'بعد'} موعدك ${Math.abs(delta)===1?'بيوم':Math.abs(delta)===2?'بيومين':`بـ${Math.abs(delta)} أيام`}*\n${formatOffer(o)}`).join('\n\n'));
+   parts.push('أي خيار من هالخيارات بناسبك لنكمل عليه؟');
+  }
+  else parts.push(allOffers.length?'البدائل المتأكدة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.':alternatives.some(c=>c.status==='pending')?'عم نفحص أقرب الأيام لموعدك، قبل بيوم وبعد بيوم أولًا، ومنرسل الخيارات المتأكدة.':alternatives.every(c=>NEGATIVE.has(c.status))?'ما ظهر خيار متاح لدى الشركات المفحوصة ضمن الأيام القريبة اللي راجعناها. بتحب نوسّع البحث لفترة أبعد، أو نقارن من مطار تاني بتختاره؟':'لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي تعذر فحصها.');
   const uncertain=alternatives.filter(c=>['partial','unverified','auth_required','pending'].includes(c.status));if(uncertain.length&&offers.length)parts.push('هذه البدائل تأكدت؛ بعض الأيام أو التواقيت القريبة لم يكتمل فحصها.');
  }
  if(parent.children.some(c=>c.offers?.length))parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');

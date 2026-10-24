@@ -68,13 +68,21 @@ class QuoteJobs {
     this.jobs.delete(id);this.advanceComparison(parent);this.save();return {accepted:true,...this.comparisonResult(parent.id)};
   }
   advanceComparison(parent){
-    if(parent.children.some(c=>c.status==='pending'))return;
-    if(parent.phase==='exact'&&parent.allowAlternatives&&!parent.request.departureRange){
-      const unavailable=parent.children.filter(c=>c.phase==='exact'&&NEGATIVE.has(c.status));
-      for(const child of unavailable)for(const near of nearbyRequests(child.request,this.now()))this.addComparisonChild(parent,near.request,'alternatives',near.delta);
-      if(parent.children.some(c=>c.phase==='alternatives'))parent.phase='alternatives';
+    if(parent.allowAlternatives&&!parent.request.departureRange){
+      for(const provider of parent.providers){
+        const exact=parent.children.filter(c=>c.provider===provider&&c.phase==='exact');
+        // Each supplier progresses independently. Search both adjacent days
+        // first, then widen only when that supplier has no verified alternative.
+        if(exact.some(c=>c.status==='pending')||!exact.some(c=>NEGATIVE.has(c.status)))continue;
+        const alternatives=parent.children.filter(c=>c.provider===provider&&c.phase==='alternatives');
+        if(alternatives.some(c=>c.status==='pending'||c.offers.length||c.status==='auth_required'||c.failureReason==='airport_selection_unconfirmed'))continue;
+        const tried=new Set(alternatives.map(c=>c.request.departureDate));
+        const remaining=nearbyRequests(exact.find(c=>NEGATIVE.has(c.status)).request,this.now()).filter(n=>!tried.has(n.request.departureDate));
+        const distance=remaining.length?Math.min(...remaining.map(n=>Math.abs(n.delta))):null;
+        for(const near of remaining.filter(n=>Math.abs(n.delta)===distance))this.addComparisonChild(parent,near.request,'alternatives',near.delta);
+      }
     }
-    if(!parent.children.some(c=>c.status==='pending'))parent.phase='done';
+    parent.phase=parent.children.some(c=>c.phase==='alternatives'&&c.status==='pending')?'alternatives':parent.children.some(c=>c.status==='pending')?'exact':'done';
     parent.version++;
   }
   isComparisonCurrent(id,version){const c=this.comparisons.get(id);return Boolean(c&&c.expires>this.now()&&this.revisions.get(c.recipient)===c.revision&&!c.delivered&&(version===undefined||version===c.version));}
