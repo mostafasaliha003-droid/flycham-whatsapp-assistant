@@ -17,31 +17,72 @@ const { sendImageMessage,sendTextMessage,checkWhatsAppConnection } = require('./
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const {recordDeliveryStatuses,comparisonDeliverySummary}=require('./delivery-status');
 const { expandLiveRequests } = require('./live-quote');
+const {DeliveryOutbox}=require('./delivery-outbox');
+const {recordMetric,metricsSummary}=require('./consultant-metrics');
+const {validateSearchCommand}=require('./consultant-tools');
+const {updateConsultantStage}=require('./consultant-memory');
+const {enabled:consultantEnabled,recommendationFor}=require('./consultant-runtime');
+const {offerKey}=require('./quote-comparison');
+const {runConsultantSmoke}=require('./consultant-brain');
+let consultantSmoke={ran:false,greeting:false,search:false};
 const assistant=new AssistantEngine();
 const quoteJobs = new QuoteJobs({store:assistant.store});
 const catalog=new FareCatalog({store:assistant.store,enabled:process.env.FARE_CATALOG_ENABLED!=='false'});
 const deliveries=new Map();
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
 
+const outbox=new DeliveryOutbox({store:assistant.store,send:sendTextMessage,report:code=>console.log(code),
+ isCurrent:async item=>{await batcher.settled(item.recipient);const c=quoteJobs.comparisons.get(item.metadata.comparisonId);return c?quoteJobs.isComparisonCurrent(c.id)&&c.revision===item.metadata.revision:item.state==='sent';},
+ onChunkSent:async(item,index,chunk)=>{
+  const state=assistant.state(item.recipient);
+  if(chunk.messageId){state.offerMessages||={};state.offerMessages[chunk.messageId]=[...chunk.text.matchAll(/\*الخيار (\d+) —/g)].map(m=>Number(m[1]));state.offerMessages=Object.fromEntries(Object.entries(state.offerMessages).slice(-100));}
+  const refs=new Set([...chunk.text.matchAll(/\*الخيار (\d+) —/g)].map(m=>Number(m[1])));
+  for(const offer of item.metadata.offers||[])if(refs.has(offer.reference))assistant.progress(item.recipient,{offer},chunk.messageId);
+  // progress writes current state; merge just the message map, never an old snapshot.
+  const current=assistant.state(item.recipient);current.offerMessages=state.offerMessages;
+  if(refs.size){updateConsultantStage(current,'offers_verified');recordMetric(assistant.store,{customer:item.recipient,journey:item.metadata.journey,event:'first_offer'});}
+  assistant.store.set(item.recipient,current);
+ },
+ onComplete:async item=>{
+  const m=item.metadata;
+  const c=quoteJobs.comparisons.get(m.comparisonId);
+  if(c&&c.revision!==m.revision)return;
+  const active=assistant.state(item.recipient).activeComparisonId===m.comparisonId;
+  quoteJobs.acknowledgeDelivery(m.comparisonId,{final:m.final,offerKeys:m.offerKeys,fingerprint:m.fingerprint});
+  if(active){assistant.jobState(item.recipient,m.final?(m.hasOffers?'done':'failed'):'searching');
+   if(m.final){recordMetric(assistant.store,{customer:item.recipient,journey:m.journey,event:m.hasOffers?'search_completed':'search_failed'});const state=assistant.state(item.recipient);state.queueReady=true;assistant.store.set(item.recipient,state);continueQueuedRequest(item.recipient);}}
+  console.log(m.final?'WHATSAPP_COMPARISON_FINAL_ACCEPTED_BY_META':'WHATSAPP_COMPARISON_PARTIAL_ACCEPTED_BY_META');
+ }});
 async function deliverComparison(id,{partial=false}={}){
  const first=quoteJobs.comparisonResult(id);if(!first)return;
  return orderedDelivery(first.recipient,async()=>{
-  // A newly received amendment always gets understood before an older offer.
   await batcher.settled(first.recipient);
   const current=quoteJobs.comparisonResult(id);if(!current)return;
   const final=current.ready;
-  if(!final&&(!partial||!current.hasVerifiedOffers))return;
-  if(!quoteJobs.markComparisonDelivered(id,{final,fingerprint:current.deliveryFingerprint,version:current.version}))return;
-  for(const offer of current.offers)assistant.progress(current.recipient,{offer});
-  try{
-   for(const text of messageChunks(current.reply)){
-    const delivery=await sendTextMessage(current.recipient,text),messageId=delivery?.messages?.[0]?.id;
-    if(messageId){const state=assistant.state(current.recipient);state.offerMessages||={};state.offerMessages[messageId]=[...text.matchAll(/\*الخيار (\d+) —/g)].map(m=>Number(m[1]));state.offerMessages=Object.fromEntries(Object.entries(state.offerMessages).slice(-100));assistant.store.set(current.recipient,state);}
-   }
-   assistant.jobState(current.recipient,final?(current.offers.length?'done':'failed'):'searching');
-   console.log(final?'WHATSAPP_COMPARISON_FINAL_ACCEPTED_BY_META':'WHATSAPP_COMPARISON_PARTIAL_ACCEPTED_BY_META');
-   if(final){const state=assistant.state(current.recipient);state.queueReady=true;assistant.store.set(current.recipient,state);continueQueuedRequest(current.recipient);}
-  }catch{assistant.jobState(current.recipient,'failed');console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED');}
+  if(!final&&(!partial||!current.hasVerifiedOffers||current.partialAlreadyDelivered))return;
+  const unresolved=assistant.store.data.outbox.find(item=>item.metadata?.comparisonId===id&&(['pending','sending','uncertain','failed'].includes(item.state)||item.state==='sent'&&!item.completionNotified));
+  if(unresolved){if(['uncertain','failed'].includes(unresolved.state)){recordMetric(assistant.store,{customer:current.recipient,journey:unresolved.metadata.journey,event:'delivery_uncertain'});return;}await outbox.flush(unresolved.key);return;}
+  const snapshotParent=quoteJobs.comparisons.get(id);
+  if(!final&&snapshotParent.lastPartialAt&&Date.now()-snapshotParent.lastPartialAt<60000)return;
+  const key='comparison:'+id+':'+(final?'final':current.deliveryFingerprint);
+  const existing=outbox.get(key);
+  if(existing){await outbox.flush(key);return;}
+  const parent=quoteJobs.comparisons.get(id),state=assistant.state(current.recipient);
+  let reply=current.reply;
+  if(consultantEnabled(process.env)&&current.hasVerifiedOffers){const intro=recommendationFor(current.offers,state,current.request);if(intro)reply=intro+'\n\n'+reply;}
+  outbox.enqueue({key,recipient:current.recipient,chunks:messageChunks(reply),metadata:{comparisonId:id,revision:parent.revision,final,fingerprint:current.deliveryFingerprint,offerKeys:current.offers.map(offerKey),offers:current.offers,hasOffers:current.hasVerifiedOffers,journey:state.tripId||id}});
+  await outbox.flush(key);
+ });
+}
+async function sendSearchWaiting(id){
+ const c=quoteJobs.comparisons.get(id);if(!c||c.waitingNotified||Date.now()-c.createdAt<90000||c.children.some(x=>x.offers?.length)||!quoteJobs.isComparisonCurrent(id))return;
+ return orderedDelivery(c.recipient,async()=>{
+  await batcher.settled(c.recipient);if(!quoteJobs.isComparisonCurrent(id)||c.waitingNotified||c.children.some(x=>x.offers?.length))return;
+  // One status notice per search; avoid repeated spam and unsupported progress claims.
+  c.waitingNotified=true;quoteJobs.save();
+  const recent=c.lastProgressAt&&Date.now()-c.lastProgressAt<120000;
+  const text=recent?'شكرًا لصبرك 🌷 عم نكمّل فحص الخيارات حسب تفاصيل رحلتك. لسه ما تأكد عرض جاهز للإرسال، ومنرسلك أول نتيجة مؤكدة فور توفرها.':'بنعتذر منك على الانتظار 🌷 طلبك ما زال قيد التحقق، لكن لم يتأكد عرض جاهز للإرسال حتى الآن. ما في داعي تعيد تفاصيل الرحلة.';
+  try{await sendTextMessage(c.recipient,text);}catch{console.log('WHATSAPP_WAITING_NOTICE_FAILED');}
  });
 }
 
@@ -75,6 +116,8 @@ async function processCustomerMessages(sender,messages){
   if(result.complete&&process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true'){
     try{
       expandLiveRequests(result.request);
+      const proposed=assistant.state(sender);
+      if(consultantEnabled(process.env)){const version=proposed.consultant?.requestVersion;validateSearchCommand({request:result.request,requestVersion:version,expectedVersion:assistant.state(sender).consultant?.requestVersion,action:result.amendment?'amend':'search'});}
       const providers=result.request.providerExclusive&&result.request.provider?[result.request.provider]:POLICY.providers;
       const seeds=catalog.find({...result.request,provider:null}).concat(require('./airport-comparison').flyChamAirportRequests(result.request).flatMap(r=>catalog.find(r)));
       const comparison=quoteJobs.enqueueComparison(sender,result.request,{providers,seedOffers:seeds,compareFlyChamAirports:true,waitForProviders:true});
@@ -82,11 +125,14 @@ async function processCustomerMessages(sender,messages){
       if(comparison.ready)setTimeout(()=>deliverComparison(comparison.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED')),0).unref();
       const r=result.request;
       reply=`*طلب رحلتك قيد البحث ✈️*\n${result.comparison?'رح نقارن الخيار الجديد مع الحفاظ على طلبك الأساسي.':result.amendment?'تم تعديل طلبك مع الحفاظ على التفاصيل الأخرى.':'وصل طلبك.'}\nمن مطار ${r.origin} إلى ${r.destination}\n📅 الفترة: ${r.departureRange?`${r.departureRange.start} إلى ${r.departureRange.end}`:r.departureDate}\n👤 المسافرون: ${r.passengers.adults} بالغ — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${r.baggageRequest?` — الوزن المطلوب ${r.baggageRequest.checkedWeightKg} كغ`:''}\n${providers.includes('flycham')&&require('./airport-comparison').flyChamAirportRequests(r).length?'عم نبحث حسب تفاصيلك، ومنقارن فلاي شام من الشارقة ودبي أولًا'+(providers.includes('airarabia')?'، وبعدها العربية للطيران.':'.'):'عم نبحث حسب تفاصيلك لدى '+providers.map(p=>p==='flycham'?'فلاي شام':'العربية للطيران').join(' و')+'.'} رح نوضح مطار المغادرة والوزن والسعر النهائي لكل خيار. \n\n⏳ يرجى الانتظار، جاري البحث عن الخيارات المناسبة والتحقق من السعر النهائي. منرسلك العروض مع التواريخ والتواقيت فور تأكيدها.`;
+      updateConsultantStage(conversation,'search_started');assistant.store.set(sender,conversation);recordMetric(assistant.store,{customer:sender,journey:conversation.tripId,event:'search_queued'});
       console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
     }catch{assistant.jobState(sender,'failed');reply='تفاصيل طلبك محفوظة، لكن البحث غير جاهز الآن أو تعذر التحقق من الفترة المطلوبة. لم يتأكد سعر جديد؛ فينا نعيد المحاولة على نفس التفاصيل.';}
   }
   if(result.introduction&&!reply.includes(result.introduction))reply=result.introduction+'\n\n'+reply;
   const delivery=await sendTextMessage(sender,reply);
+  recordMetric(assistant.store,{customer:sender,journey:assistant.state(sender).tripId,event:'reply_sent'});
+  if(result.handoff){const h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h){h.journey=assistant.state(sender).tripId;assistant.store.save();}}
   if(result.handoff&&process.env.HUMAN_HANDOFF_RECIPIENT){
     try{const s=assistant.state(sender),h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h&&h.state==='pending'){await sendTextMessage(process.env.HUMAN_HANDOFF_RECIPIENT,JSON.stringify({customer:sender,request:h.summary.request,offer:h.summary.offer,needsPriceRecheck:true}));h.state='notified';assistant.store.save();}}catch{console.log('HUMAN_HANDOFF_NOTIFICATION_FAILED');}
   }
@@ -213,10 +259,12 @@ function createServer() {
     }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
-      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay}));return;}
+      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));return;}
       if(url.pathname==='/internal/assistant/handoffs'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(assistant.store.data.handoffs));return;}
+      const issued=url.pathname.match(/^\/internal\/assistant\/handoffs\/([a-f0-9-]+)\/issued$/);
+      if(issued&&request.method==='POST'){const data=JSON.parse((await readBody(request)).toString());const h=assistant.store.data.handoffs.find(x=>x.id===issued[1]);if(!h||h.state!=='claimed'||data.ticketConfirmed!==true){response.writeHead(409).end();return;}h.state='issued';h.issuedAt=Date.now();const s=assistant.state(h.customer);updateConsultantStage(s,{type:'ticket_issued',verified:true});s.humanOwned=false;s.status='done';s.handoffId=null;assistant.store.set(h.customer,s);recordMetric(assistant.store,{customer:h.customer,journey:h.journey||s.tripId,event:'issued'});response.writeHead(200).end('{"ok":true}');return;}
       const action=url.pathname.match(/^\/internal\/assistant\/handoffs\/([a-f0-9-]+)\/(claim|release)$/);
-      if(action&&request.method==='POST'){const h=assistant.store.data.handoffs.find(h=>h.id===action[1]);if(!h){response.writeHead(404).end();return;}const s=assistant.state(h.customer);s.humanOwned=action[2]==='claim';h.state=s.humanOwned?'claimed':'released';assistant.store.set(h.customer,s);response.writeHead(200,{'Content-Type':'application/json'}).end('{"ok":true}');return;}
+      if(action&&request.method==='POST'){const h=assistant.store.data.handoffs.find(h=>h.id===action[1]);if(!h){response.writeHead(404).end();return;}const s=assistant.state(h.customer);s.humanOwned=action[2]==='claim';h.state=s.humanOwned?'claimed':'released';recordMetric(assistant.store,{customer:h.customer,journey:h.journey||s.tripId,event:s.humanOwned?'claimed':'released'});assistant.store.set(h.customer,s);response.writeHead(200,{'Content-Type':'application/json'}).end('{"ok":true}');return;}
       response.writeHead(404).end();return;
     }
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/privacy') {
@@ -231,7 +279,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-23.5',...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-25.consultant.1',consultantEnabled:consultantEnabled(process.env),consultantSmoke,webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {
@@ -252,14 +300,17 @@ function createServer() {
   });
   const sweep=setInterval(()=>{
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
+   for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
+   for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
    for(const c of quoteJobs.comparisons.values())if(!c.delivered&&Date.now()-c.createdAt>=60000)deliverComparison(c.id,{partial:true}).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
   },5000);sweep.unref();server.once('close',()=>clearInterval(sweep));return server;
 }
 
 if (require.main === module) {
+  if(consultantEnabled(process.env))runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE'));
   checkWhatsAppConnection().then(code=>console.log(code));
-  console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay}));
+  console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));
   console.log('WHATSAPP_COMPARISON_DELIVERY_HISTORY_'+JSON.stringify(comparisonDeliverySummary(assistant.store)));
   createServer().listen(PORT, () => console.log(`FlyCham WhatsApp Assistant listening on port ${PORT}`));
 }

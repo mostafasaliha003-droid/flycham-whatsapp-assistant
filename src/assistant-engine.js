@@ -9,6 +9,9 @@ const {AssistantState}=require('./assistant-state');
 const {POLICY,capabilityIssue}=require('./assistant-policy');
 const {formatOffer,verifiedOffer}=require('./quote-comparison');
 const {knownTripFollowup}=require('./travel-followups');
+const {understandConsultant}=require('./consultant-brain');
+const {updateConsultantMemory}=require('./consultant-memory');
+const {enabled,finishConsultantTurn}=require('./consultant-runtime');
 const dateText=d=>d.split('-').reverse().join('-');
 const clean=t=>String(t||'').replace(/[\u0000-\u001f]/g,' ').slice(0,9000);
 function offerId(o){return crypto.createHash('sha256').update(JSON.stringify([o.request,o.timing,o.price?.weights])).digest('hex').slice(0,12);}
@@ -52,7 +55,7 @@ function explainService(t,request={},status){
  return null;
 }
 class AssistantEngine{
- constructor({store=new AssistantState(),nlu=understand,env=process.env}={}){this.store=store;this.nlu=nlu;this.env=env;this.locks=new Map();this.prepared=new Map();}
+ constructor({store=new AssistantState(),nlu=null,env=process.env}={}){this.store=store;this.nlu=nlu||(enabled(env)?understandConsultant:understand);this.env=env;this.locks=new Map();this.prepared=new Map();}
  state(id){return {history:[],offers:[],selected:null,base:null,previous:[],comparison:null,status:'idle',coverage:[],...this.store.get(id)};}
  save(id,s){s.base=legacy.exportSession(id);this.store.set(id,s);}
  preparationKey(s,text,turnMessages){return JSON.stringify([clean(text),s.base,s.history,s.questions,s.lastQuestion,s.offers,s.selected,s.status,turnMessages]);}
@@ -62,13 +65,19 @@ class AssistantEngine{
   if(!s.pendingQuotedOffer&&knownTripFollowup(text,s.base?.request,now))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
-  const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
+  const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status,consultantMemory:snapshot.consultant},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
   if(this.prepared.size>=100)this.prepared.delete(this.prepared.keys().next().value);
   this.prepared.set(id,{key,promise,at:now});
  }
  async handle(id,text,{now=Date.now(),quotedMessageId=null,turnMessages=[]}={}){
-  const before=this.locks.get(id)||Promise.resolve();const work=before.catch(()=>{}).then(()=>this.process(id,text,{now,quotedMessageId,turnMessages}));this.locks.set(id,work);try{const result=await work;const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!result.reply.includes('معك أحمد')){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
+  const before=this.locks.get(id)||Promise.resolve();
+  const work=before.catch(()=>{}).then(async()=>{
+   const result=await finishConsultantTurn(this,id,text,await this.process(id,text,{now,quotedMessageId,turnMessages}),{now});
+   const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!result.reply.includes('معك أحمد')){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;
+  });
+  this.locks.set(id,work);try{return await work;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
  }
+
  async process(id,text,{now,quotedMessageId,turnMessages=[]}){
   const s=this.state(id),priorSelection=s.selected,priorBase=s.base;
   const prepared=this.prepared.get(id),preparedKey=this.preparationKey(s,text,turnMessages);
@@ -82,7 +91,7 @@ class AssistantEngine{
   const recoveredRoute=s.status==='unsupported'&&s.base?.request&&!capabilityIssue(s.base.request);
   if(recoveredRoute){s.base.submitted=false;s.base.awaiting=null;s.status='collecting';}
   legacy.importSession(id,s.base);
-  s.questions ||= {};s.tripId ||= crypto.randomUUID();s.history.push({role:'user',text:clean(text)});s.history=s.history.slice(-24);
+  s.questions ||= {};s.tripId ||= crypto.randomUUID();s.consultantDecision=null;if(enabled(this.env))updateConsultantMemory(s,text,{now});s.history.push({role:'user',text:clean(text)});s.history=s.history.slice(-24);
   const t=normalize(clean(text)),say=reply=>{
    if(/[؟?]/.test(reply))s.lastQuestion=reply;
    s.history.push({role:'assistant',text:reply});s.history=s.history.slice(-24);this.save(id,s);return{complete:false,reply};
@@ -99,7 +108,8 @@ class AssistantEngine{
   const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?knownTripFollowup(text,s.base?.request,now):null;
   if(followup&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
-  if(!followup&&!/^(?:شكرا|شكرا لانتظارك|بانتظاركن|ناطر|منتظر|شو صار|وين وصلتوا|لسا ما رديتوا|ليش ما رديتوا|وين الاسعار)[؟?!. ]*$/.test(t))try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  if(!followup&&!/^(?:شكرا|شكرا لانتظارك|بانتظاركن|ناطر|منتظر|شو صار|وين وصلتوا|لسا ما رديتوا|ليش ما رديتوا|وين الاسعار)[؟?!. ]*$/.test(t))try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status,consultantMemory:s.consultant},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  if(decision?.consultant){s.consultantDecision={...decision.consultant,question:decision.question,at:now};updateConsultantMemory(s,text,{now,preferences:decision.consultant.preferences});}
   const repeatSearch=Boolean(s.base?.submitted&&['done','failed','paused'].includes(s.status)&&(followup||/(?:شفلي|شوفلي|شوف لي|شيك|ابحث|عيد البحث|اعد البحث|نفس الرحل[هة]|نفس التفاصيل)/.test(t)));
   if(repeatSearch){
    // A complete known itinerary can be checked again without collecting its dates.

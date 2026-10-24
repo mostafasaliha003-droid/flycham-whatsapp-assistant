@@ -53,7 +53,7 @@ class QuoteJobs {
   comparisonProgress(id,lease,metadata={}){
     const j=this.jobs.get(id);if(!j?.comparisonId||!this.current(id,lease))return false;
     const parent=this.comparisons.get(j.comparisonId);if(!parent||!this.isComparisonCurrent(parent.id))return false;
-    const child=parent.children.find(c=>c.id===id),offer=verifiedOffer(metadata.offer,j.request,j.request.provider);
+    parent.lastProgressAt=this.now();const child=parent.children.find(c=>c.id===id),offer=verifiedOffer(metadata.offer,j.request,j.request.provider);
     if(offer&&!child.offers.some(o=>offerKey(o)===offerKey(offer))&&this.canAddComparisonOffer(parent,j.request.provider)){child.offers.push({...offer,reference:parent.nextReference++});parent.version++;}
     if(Array.isArray(metadata.coverage))child.coverage=metadata.coverage.map(c=>({date:c.date,status:c.status})).slice(0,32);
     this.save();return true;
@@ -61,7 +61,7 @@ class QuoteJobs {
   completeComparisonChild(id,lease,data={}){
     const j=this.jobs.get(id);if(!j?.comparisonId||!this.current(id,lease))return {accepted:false};
     const parent=this.comparisons.get(j.comparisonId);if(!parent||!this.isComparisonCurrent(parent.id))return {accepted:false};
-    const child=parent.children.find(c=>c.id===id);child.status=completionStatus(data,child.offers,child.request);child.coverage=Array.isArray(data.coverage)?data.coverage.map(c=>({date:c.date,status:c.status})).slice(0,32):[];
+    parent.lastProgressAt=this.now();const child=parent.children.find(c=>c.id===id);child.status=completionStatus(data,child.offers,child.request);child.coverage=Array.isArray(data.coverage)?data.coverage.map(c=>({date:c.date,status:c.status})).slice(0,32):[];
     // Airport selection happens before date search. One failed route lookup must
     // not be repeated for every day in the same monthly comparison.
     if(data.status==='airport_unconfirmed'&&!child.offers.length){
@@ -98,6 +98,13 @@ class QuoteJobs {
     const pending=c.children.filter(x=>x.status==='pending').map(x=>({provider:x.provider,phase:x.phase,date:x.request.departureDate}));
     const offers=c.children.flatMap(x=>x.offers).map(o=>structuredClone(o));const fingerprint=createHash('sha256').update(JSON.stringify(offers.map(o=>[offerKey(o),o.price.sellingTotal]))).digest('hex');
     return {id:c.id,comparisonId:c.id,revision:c.revision,version:c.version,recipient:c.recipient,request:structuredClone(c.request),ready:!pending.length,phase:c.phase,pending,reply:renderComparison(c,{excludeOfferKeys:c.deliveredOfferKeys||[]}),offers,hasVerifiedOffers:offers.length>0,deliveryFingerprint:fingerprint,partialAlreadyDelivered:c.lastPartialFingerprint===fingerprint,statuses:c.children.map(x=>({provider:x.provider,date:x.request.departureDate,phase:x.phase,status:x.status}))};
+  }
+  acknowledgeDelivery(id,{final=false,offerKeys=[],fingerprint}={}){
+    const c=this.comparisons.get(id);if(!c)return false;
+    c.deliveredOfferKeys=[...new Set([...(c.deliveredOfferKeys||[]),...offerKeys])];
+    if(!final){c.lastPartialAt=this.now();c.lastPartialFingerprint=fingerprint;this.save();return true;}
+    if(c.children.some(x=>x.status==='pending')){this.save();return false;}
+    c.delivered=true;this.comparisons.delete(id);this.save();return true;
   }
   markComparisonDelivered(id,options={}){
     if(typeof options==='number')options={version:options};

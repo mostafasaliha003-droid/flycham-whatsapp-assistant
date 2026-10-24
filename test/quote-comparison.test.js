@@ -125,3 +125,11 @@ test('parent and child state survive a configured store snapshot without leaking
  const store={data:{},save(){}};const q=queue({store}),p=q.enqueueComparison('private-customer',request()),a=q.claim();q.comparisonProgress(a.id,a.lease,{offer:offer(a.request,'airarabia')});
  const restarted=new QuoteJobs({now:()=>NOW,store});const result=restarted.comparisonResult(p.id);assert.equal(result.offers.length,1);const claimed=restarted.claim();assert.ok(claimed.id);assert.ok(!JSON.stringify(claimed).includes('private-customer'));assert.equal(restarted.current(a.id,a.lease),false);
 });
+
+test('partial outbox acknowledgement records only actually sent offers while new progress arrives',()=>{
+ const q=queue(),p=q.enqueueComparison('outbox-customer',request(),{allowAlternatives:false}),a=q.claim(),f=q.claim('flycham');
+ q.comparisonProgress(a.id,a.lease,{offer:offer(a.request,'airarabia','600.00')});const first=q.comparisonResult(p.id),keys=first.offers.map(require('../src/quote-comparison').offerKey);
+ q.comparisonProgress(f.id,f.lease,{offer:offer(f.request,'flycham','650.00')});q.acknowledgeDelivery(p.id,{final:false,offerKeys:keys,fingerprint:first.deliveryFingerprint});
+ const current=q.comparisonResult(p.id);assert.doesNotMatch(current.reply,/الإجمالي: 600.00/);assert.match(current.reply,/الإجمالي: 650.00/);assert.equal(current.partialAlreadyDelivered,false);
+ done(q,a);done(q,f);const final=q.comparisonResult(p.id);assert.equal(final.ready,true);assert.ok(q.acknowledgeDelivery(p.id,{final:true,offerKeys:final.offers.map(require('../src/quote-comparison').offerKey)}));assert.equal(q.comparisonResult(p.id),null);
+});
