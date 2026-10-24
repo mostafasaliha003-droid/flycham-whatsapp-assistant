@@ -246,7 +246,7 @@ class AssistantEngine{
     prior.reminderCount=(prior.reminderCount||0)+1;
     const r=base.request;
     const reminders={origin:r.destination?`الوجهة ${r.destination} واضحة؛ ناقصني مدينة الانطلاق فقط.`:'ناقصني مدينة الانطلاق حتى أحدد المسار.',destination:r.origin?`المغادرة من ${r.origin} واضحة؛ ناقصني المدينة اللي بدك توصل إلها فقط.`:'ناقصني المدينة اللي بدك توصل إلها.',departureDate:'تفاصيل المسار محفوظة؛ ناقصني يوم السفر أو فترة مناسبة مثل هالأسبوع.',tripType:'المسار والموعد محفوظين؛ ناقصني إذا بدك ذهاب بس أو مع رجعة.',returnDate:'تفاصيل الذهاب محفوظة؛ ناقصني موعد الرجعة أو مدة الإقامة.',passengers:'تفاصيل الرحلة محفوظة؛ ناقصني عدد المسافرين فقط، مثل «شخص واحد». إذا معك أطفال اذكر أعمارهن.'};
-    result.reply=reminders[field]||result.reply;
+    result.reply=field==='origin'&&r.originCountry==='سوريا'?`الانطلاق من سوريا واضح 🌷 من دمشق ولا حلب بدك تطلع${r.destination?' إلى '+r.destination:''}؟`:reminders[field]||result.reply;
    }
    else{s.questions[field]={field,tripId:s.tripId,askedAt:now,answered:false,status:'asked',reason:result.clarification||'missing_fact',reminderCount:0};s.lastQuestion=result.reply;}
   }

@@ -57,6 +57,12 @@ function reconcileRoute(request,previous={},raw,awaiting){
  // Explicit positive direction in the customer's wording outranks a conflicting model extraction.
  for(const k of ['origin','destination'])if(direct[k])request[k]=direct[k];
  request.origin=canonical(request.origin);request.destination=canonical(request.destination);
+ // A country is useful directional context, but is not an airport choice.
+ if(/(?:^|[\s،,])(?:من|from)\s+سوري[اةه](?:$|[\s،,.؟?])/i.test(t)&&!/(?:^|\s)(?:مو|مش|ليس|لا)\s+من\s+سوري/.test(t)){
+  request.originCountry='سوريا';
+  if(!direct.origin)request.origin=['دمشق','حلب','اللاذقية'].includes(known.origin)?known.origin:null;
+  if(!['دمشق','حلب','اللاذقية'].includes(request.destination))delete request.destinationCountry;
+ }
  // Validate AFTER all model/local patches, before deciding the request is complete.
  if(request.origin&&request.origin===request.destination){
   clarify=directed&&direct.destination&&!direct.origin?'origin':'destination';

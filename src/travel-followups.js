@@ -7,6 +7,9 @@ const {city,languagePatch}=require('./travel-language');
 function knownTripFollowup(raw,request,now=Date.now()){
  if(!request)return null;
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
+ if(/^(?:(?:انا|بدي|بدنا|قصدي)\s+)?من\s+سوري[اةه]$/.test(t))return{fields:{},sameDates:true};
+ const originCity=city(t);
+ if(request.originCountry==='سوريا'&&!request.origin&&['دمشق','حلب','اللاذقية'].includes(originCity))return{fields:{origin:originCity,destination:request.destination},sameDates:true};
  const period=naturalDate(t,now);
  if(period.range&&request.origin&&request.destination&&!/\d|كيلو|شخص|بالغ|طفل|رضيع|وزن|تثبيت|حجز|الغاء|(?:^|\s)(?:لا|مو|مش)(?:\s|$)|طلب\s+(?:تاني|ثاني)|فلاي|العربي/.test(t)){
   const route=languagePatch(raw);

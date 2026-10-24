@@ -240,6 +240,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
 
   if (missing.length) {
     state.awaiting=missing[0];
+    if(missing[0]==='origin'&&request.originCountry==='سوريا')return{complete:false,clarification:'origin_city_in_country',reply:`تمام 🌷 الانطلاق من سوريا${request.destination?' والوصول إلى '+request.destination:''}. من دمشق ولا حلب، أو مطار تاني بسوريا؟`};
     if(routeClarification===missing[0])return{complete:false,clarification:'route_direction',reply:routeClarification==='destination'?`إي، المغادرة من ${request.origin} مسجّلة عندي. لوين${request.destinationCountry?' بسوريا':''} بدك توصل؟`:`تمام، الوجهة ${request.destination} مسجّلة عندي. من وين بدك تنطلق؟`};
     const prompt=missing[0]==='destination'&&request.origin?`مطار المغادرة ${request.origin} واضح. إلى أي مدينة${request.destinationCountry?' بسوريا':''} بدك تسافر؟ مثل دمشق أو حلب.`:missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
     const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، موعد السفر ${request.departureDate}. `:'';
