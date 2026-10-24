@@ -14,6 +14,7 @@ const FLYCHAM_VERIFICATION_FILE='/tmp/flycham-verification-code';
 const OTP_INPUT='input[autocomplete="one-time-code"]:visible,input[id="userOtp"]:visible';
 const OTP_SUBMIT='button[type="submit"]:visible,input[type="submit"]:visible,button[id="btnSubmit"]:visible,input[id="btnSubmit"]:visible';
 const trusted=frame=>{try{return new URL(frame.url()).origin===ORIGIN;}catch{return false;}};
+const recoverableSearchError=error=>error?.name==='TimeoutError'||error?.message==='FLYCHAM_SEARCH_FORM_UNCONFIRMED';
 function inspectVerificationForm(){
  if(location.origin!=='https://reservations.flycham.com')return false;
  const visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden';
@@ -195,10 +196,14 @@ class FlyChamPortalAdapter{
    await this.inspectSearchState();throw Error('FLYCHAM_SEARCH_FORM_UNCONFIRMED');
   }finally{await Promise.allSettled([...previousInputs.values()].map(handle=>handle.dispose()));}
  }
- async openSearchFormWithRecovery(){
-  try{return await this.openSearchForm();}
-  catch(error){
-   if(error.message!=='FLYCHAM_SEARCH_FORM_UNCONFIRMED')throw error;
+ async withSearchRecovery(operation,beforeRecovery=async()=>{}){
+  let firstError;
+  if(!this.searchRecoveryRequired){try{return await operation();}catch(error){if(!recoverableSearchError(error))throw error;firstError=error;}}
+  // Exactly one fresh-page retry for this operation. A failed retry marks the
+  // page dirty so the next job recovers BEFORE trying to use its stale form.
+  this.searchRecoveryRequired=true;
+  if(firstError?.name==='TimeoutError')this.report('FLYCHAM_SEARCH_TIMEOUT_'+(this.searchStage||'NAVIGATION'));
+  await beforeRecovery();
    // One recovery of a missing search document, within the same browser
    // context (and cookies). Verification and rejected sign-in are never retried.
    if(await this.hasVerificationChallenge())throw Error('FLYCHAM_MANUAL_VERIFICATION');
@@ -208,10 +213,11 @@ class FlyChamPortalAdapter{
    this.page=fresh;this.reservationControl=null;this.protectedURL=null;
    for(const page of previous)if(!page.isClosed())await page.close();
    await this.signIn();
-   const frame=await this.openSearchForm();
-   this.report('FLYCHAM_SEARCH_PAGE_RECOVERY_COMPLETED');return frame;
-  }
+   this.searchRecoveryRequired=false;
+   try{const result=await operation();this.report('FLYCHAM_SEARCH_PAGE_RECOVERY_COMPLETED');return result;}
+   catch(error){this.searchRecoveryRequired=recoverableSearchError(error);if(error.name==='TimeoutError')this.report('FLYCHAM_SEARCH_RETRY_TIMEOUT_'+(this.searchStage||'NAVIGATION'));throw error;}
  }
+ async openSearchFormWithRecovery(){this.searchStage='NAVIGATION';return this.withSearchRecovery(()=>this.openSearchForm());}
  async refreshProtectedPage(){await this.openSearchFormWithRecovery();if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();this.report('FLYCHAM_HEARTBEAT_NAVIGATION_COMPLETED');}
  async searchFlightsForHeartbeat(){return this.refreshProtectedPage();}
  async assertQuoteSession(coverage){
@@ -219,16 +225,22 @@ class FlyChamPortalAdapter{
   const challenged=await this.hasVerificationChallenge();
   throw Object.assign(Error('FLYCHAM_SESSION_UNAVAILABLE'),{code:'PORTAL_SESSION_EXPIRED',coverage:coverage.map(day=>({...day,status:challenged?'authentication_required':'unverified'}))});
  }
- async search(request){
+ async search(request,isCurrent=async()=>{}){
   const config=validateLiveRequest(request);if(!flyChamBaggageAllowed(request))throw Error('FLYCHAM_BAGGAGE_NOT_VERIFIED');
+  return this.withSearchRecovery(()=>this.searchAttempt(request,config),isCurrent);
+ }
+ async searchAttempt(request,config){
   // Legacy popup shell spans several frames; navigating a child/menu URL in
   // the top-level page destroys that shell. Use its authenticated menu only.
-  const frame=await this.openSearchFormWithRecovery();
+  this.searchStage='NAVIGATION';this.report('FLYCHAM_SEARCH_NAVIGATION_STARTED');
+  const frame=await this.openSearchForm();this.report('FLYCHAM_SEARCH_FORM_READY');
+  this.searchStage='SUBMISSION';
   const prepared=await submitProbe(frame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,supplier:'flycham',report:this.report});
   if(prepared.tripKind!==(request.tripType==='one_way'?'one-way':'return'))throw Error('FLYCHAM_TRIP_NOT_CONFIRMED');
   // Flight inventory can arrive before any fare is selected. Waiting for the
   // total here prevents reaching the normal selection controls.
   this.report('FLYCHAM_WAITING_FOR_FLIGHT_RESULTS');
+  this.searchStage='RESULTS';
   await waitForFlightResults(frame,request.tripType==='one_way',ORIGIN);
   this.report('FLYCHAM_FLIGHT_RESULTS_READY');
   if(!await this.isAuthenticated())throw Error('FLYCHAM_SESSION_UNAVAILABLE');this.onAuthenticatedActivity?.();
@@ -237,7 +249,7 @@ class FlyChamPortalAdapter{
  async runCustomerQuote(request,onProgress,isCurrent=async()=>{}){
   const offers=[],attempted=[],coverage=[];const dates=expandLiveRequests(request);
   for(const dated of dates){await isCurrent();attempted.push(dated.departureDate);const day={date:dated.departureDate,status:'unverified',confirmed:0,failed:0};coverage.push(day);try{
-   const frame=await this.search(dated);
+   const frame=await this.search(dated,isCurrent);
    // Capture the supplier-confirmed selected itinerary before changing rows.
    // A failure comparing another timing must not discard this verified offer.
    try{const q=await readFlyChamFirstPage(frame,{tripType:dated.tripType,passengerCount:1,request:dated});await this.assertQuoteSession(coverage);this.onAuthenticatedActivity?.();const offer={...q,request:dated,reference:offers.length+1};offers.push(offer);day.confirmed++;if(onProgress)await onProgress('',{offer,coverage});}

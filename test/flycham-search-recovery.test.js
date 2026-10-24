@@ -45,7 +45,7 @@ test('an unchanged old search form is never accepted as a completed navigation',
 
 function recoveryFixture({challenge=false,secondFailure=false,error='FLYCHAM_SEARCH_FORM_UNCONFIRMED'}={}){
  const events=[];let attempts=0;
- const fresh={setDefaultTimeout:n=>assert.equal(n,15000)};
+ const fresh={setDefaultTimeout:n=>assert.equal(n,15000),context:()=>context};
  const old={isClosed:()=>false,close:async()=>events.push('close')};
  const context={pages:()=>[old],newPage:async()=>{events.push('new');return fresh;}};
  const a=new FlyChamPortalAdapter({context:()=>context},{report:e=>events.push(e)});
@@ -54,6 +54,39 @@ function recoveryFixture({challenge=false,secondFailure=false,error='FLYCHAM_SEA
  a.signIn=async()=>{assert.equal(a.page,fresh);assert.ok(events.includes('close'));events.push('signIn');};
  return{a,events,attempts:()=>attempts};
 }
+
+const retryRequest={origin:'أبوظبي',destination:'دمشق',departureDate:'2099-11-18',tripType:'one_way',returnDate:null,passengers:{adults:1,children:0,infants:0},baggageRequest:{checkedWeightKg:30,requestedByCustomer:true}};
+const timeout=()=>Object.assign(Error('Synthetic timeout'),{name:'TimeoutError'});
+for(const stage of ['NAVIGATION','SUBMISSION','RESULTS'])test('a '+stage+' timeout retries the exact requested flight once on the recovered page',async()=>{
+ const f=recoveryFixture();let attempts=0;
+ f.a.searchAttempt=async(r,config)=>{assert.deepEqual(r,retryRequest);assert.equal(config.origin,'AUH');assert.equal(config.destination,'DAM');f.a.searchStage=stage;if(++attempts===1)throw timeout();return 'verified-results';};
+ assert.equal(await f.a.search(retryRequest),'verified-results');assert.equal(attempts,2);assert.equal(f.events.filter(e=>e==='signIn').length,1);assert.ok(f.events.includes('FLYCHAM_SEARCH_TIMEOUT_'+stage));
+});
+test('a navigation TimeoutError is recoverable for keepalive as well as customer searches',async()=>{
+ const f=recoveryFixture();let attempts=0;f.a.openSearchForm=async()=>{if(++attempts===1)throw timeout();return 'restored';};
+ assert.equal(await f.a.openSearchFormWithRecovery(),'restored');assert.equal(attempts,2);assert.equal(f.events.filter(e=>e==='signIn').length,1);
+});
+test('two timeouts fail without looping and the next job starts with page recovery',async()=>{
+ const f=recoveryFixture();let attempts=0;f.a.searchAttempt=async()=>{attempts++;throw timeout();};
+ await assert.rejects(f.a.search(retryRequest),e=>e.name==='TimeoutError');assert.equal(attempts,2);assert.equal(f.events.filter(e=>e==='signIn').length,1);assert.equal(f.a.searchRecoveryRequired,true);
+ f.a.searchAttempt=async()=>{assert.equal(f.events.filter(e=>e==='signIn').length,2);return 'next-job-results';};
+ assert.equal(await f.a.search(retryRequest),'next-job-results');assert.equal(f.a.searchRecoveryRequired,false);
+});
+test('a superseded background search yields before recovery and leaves the next customer job a fresh page',async()=>{
+ const f=recoveryFixture();f.a.searchAttempt=async()=>{throw timeout();};
+ await assert.rejects(f.a.search(retryRequest,async()=>{throw Error('QUOTE_SUPERSEDED');}),/QUOTE_SUPERSEDED/);
+ assert.ok(!f.events.includes('signIn'));assert.equal(f.a.searchRecoveryRequired,true);
+ f.a.searchAttempt=async()=>{assert.ok(f.events.includes('signIn'));return 'customer-results';};assert.equal(await f.a.search(retryRequest),'customer-results');
+});
+test('timeouts never bypass a verification challenge',async()=>{
+ const f=recoveryFixture({challenge:true});f.a.searchAttempt=async()=>{throw timeout();};
+ await assert.rejects(f.a.search(retryRequest),/FLYCHAM_MANUAL_VERIFICATION/);assert.ok(!f.events.includes('new'));assert.ok(!f.events.includes('signIn'));
+});
+test('confirmed empty inventory and mismatched itineraries never trigger a speculative retry',async()=>{
+ for(const error of ['NO_FLIGHTS_CONFIRMED','FLYCHAM_REQUEST_NOT_MATCHED','FLYCHAM_SESSION_UNAVAILABLE','FLYCHAM_BOOKING_CONTROL_REFUSED']){
+  const f=recoveryFixture();f.a.searchAttempt=async()=>{throw Error(error);};await assert.rejects(f.a.search(retryRequest),new RegExp(error));assert.ok(!f.events.includes('new'));
+ }
+});
 
 test('missing search page recovers once using a fresh page in the existing browser context',async()=>{
  const f=recoveryFixture();assert.equal(await f.a.openSearchFormWithRecovery(),'new-form');
