@@ -1,4 +1,5 @@
 'use strict';
+const {flyChamAirportRequests}=require('./airport-comparison');
 const {randomUUID}=require('node:crypto');
 const {dubaiDay,iso,addDays}=require('./arabic-dates');
 const {validateLiveRequest}=require('./live-quote');
@@ -16,7 +17,7 @@ class FareCatalog{
   const bestKeys=new Set([...best.values()].map(o=>key(o.request)));
   // Catalog return dates are explicit 7/14-night reference examples, never a
   // silent assumption about the customer's own return itinerary.
-  for(let d=today;d<=end;d=addDays(d,1))for(const [origin,destination]of [['الشارقة','دمشق'],['دمشق','الشارقة']])for(const nights of [0,7,14]){
+  for(let d=today;d<=end;d=addDays(d,1))for(const [origin,destination]of (provider==='flycham'?[['الشارقة','دمشق'],['دبي','دمشق'],['دمشق','الشارقة'],['دمشق','دبي']]:[['الشارقة','دمشق'],['دمشق','الشارقة']]))for(const nights of [0,7,14]){
    const request={provider,origin,destination,departureDate:iso(d),returnDate:nights?iso(addDays(d,nights)):null,tripType:nights?'round_trip':'one_way',passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,source:'default30',requestedByCustomer:false},...(nights?{stayNights:nights}:{})};
    const k=key(request),last=Math.max(recent.get(k)||0,this.attempts.get(k)||0);
    if(this.now()-last>=FRESH_MS)tasks.push({request,priority:bestKeys.has(k)?-1:recent.has(k)?0:1,last});
@@ -45,8 +46,9 @@ class FareCatalog{
  finish(id,lease,outcome,coverage){const j=this.leases.get(id);if(!j||j.lease!==lease)return false;this.leases.delete(id);this.attempts.set(key(j.request),this.now());this.save();this.stats[j.request.provider]={lastFinishedAt:this.now(),outcome,coverage:coverage?.map(x=>({date:x.date,status:x.status})).slice(0,32)};return true;}
  find(request={}){this.prune();return [...this.records.values()].filter(o=>this.now()-o.checkedAt<=FRESH_MS&&(!request.provider||request.provider===o.provider)&&(!request.origin||o.request.origin===request.origin)&&(!request.destination||o.request.destination===request.destination)&&(!request.destinationCountry||request.destinationCountry!=='سوريا'||['دمشق','حلب','اللاذقية'].includes(o.request.destination))&&(!request.tripType||o.request.tripType===request.tripType)&&o.request.baggageRequest?.checkedWeightKg===(request.baggageRequest?.checkedWeightKg??30)&&(!request.departureDate||o.request.departureDate===request.departureDate)&&(!request.returnDate||o.request.returnDate===request.returnDate)&&(!request.departureRange||o.request.departureDate>=request.departureRange.start&&o.request.departureDate<=request.departureRange.end)).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));}
  reply(request={}){
-  const found=this.find(request);if(!found.length)return null;
-  const groups=new Map();for(const o of found){const k=[o.request.departureDate.slice(0,7),o.request.tripType,o.provider].join(':');if(!groups.has(k))groups.set(k,o);}
+  const found=[...new Map(this.find(request).concat((flyChamAirportRequests(request).length?flyChamAirportRequests(request):['الشارقة','SHJ'].includes(request.origin)?[{...request,origin:'دبي',provider:'flycham'}]:[]).flatMap(r=>this.find({...r,departureDate:request.departureDate}))).map(o=>[key(o.request),o])).values()];if(!found.length)return null;
+  found.sort((a,b)=>Number(a.provider!=='flycham')-Number(b.provider!=='flycham')||Number(a.request.origin!==request.origin)-Number(b.request.origin!==request.origin)||(['الشارقة','دبي'].indexOf(a.request.origin)-['الشارقة','دبي'].indexOf(b.request.origin))||Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+  const groups=new Map();for(const o of found){const k=[o.request.departureDate.slice(0,7),o.request.tripType,o.provider,o.request.origin,o.request.destination].join(':');if(!groups.has(k))groups.set(k,o);}
   const shown=[...groups.values()].slice(0,8);const dt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'});
   return '*رحلات سوريا | مجموعة الرمال*\nأفضل أسعار متأكدين منها حتى الآن ضمن التواريخ المفحوصة، لشخص بالغ واحد:\n\n'+shown.map(o=>`*${o.request.departureDate.slice(0,7)} — ${o.request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}*\nشركة الطيران: ${o.provider==='flycham'?'فلاي شام':'العربية للطيران'}\nالمسار: من ${o.request.origin} إلى ${o.request.destination}\n📅 الذهاب: ${o.request.departureDate}\nرقم الرحلة: ${o.timing.out.flight}\nالإقلاع: ${o.timing.out.departure}\nالوصول: ${o.timing.out.arrival}${o.timing.back?`\nالعودة: ${o.request.returnDate} — إقامة ${o.request.stayNights} ليلة\n${o.timing.back.flight}: ${o.timing.back.departure} — ${o.timing.back.arrival}`:''}\n🧳 الوزن: ${o.provider==='flycham'?'30 كيلو مسجل +10 كيلو يد':o.price.weights.map(w=>w.kg+' كيلو مسجل').join(' / ')}\n💰 *الإجمالي: ${o.price.sellingTotal} درهم*${o.provider==='flycham'?`\nهدية بعد إصدار التذكرة: فاوجر ${o.price.voucherValue} درهم لخدماتنا القادمة، صالح سنة؛ لا يخصم من السعر الحالي.`:''}\nآخر تحقق: ${dt.format(o.checkedAt)} بتوقيت دبي`).join('\n\n')+'\n\nالأسعار شاملة الرسوم وعمولة الخدمة، والتوفر قابل للتغير. المقارنة ضمن الخيارات المفحوصة وليست تأكيدًا لأرخص سعر بكامل الشهر.';
  }

@@ -14,12 +14,15 @@ test('one customer request compares both airlines and does not send prices suppl
  try{
   for(const provider of ['airarabia','flycham'])await post('/internal/quotes/heartbeat',{provider,ready:true});
   await inbound('من الشارقة للشام 11-11-2090 ذهاب بس شخص واحد');await wait();
-  const air=(await post('/internal/quotes/claim',{provider:'airarabia'})).body,fly=(await post('/internal/quotes/claim',{provider:'flycham'})).body;
+  assert.deepEqual((await post('/internal/quotes/claim',{provider:'airarabia'})).body,{});
+  const fly=(await post('/internal/quotes/claim',{provider:'flycham'})).body;await progress(fly,'XH744','650.00');await complete(fly);
+  const dubai=(await post('/internal/quotes/claim',{provider:'flycham'})).body;assert.equal(dubai.request.origin,'دبي');await progress(dubai,'XH740','500.00');await complete(dubai);
+  const air=(await post('/internal/quotes/claim',{provider:'airarabia'})).body;
   assert.ok(air.id&&fly.id);assert.notEqual(air.id,fly.id);assert.equal(air.request.provider,'airarabia');assert.equal(fly.request.provider,'flycham');
-  await progress(air,'G9433','600.00');await complete(air);await wait();assert.equal(out.length,1);
-  await progress(fly,'XH744','650.00');await complete(fly);await wait();
+  await progress(air,'G9433','600.00');await complete(air);await wait();assert.equal(out.length,2);
+  await wait();
   assert.equal(out.length,2);assert.match(out[1].text.body,/العربية للطيران/);assert.match(out[1].text.body,/فلاي شام/);assert.match(out[1].text.body,/600.00/);assert.match(out[1].text.body,/650.00/);assert.match(out[1].text.body,/10.00/);assert.doesNotMatch(out[1].text.body,/UNVERIFIED_PROSE|DO_NOT_TRUST/);
-  await inbound('الخيار 2');await wait();assert.match(out.at(-1).text.body,/XH744/);
+  await inbound('الخيار 1');await wait();assert.match(out.at(-1).text.body,/XH744/);
   await post('/internal/quotes/heartbeat',{provider:'airarabia',ready:false,status:'verification_required'});
   assert.deepEqual((await post('/internal/quotes/claim',{provider:'flycham'})).body,{});
  }finally{await new Promise(r=>server.close(r));global.fetch=original;}
@@ -33,9 +36,8 @@ test('Aleppo requests enter both provider queues; the second journey starts only
  try{
   for(const provider of ['airarabia','flycham'])await post('/internal/quotes/heartbeat',{provider,ready:true});
   await inbound('هلا من الشارقة لحلب 11-11-2090 ذهاب بس شخص واحد');await wait();assert.match(out.at(-1).text.body,/معك أحمد/);
-  const air=await post('/internal/quotes/claim',{provider:'airarabia'}),fly=await post('/internal/quotes/claim',{provider:'flycham'});assert.equal(air.request.destination,'حلب');assert.equal(fly.request.destination,'حلب');
+  const fly=await post('/internal/quotes/claim',{provider:'flycham'});assert.equal(fly.request.origin,'الشارقة');assert.equal(fly.request.destination,'حلب');assert.deepEqual(await post('/internal/quotes/claim',{provider:'airarabia'}),{});
   await inbound('طلب تاني من دمشق للشارقة 15-11-2090 ذهاب بس شخص واحد');await wait();assert.match(out.at(-1).text.body,/طلبك الأول.*طلبك التاني/);
-  await complete(air);await wait();assert.deepEqual(await post('/internal/quotes/claim',{provider:'airarabia'}),{});
-  await complete(fly);await wait();await wait();const second=await post('/internal/quotes/claim',{provider:'airarabia'});assert.ok(second.id);assert.equal(second.request.origin,'دمشق');assert.equal(second.request.destination,'الشارقة');assert.equal(second.request.departureDate,'2090-11-15');assert.ok(out.findIndex(x=>/مقارنة رحلتك/.test(x.text.body))<out.findIndex(x=>/15-11|2090-11-15/.test(x.text.body)));
+  await complete(fly);const dubai=await post('/internal/quotes/claim',{provider:'flycham'});assert.equal(dubai.request.origin,'دبي');await complete(dubai);await wait();const air=await post('/internal/quotes/claim',{provider:'airarabia'});assert.equal(air.request.destination,'حلب');await complete(air);await wait();await wait();const secondFly=await post('/internal/quotes/claim',{provider:'flycham'});assert.equal(secondFly.request.origin,'دمشق');await complete(secondFly);const second=await post('/internal/quotes/claim',{provider:'airarabia'});assert.ok(second.id);assert.equal(second.request.origin,'دمشق');assert.equal(second.request.destination,'الشارقة');assert.equal(second.request.departureDate,'2090-11-15');assert.ok(out.findIndex(x=>/مقارنة رحلتك/.test(x.text.body))<out.findIndex(x=>/15-11|2090-11-15/.test(x.text.body)));
  }finally{await new Promise(r=>server.close(r));global.fetch=original;}
 });

@@ -1,4 +1,5 @@
 'use strict';
+const {flyChamAirportRequests}=require('./airport-comparison');
 const { randomUUID, timingSafeEqual,createHash } = require('node:crypto');
 const {expandLiveRequests}=require('./live-quote');
 const {PROVIDERS,NEGATIVE,offerKey,verifiedOffer,nearbyRequests,completionStatus,renderComparison}=require('./quote-comparison');
@@ -21,15 +22,21 @@ class QuoteJobs {
     const id=randomUUID();this.jobs.set(id,{recipient,request:structuredClone(request),expires:this.now()+this.ttl,state:'pending'});this.save();return id;
   }
   cancel(recipient){for(const [id,j]of this.jobs)if(j.recipient===recipient)this.jobs.delete(id);for(const [id,c]of this.comparisons)if(c.recipient===recipient)this.comparisons.delete(id);this.revisions.set(recipient,(this.revisions.get(recipient)||0)+1);this.save();}
-  enqueueComparison(recipient,request,{providers=PROVIDERS,seedOffers=[],allowAlternatives=true}={}){
+  enqueueComparison(recipient,request,{providers=PROVIDERS,seedOffers=[],allowAlternatives=true,compareFlyChamAirports=false}={}){
     this.prune();providers=[...new Set(providers)];if(!providers.length||providers.some(p=>!PROVIDERS.includes(p)))throw Error('QUEUE_PROVIDER_INVALID');
-    const dated=expandLiveRequests(request),needed=dated.length*providers.length;
+    const dated=expandLiveRequests(request),airportRequests=compareFlyChamAirports&&providers.includes('flycham')?flyChamAirportRequests(request):[],needed=dated.length*(providers.length+airportRequests.length);
+    if(compareFlyChamAirports)providers.sort((a,b)=>Number(b==='flycham')-Number(a==='flycham'));
     const own=[...this.jobs.values()].filter(j=>j.recipient===recipient).length;
     const ownComparisons=[...this.comparisons.values()].filter(c=>c.recipient===recipient).length;
     if(this.jobs.size-own+needed>300||this.comparisons.size-ownComparisons>=100)throw Error('QUEUE_UNAVAILABLE');
     this.cancel(recipient);
-    const id=randomUUID(),revision=this.revisions.get(recipient),parent={id,recipient,revision,request:structuredClone(request),providers,children:[],phase:'exact',createdAt:this.now(),deadline:this.now()+this.comparisonTimeoutMs,expires:this.now()+this.ttl,allowAlternatives,version:0,nextReference:1,deliveredVersion:-1,delivered:false};
+    const id=randomUUID(),revision=this.revisions.get(recipient),parent={id,recipient,revision,request:structuredClone(request),providers,children:[],phase:'exact',createdAt:this.now(),deadline:this.now()+this.comparisonTimeoutMs,expires:this.now()+this.ttl,allowAlternatives,compareFlyChamAirports,version:0,nextReference:1,deliveredVersion:-1,delivered:false};
     this.comparisons.set(id,parent);
+    if(airportRequests.length)parent.deadline=this.now()+Math.max(this.comparisonTimeoutMs,20*60*1000);
+    for(const airportRequest of airportRequests)for(const date of expandLiveRequests(airportRequest)){
+      const r={...date,provider:'flycham'},seeds=seedOffers.filter(o=>Number.isFinite(o.checkedAt)&&o.checkedAt<=this.now()&&this.now()-o.checkedAt<=15*60*1000).map(o=>verifiedOffer(o,r,'flycham')).filter(Boolean);
+      this.addComparisonChild(parent,r,'airports',0,seeds);
+    }
     for(const provider of providers)for(const date of dated){
       const r={...structuredClone(date),provider},seeds=seedOffers.filter(o=>Number.isFinite(o.checkedAt)&&o.checkedAt<=this.now()&&this.now()-o.checkedAt<=15*60*1000).map(o=>verifiedOffer(o,r,provider)).filter(Boolean);
       this.addComparisonChild(parent,r,'exact',0,seeds);
@@ -108,7 +115,7 @@ class QuoteJobs {
     if(due.length)this.save();return due;
   }
   current(id,lease){this.prune();const j=this.jobs.get(id);const valid=Boolean(j&&j.state==='claimed'&&j.lease===lease);if(valid){const provider=j.request.provider||'airarabia';this.providerAt.set(provider,this.now());if(provider==='airarabia')this.workerAt=this.now();}return valid;}
-  claim(provider='airarabia'){if(!['airarabia','flycham'].includes(provider))throw Error('QUEUE_PROVIDER_INVALID');this.prune();this.providerAt.set(provider,this.now());if(provider==='airarabia')this.workerAt=this.now();for(const [id,j]of this.jobs)if(j.state==='pending'&&(j.request.provider||'airarabia')===provider){j.state='claimed';j.lease=randomUUID();this.save();return{id,lease:j.lease,request:j.request};}return null;}
+  claim(provider='airarabia'){if(!['airarabia','flycham'].includes(provider))throw Error('QUEUE_PROVIDER_INVALID');this.prune();this.providerAt.set(provider,this.now());if(provider==='airarabia')this.workerAt=this.now();for(const [id,j]of this.jobs)if(j.state==='pending'&&(j.request.provider||'airarabia')===provider){const parent=this.comparisons.get(j.comparisonId);const rank=o=>['الشارقة','دبي'].includes(o)?['الشارقة','دبي'].indexOf(o):2;if(provider==='flycham'&&parent?.compareFlyChamAirports&&[...this.jobs.values()].some(other=>other.state==='pending'&&other.comparisonId===j.comparisonId&&other.request.provider==='flycham'&&['exact','airports'].includes(other.comparisonPhase)&&rank(other.request.origin)<rank(j.request.origin)))continue;if(provider==='airarabia'&&parent?.compareFlyChamAirports&&parent.children.some(c=>c.provider==='flycham'&&['exact','airports'].includes(c.phase)&&c.status==='pending'))continue;j.state='claimed';j.lease=randomUUID();this.save();return{id,lease:j.lease,request:j.request};}return null;}
   takeResult(id,lease){this.prune();const j=this.jobs.get(id);if(!j || j.state!=='claimed' || lease!==j.lease)return null;j.state='sending';return {recipient:j.recipient};}
   takeProgress(id,lease,seq){this.prune();const j=this.jobs.get(id);if(!j||j.state!=='claimed'||lease!==j.lease||!Number.isInteger(seq)||seq!==(j.progress||0)+1)return null;j.progress=seq;return{recipient:j.recipient};}
   finish(id){this.jobs.delete(id);this.save();}

@@ -10,7 +10,7 @@ function sameRequest(a,b){
   (a?.baggageRequest?.checkedWeightKg??30)===(b?.baggageRequest?.checkedWeightKg??30)&&
   ['adults','children','infants'].every(k=>(a?.passengers?.[k]||0)===(b?.passengers?.[k]||0));
 }
-function offerKey(o){return JSON.stringify([o.provider,o.request.departureDate,o.request.returnDate,o.timing.out.flight,o.timing.out.departure,o.timing.back?.flight,o.timing.back?.departure]);}
+function offerKey(o){return JSON.stringify([o.provider,city(o.request.origin),city(o.request.destination),o.request.departureDate,o.request.returnDate,o.timing.out.flight,o.timing.out.departure,o.timing.back?.flight,o.timing.back?.departure]);}
 // Only authenticated worker metadata or caller-vetted fresh catalog records may
 // supply offers. Never parse prices, inventory or flights from generated prose.
 function verifiedOffer(offer,request,provider){
@@ -57,11 +57,11 @@ function completionStatus(data={},offers=[],request={}){
 function statusText(status){return {available:'سعر متأكد',partial:'تأكدت عروض؛ بقية التواقيت لم يكتمل فحصها',no_flights:'راجعت الفترة المطلوبة؛ ما في رحلات متاحة على هالمسار بهالتواريخ',sold_out:'راجعت الرحلة المطلوبة؛ ما في مقاعد متاحة لهالطلب حاليًا',auth_required:'عرض هالشركة لسه غير مؤكد؛ منرسل لك السعر بعد التحقق، حتى تختار على أساس واضح',unverified:'لم يتأكد عرض الشركة الآن'}[status]||'الفحص جارٍ';}
 function formatOffer(o){
  const r=o.request,t=o.timing,checkedAt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'}).format(new Date(o.checkedAt||Date.now())),weights=o.price.weights.map(w=>w.kg===0?'بدون أمتعة مسجلة':w.kg+' كيلو مسجل').join(' / ');
- return `*الخيار ${o.reference} — ${LABELS[o.provider]}*\nالمسار: من مطار ${r.origin} إلى مطار ${r.destination}\n📅 الذهاب: ${r.departureDate}\nرقم الرحلة: ${t.out.flight}\nالإقلاع: ${t.out.departure}\nالوصول: ${t.out.arrival}${t.back?`\n📅 العودة: ${r.returnDate}\nرقم الرحلة: ${t.back.flight}\nالإقلاع: ${t.back.departure}\nالوصول: ${t.back.arrival}`:''}\n🧳 ${weights}${o.provider==='flycham'?' +10 كيلو يد':''}\n💰 *الإجمالي: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${checkedAt} بتوقيت دبي${o.provider==='flycham'?`\n🎁 فاوجر ${o.price.voucherValue} درهم بعد إصدار التذكرة، صالح سنة للاستخدام القادم ضمن خدماتنا؛ لا يخصم من السعر الحالي.`:''}`;
+ return `*الخيار ${o.reference} — ${LABELS[o.provider]}*\nالمسار: من مطار ${city(r.origin)} إلى مطار ${city(r.destination)}\n📅 الذهاب: ${r.departureDate}\nرقم الرحلة: ${t.out.flight}\nالإقلاع: ${t.out.departure}\nالوصول: ${t.out.arrival}${t.back?`\n📅 العودة: ${r.returnDate}\nرقم الرحلة: ${t.back.flight}\nالإقلاع: ${t.back.departure}\nالوصول: ${t.back.arrival}`:''}\n🧳 ${weights}${o.provider==='flycham'?' +10 كيلو يد':''}\n💰 *الإجمالي: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${checkedAt} بتوقيت دبي${o.provider==='flycham'?`\n🎁 فاوجر ${o.price.voucherValue} درهم بعد إصدار التذكرة، صالح سنة للاستخدام القادم ضمن خدماتنا؛ لا يخصم من السعر الحالي.`:''}`;
 }
 function renderComparison(parent,{excludeOfferKeys=[]}={}){
  const sent=new Set(excludeOfferKeys);
- const exact=parent.children.filter(c=>c.phase==='exact'),alternatives=parent.children.filter(c=>c.phase==='alternatives');
+ const exact=parent.children.filter(c=>c.phase==='exact'),alternatives=parent.children.filter(c=>c.phase==='alternatives'),airportChildren=parent.children.filter(c=>c.phase==='airports');
  const parts=['*مقارنة رحلتك | مجموعة الرمال*',`من ${parent.request.origin} إلى ${parent.request.destination}`,parent.request.departureRange?`الفترة المطلوبة: ${parent.request.departureRange.start} إلى ${parent.request.departureRange.end}`:`التاريخ المطلوب: ${parent.request.departureDate}`,'لشخص بالغ واحد، '+(parent.request.tripType==='round_trip'?'ذهاب وعودة':'ذهاب فقط')];
  for(const provider of parent.providers){
   const children=exact.filter(c=>c.provider===provider),allOffers=children.flatMap(c=>c.offers||[]),offers=allOffers.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
@@ -74,9 +74,26 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
    if(city(parent.request.origin)==='أبوظبي'){
     const other=exact.filter(c=>c.provider!==provider).flatMap(c=>c.offers||[]);
     if(other.length)parts.push(`والخبر الحلو، لقيتلك بديل متأكد على ${[...new Set(other.map(o=>LABELS[o.provider]))].join(' و')} من أبوظبي؛ تفاصيل المواعيد والأسعار موضحة ضمن الخيارات.`);
-    parts.push('وإذا بتناسبك المغادرة من دبي أو الشارقة، بتحب قارنلك المتاح منهما لنشوف الأنسب إلك؟');
+    if(!airportChildren.length)parts.push('وإذا بتناسبك المغادرة من دبي أو الشارقة، بتحب قارنلك المتاح منهما لنشوف الأنسب إلك؟');
    }
   }else if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
+ if(provider==='flycham'&&airportChildren.length){
+  parts.push('\n*فلاي شام — مقارنة مطارات المغادرة*');
+  parts.push('حافظت على طلبك الأساسي، وقارنتلك كمان مطارات بديلة بنفس التواريخ والوزن وعدد المسافرين، لتختار الأنسب إلك.');
+  const requested=city(parent.request.origin),flyOffers=exact.filter(c=>c.provider==='flycham').flatMap(c=>c.offers||[]);
+  for(const origin of [...new Set(airportChildren.map(c=>city(c.request.origin)))]){
+   const children=airportChildren.filter(c=>city(c.request.origin)===origin),all=children.flatMap(c=>c.offers||[]),fresh=all.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+   parts.push(`\n*المغادرة من مطار ${origin} — فلاي شام*`);
+   if(fresh.length)parts.push(fresh.map(formatOffer).join('\n\n'));
+   else if(all.length)parts.push('تفاصيل عروض هالمطار المتأكدة سبق إرسالها أعلاه.');
+   else if(children.every(c=>NEGATIVE.has(c.status)))parts.push(`شيّكت نفس الفترة من مطار ${origin}؛ ما في خيارات متاحة على فلاي شام بهالتواريخ.`);
+   else parts.push(children.some(c=>c.status==='pending')?'عم نكمّل التحقق من خيارات هالمطار.':'خيارات هالمطار لسه غير مؤكدة؛ ما رح أعطيك سعر قبل التحقق.');
+   flyOffers.push(...all);
+  }
+  const dubai=flyOffers.filter(o=>city(o.request.origin)==='دبي').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0],sharjah=flyOffers.filter(o=>city(o.request.origin)==='الشارقة').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0];
+  if(dubai&&sharjah&&Number(dubai.price.sellingTotal)<Number(sharjah.price.sellingTotal))parts.push(`💡 ضمن الخيارات المتأكدة، أقل سعر من دبي ${dubai.price.sellingTotal} درهم، وأقل سعر من الشارقة ${sharjah.price.sellingTotal} درهم. راجع تواريخ وتواقيت الخيارين فوق؛ إذا دبي بتناسبك ممكن تكون أوفر إلك.`);
+  if(flyOffers.length)parts.push(`أي خيار بناسبك؟ المغادرة الأساسية من ${requested} محفوظة، وتغيير المطار بيكون حسب اختيارك.`);
+ }
  }
  if(alternatives.length){
   parts.push('\n*بدائل قريبة من التاريخ المطلوب*');

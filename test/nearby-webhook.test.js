@@ -24,7 +24,7 @@ test('signed WhatsApp request suggests verified before/after one-day alternative
   assert.equal((await inbound('من الشارقة للشام 11-11-2090 ذهاب بس شخص واحد فلاي شام فقط')).status,200);await waitForReply(1);
   const exact=await claim();assert.ok(exact.id);assert.equal(exact.request.departureDate,'2090-11-11');assert.equal(exact.request.origin,'الشارقة');assert.equal(exact.request.destination,'دمشق');
   assert.deepEqual((await post('/internal/quotes/claim',{provider:'airarabia'})).body,{});
-  await complete(exact,'no_flights');
+  await complete(exact,'no_flights');const airport=await claim();assert.equal(airport.request.origin,'دبي');await complete(airport,'unverified');
   const before=await claim(),after=await claim();assert.equal(before.request.departureDate,'2090-11-10');assert.equal(after.request.departureDate,'2090-11-12');
   for(const job of [before,after]){assert.equal(job.request.origin,'الشارقة');assert.equal(job.request.destination,'دمشق');assert.equal(job.request.passengers.adults,1);assert.equal(job.request.baggageRequest.checkedWeightKg,30);assert.equal(job.request.tripType,'one_way');}
   assert.deepEqual(await claim(),{});

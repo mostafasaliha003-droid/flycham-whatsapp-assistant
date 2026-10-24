@@ -76,12 +76,12 @@ async function processCustomerMessages(sender,messages){
     try{
       expandLiveRequests(result.request);
       const providers=result.request.providerExclusive&&result.request.provider?[result.request.provider]:POLICY.providers;
-      const seeds=catalog.find({...result.request,provider:null});
-      const comparison=quoteJobs.enqueueComparison(sender,result.request,{providers,seedOffers:seeds});
+      const seeds=catalog.find({...result.request,provider:null}).concat(require('./airport-comparison').flyChamAirportRequests(result.request).flatMap(r=>catalog.find(r)));
+      const comparison=quoteJobs.enqueueComparison(sender,result.request,{providers,seedOffers:seeds,compareFlyChamAirports:true});
       const conversation=assistant.state(sender);conversation.previousComparisonOffers=conversation.offers.slice(-80);conversation.offers=[];conversation.selected=null;conversation.activeComparisonId=comparison.id;conversation.queueReady=false;conversation.status='queued';assistant.store.set(sender,conversation);
       if(comparison.ready)setTimeout(()=>deliverComparison(comparison.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED')),0).unref();
       const r=result.request;
-      reply=`${result.comparison?'رح نقارن الخيار الجديد مع الحفاظ على طلبك الأساسي.':result.amendment?'تم تعديل طلبك مع الحفاظ على التفاصيل الأخرى.':'وصل طلبك.'}\nمن مطار ${r.origin} إلى ${r.destination}\nالفترة: ${r.departureRange?`${r.departureRange.start} إلى ${r.departureRange.end}`:r.departureDate}\n${r.passengers.adults} بالغ — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${r.baggageRequest?` — الوزن المطلوب ${r.baggageRequest.checkedWeightKg} كغ`:''}\nعم نقارن الخيارات المتاحة لدى ${providers.map(p=>p==='flycham'?'فلاي شام':'العربية للطيران').join(' وفـ')} حسب تفاصيلك، مع الأسعار والإضافات. أول ما تتأكد نتيجة منرسلها؛ الاستعلام لا ينشئ حجزًا.`;
+      reply=`${result.comparison?'رح نقارن الخيار الجديد مع الحفاظ على طلبك الأساسي.':result.amendment?'تم تعديل طلبك مع الحفاظ على التفاصيل الأخرى.':'وصل طلبك.'}\nمن مطار ${r.origin} إلى ${r.destination}\nالفترة: ${r.departureRange?`${r.departureRange.start} إلى ${r.departureRange.end}`:r.departureDate}\n${r.passengers.adults} بالغ — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}${r.baggageRequest?` — الوزن المطلوب ${r.baggageRequest.checkedWeightKg} كغ`:''}\n${providers.includes('flycham')&&require('./airport-comparison').flyChamAirportRequests(r).length?'عم نبحث حسب تفاصيلك، ومنقارن فلاي شام من الشارقة ودبي أولًا'+(providers.includes('airarabia')?'، وبعدها العربية للطيران.':'.'):'عم نبحث حسب تفاصيلك لدى '+providers.map(p=>p==='flycham'?'فلاي شام':'العربية للطيران').join(' و')+'.'} رح نوضح مطار المغادرة والوزن والسعر النهائي لكل خيار. أول ما تتأكد نتيجة منرسلها؛ الاستعلام لا ينشئ حجزًا.`;
       console.log('WHATSAPP_LIVE_QUOTE_QUEUED');
     }catch{assistant.jobState(sender,'failed');reply='تفاصيل طلبك محفوظة، لكن البحث غير جاهز الآن أو تعذر التحقق من الفترة المطلوبة. لم يتأكد سعر جديد؛ فينا نعيد المحاولة على نفس التفاصيل.';}
   }
@@ -143,7 +143,7 @@ async function handleWebhookPost(request, response) {
   }
 }
 
-function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||(includeCatalog?catalog.claim(provider||'airarabia'):null)||{};}
+function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');const waiting=[...quoteJobs.jobs.values()].some(job=>job.state==='pending'&&(job.request.provider||'airarabia')===(provider||'airarabia'));return j||(includeCatalog&&!waiting?catalog.claim(provider||'airarabia'):null)||{};}
 
 function createServer() {
   const server=http.createServer(async (request, response) => {
