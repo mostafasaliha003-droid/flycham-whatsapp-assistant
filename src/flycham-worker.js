@@ -3,6 +3,7 @@ const {chromium}=require('playwright');
 const {PortalSession}=require('./portal-session');
 const {startQuotePolling}=require('./quote-poller');
 const {submitProbe}=require('./portal-search-probe');
+const {revealFlyChamSearchPanel}=require('./flycham-search-panel');
 const {validateLiveRequest,expandLiveRequests}=require('./live-quote');
 const {readFlyChamFirstPage}=require('./flycham-first-page');
 const {waitForFlightResults,readFlightTimes,selectFlightTimes,flightPairs}=require('./portal-flight-times');
@@ -179,6 +180,7 @@ class FlyChamPortalAdapter{
    let recovered=false;
    for(let attempt=0;attempt<60;attempt++){
     for(const f of this.searchFrames())try{
+     if(await revealFlyChamSearchPanel(f)){reactivatedFrames.add(f);this.report('FLYCHAM_SEARCH_PANEL_EXPANDED');}
      if(await f.locator('#fAirport:visible').count()!==1)continue;
      const previous=previousInputs.get(f);
      if(previous&&!reactivatedFrames.has(f)&&await previous.evaluate(el=>el.isConnected).catch(()=>false))continue;

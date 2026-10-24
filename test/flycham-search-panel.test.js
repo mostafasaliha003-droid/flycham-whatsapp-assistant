@@ -1,0 +1,8 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {revealFlyChamSearchPanel}=require('../src/flycham-search-panel');
+const {FlyChamPortalAdapter}=require('../src/flycham-worker');
+function fixture({visible=false,label='Show search panel'}={}){let clicks=0;const frame={locator:selector=>({count:async()=>selector==='#fAirport:visible'?(visible?1:0):1,innerText:async()=>label,click:async()=>{assert.equal(selector,'#trSearchParams_icon:visible');clicks++;visible=true;},waitFor:async()=>{assert.ok(visible);}})};return{frame,clicks:()=>clicks};}
+test('a supplier-collapsed panel is opened with its icon before airport typing',async()=>{const f=fixture();assert.equal(await revealFlyChamSearchPanel(f.frame),true);assert.equal(f.clicks(),1);assert.equal(await revealFlyChamSearchPanel(f.frame),false);assert.equal(f.clicks(),1);});
+test('visible fields and unfamiliar panel labels never cause a toggle',async()=>{for(const options of [{visible:true},{label:'Hide search panel'},{label:'Make Reservation'}]){const f=fixture(options);assert.equal(await revealFlyChamSearchPanel(f.frame),false);assert.equal(f.clicks(),0);}});
+test('adapter returns the restored search form after a positive fare had collapsed it',async()=>{const f=fixture(),events=[];const a=new FlyChamPortalAdapter({waitForTimeout:async()=>{}},{report:e=>events.push(e)});a.authenticatedFrame=async()=>f.frame;a.isAuthenticated=async()=>true;a.searchFrames=()=>[f.frame];a.reservationControl={click:async()=>{}};assert.equal(await a.openSearchForm(),f.frame);assert.equal(f.clicks(),1);assert.ok(events.includes('FLYCHAM_SEARCH_PANEL_EXPANDED'));});
