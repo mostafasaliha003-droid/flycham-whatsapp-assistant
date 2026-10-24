@@ -25,6 +25,7 @@ test('signed WhatsApp request queues privately and completes one reply using aut
   const complete={id:job.id,lease:job.lease,reply:'MODEL_PRICE_MUST_NOT_BE_USED',outcome:'done',coverage:[{date:'2090-11-11',status:'confirmed'}]};
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,200);
   assert.equal((await post('/internal/quotes/complete',complete,auth)).status,409);
+  const alternate=JSON.parse((await post('/internal/quotes/claim',{},auth)).body);assert.ok(alternate.id);assert.equal(alternate.request.origin,'أبوظبي');assert.equal(alternate.request.departureDate,job.request.departureDate);assert.equal(alternate.request.returnDate,job.request.returnDate);assert.ok(!JSON.stringify(alternate).includes('private-recipient'));assert.equal((await post('/internal/quotes/complete',{id:alternate.id,lease:alternate.lease,reply:'UNVERIFIED_ALTERNATE_PROSE',outcome:'failed',coverage:[{date:alternate.request.departureDate,status:'unverified'}]},auth)).status,200);
   await new Promise(r=>setTimeout(r,30));assert.equal(out.length,2);assert.equal(out[1].to,'private-recipient');assert.match(out[1].text.body,/700.00/);assert.doesNotMatch(out[1].text.body,/MODEL_PRICE_MUST_NOT_BE_USED/);
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);}
 });

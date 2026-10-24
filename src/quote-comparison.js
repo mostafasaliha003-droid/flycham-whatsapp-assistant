@@ -60,40 +60,52 @@ function formatOffer(o){
  return `*الخيار ${o.reference} — ${LABELS[o.provider]}*\nالمسار: من مطار ${city(r.origin)} إلى مطار ${city(r.destination)}\n📅 الذهاب: ${r.departureDate}\nرقم الرحلة: ${t.out.flight}\nالإقلاع: ${t.out.departure}\nالوصول: ${t.out.arrival}${t.back?`\n📅 العودة: ${r.returnDate}\nرقم الرحلة: ${t.back.flight}\nالإقلاع: ${t.back.departure}\nالوصول: ${t.back.arrival}`:''}\n🧳 ${weights}${o.provider==='flycham'?' +10 كيلو يد':''}\n💰 *الإجمالي: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${checkedAt} بتوقيت دبي${o.provider==='flycham'?`\n🎁 فاوجر ${o.price.voucherValue} درهم بعد إصدار التذكرة، صالح سنة للاستخدام القادم ضمن خدماتنا؛ لا يخصم من السعر الحالي.`:''}`;
 }
 function renderComparison(parent,{excludeOfferKeys=[]}={}){
- const sent=new Set(excludeOfferKeys);
- const exact=parent.children.filter(c=>c.phase==='exact'),alternatives=parent.children.filter(c=>c.phase==='alternatives'),airportChildren=parent.children.filter(c=>c.phase==='airports');
- const parts=['*مقارنة رحلتك | مجموعة الرمال*',`من ${parent.request.origin} إلى ${parent.request.destination}`,parent.request.departureRange?`الفترة المطلوبة: ${parent.request.departureRange.start} إلى ${parent.request.departureRange.end}`:`التاريخ المطلوب: ${parent.request.departureDate}`,'لشخص بالغ واحد، '+(parent.request.tripType==='round_trip'?'ذهاب وعودة':'ذهاب فقط')];
- for(const provider of parent.providers){
-  const children=exact.filter(c=>c.provider===provider),allOffers=children.flatMap(c=>c.offers||[]),offers=allOffers.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
-  parts.push(`\n*${LABELS[provider]} — التاريخ المطلوب*`);
-  if(offers.length)parts.push(offers.map(formatOffer).join('\n\n'));else if(allOffers.length)parts.push('العروض المتأكدة لهذه الشركة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.');
-  const statuses=[...new Set(children.map(c=>c.status))];
-  if(!allOffers.length&&children.some(c=>c.failureReason==='airport_selection_unconfirmed'))parts.push(`تعذر تأكيد اختيار المطار لمسار ${parent.request.origin} إلى ${parent.request.destination} لدى هذه الشركة، لذلك لم يتأكد سعر للفترة المطلوبة. هذا لا يعني عدم وجود رحلات أو امتلاء المقاعد. بتحب نجرّب من مطار الشارقة أو مطار تاني بتختاره؟`);
-  else if(!allOffers.length&&children.length&&children.every(c=>c.status==='no_flights')){
-   parts.push(`راجعت الفترة المطلوبة من مطار ${city(parent.request.origin)} إلى مطار ${city(parent.request.destination)} على ${LABELS[provider]}؛ ما في رحلات متاحة بهالتواريخ على هالمسار. هالنتيجة تخص هالشركة والفترة اللي شيّكتها.`);
-   if(city(parent.request.origin)==='أبوظبي'){
-    const other=exact.filter(c=>c.provider!==provider).flatMap(c=>c.offers||[]);
-    if(other.length)parts.push(`والخبر الحلو، لقيتلك بديل متأكد على ${[...new Set(other.map(o=>LABELS[o.provider]))].join(' و')} من أبوظبي؛ تفاصيل المواعيد والأسعار موضحة ضمن الخيارات.`);
-    if(!airportChildren.length)parts.push('وإذا بتناسبك المغادرة من دبي أو الشارقة، بتحب قارنلك المتاح منهما لنشوف الأنسب إلك؟');
-   }
-  }else if(!offers.length||statuses.some(s=>s!=='available'))parts.push(statuses.map(statusText).join('؛ '));
- if(provider==='flycham'&&airportChildren.length){
-  parts.push('\n*فلاي شام — مقارنة مطارات المغادرة*');
-  parts.push('حافظت على طلبك الأساسي، وقارنتلك كمان مطارات بديلة بنفس التواريخ والوزن وعدد المسافرين، لتختار الأنسب إلك.');
-  const requested=city(parent.request.origin),flyOffers=exact.filter(c=>c.provider==='flycham').flatMap(c=>c.offers||[]);
-  for(const origin of [...new Set(airportChildren.map(c=>city(c.request.origin)))]){
-   const children=airportChildren.filter(c=>city(c.request.origin)===origin),all=children.flatMap(c=>c.offers||[]),fresh=all.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
-   parts.push(`\n*المغادرة من مطار ${origin} — فلاي شام*`);
-   if(fresh.length)parts.push(fresh.map(formatOffer).join('\n\n'));
-   else if(all.length)parts.push('تفاصيل عروض هالمطار المتأكدة سبق إرسالها أعلاه.');
-   else if(children.every(c=>NEGATIVE.has(c.status)))parts.push(`شيّكت نفس الفترة من مطار ${origin}؛ ما في خيارات متاحة على فلاي شام بهالتواريخ.`);
-   else parts.push(children.some(c=>c.status==='pending')?'عم نكمّل التحقق من خيارات هالمطار.':'خيارات هالمطار لسه غير مؤكدة؛ ما رح أعطيك سعر قبل التحقق.');
-   flyOffers.push(...all);
+ const sent=new Set(excludeOfferKeys),allChildren=parent.children||[],pending=allChildren.some(c=>c.status==='pending');
+ const exact=allChildren.filter(c=>c.phase==='exact'),alternatives=allChildren.filter(c=>c.phase==='alternatives'),airportChildren=allChildren.filter(c=>c.phase==='airports');
+ const allParentOffers=allChildren.flatMap(c=>c.offers||[]);
+ const parts=['*مقارنة رحلتك | مجموعة الرمال*',`من ${city(parent.request.origin)} إلى ${city(parent.request.destination)}`,parent.request.departureRange?`الفترة المطلوبة: ${parent.request.departureRange.start} إلى ${parent.request.departureRange.end}`:`التاريخ المطلوب: ${parent.request.departureDate}`,'لشخص بالغ واحد، '+(parent.request.tripType==='round_trip'?'ذهاب وعودة':'ذهاب فقط')];
+ function renderGroup(children,provider,request){
+  const all=children.flatMap(c=>c.offers||[]),fresh=all.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+  if(fresh.length)parts.push(fresh.map(formatOffer).join('\n\n'));
+  else if(all.length)parts.push('العروض المتأكدة لهذه الشركة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.');
+  if(!children.length){parts.push('لم يبدأ فحص خيارات هذه الشركة لهذا المطار؛ لا يوجد سعر متأكد معروض له.');return;}
+  if(children.some(c=>c.status==='pending')){parts.push('خيارات هذا المطار لسه قيد التحقق، ومنرسل كل عرض بعد تأكيد سعره.');return;}
+  if(all.length){if(children.some(c=>c.status!=='available'))parts.push('العروض الموضحة متأكدة؛ بعض الأيام أو التواقيت الأخرى لم يكتمل فحصها.');return;}
+  const route=`من مطار ${city(request.origin)} إلى مطار ${city(request.destination)} على ${LABELS[provider]}`;
+  if(children.every(c=>c.status==='no_flights')){
+   parts.push(`راجعت الفترة المطلوبة ${route}؛ ما في رحلات متاحة بهالتواريخ على هالمسار. هالنتيجة تخص هالشركة والفترة اللي شيّكتها.`);
+   const sameAirportOffers=allParentOffers.filter(o=>o.provider!==provider&&city(o.request?.origin)===city(request.origin)&&city(o.request?.destination)===city(request.destination)&&
+    (parent.request.departureRange?o.request.departureDate>=parent.request.departureRange.start&&o.request.departureDate<=parent.request.departureRange.end:o.request.departureDate===parent.request.departureDate));
+   if(sameAirportOffers.length)parts.push(`والخبر الحلو، لقيتلك بديل متأكد على ${[...new Set(sameAirportOffers.map(o=>LABELS[o.provider]))].join(' و')} من ${city(request.origin)}؛ تفاصيل المواعيد والأسعار موضحة ضمن الخيارات.`);
+   if(city(request.origin)==='أبوظبي'&&!airportChildren.length)parts.push('المغادرة من دبي أو الشارقة ممكن تكون بديلًا للمقارنة إذا بتناسبك؛ لم يتأكد عرض منهما ضمن هالفحص.');
   }
-  const dubai=flyOffers.filter(o=>city(o.request.origin)==='دبي').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0],sharjah=flyOffers.filter(o=>city(o.request.origin)==='الشارقة').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0];
-  if(dubai&&sharjah&&Number(dubai.price.sellingTotal)<Number(sharjah.price.sellingTotal))parts.push(`💡 ضمن الخيارات المتأكدة، أقل سعر من دبي ${dubai.price.sellingTotal} درهم، وأقل سعر من الشارقة ${sharjah.price.sellingTotal} درهم. راجع تواريخ وتواقيت الخيارين فوق؛ إذا دبي بتناسبك ممكن تكون أوفر إلك.`);
-  if(flyOffers.length)parts.push(`أي خيار بناسبك؟ المغادرة الأساسية من ${requested} محفوظة، وتغيير المطار بيكون حسب اختيارك.`);
+  else if(children.every(c=>NEGATIVE.has(c.status)))parts.push(`ما ظهر خيار متاح ${route} ضمن الأيام والتواقيت اللي اكتمل فحصها.`);
+  else parts.push(`لم يتأكد سعر جاهز للإرسال ${route} حتى الآن. هالنتيجة ما تعني أن الرحلات غير موجودة أو المقاعد ممتلئة.`);
  }
+ for(const provider of parent.providers){
+  const routing=parent.airportRouting?.[provider],side=routing?.airportSide==='destination'?'destination':'origin';
+  const ownExact=exact.filter(c=>c.provider===provider),ownAirports=airportChildren.filter(c=>c.provider===provider);
+  parts.push(`\n*${LABELS[provider]} — التاريخ المطلوب*`);
+  if(ownExact.length)renderGroup(ownExact,provider,ownExact[0].request||parent.request);
+  else if(routing?.excludedRequested){
+   const airport=city(routing.requestedAirport||parent.request[side]);
+   parts.push(`ل${side==='origin'?'لمغادرة من':'لوصول إلى'} مطار ${airport}، ما عندي عرض متأكد على ${LABELS[provider]}. المقارنة مع هذه الشركة تشمل المطارات البديلة الموضحة أدناه، مع بقاء ${side==='origin'?'مطار مغادرتك':'مطار وصولك'} الأساسي حسب طلبك.`);
+  }else if(!ownAirports.length)renderGroup([],provider,parent.request);
+  if(ownAirports.length){
+   parts.push(`\n*${LABELS[provider]} — مقارنة مطارات ${side==='origin'?'المغادرة':'الوصول'}*`);
+   parts.push('المقارنة على نفس التواريخ والوزن وعدد المسافرين؛ أي تغيير بالمطار بيكون باختيارك.');
+   const requested=city(parent.request[side]),airports=[...new Set(ownAirports.map(c=>city(c.request[side])))].sort((a,b)=>Number(b===requested)-Number(a===requested));
+   for(const airport of airports){
+    const children=ownAirports.filter(c=>city(c.request[side])===airport);
+    parts.push(`\n*${side==='origin'?'المغادرة من':'الوصول إلى'} مطار ${airport} — ${LABELS[provider]}*`);
+    renderGroup(children,provider,children[0].request);
+   }
+  }
+  if(provider==='flycham'){
+   const flyOffers=[...ownExact,...ownAirports].flatMap(c=>c.offers||[]);
+   const dubai=flyOffers.filter(o=>city(o.request[side])==='دبي').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0],sharjah=flyOffers.filter(o=>city(o.request[side])==='الشارقة').sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal))[0];
+   if(dubai&&sharjah&&Number(dubai.price.sellingTotal)<Number(sharjah.price.sellingTotal))parts.push(`💡 ضمن الخيارات المتأكدة، أقل سعر ${side==='origin'?'من':'إلى'} دبي ${dubai.price.sellingTotal} درهم، وأقل سعر ${side==='origin'?'من':'إلى'} الشارقة ${sharjah.price.sellingTotal} درهم. راجع تواريخ وتواقيت الخيارين فوق؛ إذا دبي بتناسبك ممكن تكون أوفر إلك.`);
+  }
  }
  if(alternatives.length){
   parts.push('\n*بدائل قريبة من التاريخ المطلوب*');
@@ -101,12 +113,20 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
   if(offers.length){
    parts.push('لقيتلك هالبدائل القريبة والمتأكدة أسعارها 👇');
    parts.push(offers.map(({o,delta})=>`*${delta<0?'قبل':'بعد'} موعدك ${Math.abs(delta)===1?'بيوم':Math.abs(delta)===2?'بيومين':`بـ${Math.abs(delta)} أيام`}*\n${formatOffer(o)}`).join('\n\n'));
-   parts.push('أي خيار من هالخيارات بناسبك لنكمل عليه؟');
-  }
-  else parts.push(allOffers.length?'البدائل المتأكدة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.':alternatives.some(c=>c.status==='pending')?'عم نفحص أقرب الأيام لموعدك، قبل بيوم وبعد بيوم أولًا، ومنرسل الخيارات المتأكدة.':alternatives.every(c=>NEGATIVE.has(c.status))?'ما ظهر خيار متاح لدى الشركات المفحوصة ضمن الأيام القريبة اللي راجعناها. بتحب نوسّع البحث لفترة أبعد، أو نقارن من مطار تاني بتختاره؟':'لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي تعذر فحصها.');
-  const uncertain=alternatives.filter(c=>['partial','unverified','auth_required','pending'].includes(c.status));if(uncertain.length&&offers.length)parts.push('هذه البدائل تأكدت؛ بعض الأيام أو التواقيت القريبة لم يكتمل فحصها.');
+  }else if(allOffers.length)parts.push('البدائل المتأكدة سبق إرسالها أعلاه، وأرقام خياراتها محفوظة.');
+  else if(alternatives.some(c=>c.status==='pending'))parts.push('الأيام القريبة من موعدك لسه قيد التحقق؛ منرسل الخيارات المتأكدة فور توفرها.');
+  else if(alternatives.every(c=>NEGATIVE.has(c.status)))parts.push('ما ظهر خيار متاح لدى الشركات المفحوصة ضمن الأيام القريبة اللي راجعناها.');
+  else parts.push('لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي لم يكتمل فحصها.');
+  if(alternatives.some(c=>['partial','unverified','auth_required','pending'].includes(c.status))&&offers.length)parts.push('هذه البدائل تأكدت؛ بعض الأيام أو التواقيت القريبة لم يكتمل فحصها.');
  }
- if(parent.children.some(c=>c.offers?.length))parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');
+ if(allParentOffers.length){
+  parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');
+  parts.push(pending?'بقية الخيارات لسه قيد التحقق؛ العروض الموضحة أعلاه متأكدة حسب آخر مراجعة.':'أي خيار من هالخيارات بناسبك لنكمل عليه؟');
+ }else if(pending)parts.push('\nبقية الخيارات لسه قيد التحقق؛ ما في داعي تعيد تفاصيل رحلتك، ومنرسل أي سعر بعد تأكيده.');
+ else{
+  parts.push('\nحتى تختار على أساس واضح، ما عندي سعر متأكد جاهز للإرسال من الفحوص المنجزة لهالطلب.');
+  parts.push('إذا مواعيدك مرنة، بتحب نوسّع البحث لفترة أبعد: سبعة أيام بعد آخر تاريخ طلبته، مع الحفاظ على باقي التفاصيل؟');
+ }
  return parts.join('\n');
 }
 module.exports={PROVIDERS,NEGATIVE,STATUSES,sameRequest,offerKey,verifiedOffer,nearbyRequests,completionStatus,renderComparison,formatOffer};

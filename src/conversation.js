@@ -104,8 +104,8 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
-  if(/فلاي\s*شام|fly\s*cham/i.test(text)){if(request.provider!=='flycham')request.providerExclusive=false;request.provider='flycham';}
-  else if(/العربي[هة]|air\s*arabia/i.test(text)){if(request.provider!=='airarabia')request.providerExclusive=false;request.provider='airarabia';}
+  if(/فلاي\s*شام|fly\s*cham/i.test(text)){if(request.provider!=='flycham'){request.providerExclusive=false;delete request.providerRestrictionSource;}request.provider='flycham';}
+  else if(/العربي[هة]|air\s*arabia/i.test(text)){if(request.provider!=='airarabia'){request.providerExclusive=false;delete request.providerRestrictionSource;}request.provider='airarabia';}
   const hasReturn = parseTripType(text)==='round_trip';
   const oneWay = parseTripType(text)==='one_way';
   if (dates.length && !invalidDate) {
@@ -168,8 +168,12 @@ function summarize(request) {
 
 function applyDecisionPatch(request, patch, now) {
   if (!patch) return false;
-  for (const k of ['origin','destination','tripType','provider']) if (patch[k]){if(k==='provider'&&request.provider!==patch[k]&&typeof patch.providerExclusive!=='boolean')request.providerExclusive=false;request[k]=patch[k];}
-  if(typeof patch.providerExclusive==='boolean')request.providerExclusive=patch.providerExclusive;
+  for (const k of ['origin','destination','tripType','provider']) if (patch[k]){if(k==='provider'&&request.provider!==patch[k]&&typeof patch.providerExclusive!=='boolean'){request.providerExclusive=false;delete request.providerRestrictionSource;}request[k]=patch[k];}
+  if(typeof patch.providerExclusive==='boolean'){
+    request.providerExclusive=patch.providerExclusive;
+    if(!patch.providerExclusive)delete request.providerRestrictionSource;
+    else if(patch.providerRestrictionSource==='customer')request.providerRestrictionSource='customer';
+  }
   if (patch.departureDate) {request.departureDate=patch.departureDate;request.departureRange=null;}
   if (patch.rangeStart && patch.rangeEnd) {request.departureRange={start:patch.rangeStart,end:patch.rangeEnd,kind:'customer_range'};request.departureDate=null;}
   if (patch.returnDate) request.returnDate=patch.returnDate;
@@ -227,6 +231,14 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   if(language.destination===request.origin&&!/(?:لل|الى|إلى|على)\s*/.test(normalized))delete language.destination;
   if(language.origin===request.destination&&!/(?:من|from)\s/i.test(normalized))delete language.origin;
   const invalidDate = applyDecisionPatch(request,language,now)||applyDecisionPatch(request,patch,now)||parsedInvalid;
+  // Only the customer's airline wording can establish an exclusive supplier.
+  // It outranks a model's conflicting preference patch.
+  if(language.provider&&typeof language.providerExclusive==='boolean')request.provider=language.provider;
+  if(typeof language.providerExclusive==='boolean'){
+    request.providerExclusive=language.providerExclusive;
+    if(language.providerExclusive)request.providerRestrictionSource='customer';
+    else delete request.providerRestrictionSource;
+  }
   const routeClarification=reconcileRoute(request,state.request,normalized,state.awaiting);
   applyDefaultBaggage(request);
   if(state.awaiting==='searchExpansion'&&JSON.stringify(request)===before)return{complete:false,reply:'على نفس المسار والوزن: أي فترة بتناسبك أكثر، الأسبوع الجاي أو الشهر الجاي؟ أو حدد عدد الأيام بعد آخر تاريخ.'};

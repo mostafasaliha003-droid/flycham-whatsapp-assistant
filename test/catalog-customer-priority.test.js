@@ -11,8 +11,8 @@ test('catalog exclusion never blocks a queued customer and never claims backgrou
   assert.deepEqual(await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false}),{});
   await post('/webhooks/whatsapp',{entry:[{changes:[{field:'messages',value:{messages:[{from:'synthetic-customer',id:'catalog-priority-inbound',type:'text',text:{body:'من ابوظبي إلى دمشق 18-11-2099 ذهاب بس شخص واحد فلاي شام فقط'}}]}}]}]},true);
   await new Promise(resolve=>setTimeout(resolve,30));
-  const customer=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.ok(customer.id);assert.ok(!customer.catalog);assert.equal(customer.request.origin,'الشارقة');assert.equal(customer.request.departureDate,'2099-11-18');
-  const dubai=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.equal(dubai.request.origin,'دبي');const abuDhabi=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.equal(abuDhabi.request.origin,'أبوظبي');
+  const customer=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.ok(customer.id);assert.ok(!customer.catalog);assert.equal(customer.request.origin,'دبي');assert.equal(customer.request.departureDate,'2099-11-18');
+  const sharjah=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.equal(sharjah.request.origin,'الشارقة');assert.equal(sharjah.request.departureDate,'2099-11-18');assert.deepEqual(await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false}),{});assert.deepEqual(await post('/internal/quotes/claim',{provider:'airarabia',includeCatalog:false}),{});
   const catalog=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:true});assert.equal(catalog.catalog,true);
  }finally{await new Promise(r=>server.close(r));}
 });

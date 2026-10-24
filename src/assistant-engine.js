@@ -4,6 +4,7 @@ const {aiConfigured,aiProvider}=require('./assistant-nlu');
 const crypto=require('node:crypto');
 const legacy=require('./conversation');
 const {normalize,naturalDate}=require('./arabic-dates');
+const {languagePatch,city}=require('./travel-language');
 const {understand}=require('./assistant-nlu');
 const {AssistantState}=require('./assistant-state');
 const {POLICY,capabilityIssue}=require('./assistant-policy');
@@ -54,6 +55,27 @@ function explainService(t,request={},status){
  if(/طول|تأخير|تاخير|تعب|مستعجل/.test(t))return ['searching','queued'].includes(status)?'معك، وبقدّر وقتك. طلبك قيد التحقق على نفس التفاصيل؛ ما رح أغيّر المسار أو الوزن من عندي، ومنبعتلك النتيجة بعد تأكدها.':'معك، وبقدّر وقتك. التفاصيل اللي ذكرتها محفوظة؛ منكمل من آخر نقطة واضحة حتى ما تعيد طلبك.';
  return null;
 }
+function acceptsExpansion(base,text,now){const p=base?.proposal,t=normalize(text).replace(/[؟?!،,.]+$/g,'');return Boolean(p?.choiceCount===1&&p.expiresAt>=now&&p.requestFingerprint===JSON.stringify(base.request)&&/^(?:شفلي|شوفلي|شوف لي|اي شفلي|اي شوفلي|نعم|اي|تابع|كمل|تمام)$/.test(t));}
+function selectedSupplierRequest(request){return {...request,providerExclusive:true,providerRestrictionSource:request.providerExclusive&&request.providerRestrictionSource==='customer'?'customer':'selection'};}
+function reconcileSupplierRestriction(id,s,text,modelPatch={}){
+ const base=legacy.exportSession(id),r=base?.request;
+ if(!r?.providerExclusive)return;
+ const direct=languagePatch(text),t=normalize(text).replace(/[؟?!،,.]+$/g,'').trim();
+ if(typeof direct.providerExclusive==='boolean')return; // Applied authoritatively below.
+ if(r.providerRestrictionSource==='customer')return;
+ // Migrate an older restriction only when the customer's own bounded history
+ // proves an airline-only instruction. Assistant offer text is not consent.
+ if(!r.providerRestrictionSource){
+  const evidence=[...s.history].reverse().filter(m=>m.role==='user').map(m=>languagePatch(m.text)).find(p=>typeof p.providerExclusive==='boolean');
+  if(evidence?.providerExclusive&&evidence.provider===r.provider){r.providerRestrictionSource='customer';legacy.importSession(id,base);s.base=base;return;}
+ }
+ const target={...modelPatch,...direct};
+ const changedRoute=['origin','destination'].some(k=>target[k]&&city(target[k])!==city(r[k]));
+ const broadCheapest=/ارخص|اقل سعر|اوفر/.test(t)&&/ابحث|شوف|شفلي|شيك|بدي|اريد|شو|او\s*ارخص/.test(t);
+ const anyCompany=direct.providerExclusive===false;
+ const legacyRetry=!r.providerRestrictionSource&&!s.offers.length&&['done','failed'].includes(s.status)&&/^(?:اعد البحث|عيد البحث|شفلي|شوفلي|شوف لي|تابع|كمل|نفس الرحله|نفس التفاصيل)$/.test(t);
+ if(changedRoute||broadCheapest||anyCompany||legacyRetry){const before=JSON.stringify(r);r.providerExclusive=false;delete r.providerRestrictionSource;if(base.proposal?.requestFingerprint===before)base.proposal.requestFingerprint=JSON.stringify(r);s.selected=null;legacy.importSession(id,base);s.base=base;}
+}
 class AssistantEngine{
  constructor({store=new AssistantState(),nlu=null,env=process.env}={}){this.store=store;this.nlu=nlu||(enabled(env)?understandConsultant:understand);this.env=env;this.locks=new Map();this.prepared=new Map();}
  state(id){return {history:[],offers:[],selected:null,base:null,previous:[],comparison:null,status:'idle',coverage:[],...this.store.get(id)};}
@@ -62,7 +84,7 @@ class AssistantEngine{
  async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
   if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
   const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
-  if(!s.pendingQuotedOffer&&knownTripFollowup(text,s.base?.request,now))return;
+  if(!s.pendingQuotedOffer&&(acceptsExpansion(s.base,text,now)||knownTripFollowup(text,s.base?.request,now)))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
   const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status,consultantMemory:snapshot.consultant},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
@@ -87,7 +109,7 @@ class AssistantEngine{
   const mapped=quotedMessageId?s.offerMessages?.[quotedMessageId]:undefined;
   const direct=mapped===undefined&&quotedMessageId?s.offers.flatMap((o,i)=>o.messageId===quotedMessageId?[o.reference||i+1]:[]):[];
   const quotedOfferReferences=[...new Set([...(Array.isArray(mapped)?mapped:direct),...turnMessages.flatMap(m=>Array.isArray(m.quotedOfferReferences)?m.quotedOfferReferences:Number.isInteger(m.quotedOfferReference)?[m.quotedOfferReference]:[])])].filter(r=>Number.isInteger(r)&&availableReferences.has(r)).slice(0,80);
-  if(quotedOfferReferences.length===1){const quoted=s.offers.find((o,i)=>(o.reference||i+1)===quotedOfferReferences[0]);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:{...quoted.request,providerExclusive:true},submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}
+  if(quotedOfferReferences.length===1){const quoted=s.offers.find((o,i)=>(o.reference||i+1)===quotedOfferReferences[0]);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:selectedSupplierRequest(quoted.request),submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}
   const recoveredRoute=s.status==='unsupported'&&s.base?.request&&!capabilityIssue(s.base.request);
   if(recoveredRoute){s.base.submitted=false;s.base.awaiting=null;s.status='collecting';}
   legacy.importSession(id,s.base);
@@ -105,15 +127,15 @@ class AssistantEngine{
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
-  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?knownTripFollowup(text,s.base?.request,now):null;
-  if(followup&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
+  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?(acceptsExpansion(s.base,text,now)?{fields:{},proposal:true}:knownTripFollowup(text,s.base?.request,now)):null;
+  if(followup&&!followup.proposal&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
   if(!followup&&!/^(?:شكرا|شكرا لانتظارك|بانتظاركن|ناطر|منتظر|شو صار|وين وصلتوا|لسا ما رديتوا|ليش ما رديتوا|وين الاسعار)[؟?!. ]*$/.test(t))try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status,consultantMemory:s.consultant},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
   if(decision?.consultant){s.consultantDecision={...decision.consultant,question:decision.question,at:now};updateConsultantMemory(s,text,{now,preferences:decision.consultant.preferences});}
   const repeatSearch=Boolean(s.base?.submitted&&['done','failed','paused'].includes(s.status)&&(followup||/(?:شفلي|شوفلي|شوف لي|شيك|ابحث|عيد البحث|اعد البحث|نفس الرحل[هة]|نفس التفاصيل)/.test(t)));
   if(repeatSearch){
    // A complete known itinerary can be checked again without collecting its dates.
-   const retry=legacy.exportSession(id);retry.submitted=false;if(followup){retry.awaiting=null;delete retry.proposal;}
+   const retry=legacy.exportSession(id);retry.submitted=false;if(followup){retry.awaiting=null;if(!followup.proposal)delete retry.proposal;}
    legacy.importSession(id,retry);s.base=retry;
    decision={...(decision||{}),intent:'change',fields:{...(decision?.fields||{})},question:null,option:null};
   }
@@ -151,7 +173,7 @@ class AssistantEngine{
     const merged=Object.fromEntries([...new Set([...Object.keys(previousFields),...Object.keys(currentFields)])].map(k=>[k,currentFields[k]!=null&&(!Array.isArray(currentFields[k])||currentFields[k].length)?currentFields[k]:previousFields[k]??currentFields[k]??null]));
     const ref=explicit[0],o=s.offers.find((o,i)=>(o.reference||i+1)===ref);
     decision={...(decision||{}),intent:decision?.intent==='booking'?'booking':decision?.intent==='explain'?'explain':'select',option:ref,fields:merged,question:null};
-    if(decision.intent==='booking'){s.selected=o.id;legacy.importSession(id,{request:{...o.request,providerExclusive:true},submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}
+    if(decision.intent==='booking'){s.selected=o.id;legacy.importSession(id,{request:selectedSupplierRequest(o.request),submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}
     if(s.questions.offerChoice){s.questions.offerChoice.answered=true;s.questions.offerChoice.status='answered';s.questions.offerChoice.answeredAt=now;}
     delete s.pendingQuotedOffer;
    }else if(['select','booking'].includes(decision?.intent)||/(?:هاد|هدا|هذا|هداك|نفسه|نفسها|هالرحل[هة]|ثبتلي|احجزلي|هالخيار)/.test(t)){
@@ -204,7 +226,7 @@ class AssistantEngine{
    if(!offer)return say('أي عرض تقصد؟ اذكر تاريخ الرحلة أو رقم الخيار من آخر مقارنة.');
    s.selected=offer.id;
    // Subsequent amendments apply to the selected flight, not the whole earlier comparison.
-   legacy.importSession(id,{request:{...offer.request,providerExclusive:true},submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);
+   legacy.importSession(id,{request:selectedSupplierRequest(offer.request),submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);
    if(!announce)return null;
    return say(`تمام، اخترت الخيار ${index+1} بتاريخ ${offer.request.departureDate}، رحلة ${offer.timing.out.flight}. السعر والتوفر يحتاجان إعادة تحقق عند التثبيت. بتحب تعرف كيف نتابع التثبيت؟`);
   };
@@ -240,6 +262,7 @@ class AssistantEngine{
    if(prior?.fingerprint===fingerprint&&!prior.answered)return say('أنا معك، والتفاصيل اللي اتفقنا عليها محفوظة. وضّحلي النقطة اللي قصدتها بكلمتين حتى أعطيك جواب مناسب.');
    s.questions[key]={field:key,tripId:s.tripId,askedAt:now,answered:false,status:'asked',reason:decision.intent,fingerprint};return say(decision.question);
   }
+  reconcileSupplierRestriction(id,s,text,decision?.fields);
   const previous=legacy.exportSession(id);
   let result=legacy.handleMessage(id,clean(text),{now,patch:decision?.fields});let base;
   base=legacy.exportSession(id);
@@ -277,6 +300,7 @@ class AssistantEngine{
   this.save(id,s);return result;
  }
  beginNextRequest(id){const s=this.state(id);if(!s.queueReady||!['done','failed'].includes(s.status)||!s.pendingRequests?.length)return null;const next=s.pendingRequests.shift();s.queueReady=false;s.previous ||= [];if(s.base)s.previous.push(s.base);s.previous=s.previous.slice(-5);s.base=null;s.lastQuestion=null;s.questions={};s.selected=null;s.offers=[];s.comparison=null;s.activeComparisonId=null;s.status='collecting';s.tripId=crypto.randomUUID();legacy.importSession(id,null);this.store.set(id,s);return next;}
+ proposeSearchExpansion(id,{now=Date.now()}={}){const s=this.state(id);if(!s.base?.submitted||!s.base.request||s.humanOwned)return null;legacy.importSession(id,s.base);const proposal=legacy.proposeExpansion(id,{now,days:7});if(proposal){s.base=legacy.exportSession(id);this.store.set(id,s);}return proposal;}
  jobState(id,status){const s=this.state(id);s.status=status;this.store.set(id,s);}
  progress(id,data,messageId){const s=this.state(id);s.status='searching';if(data.coverage)s.coverage=data.coverage.slice(0,32);if(data.offer){const o=data.offer;if(o.request&&o.timing?.out?.flight&&/^\d+\.\d{2}$/.test(o.price?.sellingTotal||'')){const item={...o,id:offerId(o),messageId};const index=s.offers.findIndex(x=>x.id===item.id);if(index<0)s.offers.push(item);else s.offers[index]=item;s.offers=s.offers.slice(-80);}}this.store.set(id,s);}
  status(){return{policy:POLICY.version,aiConfigured:aiConfigured(this.env),aiProvider:aiProvider(this.env),...this.store.status(),humanRoutingConfigured:Boolean(this.env.HUMAN_HANDOFF_RECIPIENT),providers:POLICY.providers};}

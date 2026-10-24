@@ -41,3 +41,11 @@ Only the web service requires this deployment. Portal workers need no restart. E
 ## Separate portal recovery fix
 
 The Air Arabia adapter can reacquire a reused trusted named login window or trusted child frame when the supplier emits no new popup event. The login target origin and route are rechecked before credential operations; ambiguous targets and security challenges remain blocked. Ordinary typed navigation/network failures preserve their classification for the existing bounded session retry, while verification failures are never retried automatically. This worker code needs its own deployment to the separate background-worker service; the web deployment cannot revive a previously parked worker.
+
+## Airport routing and continuation correction (2026-10-25)
+
+For UAE/Syria comparisons, company-configured airport routing sends Air Arabia searches to Sharjah/Abu Dhabi and FlyCham searches to Dubai/Sharjah. Reverse journeys compare the corresponding arrival airports. This routing policy is not proof of any dated flight inventory. The customer's requested airport, month, party and baggage remain the parent trip; every alternative offer identifies its actual airport. Date jobs are interleaved across airports, and Air Arabia need not wait for a whole FlyCham monthly scan: it can proceed after the first FlyCham probe or a bounded 15-second head start.
+
+An explicit customer airline-only instruction has separate provenance from binding a selected offer. New-route/general-cheapest searches release selection-based or unproven historical exclusivity; genuine customer restrictions remain. Retrying an old failed request without offers also releases only unproven historical exclusivity. Unknown availability never means sold out. A terminal comparison without verified fares offers one concrete seven-day date expansion; after Meta accepts delivery, that exact proposal is persisted so a short acceptance such as شفلي can start it without repeated trip questions.
+
+Regression coverage includes the supplied fragmented Dubai/next-month conversation from an old Abu Dhabi/AirArabia-bound state, both airlines' actual queue commands, valid alternate airports, truthful no-price delivery and the subsequent accepted expansion. Signed-webhook tests use synthetic customer data and mocked providers; they do not establish live supplier fares.

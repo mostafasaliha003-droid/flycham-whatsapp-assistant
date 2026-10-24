@@ -4,7 +4,7 @@ const {AssistantEngine}=require('../src/assistant-engine');
 const {AssistantState}=require('../src/assistant-state');
 const {knownTripFollowup}=require('../src/travel-followups');
 const now=Date.parse('2026-10-24T12:30:00Z');
-const request={origin:'أبوظبي',destination:'دمشق',departureDate:'2026-11-18',tripType:'one_way',returnDate:null,stayNights:null,passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,requestedByCustomer:true},provider:'flycham',providerExclusive:true};
+const request={origin:'أبوظبي',destination:'دمشق',departureDate:'2026-11-18',tripType:'one_way',returnDate:null,stayNights:null,passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,requestedByCustomer:true},provider:'flycham',providerExclusive:true,providerRestrictionSource:'customer'};
 function make({r=request,status='failed',awaiting=null}={}){
  let calls=0;const e=new AssistantEngine({store:new AssistantState({now:()=>now}),env:{},nlu:async()=>{calls++;throw Error('NLU_TIMEOUT');}});
  e.store.set('followup',{introduced:true,history:[],offers:[],selected:null,base:{request:structuredClone(r),submitted:true,awaiting,at:now},status});
