@@ -66,26 +66,26 @@ async function understandConsultant(text,context={}, {env=process.env,fetchImpl=
  const source=context.consultantMemory||{},objections=(Array.isArray(source.objections)?source.objections:[]).map(v=>typeof v==='string'?v:v?.type).map(v=>({waiting:'delay',considering:'undecided'})[v]||v),next=({await_verified_offers:'await_results',choose_offer:'confirm_choice',confirm_booking_intent:'confirm_choice',await_staff:'handoff'})[source.lastNextStep]||source.lastNextStep;
  const memory={preferences,stage:STAGES.has(source.stage)?source.stage:null,objections:[...new Set(objections.filter(v=>OBJECTIONS.has(v)))].slice(-8),lastNextStep:NEXT_STEPS.includes(next)?next:null};
  const payload={todayDubai:new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai'}).format(new Date(now)),context:{...safe,preferences,consultantMemory:memory},text:cleanText};
- return routeDecision({env,fetchImpl,now,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
+ return routeDecision({env,fetchImpl,now,timeoutMs:35000,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
 }
 // Two bounded synthetic cases exercise the configured understanding provider.
 // Nothing is enqueued, no customer state is used, and only booleans escape.
 async function runConsultantSmoke({env=process.env,fetchImpl=fetch,now=Date.now()}={}){
  if(aiProvider(env)!=='cline'||!env.CLINE_API_KEY)return {greeting:false,search:false,ran:false};
- const [g,s]=await Promise.allSettled([
-  understandConsultant('مرحبا، كيفك؟',{status:'idle'},{env,fetchImpl,now}),
-  understandConsultant('بدي رحلة ذهاب فقط من الشارقة إلى دمشق بتاريخ 11-11-2090، شخص بالغ واحد لحالي، وزن ثلاثين كيلو.',{status:'collecting'},{env,fetchImpl,now})
- ]);
+ // Keep startup probes serial: a provider may throttle concurrent generations.
+ // Advance the logical timestamp after the first case, so circuit bookkeeping
+ // does not reuse a timestamp captured before a potentially long request.
+ const clockStart=Date.now(),freshNow=()=>now+Math.max(0,Date.now()-clockStart);
  let greeting=false,search=false;
- if(g.status==='fulfilled'){
-  const d=g.value;
+ try{
+  const d=await understandConsultant('مرحبا، كيفك؟',{status:'idle'},{env,fetchImpl,now});
   greeting=Boolean(d?.intent==='greeting'&&d.consultant?.action==='answer'&&(d.consultant.reply===null||canUseReply(d.consultant.reply,{status:'idle'})));
- }
- if(s.status==='fulfilled'){
-  const d=s.value;
+ }catch{}
+ try{
+  const d=await understandConsultant('بدي رحلة ذهاب فقط من الشارقة إلى دمشق بتاريخ 11-11-2090، شخص بالغ واحد لحالي، وزن ثلاثين كيلو.',{status:'collecting'},{env,fetchImpl,now:freshNow()});
   const f=d?.fields;
   search=Boolean(d?.intent==='request'&&d.consultant?.action==='search'&&airportCode(f?.origin)==='SHJ'&&airportCode(f?.destination)==='DAM'&&f?.departureDate==='2090-11-11'&&f?.tripType==='one_way'&&f?.adults===1&&f?.children===0&&f?.infants===0&&f?.weightKg===30);
- }
+ }catch{}
  return {greeting,search,ran:true};
 }
 module.exports={understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,schema,ACTIONS,NEXT_STEPS};

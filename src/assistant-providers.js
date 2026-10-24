@@ -40,7 +40,7 @@ function parseDecision(output,validate,schema){
  }
  try{return validate(d);}catch{throw Error('NLU_INVALID_SCHEMA');}
 }
-async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision}){
+async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,validateDecision,timeoutMs=20000}){
  const model=modelFor(p,env),jsonInstructions=instructions+' Output one JSON object, no markdown, no reasoning. JSON schema: '+JSON.stringify(schema);
  let url,headers,body;
  if(p==='cline'){
@@ -53,7 +53,10 @@ async function callProvider(p,{env,fetchImpl,now,input,instructions,schema,valid
   url='https://api.openai.com/v1/responses';headers={Authorization:'Bearer '+env.OPENAI_API_KEY,'Content-Type':'application/json'};
   body={model,store:false,instructions,input,max_output_tokens:1200,text:{format:{type:'json_schema',name:'travel_intent',strict:true,schema}}};
  }else throw Error('NLU_PROVIDER_NOT_ALLOWED');
- let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(20000),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
+ // Only an explicit application-side consultant option may extend Cline's
+ // request budget. Legacy extraction and other providers retain twenty seconds.
+ const requestTimeout=p==='cline'&&Number.isFinite(timeoutMs)?Math.max(20000,Math.min(35000,Math.trunc(timeoutMs))):20000;
+ let response;try{response=await fetchImpl(url,{method:'POST',headers,signal:AbortSignal.timeout(requestTimeout),body:JSON.stringify(body)});}catch(error){throw Error(['TimeoutError','AbortError'].includes(error?.name)?'NLU_TIMEOUT':'NLU_NETWORK');}
  if(!response.ok)await failHTTP(response,p,now);
  const data=await response.json();let output;
  if(p==='cline'){

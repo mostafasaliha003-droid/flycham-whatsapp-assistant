@@ -48,10 +48,27 @@ test('smoke performs exactly two synthetic cases and returns booleans only',asyn
  }});
  assert.deepEqual(result,{greeting:true,search:true,ran:true});assert.equal(requests.length,2);assert.ok(requests.every(x=>x.url==='https://api.cline.bot/api/v1/chat/completions'));assert.ok(requests[1].body.messages[1].content.includes('2090'));
 });
-test('smoke skips without Cline and still attempts second case after first fails',async()=>{
+test('smoke skips without Cline and preserves provider cooldown after first fails',async()=>{
  let calls=0;
  assert.deepEqual(await runConsultantSmoke({env:{},fetchImpl:async()=>{calls++;throw Error('must not call');}}),{greeting:false,search:false,ran:false});assert.equal(calls,0);
- // A malformed decision is contained; the second synthetic case still runs.
+ // Both logical cases are contained; a failed provider's circuit is respected.
  const result=await runConsultantSmoke({env:env(),fetchImpl:async()=>{calls++;return response(calls===1?{invalid:true}:decision());}});
- assert.equal(calls,2);assert.deepEqual(result,{greeting:false,search:false,ran:true});
+ assert.equal(calls,1);assert.deepEqual(result,{greeting:false,search:false,ran:true});
+});
+test('consultant explicitly extends only its Cline transport budget, preserving legacy body and timeout',async()=>{
+ const timeout=AbortSignal.timeout,seen=[],bodies=[];AbortSignal.timeout=ms=>{seen.push(ms);return new AbortController().signal;};
+ try{
+  await understandConsultant('مرحبا',{}, {env:env(),fetchImpl:async(url,opt)=>{bodies.push(JSON.parse(opt.body));return response(decision());}});
+  const {understand}=require('../src/assistant-nlu');const d=decision();delete d.consultant;
+  await understand('مرحبا',{}, {env:env(),fetchImpl:async(url,opt)=>{bodies.push(JSON.parse(opt.body));return response(d);}});
+  assert.deepEqual(seen,[35000,20000]);assert.ok(bodies.every(b=>b.max_tokens===4096&&b.temperature===0&&b.model==='cline-pass/qwen3.8-max'));
+ }finally{AbortSignal.timeout=timeout;}
+});
+test('smoke starts second case only after first completes and uses an advanced clock',async()=>{
+ const dateNow=Date.now,base=Date.parse('2026-10-25T19:59:50Z'),seen=[];let clock=base,release;Date.now=()=>clock;
+ const held=new Promise(resolve=>{release=resolve;});
+ try{
+  const running=runConsultantSmoke({env:env(),now:base,fetchImpl:async(url,opt)=>{seen.push(JSON.parse(JSON.parse(opt.body).messages[1].content));if(seen.length===1){await held;clock+=40000;}const d=decision();if(seen.length===2){d.intent='request';Object.assign(d.fields,{origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',adults:1,children:0,infants:0,weightKg:30});d.consultant.action='search';d.consultant.reply=null;}return response(d);}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(seen.length,1);release();assert.deepEqual(await running,{greeting:true,search:true,ran:true});assert.equal(seen[0].todayDubai,'2026-10-25');assert.equal(seen[1].todayDubai,'2026-10-26');
+ }finally{release();Date.now=dateNow;}
 });
