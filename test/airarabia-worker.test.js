@@ -16,7 +16,7 @@ test('keepalive adapter permits only registered search candidates; supplier must
   assert.equal(adapter.destination, 'DAM');
 });
 
-const { PortalError, safeFailureCode, run } = require('../src/airarabia-worker');
+const { PortalError, safeFailureCode, openAirArabiaRuntime, run } = require('../src/airarabia-worker');
 
 function fakePage({ captcha = false, navigationError, confirmError, popup = null } = {}) {
   const calls = [];
@@ -49,6 +49,72 @@ function fakePage({ captcha = false, navigationError, confirmError, popup = null
 function adapterFor(page, report) {
   return new AirArabiaPortalAdapter(page, { username: 'test-user', password: 'secret-test-only', origin: 'SHJ', destination: 'DAM', report });
 }
+
+const runtimeEnv = { AIR_ARABIA_AGENT_USERNAME: 'factory-test-user', AIR_ARABIA_AGENT_PASSWORD: 'factory-test-password', GMAIL_OTP_ENABLED: 'false' };
+const quietLog = { log() {}, error() {} };
+test('runtime factory opens one authenticated browser lifetime and closes idempotently without polling or parking', async () => {
+  const page = fakePage();let opened = 0, closed = 0;
+  const browser = { newPage: async () => page, close: async () => { closed++; } };
+  const runtime = await openAirArabiaRuntime({ env: runtimeEnv, launch: async () => { opened++;return browser; }, log: quietLog });
+  assert.equal(opened, 1);assert.equal(runtime.browser, browser);assert.equal(runtime.session.isReady(), true);
+  assert.equal(runtime.session.adapter.username, runtimeEnv.AIR_ARABIA_AGENT_USERNAME);
+  assert.equal(page.calls.filter(([op,selector]) => op === 'click' && selector === '#btnLogin').length, 1);
+  assert.equal(page.calls.filter(([op]) => op === 'fill').length, 2);
+  await runtime.close();await runtime.close();
+  assert.equal(closed, 1);assert.equal(runtime.session.closed, true);assert.equal(runtime.session.timer, null);
+});
+test('runtime factory validates its supplied environment before opening a browser', async () => {
+  let opened = 0;
+  await assert.rejects(openAirArabiaRuntime({ env: {}, launch: async () => { opened++; }, log: quietLog }), error => error instanceof PortalError && error.message === 'PORTAL_CONFIGURATION_MISSING_USERNAME');
+  assert.equal(opened, 0);
+});
+test('runtime factory cleans up a failed opening without leaking the browser error', async () => {
+  let closed = 0;
+  const failure = Object.assign(new Error('private selector and password=DO_NOT_EXPOSE'), { name: 'TimeoutError' });
+  await assert.rejects(openAirArabiaRuntime({ env: runtimeEnv, launch: async () => ({ newPage: async () => { throw failure; }, close: async () => { closed++; } }), log: quietLog }), error => error instanceof PortalError && error.message === 'PORTAL_BROWSER_START_TIMEOUT' && !error.message.includes('DO_NOT_EXPOSE'));
+  assert.equal(closed, 1);
+});
+test('runtime cleanup attempts both resources, reports a fixed failure and allows explicit cleanup retry', async () => {
+  let stops = 0, closes = 0, connected = true;
+  const browser = { newPage: async () => fakePage(), isConnected: () => connected, close: async () => { closes++;if (closes === 1) throw Error('private browser and cookie');connected = false; } };
+  const runtime = await openAirArabiaRuntime({ env: runtimeEnv, launch: async () => browser, log: quietLog });
+  const stop = runtime.session.stop.bind(runtime.session);
+  runtime.session.stop = async () => { stops++;await stop();if (stops === 1) throw Error('private session and password'); };
+  await assert.rejects(runtime.close(), error => error instanceof PortalError && error.message === 'PORTAL_SESSION_CLOSE_FAILED');
+  assert.equal(stops, 1);assert.equal(closes, 1);assert.equal(connected, true);
+  await runtime.close();await runtime.close();
+  assert.equal(stops, 2);assert.equal(closes, 2);assert.equal(connected, false);
+});
+test('a close that leaves Chromium connected is not accepted as successful cleanup', async () => {
+  let closes = 0, connected = true;
+  const runtime = await openAirArabiaRuntime({ env: runtimeEnv, launch: async () => ({ newPage: async () => fakePage(), isConnected: () => connected, close: async () => { closes++; } }), log: quietLog });
+  await assert.rejects(runtime.close(), /^Error: PORTAL_SESSION_CLOSE_FAILED$/);assert.equal(closes, 1);
+  connected = false;await runtime.close();await runtime.close();assert.equal(closes, 2);
+});
+test('runtime close drains already running work before closing the browser and rejects further work', async () => {
+  let release, entered, closed = 0;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const runtime = await openAirArabiaRuntime({ env: runtimeEnv, launch: async () => ({ newPage: async () => fakePage(), close: async () => { closed++; } }), log: quietLog });
+  const work = runtime.session.run(async () => { entered();await barrier;return 'finished'; });
+  await started;const closing = runtime.close();
+  assert.equal(runtime.session.closed, true);assert.equal(closed, 0);
+  await assert.rejects(runtime.session.run(async () => {}), /closing/);
+  release();assert.equal(await work, 'finished');await closing;assert.equal(closed, 1);
+});
+test('terminal heartbeat failure stops future ticks without recursively closing the runtime', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 100000 });
+  let closed = 0, heartbeatCalls = 0;const errors = [], terminal = [];
+  const runtime = await openAirArabiaRuntime({ env: runtimeEnv, launch: async () => ({ newPage: async () => fakePage(), close: async () => { closed++; } }), log: { log() {}, error: code => errors.push(code) }, onSessionError: code => terminal.push(code) });
+  runtime.session.heartbeat = async () => { heartbeatCalls++;throw Error('private heartbeat error'); };
+  try {
+    t.mock.timers.tick(60000);for (let i = 0;i < 20;i++)await Promise.resolve();
+    assert.deepEqual(terminal, ['PORTAL_SESSION_UNAVAILABLE']);assert.equal(runtime.session.state, 'unavailable');assert.equal(runtime.session.timer, null);assert.equal(closed, 0);
+    t.mock.timers.tick(180000);for (let i = 0;i < 20;i++)await Promise.resolve();
+    assert.equal(heartbeatCalls, 1);assert.ok(!errors.some(code => code.includes('private')));
+  } finally { await runtime.close();t.mock.timers.reset(); }
+  assert.equal(closed, 1);
+});
 
 test('login waits for the document and a visible authenticated control, not third-party page load', async () => {
   const page = fakePage();

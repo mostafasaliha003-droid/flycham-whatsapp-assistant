@@ -65,3 +65,8 @@ test('changing to a different allowed search stage also withholds the old image 
 test('provider and stage allowlists prevent arbitrary monitor entries',()=>{
  const m=new PortalMonitor({now:()=>1000});assert.equal(m.accept(update({provider:'evil-provider'})),false);assert.equal(m.accept(update({stage:'send_password'})),false);assert.equal(m.accept(null),false);assert.equal(m.list().providers.length,2);assert.equal(m.preview('evil-provider'),null);
 });
+test('intentional dormancy is labelled truthfully and clears a previous authenticated image',()=>{
+ const m=new PortalMonitor({now:()=>1000});assert.equal(m.accept(update({preview:preview()})),true);
+ assert.equal(m.accept(update({state:'dormant',stage:'idle',ready:false,activeJob:null,preview:null,previewWithheld:true})),true);
+ const current=row(m);assert.equal(current.state,'dormant');assert.equal(current.ready,false);assert.equal(current.previewAvailable,false);assert.equal(current.activeJob,null);assert.match(current.stageLabel,/توفير الذاكرة/);assert.equal(m.preview('flycham'),null);
+});

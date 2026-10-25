@@ -27,6 +27,6 @@ test('customer requests preempt catalog across providers while pending and claim
   // A separate customer's cancellation also releases the global priority gate.
   await inbound('synthetic-priority-customer-two','19-11-2099');assert.equal(await current(resumed),false);assert.deepEqual(await claim('airarabia'),{});
   assert.equal((await call('/internal/assistant/conversations/synthetic-priority-customer-two/claim',{},'admin')).status,200);
-  assert.equal(await current(resumed),true);await complete(resumed,'cancelled');assert.equal((await claim('airarabia')).catalog,true);
+  assert.equal(await current(resumed),true);await complete(resumed,'cancelled');assert.deepEqual(await claim('airarabia'),{}); // Both starts in this background window were already spent.
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=original;fs.rmSync(temp,{recursive:true,force:true});}
 });

@@ -236,6 +236,13 @@ function createServer() {
       if(request.method!=='POST'){response.writeHead(405).end();return;}
       try{
         const data=JSON.parse((await readBody(request)).toString('utf8'));
+        if(url.pathname==='/internal/quotes/pending'){
+          if(!['airarabia','flycham'].includes(data.provider)){response.writeHead(400).end();return;}
+          const customerPending=[...quoteJobs.jobs.values()].some(job=>job.state==='pending'&&job.expires>Date.now()&&(job.request.provider||'airarabia')===data.provider);
+          const activeWork=[...quoteJobs.jobs.values()].some(job=>['pending','claimed'].includes(job.state)&&job.expires>Date.now()&&(job.request.provider||'airarabia')===data.provider)||[...catalog.leases.values()].some(job=>job.expires>Date.now()&&job.request.provider===data.provider);
+          const catalogPending=data.includeCatalog!==false&&!customerSearchActive()&&catalog.hasEligibleWork(data.provider);
+          response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({pending:customerPending||catalogPending,customerPending,catalogPending,activeWork}));return;
+        }
         if(url.pathname==='/internal/quotes/monitor'){const accepted=portalMonitor.accept(data);response.writeHead(accepted?200:400,{'Content-Type':'application/json'}).end(JSON.stringify({accepted}));return;}
         if(url.pathname==='/internal/quotes/heartbeat'){
           if(!['airarabia','flycham'].includes(data.provider)){response.writeHead(400).end();return;}
@@ -318,7 +325,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-25.request-choice.1',configuredProviders:POLICY.providers,consultantEnabled:consultantEnabled(process.env),consultantSmoke,webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-25.idle-worker.1',configuredProviders:POLICY.providers,consultantEnabled:consultantEnabled(process.env),consultantSmoke,webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {

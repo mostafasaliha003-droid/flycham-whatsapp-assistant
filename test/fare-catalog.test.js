@@ -67,3 +67,75 @@ test('oversized supplier timing facts omit whole examples explicitly and preserv
  }
  const reply=c.reply(),shown=(reply.match(/آخر إجمالي رصدناه/g)||[]).length;assert.ok(reply.length<=3600);assert.ok(shown>0&&shown<8);assert.ok(reply.includes(`لم نعرض ${8-shown} من الأمثلة المحفوظة`));assert.match(reply,/2026-10/);assert.match(reply,/2026-11/);assert.match(reply,/فلاي شام/);assert.match(reply,/العربية للطيران/);assert.match(reply,/ذهاب فقط/);assert.match(reply,/ذهاب وعودة/);assert.match(reply,/نعيد تأكيد السعر/);assert.doesNotMatch(reply,/أرخص سعر في كامل الشهر|فحصنا كل الشهر/);
 });
+test('background starts are bounded per provider while the cached search plan remains complete',()=>{
+ const c=new FareCatalog({now:()=>NOW}),planned=c.plan('flycham').length;
+ for(const provider of ['flycham','airarabia'])for(let n=0;n<2;n++){
+  const job=c.claim(provider);assert.ok(job?.catalog);assert.equal(c.backgroundBudget(provider).used,n+1);
+  assert.equal(c.finish(job.id,job.lease,'done',[{date:job.request.departureDate,status:'no_flights'}]),true);
+ }
+ assert.equal(c.claim('flycham'),null);assert.equal(c.claim('airarabia'),null);
+ assert.equal(c.plan('flycham').length,planned-2);
+ const budget=c.status().backgroundBudget;assert.equal(budget.policy,'starts_per_provider_window');
+ assert.deepEqual(budget.providers.flycham,{limit:2,windowMs:FRESH_MS,used:2,remaining:0,eligible:false,windowStartedAt:NOW,nextWindowAt:NOW+FRESH_MS});
+ assert.equal(c.status().completeMonthlyCoverage,false);
+});
+test('a claimed start is durable before return and cannot be reset by reloading the catalog',()=>{
+ let now=NOW,saves=0;const store={data:{},save(){saves++;}};
+ const firstCatalog=new FareCatalog({now:()=>now,store}),first=firstCatalog.claim('flycham');
+ assert.ok(first);assert.equal(saves,1);assert.equal(store.data.catalogBudget.providers.flycham.used,1);
+ const restored=new FareCatalog({now:()=>now,store}),second=restored.claim('flycham');assert.ok(second);assert.equal(store.data.catalogBudget.providers.flycham.used,2);
+ restored.finish(second.id,second.lease,'failed',[]);
+ const again=new FareCatalog({now:()=>now,store});assert.equal(again.claim('flycham'),null);assert.equal(again.backgroundBudget('flycham').remaining,0);
+ assert.ok(again.claim('airarabia'));assert.equal(again.backgroundBudget('airarabia').used,1);
+});
+test('failed or abandoned expired work consumes its start instead of causing an unbounded retry burst',()=>{
+ let now=NOW;const c=new FareCatalog({now:()=>now}),first=c.claim('airarabia');
+ assert.ok(first);assert.equal(c.claim('airarabia'),null);assert.equal(c.backgroundBudget('airarabia').used,1);
+ now+=4*60000+1;assert.equal(c.current(first.id,first.lease),false);
+ const second=c.claim('airarabia');assert.ok(second);assert.equal(c.leases.has(first.id),false);assert.equal(c.backgroundBudget('airarabia').used,2);
+ assert.equal(c.finish(second.id,second.lease,'failed',[]),true);assert.equal(c.claim('airarabia'),null);
+});
+test('window rollover permits only the configured new batch without catching up missed windows',()=>{
+ let now=NOW+12345;const c=new FareCatalog({now:()=>now,backgroundJobsPerWindow:1}),start=now,first=c.claim('flycham');c.finish(first.id,first.lease,'failed',[]);
+ now=start+FRESH_MS-1;assert.equal(c.claim('flycham'),null);
+ now=start+FRESH_MS;const second=c.claim('flycham');assert.ok(second);c.finish(second.id,second.lease,'failed',[]);assert.equal(c.backgroundBudget('flycham').windowStartedAt,now);
+ now+=10*FRESH_MS;assert.equal(c.backgroundBudget('flycham').used,0);const later=c.claim('flycham');assert.ok(later);c.finish(later.id,later.lease,'failed',[]);assert.equal(c.claim('flycham'),null);assert.equal(c.backgroundBudget('flycham').used,1);
+});
+test('a persisted future window remains spent when the system clock moves backwards',()=>{
+ let now=NOW;const store={data:{},save(){}},c=new FareCatalog({now:()=>now,store,backgroundJobsPerWindow:1}),job=c.claim('flycham');c.finish(job.id,job.lease,'failed',[]);
+ now-=60000;const restored=new FareCatalog({now:()=>now,store,backgroundJobsPerWindow:1});assert.equal(restored.claim('flycham'),null);assert.equal(restored.backgroundBudget('flycham').nextWindowAt,NOW+FRESH_MS);
+ now=NOW+FRESH_MS;assert.ok(restored.claim('flycham'));
+});
+test('an exhausted or disabled budget skips expensive plan generation and an empty plan spends nothing',()=>{
+ const zero=new FareCatalog({now:()=>NOW,backgroundJobsPerWindow:0});zero.plan=()=>{throw Error('disabled budget must not build a plan');};assert.equal(zero.claim('flycham'),null);assert.equal(zero.status().backgroundBudget.providers.flycham.eligible,false);
+ const disabled=new FareCatalog({now:()=>NOW,enabled:false});disabled.plan=()=>{throw Error('disabled catalog must not build a plan');};assert.equal(disabled.claim('airarabia'),null);
+ const store={data:{},save(){throw Error('no actual start to persist');}},empty=new FareCatalog({now:()=>NOW,store});empty.plan=()=>[];assert.equal(empty.claim('flycham'),null);assert.equal(empty.backgroundBudget('flycham').used,0);assert.equal(store.data.catalogBudget,undefined);
+ const capped=new FareCatalog({now:()=>NOW,backgroundJobsPerWindow:1}),job=capped.claim('airarabia');capped.finish(job.id,job.lease,'done',[]);capped.plan=()=>{throw Error('exhausted budget must not build a plan');};assert.equal(capped.claim('airarabia'),null);
+});
+test('budget configuration is bounded and persisted expiry is retained across a configuration change',()=>{
+ for(const options of [{backgroundJobsPerWindow:-1},{backgroundJobsPerWindow:1.5},{backgroundJobsPerWindow:21},{backgroundWindowMs:0},{backgroundWindowMs:Infinity},{backgroundWindowMs:86400001}])assert.throws(()=>new FareCatalog(options),/CATALOG_BACKGROUND_BUDGET_INVALID/);
+ let now=NOW;const store={data:{},save(){}},c=new FareCatalog({now:()=>now,store,backgroundJobsPerWindow:1,backgroundWindowMs:60000}),job=c.claim('flycham');c.finish(job.id,job.lease,'failed',[]);
+ const restored=new FareCatalog({now:()=>now,store,backgroundJobsPerWindow:1,backgroundWindowMs:1000});assert.equal(restored.claim('flycham'),null);assert.equal(restored.backgroundBudget('flycham').nextWindowAt,NOW+60000);now+=60000;assert.ok(restored.claim('flycham'));assert.equal(restored.backgroundBudget('flycham').nextWindowAt,NOW+61000);
+});
+test('cold eligibility probe detects real work without claiming, pruning or advancing any state',()=>{
+ let saves=0;const c=new FareCatalog({now:()=>NOW,store:{data:{},save(){saves++;}}});
+ c.records.set('expired',{...offer(),checkedAt:NOW-86400001});c.coverage.set('expired',{at:NOW-86400001});c.routeFailures.set('expired',{until:NOW-1});
+ const snapshot=()=>structuredClone({records:[...c.records],coverage:[...c.coverage],routeFailures:[...c.routeFailures],attempts:[...c.attempts],leases:[...c.leases],tasks:[...c.tasks],cycles:[...c.cycles],windows:c.backgroundWindows});
+ const before=snapshot();assert.equal(c.hasEligibleWork('flycham'),true);assert.equal(c.hasEligibleWork('airarabia'),true);assert.deepEqual(snapshot(),before);assert.equal(saves,0);
+});
+test('cold eligibility probe respects active leases and budget without refunding expired starts',()=>{
+ let now=NOW;const c=new FareCatalog({now:()=>now}),first=c.claim('flycham');assert.equal(c.hasEligibleWork('flycham'),false);assert.equal(c.hasEligibleWork('airarabia'),true);
+ now+=4*60000+1;assert.equal(c.hasEligibleWork('flycham'),true);assert.equal(c.leases.has(first.id),true);assert.equal(c.backgroundBudget('flycham').used,1);
+ const second=c.claim('flycham');c.finish(second.id,second.lease,'failed',[]);c.plan=()=>{throw Error('spent probe must not build a plan');};assert.equal(c.hasEligibleWork('flycham'),false);
+});
+test('cold eligibility probe does not wake for cooled routes or for already fresh candidate tasks',()=>{
+ let now=NOW;const c=new FareCatalog({now:()=>now});
+ for(const task of c.plan('flycham'))c.routeFailures.set(JSON.stringify(['flycham',require('../src/airports').airportCode(task.request.origin),require('../src/airports').airportCode(task.request.destination)]),{until:NOW+60000});
+ assert.equal(c.hasEligibleWork('flycham'),false);assert.equal(c.backgroundBudget('flycham').used,0);
+ now+=60000;assert.equal(c.hasEligibleWork('flycham'),true);
+ const fresh=new FareCatalog({now:()=>NOW});for(const task of fresh.plan('airarabia'))fresh.attempts.set(catalogRequestKey(task.request),NOW);assert.equal(fresh.hasEligibleWork('airarabia'),false);assert.equal(fresh.leases.size,0);assert.equal(fresh.backgroundBudget('airarabia').used,0);
+});
+test('cold eligibility probe rejects disabled or unknown providers without planning',()=>{
+ for(const c of [new FareCatalog({now:()=>NOW,enabled:false}),new FareCatalog({now:()=>NOW,backgroundJobsPerWindow:0})]){c.plan=()=>{throw Error('disabled probe must not plan');};assert.equal(c.hasEligibleWork('flycham'),false);}
+ const c=new FareCatalog({now:()=>NOW});c.plan=()=>{throw Error('unknown provider must not plan');};assert.equal(c.hasEligibleWork('unknown'),false);
+});

@@ -6,6 +6,8 @@ const {airportCode}=require('./airports');
 const {airportSearchPlan}=require('./airport-comparison');
 const {catalogParties,partyKey,fixtureFor}=require('./catalog-party');
 const FRESH_MS=15*60*1000,INDICATIVE_MS=6*60*60*1000,DAY_MS=86400000;
+const PROVIDERS=Object.freeze(['airarabia','flycham']);
+const BACKGROUND_JOBS_PER_WINDOW=2;
 const providerOf=r=>r?.provider||'airarabia';
 const baggageKey=r=>JSON.stringify([r.baggageRequest?.checkedWeightKg??30,r.baggageRequest?.pieces||null,r.baggageRequest?.scope||'per_person']);
 function key(r){return JSON.stringify([providerOf(r),airportCode(r.origin)||r.origin,airportCode(r.destination)||r.destination,r.departureDate,r.returnDate||null,r.tripType,partyKey(r.passengers),baggageKey(r)]);}
@@ -20,14 +22,30 @@ function indicativeCard(o,dt){
  return `*${o.provider==='flycham'?'فلاي شام':'العربية للطيران'} — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}*\nمن ${r.origin} إلى ${r.destination}\n${line('الذهاب:',r.departureDate,o.timing.out)}${o.timing.back?`\n${line('العودة:',r.returnDate,o.timing.back)}\nإقامة مرجعية ${r.stayNights||'بحسب التاريخ'} ليلة`:''}\n🧳 ${o.price.weights.map(w=>w.kg+' كغ مسجل').join(' / ')}${o.provider==='flycham'?' +10 كغ يد':''}\n*آخر إجمالي رصدناه: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${dt.format(o.checkedAt)}`;
 }
 class FareCatalog{
- constructor({now=Date.now,store=null,enabled=true,indicativeMs=INDICATIVE_MS,familyEnabled=false,verifiedFamilyProviders=[],validateRequest=validateLiveRequest}={}){
+ constructor({now=Date.now,store=null,enabled=true,indicativeMs=INDICATIVE_MS,familyEnabled=false,verifiedFamilyProviders=[],validateRequest=validateLiveRequest,backgroundJobsPerWindow=BACKGROUND_JOBS_PER_WINDOW,backgroundWindowMs=FRESH_MS}={}){
+  if(!Number.isSafeInteger(backgroundJobsPerWindow)||backgroundJobsPerWindow<0||backgroundJobsPerWindow>20||!Number.isSafeInteger(backgroundWindowMs)||backgroundWindowMs<1000||backgroundWindowMs>DAY_MS)throw Error('CATALOG_BACKGROUND_BUDGET_INVALID');
   Object.assign(this,{now,store,enabled,familyEnabled,validateRequest});this.indicativeMs=Math.max(FRESH_MS,Math.min(DAY_MS,Number(indicativeMs)||INDICATIVE_MS));
+  Object.assign(this,{backgroundJobsPerWindow,backgroundWindowMs});this.backgroundWindows={};
+  const saved=store?.data?.catalogBudget;
+  if(saved?.version===1)for(const provider of PROVIDERS){
+   const record=saved.providers?.[provider];
+   if(record&&Number.isFinite(record.startedAt)&&record.startedAt>=0&&Number.isFinite(record.endsAt)&&record.endsAt>record.startedAt&&record.endsAt-record.startedAt<=DAY_MS&&Number.isSafeInteger(record.used)&&record.used>=0&&record.used<=100000)this.backgroundWindows[provider]={startedAt:record.startedAt,endsAt:record.endsAt,used:record.used};
+  }
   // Passing a feature flag alone does not prove supplier passenger support.
   this.verifiedFamilyProviders=new Set(verifiedFamilyProviders.filter(p=>['airarabia','flycham'].includes(p)));
   this.records=new Map(store?.data?.catalog||[]);this.attempts=new Map(store?.data?.catalogAttempts||[]);this.coverage=new Map(store?.data?.catalogCoverage||[]);this.routeFailures=new Map(store?.data?.catalogRouteFailures||[]);
   this.leases=new Map();this.tasks=new Map();this.cycles=new Map();this.stats=store?.data?.catalogStats||{};this.prune();
  }
- save(){this.prune();if(this.store){Object.assign(this.store.data,{catalog:[...this.records],catalogAttempts:[...this.attempts].slice(-16000),catalogCoverage:[...this.coverage].slice(-16000),catalogRouteFailures:[...this.routeFailures].slice(-100),catalogStats:this.stats});this.store.save();}}
+ save(){this.prune();if(this.store){Object.assign(this.store.data,{catalog:[...this.records],catalogAttempts:[...this.attempts].slice(-16000),catalogCoverage:[...this.coverage].slice(-16000),catalogRouteFailures:[...this.routeFailures].slice(-100),catalogStats:this.stats,catalogBudget:{version:1,providers:structuredClone(this.backgroundWindows)}});this.store.save();}}
+ backgroundBudget(provider){
+  if(!PROVIDERS.includes(provider))return null;
+  const stored=this.backgroundWindows[provider],active=stored&&this.now()<stored.endsAt,used=active?stored.used:0,remaining=Math.max(0,this.backgroundJobsPerWindow-used);
+  return {limit:this.backgroundJobsPerWindow,windowMs:this.backgroundWindowMs,used,remaining,eligible:this.enabled&&remaining>0,windowStartedAt:active?stored.startedAt:null,nextWindowAt:remaining===0&&active?stored.endsAt:null};
+ }
+ spendBackgroundStart(provider){
+  const now=this.now(),stored=this.backgroundWindows[provider];
+  this.backgroundWindows[provider]=stored&&now<stored.endsAt?{...stored,used:stored.used+1}:{startedAt:now,endsAt:now+this.backgroundWindowMs,used:1};
+ }
  prune(){
   const day=dubaiDay(this.now()),today=iso(day),end=iso(new Date(Date.UTC(day.getUTCFullYear(),day.getUTCMonth()+2,0)));
   for(const [k,v]of this.records)if(!v?.request||v.request.departureDate<today||v.request.departureDate>end||!Number.isFinite(v.checkedAt)||v.checkedAt>this.now()||this.now()-v.checkedAt>DAY_MS)this.records.delete(k);
@@ -43,10 +61,13 @@ class FareCatalog{
    for(const item of airportSearchPlan(request,[provider]).requests)if(airportCode(item.request.origin)&&airportCode(item.request.destination))rows.push([item.request.origin,item.request.destination]);
   }return rows;
  }
- plan(provider){
+ plan(provider,{prune=true}={}){
   if(!['airarabia','flycham'].includes(provider))return [];
-  this.prune();const today=dubaiDay(this.now()),end=new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+2,0)),recent=new Map(),best=new Map(),groups=new Map(),groupVisits=new Map();
+  if(prune)this.prune();const today=dubaiDay(this.now()),end=new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+2,0)),from=iso(today),to=iso(end),recent=new Map(),best=new Map(),groups=new Map(),groupVisits=new Map();
   for(const o of this.records.values()){
+   // A read-only cold-worker probe must ignore the same expired/future records
+   // as pruning would, without deleting them or advancing any task cursor.
+   if(!o?.request||typeof o.request.departureDate!=='string'||o.request.departureDate<from||o.request.departureDate>to||!Number.isFinite(o.checkedAt)||o.checkedAt>this.now()||this.now()-o.checkedAt>DAY_MS)continue;
    const k=key(o.request);recent.set(k,Math.max(recent.get(k)||0,o.checkedAt));
    const g=[routeKey(o.request),o.request.departureDate.slice(0,7),o.request.tripType,o.request.stayNights||0,partyKey(o.request.passengers)].join(':');if(!best.has(g)||priceSort(o,best.get(g))<0)best.set(g,o);
   }
@@ -64,13 +85,22 @@ class FareCatalog{
   for(let i=0;i<Math.max(0,...lists.map(l=>l.length));i++)for(const list of lists)if(list[i])tasks.push(list[i]);
   return tasks;
  }
+ hasEligibleWork(provider){
+  if(!this.enabled||!PROVIDERS.includes(provider)||!this.backgroundBudget(provider).eligible)return false;
+  if([...this.leases.values()].some(job=>job.request.provider===provider&&job.expires>this.now()))return false;
+  return this.plan(provider,{prune:false}).length>0;
+ }
  claim(provider){
   if(!this.enabled||!['airarabia','flycham'].includes(provider))return null;
   for(const [id,j]of this.leases)if(j.expires<=this.now())this.leases.delete(id);
   if([...this.leases.values()].some(j=>j.request.provider===provider))return null;
+  // A bounded number of starts gives the worker a genuine idle period.
+  // Count starts, not successful prices: expired or superseded work consumed
+  // supplier/browser resources too and must not be refunded into another burst.
+  if(!this.backgroundBudget(provider).eligible)return null;
   if(!this.tasks.get(provider)?.length||this.now()-(this.cycles.get(provider)||0)>=FRESH_MS){this.tasks.set(provider,this.plan(provider));this.cycles.set(provider,this.now());}
   let task;while((task=this.tasks.get(provider).shift()))if(!(this.routeFailures.get(routeKey(task.request))?.until>this.now()))break;
-  if(!task)return null;const id='catalog-'+randomUUID(),lease=randomUUID(),j={id,lease,request:task.request,catalog:true,expires:this.now()+4*60*1000};this.leases.set(id,j);return structuredClone(j);
+  if(!task)return null;const id='catalog-'+randomUUID(),lease=randomUUID(),j={id,lease,request:task.request,catalog:true,expires:this.now()+4*60*1000};this.spendBackgroundStart(provider);this.leases.set(id,j);this.save();return structuredClone(j);
  }
  current(id,lease){const j=this.leases.get(id);return Boolean(j&&j.lease===lease&&j.expires>this.now());}
  acceptOffer(offer,provider,expected){
@@ -122,7 +152,8 @@ class FareCatalog{
  }
  status(){
   this.prune();const records=[...this.records.values()],coverage=[...this.coverage.values()],today=dubaiDay(this.now()),months=[iso(today).slice(0,7),iso(new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+1,1))).slice(0,7)];
-  return {version:'2026-10-25.catalog.2',enabled:this.enabled,records:this.records.size,fresh:records.filter(o=>this.now()-o.checkedAt<=FRESH_MS).length,indicative:records.filter(o=>this.now()-o.checkedAt<=this.indicativeMs).length,refreshIntervalMs:FRESH_MS,refreshPolicy:'rotating_background_not_full_month_every_interval',indicativeMaxAgeMs:this.indicativeMs,completeMonthlyCoverage:false,returnReferenceNights:[7,14],providers:this.stats,
+  return {version:'2026-10-25.catalog.3',enabled:this.enabled,records:this.records.size,fresh:records.filter(o=>this.now()-o.checkedAt<=FRESH_MS).length,indicative:records.filter(o=>this.now()-o.checkedAt<=this.indicativeMs).length,refreshIntervalMs:FRESH_MS,refreshPolicy:'bounded_rotating_background_not_full_month_every_interval',indicativeMaxAgeMs:this.indicativeMs,completeMonthlyCoverage:false,returnReferenceNights:[7,14],providers:this.stats,
+   backgroundBudget:{policy:'starts_per_provider_window',providers:Object.fromEntries(PROVIDERS.map(provider=>[provider,this.backgroundBudget(provider)]))},
    familyPricing:{enabled:this.familyEnabled&&this.verifiedFamilyProviders.size>0,requested:this.familyEnabled,verifiedProviders:[...this.verifiedFamilyProviders],activeProviders:this.familyEnabled?[...this.verifiedFamilyProviders]:[],defaultParty:'one_adult',requiresVerifiedSupplierSupport:true},
    months:months.map(month=>({month,pricedDates:new Set(records.filter(o=>o.request.departureDate.startsWith(month)).map(o=>o.request.departureDate)).size,attemptedDates:new Set(coverage.filter(o=>o.departureDate.startsWith(month)).map(o=>o.departureDate)).size,attemptedRequests:coverage.filter(o=>o.departureDate.startsWith(month)).length,complete:false})),
    rotation:['flycham','airarabia'].map(provider=>({provider,startedAt:this.cycles.get(provider)||null,remaining:this.tasks.get(provider)?.length??null,nextRefreshAt:this.cycles.has(provider)?this.cycles.get(provider)+FRESH_MS:null})),
@@ -130,4 +161,4 @@ class FareCatalog{
    active:[...this.leases.values()].filter(j=>j.expires>this.now()).map(j=>({provider:j.request.provider,origin:j.request.origin,destination:j.request.destination,departureDate:j.request.departureDate,returnDate:j.request.returnDate,tripType:j.request.tripType,party:fixtureFor(j.request.passengers)?.id||'custom',expiresAt:j.expires})),routeFailures:[...this.routeFailures.values()]};
  }
 }
-module.exports={FareCatalog,FRESH_MS,INDICATIVE_MS,catalogRequestKey:key};
+module.exports={FareCatalog,FRESH_MS,INDICATIVE_MS,BACKGROUND_JOBS_PER_WINDOW,catalogRequestKey:key};
