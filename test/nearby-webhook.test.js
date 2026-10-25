@@ -31,7 +31,7 @@ test('signed WhatsApp request suggests verified before/after one-day alternative
   await progress(before,{flight:'XH710',total:'610.00',departure:'10 Nov2090 08:00',arrival:'10 Nov2090 10:00'});await complete(before,'confirmed');
   await progress(after,{flight:'XH712',total:'620.00',departure:'12 Nov2090 14:30',arrival:'12 Nov2090 16:30'});await complete(after,'confirmed');await waitForReply(2);
   const card=out[1].text.body;assert.equal(out[1].to,'synthetic-nearby-customer');assert.match(card,/التاريخ المطلوب: 2090-11-11/);assert.match(card,/قبل موعدك بيوم/);assert.match(card,/بعد موعدك بيوم/);
-  for(const detail of ['2090-11-10','2090-11-12','610.00','620.00','XH710','XH712','08:00','14:30','30 كيلو مسجل'])assert.ok(card.includes(detail),detail);
+  for(const detail of ['2090-11-10','2090-11-12','610.00','620.00','XH710','XH712','08:00','14:30'])assert.ok(card.includes(detail),detail);assert.match(card,/30 كيلو مسجّ?ل/);
   assert.doesNotMatch(card,/SUPPLIER_PROSE_MUST_NOT_SET_CUSTOMER_PRICE/);assert.deepEqual(await claim(),{});
   await inbound('الخيار 1');await waitForReply(3);assert.match(out[2].text.body,/2090-11-10/);assert.match(out[2].text.body,/XH710/);assert.deepEqual(await claim(),{});
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;}

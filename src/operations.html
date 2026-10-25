@@ -1,1 +1,46 @@
-<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>أحمد — متابعة الحجوزات</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#f5f7fb;color:#15213a}input,button{padding:12px;margin:6px;border-radius:8px;border:1px solid #ccd3df}article{background:white;padding:20px;margin:16px 0;border-radius:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metrics article{margin:0;border-top:3px solid #168a86}h2{font-size:1.15rem}button{cursor:pointer;background:#e4f5f3}button:focus,input:focus{outline:3px solid #66aba7}#error{color:#a20c24}</style><h1>أحمد — لوحة المتابعة</h1><p>للموظفين المخولين فقط. مفتاح الإدارة يبقى في ذاكرة الصفحة ولا يُحفظ في المتصفح.</p><input id="key" type="password" autocomplete="off" placeholder="مفتاح الإدارة"><button id="load">عرض حالة الخدمة وطلبات التثبيت</button><p id="error"></p><section id="status" aria-live="polite"></section><section id="jobs"></section><script src="/operations.js" defer></script></html>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#102b35"><title>أحمد | مركز محادثات الرمال</title>
+<link rel="stylesheet" href="/operations.css"><script src="/operations.js" defer></script>
+</head>
+<body>
+<section id="login" class="login-screen" aria-labelledby="login-title">
+ <div class="login-art" aria-hidden="true"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><span class="art-word">REMAL</span><p>كل محادثة، بداية رحلة.</p><span class="art-caption">مركز خدمة المسافرين · مجموعة الرمال</span></div>
+ <form id="login-form" class="login-card">
+  <img class="login-logo original-logo" src="/operations-logo.jpg" alt="شعار مجموعة الرمال">
+  <p class="eyebrow">REMAL GROUP · OPERATIONS</p><h1 id="login-title">أهلًا بك في مركز أحمد</h1><p class="muted">المحادثات، عروض السفر ومتابعة الحجوزات في مكان واحد.</p>
+  <label for="key">مفتاح دخول الموظف</label><input id="key" type="password" autocomplete="off" placeholder="أدخل مفتاح الإدارة" required>
+  <button id="load" class="button primary wide" type="submit">دخول مركز المتابعة <span aria-hidden="true">←</span></button>
+  <p id="login-error" class="error" role="alert"></p><p class="privacy-note">للموظفين المخوّلين فقط. يبقى مفتاح الدخول في ذاكرة الصفحة ولا يُحفظ في المتصفح.</p>
+ </form>
+</section>
+<div id="app" class="app-shell" hidden>
+ <aside class="rail" aria-label="التنقل الرئيسي">
+  <div class="rail-brand"><img class="original-logo" src="/operations-logo.jpg" alt="الرمال"><span>REMAL</span></div>
+  <nav id="navigation">
+   <button class="nav-item active" data-view="inbox" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span><span>المحادثات</span></button>
+   <button class="nav-item" data-view="portals"><span class="nav-icon" aria-hidden="true">✈</span><span>البوابات</span></button>
+   <button class="nav-item" data-view="handoffs"><span class="nav-icon" aria-hidden="true">▤</span><span>التثبيت</span></button>
+   <button class="nav-item" data-view="metrics"><span class="nav-icon" aria-hidden="true">▥</span><span>المؤشرات</span></button>
+  </nav>
+  <button id="logout" class="nav-item logout"><span class="nav-icon" aria-hidden="true">↪</span><span>خروج</span></button>
+ </aside>
+ <main class="workspace">
+  <header class="topbar"><div><p class="eyebrow">مركز خدمة المسافرين</p><h1 id="page-title">المحادثات</h1></div><div class="topbar-tools"><span id="live-state" class="live-badge"><i></i> جارٍ الاتصال</span><span id="last-updated" class="update-label">—</span><button id="refresh" class="icon-button" aria-label="تحديث البيانات">↻</button><span class="staff-avatar" aria-label="الموظف">ر</span></div></header>
+  <div id="error" class="banner error-banner" role="alert" hidden></div>
+  <section id="view-inbox" class="view inbox-layout" aria-label="صندوق المحادثات">
+   <aside class="conversation-pane"><div class="pane-heading"><h2>صندوق الوارد <span id="conversation-count" class="count">—</span></h2><span class="small muted">التحديث كل خمس ثوانٍ</span></div><label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="ابحث بالاسم أو رقم الهاتف" aria-label="بحث المحادثات"></label><div class="filter-row"><label for="status-filter" class="sr-only">تصفية المحادثات</label><select id="status-filter"><option value="">كل المحادثات</option value="unread">غير المقروءة</option><option value="searching">جارٍ البحث</option><option value="done">اكتمل البحث</option><option value="human">يتابعها موظف</option><option value="handoff_pending">طلبات تثبيت</option></select></div><div id="conversation-list" class="conversation-list" aria-live="polite"><div class="empty compact">جاري تحميل المحادثات…</div></div><button id="more-conversations" class="button subtle more" hidden>عرض المزيد</button><div class="pane-footer"><i></i> سجل الفريق · بتوقيت دبي</div></aside>
+   <section class="chat-pane" aria-label="المحادثة المحددة"><div id="chat-empty" class="chat-empty"><div class="empty-illustration" aria-hidden="true">◌</div><p class="eyebrow">أحمد · مساعد الرمال</p><h2>كل تفاصيل الرحلة تبدأ من هنا</h2><p>اختر محادثة لمتابعة رسائل العميل وأحمد، أو استلامها والرد مباشرة.</p><div class="empty-features"><span>محادثة مباشرة</span><span>عروض متحققة</span><span>متابعة واضحة</span></div></div>
+    <div id="chat-content" class="chat-content" hidden><header class="chat-header"><button id="back-list" class="icon-button mobile-only" aria-label="العودة لقائمة العملاء">→</button><span id="customer-avatar" class="customer-avatar">—</span><div class="chat-person"><h2 id="customer-title">—</h2><p id="customer-number" dir="ltr">—</p></div><span id="customer-state" class="pill">—</span><button id="details-toggle" class="icon-button" aria-label="تفاصيل الرحلة">☷</button></header><div id="ownership-bar" class="ownership-bar"><span id="ownership-copy">—</span><button id="ownership-action" class="button small">استلام المحادثة</button></div><button id="older-messages" class="button subtle older" hidden>الرسائل الأقدم</button><div id="messages" class="messages" role="log" aria-label="رسائل المحادثة"></div><div id="compose-notice" class="compose-notice"></div><form id="compose-form" class="compose-form"><label for="message-text" class="sr-only">نص الرد للعميل</label><textarea id="message-text" rows="2" maxlength="4000" placeholder="اكتب ردّك للعميل…" disabled></textarea><button id="send-message" type="submit" class="button primary" disabled>إرسال <span aria-hidden="true">↗</span></button></form><p class="compose-footnote">استلام المحادثة يوقف رد أحمد على هذا العميل حتى إعادتها إليه.</p></div>
+   </section>
+   <aside id="details-pane" class="details-pane"><div class="pane-heading"><h2>ملف الرحلة</h2><span class="small muted">سياق واحد لكل عميل</span></div><div id="trip-details" class="details-section"><div class="empty compact">اختر محادثة لعرض التفاصيل.</div></div><div class="details-section"><h3>عروض الرحلة المحفوظة</h3><div id="customer-offers" class="offer-stack"><p class="muted small">لا توجد محادثة محددة.</p></div></div><div class="details-section"><h3>ملاحظات الفريق <span class="private-tag">داخلية</span></h3><div id="notes" class="notes-stack"></div><form id="note-form"><label for="note-text" class="sr-only">ملاحظة داخلية</label><textarea id="note-text" rows="2" maxlength="1200" placeholder="أضف ملاحظة لا تظهر للعميل…" disabled></textarea><button id="save-note" class="button subtle small" disabled>حفظ الملاحظة</button></form></div></aside>
+  </section>
+  <section id="view-portals" class="view page-view" aria-labelledby="portals-title" hidden><div class="section-intro"><div><p class="eyebrow">متابعة البحث</p><h2 id="portals-title">رحلة الطلب داخل البوابات</h2><p>حالة الاتصال وخطوات البحث الفعلية لكل شركة، مع وقت آخر تحديث.</p></div><span class="pill neutral">مشاهدة فقط</span></div><div id="portal-cards" class="portal-grid"></div><div class="panel explanation"><strong>المتابعة مرتبطة بأحداث فعلية</strong><p>ظهور البوابة متصلة لا يعني تأكيد سعر. يظهر العرض للعميل بعد التحقق من تفاصيل الرحلة والسعر فقط.</p></div></section>
+  <section id="view-handoffs" class="view page-view" hidden><div class="section-intro"><div><p class="eyebrow">من الاستعلام إلى الإصدار</p><h2>طلبات التثبيت</h2><p>استلم الطلب، تابع العميل، وسجّل الإصدار بعد إتمامه فعليًا.</p></div></div><div id="jobs" class="handoff-grid"></div></section>
+  <section id="view-metrics" class="view page-view" hidden><div class="section-intro"><div><p class="eyebrow">صورة التشغيل</p><h2>أداء أحمد ومتابعة المبيعات</h2><p id="metrics-period">المؤشرات حسب السجل المتاح.</p></div></div><div id="metrics-cards" class="metrics-grid"></div><div id="status" class="status-panels"></div></section>
+ </main>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+</body></html>

@@ -4,6 +4,7 @@ const sessions = new Map();
 const {languagePatch,applyDefaultBaggage,reconcileRoute}=require('./travel-language');
 const { pricingDemo } = require('./pricing-demo');
 const {naturalDate,normalize,dubaiDay,addDays,iso}=require('./arabic-dates');
+const {resolveMonthScope}=require('./month-scope');
 
 const prompts = {
   origin: 'من أي مدينة أو مطار؟',
@@ -208,6 +209,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   }
   const state=sessions.get(sender) ?? {request:emptyRequest(),awaiting:null,submitted:false,at:now};
   const request=structuredClone(state.request);
+  const monthScope=resolveMonthScope(normalized,{now,pending:state.monthScope,selection:state.monthScopeSelection,request:state.request});
   const before=JSON.stringify(request);
   const follow=normalize(normalized).replace(/[؟?!،,.]+$/g,'');
   const proposal=state.proposal;
@@ -230,7 +232,17 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   const language=languagePatch(normalized,state.awaiting);
   if(language.destination===request.origin&&!/(?:لل|الى|إلى|على)\s*/.test(normalized))delete language.destination;
   if(language.origin===request.destination&&!/(?:من|from)\s/i.test(normalized))delete language.origin;
-  const invalidDate = applyDecisionPatch(request,language,now)||applyDecisionPatch(request,patch,now)||parsedInvalid;
+  const scopedPatch=patch&&['ask','chosen'].includes(monthScope.kind)?{...patch}:patch;
+  if(scopedPatch&&['ask','chosen'].includes(monthScope.kind))for(const key of ['departureDate','rangeStart','rangeEnd'])delete scopedPatch[key];
+  const invalidDate = applyDecisionPatch(request,language,now)||applyDecisionPatch(request,scopedPatch,now)||parsedInvalid;
+  if(monthScope.kind==='chosen'){
+    request.departureDate=null;request.departureRange=monthScope.range;state.monthScopeSelection=monthScope.selection;delete state.monthScope;
+    if(state.awaiting==='monthScope')state.awaiting=null;
+  }else if(monthScope.kind==='bypass'){
+    delete state.monthScope;delete state.monthScopeSelection;if(state.awaiting==='monthScope')state.awaiting=null;
+  }else if(monthScope.kind==='ask'){
+    request.departureDate=null;request.departureRange=null;state.monthScope=monthScope.pending;state.awaiting='monthScope';state.submitted=false;
+  }
   // Only the customer's airline wording can establish an exclusive supplier.
   // It outranks a model's conflicting preference patch.
   if(language.provider&&typeof language.providerExclusive==='boolean')request.provider=language.provider;
@@ -249,6 +261,8 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
   if (invalidDate) {
     return { complete: false, reply: 'التاريخ غير صالح أو مضى، أو أن العودة تسبق الذهاب. أرسل تاريخًا مستقبليًا صحيحًا بصيغة يوم-شهر-سنة، مثل 11-11-2026.' };
   }
+
+  if(monthScope.kind==='ask')return {complete:false,clarification:'month_scope',reply:monthScope.question};
 
   if (missing.length) {
     state.awaiting=missing[0];

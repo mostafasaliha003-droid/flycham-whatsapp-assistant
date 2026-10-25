@@ -30,7 +30,7 @@ test('a return-date reply never overwrites the departure date',()=>{
 });
 test('cheapest month round-trip intent asks stay length and preserves the date range',()=>{
  resetSessions();const h=t=>handleMessage('range-user',t,{now});
- h('من الشارقة إلى دمشق، أرخص سعر بهل شهر، ذهاب وعودة، 1 بالغ');
+ const first=h('من الشارقة إلى دمشق، أرخص سعر بهل شهر كامل، ذهاب وعودة، 1 بالغ');assert.equal(first.complete,false);assert.match(first.reply,/مدة إقامتك/);
  const r=h('لمدة 7 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.start,'2026-10-23');assert.equal(r.request.stayNights,7);
 });
 

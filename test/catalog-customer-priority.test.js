@@ -13,6 +13,6 @@ test('catalog exclusion never blocks a queued customer and never claims backgrou
   await new Promise(resolve=>setTimeout(resolve,30));
   const customer=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.ok(customer.id);assert.ok(!customer.catalog);assert.equal(customer.request.origin,'دبي');assert.equal(customer.request.departureDate,'2099-11-18');
   const sharjah=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false});assert.equal(sharjah.request.origin,'الشارقة');assert.equal(sharjah.request.departureDate,'2099-11-18');assert.deepEqual(await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:false}),{});assert.deepEqual(await post('/internal/quotes/claim',{provider:'airarabia',includeCatalog:false}),{});
-  const catalog=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:true});assert.equal(catalog.catalog,true);
+  const catalog=await post('/internal/quotes/claim',{provider:'flycham',includeCatalog:true});assert.deepEqual(catalog,{});
  }finally{await new Promise(r=>server.close(r));}
 });

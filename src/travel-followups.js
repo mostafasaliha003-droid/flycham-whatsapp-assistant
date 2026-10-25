@@ -1,11 +1,14 @@
 'use strict';
 const {normalize,naturalDate}=require('./arabic-dates');
 const {city,languagePatch}=require('./travel-language');
+const {resolveMonthScope}=require('./month-scope');
 
 // Resolve short references against saved facts before asking the model again.
 // This recognises a request to CHECK availability, never availability itself.
-function knownTripFollowup(raw,request,now=Date.now()){
+function knownTripFollowup(raw,request,now=Date.now(),{monthScope}={}){
  if(!request)return null;
+ const scope=resolveMonthScope(raw,{now,pending:monthScope,request});
+ if(scope.kind==='chosen')return {fields:{rangeStart:scope.range.start,rangeEnd:scope.range.end,departureDate:null},sameDates:false,monthScope:true};
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
  if(/^(?:(?:انا|بدي|بدنا|قصدي)\s+)?من\s+سوري[اةه]$/.test(t))return{fields:{},sameDates:true};
  const carrier=languagePatch(raw);

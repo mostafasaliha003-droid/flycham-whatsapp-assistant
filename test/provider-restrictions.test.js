@@ -7,20 +7,20 @@ const NOW=Date.parse('2026-10-24T23:01:00Z');
 const request=(extra={})=>({origin:'أبوظبي',destination:'دمشق',departureDate:null,departureRange:{start:'2026-12-01',end:'2026-12-31'},tripType:'one_way',returnDate:null,passengers:{adults:1,children:0,infants:0,ages:[]},baggageRequest:{checkedWeightKg:30,source:'default30',requestedByCustomer:false},provider:'airarabia',providerExclusive:true,...extra});
 function seeded(extra={},history=[],env={}){const e=new AssistantEngine({store:new AssistantState({now:()=>NOW}),env,nlu:async()=>null});e.store.set('customer',{history,offers:[],base:{request:request(extra),submitted:true,awaiting:null,at:NOW},status:'done'});return e;}
 test('screenshot correction releases an old unproven airline restriction and preserves party, month and baggage',async()=>{
- const e=seeded();const r=await e.handle('customer','لا اخي بدي سافر من الإمارات على سوريا بس من دبي، او ارخص شي، الشهر القادم، شو ارخص سعر',{now:NOW});
+ const e=seeded();const r=await e.handle('customer','لا اخي بدي سافر من الإمارات على سوريا بس من دبي، او ارخص شي، الشهر القادم كامل، شو ارخص سعر',{now:NOW});
  assert.equal(r.complete,true);assert.equal(r.request.origin,'دبي');assert.equal(r.request.destination,'دمشق');assert.equal(r.request.providerExclusive,false);assert.equal(r.request.providerRestrictionSource,undefined);
- assert.deepEqual(r.request.departureRange,{start:'2026-11-01',end:'2026-11-30',kind:'customer_range'});assert.deepEqual(r.request.passengers,{adults:1,children:0,infants:0,ages:[]});assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.doesNotMatch(r.reply,/كم عدد|ذهاب فقط أم|ذهاب ولا/);
+ assert.deepEqual(r.request.departureRange,{start:'2026-11-01',end:'2026-11-30',kind:'confirmed_whole_month'});assert.deepEqual(r.request.passengers,{adults:1,children:0,infants:0,ages:[]});assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.doesNotMatch(r.reply,/كم عدد|ذهاب فقط أم|ذهاب ولا/);
 });
 test('general cheaper search releases selection scope even when the airport stays the same',async()=>{
- const e=seeded({origin:'دبي',providerRestrictionSource:'selection'});const r=await e.handle('customer','بدي ارخص سعر بالشهر القادم',{now:NOW});assert.equal(r.complete,true);assert.equal(r.request.providerExclusive,false);assert.equal(r.request.origin,'دبي');
+ const e=seeded({origin:'دبي',providerRestrictionSource:'selection'});const r=await e.handle('customer','بدي ارخص سعر بالشهر القادم كامل',{now:NOW});assert.equal(r.complete,true);assert.equal(r.request.providerExclusive,false);assert.equal(r.request.origin,'دبي');
 });
 test('genuine customer-only airline scope survives route and date amendments',async()=>{
- const e=seeded({providerRestrictionSource:'customer'});let r=await e.handle('customer','طيب شفلي من دبي الشهر القادم',{now:NOW});assert.equal(r.complete,true);assert.equal(r.request.providerExclusive,true);assert.equal(r.request.providerRestrictionSource,'customer');assert.equal(r.request.provider,'airarabia');
- r=await e.handle('customer','بدي ارخص سعر خلال شهر 11',{now:NOW});assert.equal(r.request.providerExclusive,true);assert.equal(r.request.providerRestrictionSource,'customer');
+ const e=seeded({providerRestrictionSource:'customer'});let r=await e.handle('customer','طيب شفلي من دبي الشهر القادم كامل',{now:NOW});assert.equal(r.complete,true);assert.equal(r.request.providerExclusive,true);assert.equal(r.request.providerRestrictionSource,'customer');assert.equal(r.request.provider,'airarabia');
+ r=await e.handle('customer','بدي ارخص سعر خلال شهر 11 كامل',{now:NOW});assert.equal(r.request.providerExclusive,true);assert.equal(r.request.providerRestrictionSource,'customer');
 });
 test('legacy exclusivity is migrated only from customer words, never assistant offer labels',async()=>{
- const e=seeded({},[{role:'assistant',text:'العربية حصرا'},{role:'user',text:'مرحبا'}]);const r=await e.handle('customer','شفلي من دبي الشهر القادم',{now:NOW});assert.equal(r.request.providerExclusive,false);
- const explicit=seeded({},[{role:'user',text:'العربية للطيران فقط'}]);const kept=await explicit.handle('customer','شفلي من دبي الشهر القادم',{now:NOW});assert.equal(kept.request.providerExclusive,true);assert.equal(kept.request.providerRestrictionSource,'customer');
+ const e=seeded({},[{role:'assistant',text:'العربية حصرا'},{role:'user',text:'مرحبا'}]);const r=await e.handle('customer','شفلي من دبي الشهر القادم كامل',{now:NOW});assert.equal(r.request.providerExclusive,false);
+ const explicit=seeded({},[{role:'user',text:'العربية للطيران فقط'}]);const kept=await explicit.handle('customer','شفلي من دبي الشهر القادم كامل',{now:NOW});assert.equal(kept.request.providerExclusive,true);assert.equal(kept.request.providerRestrictionSource,'customer');
 });
 test('customer explicit airline restriction outranks a conflicting model preference and can be cleared',()=>{
  const id='model-restriction';legacy.importSession(id,{request:request({providerExclusive:false}),submitted:false,awaiting:null,at:NOW});

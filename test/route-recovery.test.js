@@ -24,7 +24,7 @@ test('waiting on a previously blocked Aleppo request actually resubmits known tr
 });
 test('greeting and travel facts in one batch introduce Ahmed once while retaining the itinerary',async()=>{
  const e=make();const result=await e.handle('greet','هلا، كيفكن، من الشارقة لحلب يوم الأحد ذهاب بس شخص واحد',{now});assert.equal(result.complete,true);assert.match(result.reply,/معك أحمد/);
- const waiting=await e.handle('greet','بانتظار الأسعار',{now});assert.doesNotMatch(waiting.reply,/معك أحمد/);assert.match(waiting.reply,/قيد العمل|البحث مستمر/);
+ const waiting=await e.handle('greet','بانتظار الأسعار',{now});assert.doesNotMatch(waiting.reply,/معك أحمد/);assert.match(waiting.reply,/قيد العمل|البحث مستمر|قيد البحث/);
 });
 test('a distinct journey queues behind the first, while baggage edits remain amendments',async()=>{
  const e=make();await e.handle('queue','من الشارقة للشام 25-10-2026 ذهاب بس شخص واحد',{now});e.jobState('queue','searching');const before=structuredClone(e.state('queue').base);

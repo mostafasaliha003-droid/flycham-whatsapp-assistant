@@ -123,7 +123,7 @@ test('search-expansion replies clarify the window and retain route and requested
  assert.equal(h('شفلي').complete,false);assert.match(h('شفلي بعد بكم يوم').reply,/حدد قديش/);
  const r=h('3 أيام');assert.equal(r.complete,true);assert.equal(r.request.departureRange.start,'2026-10-26');assert.equal(r.request.departureRange.end,'2026-10-28');assert.equal(r.request.baggageRequest.checkedWeightKg,30);assert.equal(r.request.origin,'الشارقة');
  assert.equal(h('حصرا بهل ايام').complete,false);
- assert.equal(h('شوفلي').complete,false);const next=h('الشهر الجاي');assert.equal(next.complete,true);assert.equal(next.request.departureRange.start,'2026-11-01');
+ assert.equal(h('شوفلي').complete,false);const scoped=h('الشهر الجاي');assert.equal(scoped.complete,false);assert.equal(scoped.clarification,'month_scope');const next=h('كامل');assert.equal(next.complete,true);assert.equal(next.request.departureRange.start,'2026-11-01');
 });
 
 test('singular party means one adult; hypothetical, negated or child-only text does not',()=>{

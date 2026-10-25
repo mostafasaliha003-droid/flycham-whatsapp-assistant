@@ -31,3 +31,28 @@ test('a failed catalog search pauses only catalog work and checks customer jobs 
  try{await drain();assert.equal(completed.length,1);t.mock.timers.tick(2999);await drain();assert.equal(claims.length,1);t.mock.timers.tick(1);await drain();assert.equal(claims.length,2);assert.equal(claims[1].includeCatalog,false);assert.equal(completed[1].id,'customer-two');t.mock.timers.tick(57000);await drain();assert.equal(claims[2].includeCatalog,undefined);}
  finally{await stop();t.mock.timers.reset();}
 });
+test('quote polling publishes live job lifecycle metadata and clears it at shutdown without exposing a lease',async()=>{
+ const calls=[],logs=[];let release;const pending=new Promise(resolve=>release=resolve);
+ const adapter={isAuthenticated:async()=>true,report:code=>logs.push(code)};
+ const session={adapter,isReady:()=>true,healthStatus:()=>({state:'ready'}),run:async()=>{adapter.report('FLYCHAM_FLIGHT_RESULTS_READY');await pending;return{reply:'verified result',outcome:'done',coverage:[{confirmed:1}]};}};
+ const stop=startQuotePolling(session,{env,provider:'flycham',log:{log:code=>logs.push(code)},fetchImpl:async(url,options)=>{
+  const path=new URL(url).pathname,body=JSON.parse(options.body);calls.push({path,body});
+  return{ok:true,json:async()=>path.endsWith('/claim')?{id:'private-job',lease:'private-lease',phone:'+971500000000',request:{origin:'SHJ',destination:'DAM',departureDate:'2026-11-12',tripType:'one_way'}}:path.endsWith('/current')?{current:true}:path.endsWith('/monitor')?{accepted:true}:{}};
+ }});
+ try{
+  await drain();const active=calls.filter(c=>c.path.endsWith('/monitor')).find(c=>c.body.activeJob);assert.equal(active.body.activeJob.origin,'SHJ');assert.doesNotMatch(JSON.stringify(active.body),/private-|500000000/);
+  release();await drain();assert.ok(calls.some(c=>c.path.endsWith('/complete')&&c.body.reply==='verified result'));
+  assert.ok(calls.some(c=>c.path.endsWith('/monitor')&&c.body.stage==='completed'&&c.body.activeJob===null));
+ }finally{release();await stop();}
+ const monitors=calls.filter(c=>c.path.endsWith('/monitor'));assert.equal(monitors.at(-1).body.state,'closed');assert.equal(monitors.at(-1).body.ready,false);
+ assert.equal(logs.filter(code=>code==='FLYCHAM_PORTAL_MONITOR_PUBLISH_CONFIRMED').length,1);assert.ok(!logs.includes('FLYCHAM_PORTAL_MONITOR_PREVIEW_PUBLISHED'));
+});
+test('dashboard publishing failures do not hold up or change the verified customer quote',async()=>{
+ const completed=[];
+ const stop=startQuotePolling({adapter:{isAuthenticated:async()=>true,report:()=>{}},isReady:()=>true,run:async()=>({reply:'unchanged quote',outcome:'done',coverage:[{confirmed:1}]})},{env,log:{log(){}},fetchImpl:async(url,options)=>{
+  if(url.endsWith('/monitor'))throw Error('private network detail');
+  if(url.endsWith('/complete'))completed.push(JSON.parse(options.body));
+  return{ok:true,json:async()=>url.endsWith('/claim')?{id:'job',lease:'lease',request:{origin:'SHJ',destination:'DAM',departureDate:'2026-11-12'}}:url.endsWith('/current')?{current:true}:{}};
+ }});
+ try{await drain();assert.equal(completed.length,1);assert.equal(completed[0].reply,'unchanged quote');assert.equal(completed[0].outcome,'done');}finally{await stop();}
+});

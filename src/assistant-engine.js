@@ -13,6 +13,7 @@ const {knownTripFollowup}=require('./travel-followups');
 const {understandConsultant}=require('./consultant-brain');
 const {updateConsultantMemory}=require('./consultant-memory');
 const {enabled,finishConsultantTurn}=require('./consultant-runtime');
+const {chooseApprovedReply}=require('./response-library');
 const dateText=d=>d.split('-').reverse().join('-');
 const clean=t=>String(t||'').replace(/[\u0000-\u001f]/g,' ').slice(0,9000);
 function offerId(o){return crypto.createHash('sha256').update(JSON.stringify([o.request,o.timing,o.price?.weights])).digest('hex').slice(0,12);}
@@ -84,7 +85,7 @@ class AssistantEngine{
  async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
   if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
   const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
-  if(!s.pendingQuotedOffer&&(acceptsExpansion(s.base,text,now)||knownTripFollowup(text,s.base?.request,now)))return;
+  if(!s.pendingQuotedOffer&&(acceptsExpansion(s.base,text,now)||knownTripFollowup(text,s.base?.request,now,{monthScope:s.base?.monthScope})))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
   const promise=Promise.resolve().then(()=>this.nlu(clean(text),{request:snapshot.base?.request,lastQuestion:snapshot.lastQuestion,history:[...snapshot.history,{role:'user',text:clean(text)}].slice(-12),questions:snapshot.questions||{},proposal:snapshot.base?.proposal,quotedOfferReferences:[],turnMessages,awaiting:snapshot.base?.awaiting,selectedOffer:snapshot.offers.find(o=>o.id===snapshot.selected),offerSummaries:offerSummaries(snapshot.offers),status:snapshot.status,consultantMemory:snapshot.consultant},{env:this.env,now})).then(decision=>({decision}),error=>({error}));
@@ -95,7 +96,7 @@ class AssistantEngine{
   const before=this.locks.get(id)||Promise.resolve();
   const work=before.catch(()=>{}).then(async()=>{
    const result=await finishConsultantTurn(this,id,text,await this.process(id,text,{now,quotedMessageId,turnMessages}),{now});
-   const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!result.reply.includes('معك أحمد')){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;
+   const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!/(?:معك|أنا)\s+أحمد/.test(result.reply)){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;
   });
   this.locks.set(id,work);try{return await work;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
  }
@@ -118,6 +119,15 @@ class AssistantEngine{
    if(/[؟?]/.test(reply))s.lastQuestion=reply;
    s.history.push({role:'assistant',text:reply});s.history=s.history.slice(-24);this.save(id,s);return{complete:false,reply};
   };
+  const sayApproved=(kind,{suffix='',allowFreshModel=false}={})=>{
+   const reply=chooseApprovedReply(kind,{state:s,now});
+   // A safe first model greeting remains personalized. Repeated model prose
+   // cannot replace the reviewed variation or the actual expansion question.
+   const proposed=s.consultantDecision?.reply;
+   const repeated=typeof proposed==='string'&&proposed.trim()&&s.history.some(m=>m.role==='assistant'&&normalize(m.text).includes(normalize(proposed)));
+   if(s.consultantDecision&&(!allowFreshModel||repeated))s.consultantDecision.reply=null;
+   return say(reply+(suffix?' '+suffix:''));
+  };
   if(s.humanOwned)return say('المحادثة الآن بمتابعة موظف الحجوزات.');
   if(s.base?.request&&/(?:اي|شو)\s*(?:تواريخ|مواعيد)|(?:تواريخ|مواعيد)\s*(?:متاح[هة]|موجود[هة]?)/.test(t)&&!naturalDate(t,now).range&&!/\d|حجز|تثبيت|الغاء/.test(t)){
    const next=legacy.exportSession(id),route=require('./travel-language').languagePatch(text);
@@ -127,7 +137,7 @@ class AssistantEngine{
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
-  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?(acceptsExpansion(s.base,text,now)?{fields:{},proposal:true}:knownTripFollowup(text,s.base?.request,now)):null;
+  const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?(acceptsExpansion(s.base,text,now)?{fields:{},proposal:true}:knownTripFollowup(text,s.base?.request,now,{monthScope:s.base?.monthScope})):null;
   if(followup&&!followup.proposal&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
   if(!followup&&!/^(?:شكرا|شكرا لانتظارك|بانتظاركن|ناطر|منتظر|شو صار|وين وصلتوا|لسا ما رديتوا|ليش ما رديتوا|وين الاسعار)[؟?!. ]*$/.test(t))try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status,consultantMemory:s.consultant},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
@@ -210,16 +220,19 @@ class AssistantEngine{
   }
 
   hasChange ||= hasDecisionFields;
-  if(!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return say(greeted?'أهلًا فيك من جديد 🌷 منكمّل على تفاصيلك المحفوظة.':'أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي. كيف فيني ساعدك اليوم؟');}
+  if(!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
   if(!hasChange&&(socialIntent==='negotiate'||/زبط|تزبط|خصم|تخفيض|نزل.*سعر|غالي|ارخص من هيك/.test(t))){
    const proposal=legacy.proposeExpansion(id,{now});
-   return say((s.offers.length||['searching','queued','done'].includes(s.status)?'تكرم عيونك، عمولة الخدمة ثابتة والسعر المعروض بعد التحقق بيكون نهائي. ':'تكرم عيونك، رح نراجع الخيارات حسب طلبك ونرتّبلك الأسعار المتحققة بوضوح. ')+(proposal?'فينا نقارن سبعة أيام بعد آخر موعد مع الحفاظ على المسار والوزن. بتناسبك نوسّع البحث لهالفترة؟':'فينا نقارن أيام أو تواقيت أوسع إذا بتناسبك، بدون تغيير تفاصيلك من عندنا.'));
+   return sayApproved('negotiation_ack',{suffix:proposal?'فينا نقارن سبعة أيام بعد آخر موعد مع الحفاظ على المسار والوزن. بتناسبك نوسّع البحث لهالفترة؟':'فينا نقارن أيام أو تواقيت أوسع إذا بتناسبك، بدون تغيير تفاصيلك من عندنا.'});
   }
-  if(!hasChange&&(socialIntent==='goodbye'||/برجع|بعدي?ن بحكي|بدي فكر|بدي افكر|سلام$/.test(t))){s.status='paused';return{...say('أهلًا وسهلًا فيك بأي وقت، شرّفتنا 🌷 لما ترجع بأي سؤال أو استفسار، نحنا بالخدمة.'),cancel:true};}
+  if(!hasChange&&(socialIntent==='goodbye'||/برجع|بعدي?ن بحكي|بدي فكر|بدي افكر|سلام$/.test(t))){s.status='paused';return{...sayApproved('goodbye'),cancel:true};}
   if(!recoveredRoute&&!hasChange&&(socialIntent==='status'||/بانتظار|بالانتظار|ناطر|منتظر|شو صار|وين وصلت|لسا|اصبر/.test(t))){
-   const busy=['searching','queued'].includes(s.status);const waiting=['بنعتذر منك على الانتظار 🌷 طلبك قيد العمل، ولسه عم نتحقق من الأسعار والتواقيت. أول ما تتأكد العروض منرسلها إلك هون، وما في داعي تعيد تفاصيل الرحلة.','شكرًا لصبرك 🌷 جاري البحث على نفس تفاصيل رحلتك. منرسلك الخيارات والأسعار النهائية فور تأكيدها.','معك 🌷 طلبك محفوظ والبحث مستمر؛ أول ما يجهز عرض متحقق منبعته إلك.'];s.waitingCount=(s.waitingCount||0)+1;return say(busy?waiting[(s.waitingCount-1)%waiting.length]:s.status==='failed'?'لم يكتمل التحقق من الأسعار للطلب السابق. فينا نعيد المحاولة على نفس التفاصيل، أو نحدد فترة ثانية.':s.status==='done'?'نتائج البحث المتحققة موجودة بالعرض السابق. فينا نراجع الخيار اللي بناسبك أو نوسّع الفترة إذا حبيت.':s.status==='unsupported'?'تفاصيل رحلتك موجودة، لكن ما تأكّد سعر لهالمسار بعد. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':s.base?.awaiting?'تفاصيلك محفوظة، وبانتظار جوابك على النقطة اللي سألتك عنها حتى أكمل على نفس الطلب.':'معك، ما في بحث جارٍ حاليًا. ابعتلي تفاصيل رحلتك ومنرتّب الخيارات المناسبة.');
+   const busy=['searching','queued'].includes(s.status);s.waitingCount=(s.waitingCount||0)+1;
+   if(busy)return sayApproved('waiting');
+   if(s.consultantDecision)s.consultantDecision.reply=null;
+   return say(s.status==='failed'?'لم يكتمل التحقق من الأسعار للطلب السابق. فينا نعيد المحاولة على نفس التفاصيل، أو نحدد فترة ثانية.':s.status==='done'?'نتائج البحث المتحققة موجودة بالعرض السابق. فينا نراجع الخيار اللي بناسبك أو نوسّع الفترة إذا حبيت.':s.status==='unsupported'?'تفاصيل رحلتك موجودة، لكن ما تأكّد سعر لهالمسار بعد. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':s.base?.awaiting?'تفاصيلك محفوظة، وبانتظار جوابك على النقطة اللي سألتك عنها حتى أكمل على نفس الطلب.':'معك، ما في بحث جارٍ حاليًا. ابعتلي تفاصيل رحلتك ومنرتّب الخيارات المناسبة.');
   }
-  if(!recoveredRoute&&!hasChange&&(socialIntent==='thanks'||/^(?:شكرا|شكراً|يسلمو|مشكور|يعطيك العافيه|يعطيك العافية|تمام شكرا|👍)$/.test(t)))return say('أهلًا وسهلًا فيك 🌷');
+  if(!recoveredRoute&&!hasChange&&(socialIntent==='thanks'||/^(?:شكرا|شكراً|يسلمو|مشكور|يعطيك العافيه|يعطيك العافية|تمام شكرا|👍)$/.test(t)))return sayApproved('thanks');
   if(socialIntent==='cancel'){s.status='cancelled';s.pendingRequests=[];s.questions={};s.lastQuestion=null;legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار الحالي. إذا قصدك تذكرة صادرة، وضّحلي حتى نميّزها عن الاستعلام.'),cancel:true};}
   const selectOffer=(index,{announce=true}={})=>{
    const offer=s.offers.find(o=>o.reference===index+1)||s.offers[index];

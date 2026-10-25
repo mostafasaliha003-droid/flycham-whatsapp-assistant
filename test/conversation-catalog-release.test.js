@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {MessageBatcher}=require('../src/message-batcher');
 const {AssistantEngine}=require('../src/assistant-engine');
 const {AssistantState}=require('../src/assistant-state');
-const {FareCatalog,FRESH_MS}=require('../src/fare-catalog');
+const {FareCatalog,FRESH_MS,INDICATIVE_MS}=require('../src/fare-catalog');
 const {handleMessage,resetSessions}=require('../src/conversation');
 const {validateLiveRequest}=require('../src/live-quote');
 const {capabilityIssue}=require('../src/assistant-policy');
@@ -39,7 +39,7 @@ test('default30 is valid and FlyCham included30 does not trigger unsupported upg
  assert.doesNotThrow(()=>validateLiveRequest(request,now));assert.equal(capabilityIssue({...request,provider:'flycham'}),null);assert.equal(capabilityIssue({...request,provider:'flycham',baggageRequest:{checkedWeightKg:40,requestedByCustomer:true}}),'constraints');
 });
 test('catalog retains only verified matching quotes and freshness is per offer',()=>{
- let time=now;const c=new FareCatalog({now:()=>time});assert.equal(c.acceptOffer(offer(),'airarabia'),true);assert.match(c.reply({destinationCountry:'سوريا'}),/700.00/);assert.match(c.reply(),/من الشارقة إلى دمشق/);assert.equal(c.acceptOffer(offer({...request,destination:'المنامة'}),'airarabia'),false);assert.equal(c.acceptOffer({...offer(),price:{sellingTotal:'700.00',weights:[]}},'airarabia'),false);time+=FRESH_MS+1;assert.equal(c.reply(),null);
+ let time=now;const c=new FareCatalog({now:()=>time});assert.equal(c.acceptOffer(offer(),'airarabia'),true);assert.match(c.reply({destinationCountry:'سوريا'}),/700.00/);assert.match(c.reply(),/من الشارقة إلى دمشق/);assert.equal(c.acceptOffer(offer({...request,destination:'المنامة'}),'airarabia'),false);assert.equal(c.acceptOffer({...offer(),price:{sellingTotal:'700.00',weights:[]}},'airarabia'),false);time+=FRESH_MS+1;assert.equal(c.find().length,0);assert.match(c.reply(),/استرشادية/);time=now+INDICATIVE_MS+1;assert.equal(c.reply(),null);
 });
 test('route, return, weight and supplier cannot share an unrelated cached quote',()=>{
  const c=new FareCatalog({now:()=>now});c.acceptOffer(offer(),'airarabia');assert.equal(c.find({origin:'دمشق'}).length,0);assert.equal(c.find({provider:'flycham'}).length,0);assert.equal(c.find({tripType:'round_trip'}).length,0);assert.equal(c.find({baggageRequest:{checkedWeightKg:20}}).length,0);assert.equal(c.find({departureDate:'2026-11-12'}).length,0);
@@ -48,7 +48,7 @@ test('catalog leases are separate from customers and guard source request and ex
  let time=now;const c=new FareCatalog({now:()=>time});const job=c.claim('flycham');assert.equal(job.catalog,true);assert.equal(job.request.baggageRequest.checkedWeightKg,30);assert.equal(c.claim('flycham'),null);assert.equal(c.current(job.id,'wrong'),false);assert.equal(c.progress(job.id,job.lease,{offer:offer({...job.request,destination:'حلب'})}),true);assert.equal(c.records.size,0);time+=4*60000+1;assert.equal(c.current(job.id,job.lease),false);
 });
 test('month plan uses current and next Dubai month; return duration is explicit',()=>{
- const c=new FareCatalog({now:()=>now});const p=c.plan('airarabia');assert.equal(p.length,39*2*3);assert.equal(p[0].request.departureDate,'2026-10-23');assert.equal(p.at(-1).request.departureDate,'2026-11-30');assert.ok(p.some(t=>t.request.returnDate==='2026-12-14'&&t.request.stayNights===14));assert.equal(c.status().completeMonthlyCoverage,false);
+ const c=new FareCatalog({now:()=>now});const p=c.plan('airarabia');assert.equal(p.length,39*8*3);assert.equal(p[0].request.departureDate,'2026-10-23');assert.equal(p.at(-1).request.departureDate,'2026-11-30');assert.ok(p.some(t=>t.request.returnDate==='2026-12-14'&&t.request.stayNights===14));assert.equal(c.status().completeMonthlyCoverage,false);
 });
 
 test('a mistaken model clarification cannot prevent parsing the actual answer',async()=>{

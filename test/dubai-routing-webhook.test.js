@@ -18,7 +18,9 @@ test('the screenshot conversation searches both suppliers at valid airports and 
  const claim=provider=>call('/internal/quotes/claim',{provider,includeCatalog:false});
  try{
   await call('/internal/quotes/heartbeat',{provider:'flycham',ready:true});await call('/internal/quotes/heartbeat',{provider:'airarabia',ready:true});
-  await inbound(['لا اخي بدي سافر من الإمارات على سوريا بس من دبي','او ارخص شي','الشهر القادم','شو ارخص سعر']);await waitFor(()=>out.some(x=>x.includes('جاري البحث')));
+  await inbound(['لا اخي بدي سافر من الإمارات على سوريا بس من دبي','او ارخص شي','الشهر القادم','شو ارخص سعر']);await waitFor(()=>out.some(x=>x.includes('بأي جزء')));
+  assert.equal(out.some(x=>x.includes('جاري البحث')),false);assert.deepEqual(await claim('flycham'),{});assert.deepEqual(await claim('airarabia'),{});
+  await inbound(['كامل']);await waitFor(()=>out.some(x=>x.includes('جاري البحث')));
   const ack=out.find(x=>x.includes('جاري البحث'));assert.match(ack,/فلاي شام/);assert.match(ack,/العربية للطيران/);assert.match(ack,/الشارقة وأبوظبي/);assert.match(ack,/2026-11-01/);assert.match(ack,/2026-11-30/);
   const seen=[];for(const provider of ['flycham','airarabia'])for(let i=0;i<2;i++){
    const j=await claim(provider);assert.ok(j.id);seen.push([provider,j.request.origin]);assert.equal(j.request.passengers.adults,1);assert.equal(j.request.baggageRequest.checkedWeightKg,30);assert.match(j.request.departureDate,/^2026-11-/);
