@@ -28,14 +28,24 @@ function extractIncomingMessages(payload) {
       const value = change?.value ?? {};
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
-        if (message?.type !== 'text' || !message?.from || typeof message?.text?.body !== 'string') continue;
+        if(!message?.from)continue;
+        let text,requestChoice;
+        if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
+        else if(message.type==='interactive'&&message.interactive?.type==='button_reply'){
+          const buttonId=message.interactive.button_reply?.id;
+          const choice=typeof buttonId==='string'?buttonId.match(/^request_(continue|new):([a-f0-9-]{36})$/):null;
+          if(!choice)continue;
+          requestChoice={id:choice[2],action:choice[1]};
+          text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';
+        }else continue;
         const contact = contacts.find((item) => item?.wa_id === message.from);
         messages.push({
           id: message.id ?? null,
           ...(message.context?.id?{contextId:message.context.id}:{}),
           from: message.from,
           name: contact?.profile?.name ?? null,
-          text: message.text.body.trim(),
+          text,
+          ...(requestChoice?{requestChoice}:{}),
           timestamp: message.timestamp ?? null
         });
       }

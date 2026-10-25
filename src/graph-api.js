@@ -21,6 +21,10 @@ async function sendTextMessage(to, body, env = process.env) {
     return { dryRun: true };
   }
 
+  return sendGraphMessage({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: false, body } },env);
+}
+
+async function sendGraphMessage(message,env){
   const { WHATSAPP_ACCESS_TOKEN: token, WHATSAPP_PHONE_NUMBER_ID: phoneId } = env;
   const version = env.WHATSAPP_GRAPH_API_VERSION || 'v23.0';
   if (!token || !phoneId) throw new Error('WhatsApp Graph API credentials are missing');
@@ -28,7 +32,7 @@ async function sendTextMessage(to, body, env = process.env) {
   const response = await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: false, body } }),
+    body: JSON.stringify(message),
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) {
@@ -36,6 +40,15 @@ async function sendTextMessage(to, body, env = process.env) {
     const code=safeGraphFailure(response.status,payload);console.error(code);throw new Error(code);
   }
   return response.json();
+}
+
+async function sendRequestChoiceMessage(to,{text,choiceId}={},env=process.env){
+ if(typeof text!=='string'||!text.trim()||text.length>1024||typeof choiceId!=='string'||!/^[a-f0-9-]{36}$/.test(choiceId))throw Error('WHATSAPP_REQUEST_CHOICE_INVALID');
+ if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return {dryRun:true};
+ return sendGraphMessage({messaging_product:'whatsapp',recipient_type:'individual',to,type:'interactive',interactive:{type:'button',body:{text},action:{buttons:[
+  {type:'reply',reply:{id:'request_continue:'+choiceId,title:'متابعة طلبي الحالي'}},
+  {type:'reply',reply:{id:'request_new:'+choiceId,title:'طلب جديد مختلف'}}
+ ]}}},env);
 }
 
 async function sendImageMessage(to,png,caption,env=process.env){
@@ -46,4 +59,4 @@ async function sendImageMessage(to,png,caption,env=process.env){
  const upload=await fetch(base+'/media',{method:'POST',headers,body,signal:AbortSignal.timeout(30000)});if(!upload.ok)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');const media=await upload.json();if(typeof media.id!=='string')throw Error('VOUCHER_DELIVERY_UNAVAILABLE');
  const response=await fetch(base+'/messages',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to,type:'image',image:{id:media.id,caption}}),signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');return response.json();
 }
-module.exports = {sendImageMessage, sendTextMessage,checkWhatsAppConnection,safeGraphFailure };
+module.exports = {sendImageMessage, sendTextMessage,sendRequestChoiceMessage,checkWhatsAppConnection,safeGraphFailure };

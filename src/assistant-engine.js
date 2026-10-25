@@ -14,6 +14,7 @@ const {understandConsultant}=require('./consultant-brain');
 const {updateConsultantMemory}=require('./consultant-memory');
 const {enabled,finishConsultantTurn}=require('./consultant-runtime');
 const {chooseApprovedReply}=require('./response-library');
+const {shouldOfferRequestChoice,createRequestChoice,readRequestChoice}=require('./request-choice');
 const dateText=d=>d.split('-').reverse().join('-');
 const clean=t=>String(t||'').replace(/[\u0000-\u001f]/g,' ').slice(0,9000);
 function offerId(o){return crypto.createHash('sha256').update(JSON.stringify([o.request,o.timing,o.price?.weights])).digest('hex').slice(0,12);}
@@ -85,6 +86,7 @@ class AssistantEngine{
  async prepare(id,text,{turnMessages=[],quotedMessageId=null,now=Date.now()}={}){
   if(quotedMessageId||turnMessages.some(m=>m.quotedOfferReference||m.quotedOfferReferences?.length))return;
   const s=this.state(id),key=this.preparationKey(s,text,turnMessages);
+  if(s.requestChoice||shouldOfferRequestChoice({state:s,text,followup:knownTripFollowup(text,s.base?.request,now,{monthScope:s.base?.monthScope}),now}))return;
   if(!s.pendingQuotedOffer&&(acceptsExpansion(s.base,text,now)||knownTripFollowup(text,s.base?.request,now,{monthScope:s.base?.monthScope})))return;
   if(this.prepared.get(id)?.key===key)return;
   const snapshot=structuredClone(s);
@@ -92,16 +94,70 @@ class AssistantEngine{
   if(this.prepared.size>=100)this.prepared.delete(this.prepared.keys().next().value);
   this.prepared.set(id,{key,promise,at:now});
  }
- async handle(id,text,{now=Date.now(),quotedMessageId=null,turnMessages=[]}={}){
+ async handle(id,text,{now=Date.now(),quotedMessageId=null,turnMessages=[],buttonChoice=null,choiceExtras=[]}={}){
   const before=this.locks.get(id)||Promise.resolve();
   const work=before.catch(()=>{}).then(async()=>{
-   const result=await finishConsultantTurn(this,id,text,await this.process(id,text,{now,quotedMessageId,turnMessages}),{now});
+   const choiceResult=await this.processRequestChoice(id,text,{now,quotedMessageId,turnMessages,buttonChoice,choiceExtras});
+   const result=await finishConsultantTurn(this,id,text,choiceResult||await this.process(id,text,{now,quotedMessageId,turnMessages}),{now});
    const s=this.state(id);if(!s.introduced&&!result.cancel){const introduction='أهلًا وسهلًا فيك 🌷 معك أحمد، مساعد مجموعة الرمال الافتراضي.';s.introduced=true;if(!/(?:معك|أنا)\s+أحمد/.test(result.reply)){result.reply=introduction+'\n\n'+result.reply;result.introduction=introduction;const last=s.history[s.history.length-1];if(last?.role==='assistant')last.text=result.reply;}this.store.set(id,s);}return result;
   });
   this.locks.set(id,work);try{return await work;}finally{if(this.locks.get(id)===work)this.locks.delete(id);}
  }
 
- async process(id,text,{now,quotedMessageId,turnMessages=[]}){
+ choiceReply(id,state,text,reply,extra={}){
+  state.consultantDecision=null;state.history.push({role:'user',text:clean(text)},{role:'assistant',text:reply});state.history=state.history.slice(-24);this.store.set(id,state);
+  return {complete:false,reply,requestChoiceHandled:true,...extra};
+ }
+ async processRequestChoice(id,text,{now,quotedMessageId,turnMessages=[],buttonChoice,choiceExtras=[]}){
+  let state=this.state(id);if(state.humanOwned)return null;
+  const oldChoice=state.requestChoice,quotedElsewhere=!buttonChoice&&quotedMessageId&&quotedMessageId!==oldChoice?.messageId;
+  const followup=knownTripFollowup(text,state.base?.request,now,{monthScope:state.base?.monthScope});
+  let picked=quotedElsewhere?{action:'none'}:readRequestChoice(state,text,{now,buttonChoice});
+  if(picked.action==='stale'){
+   // A stale button can never reset the current journey. Ordinary new text
+   // may proceed after expiring an old prompt, without being discarded.
+   if(buttonChoice)return this.choiceReply(id,state,text,picked.reply);
+   delete state.requestChoice;this.store.set(id,state);
+   if(/^(?:[12١٢]|الاول|الثاني|التاني|متابعة طلبي الحالي|طلب جديد مختلف)[.!؟? ]*$/.test(String(text).trim()))return this.choiceReply(id,state,text,picked.reply);
+   picked={action:'none'};
+  }
+  if(picked.action==='repeat'&&followup)picked={action:'none'};
+  if(picked.action==='none'&&oldChoice&&(picked.resolvedCurrent||followup||quotedElsewhere||/^(?:الخيار|العرض)\s*\d{1,2}$/.test(normalize(text))||/ثبتلي|بدي ثبت|احجزلي|وقف البحث|احذف بياناتي|امسح بياناتي/.test(normalize(text)))){state.lastQuestion=oldChoice.previousQuestion||null;delete state.requestChoice;this.store.set(id,state);}
+  if(picked.action==='repeat'){
+   if(clean(text)!==state.requestChoice.text&&!state.requestChoice.text.includes(clean(text)))state.requestChoice.text=clean(state.requestChoice.text+'، '+text).slice(0,3000);
+   return this.choiceReply(id,state,text,picked.reply,{requestChoice:{id:state.requestChoice.id}});
+  }
+  if(['continue','new'].includes(picked.action)){
+   this.prepared.delete(id);delete state.requestChoice;state.lastQuestion=picked.pending.previousQuestion||null;state.consultantDecision=null;
+   const original=clean(picked.pending.text+(choiceExtras.length?'، '+choiceExtras.join('، '):''));
+   if(picked.action==='new'&&['queued','searching'].includes(state.status)){
+    state.pendingRequests||=[];
+    if(!state.pendingRequests.some(r=>normalize(r.text)===normalize(original))){
+     if(state.pendingRequests.length>=5)return this.choiceReply(id,state,text,'عندي خمس طلبات إلك بانتظار البحث 🌷 خلّيني أخلصها بالترتيب، وبعدها منكمل الطلب الجديد.');
+     state.pendingRequests.push({text:original,at:now});
+    }
+    return this.choiceReply(id,state,text,'أكيد 🌷 هاد طلب جديد ومنفصل عن رحلتك الحالية. رح أنهي البحث الحالي وأرسلك عروضه، وبعدها ببدأ بطلبك الجديد بتفاصيل مستقلة.');
+   }
+   if(picked.action==='new'){
+    state.previous||=[];if(state.base)state.previous.push(state.base);state.previous=state.previous.slice(-5);
+    state.base=null;state.history=[];state.questions={};state.lastQuestion=null;state.selected=null;state.offers=[];state.offerMessages={};state.comparison=null;state.activeComparisonId=null;state.queueReady=false;state.coverage=[];state.consultant={};state.status='collecting';state.tripId=crypto.randomUUID();delete state.offerPages;delete state.pendingQuotedOffer;delete state.previousComparisonOffers;delete state.handoffId;
+    legacy.importSession(id,null);
+   }
+   this.store.set(id,state);
+   const result=await this.process(id,original,{now,quotedMessageId:null,turnMessages:[],choiceMode:picked.action==='continue'?'continue':null});
+   result.requestChoiceHandled=true;
+   if(picked.action==='new')result.cancel=true;
+   if(!result.complete){const current=this.state(id);result.reply=(picked.action==='new'?'تمام 🌷 منبدأ طلب جديد بتفاصيل مستقلة.':'تمام 🌷 منكمل على طلبك الحالي.')+'\n\n'+result.reply;const last=current.history.at(-1);if(last?.role==='assistant')last.text=result.reply;this.store.set(id,current);}
+   return result;
+  }
+  if(!quotedElsewhere&&shouldOfferRequestChoice({state,text,followup,quotedOfferReferences:quotedMessageId?[1]:turnMessages.flatMap(m=>m.quotedOfferReference?[m.quotedOfferReference]:[]),now})){
+   state.tripId||=crypto.randomUUID();const previousQuestion=state.lastQuestion,prompt=createRequestChoice(state,text,{now});state.requestChoice.previousQuestion=previousQuestion||null;
+   return this.choiceReply(id,state,text,prompt.reply,{requestChoice:{id:prompt.id}});
+  }
+  return null;
+ }
+
+ async process(id,text,{now,quotedMessageId,turnMessages=[],choiceMode=null}){
   const s=this.state(id),priorSelection=s.selected,priorBase=s.base;
   const prepared=this.prepared.get(id),preparedKey=this.preparationKey(s,text,turnMessages);
   const usePrepared=!quotedMessageId&&prepared?.key===preparedKey&&now-prepared.at<120000;
@@ -141,6 +197,9 @@ class AssistantEngine{
   if(followup&&!followup.proposal&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
   if(!followup&&!/^(?:شكرا|شكرا لانتظارك|بانتظاركن|ناطر|منتظر|شو صار|وين وصلتوا|لسا ما رديتوا|ليش ما رديتوا|وين الاسعار)[؟?!. ]*$/.test(t))try{if(usePrepared){const value=await prepared.promise;if(value.error)throw value.error;decision=value.decision;}else decision=await this.nlu(clean(text),{request:s.base?.request,lastQuestion:s.lastQuestion,history:s.history.slice(-12),questions:s.questions,proposal:s.base?.proposal,quotedOfferReferences,turnMessages,awaiting:s.base?.awaiting,selectedOffer:s.offers.find(o=>o.id===s.selected),offerSummaries:offerSummaries(s.offers),status:s.status,consultantMemory:s.consultant},{env:this.env,now});if(decision)console.log('ASSISTANT_NLU_OK_'+decision.intent);}catch(error){console.log(/^NLU_[A-Z0-9_]+$/.test(error.message)?error.message:'ASSISTANT_NLU_UNAVAILABLE');}
+  // The customer's explicit scope choice outranks a model's suggestion that
+  // the held message should become a separate journey.
+  if(choiceMode==='continue'&&decision?.intent==='additional_request')decision={...decision,intent:'change',...(decision.consultant?{consultant:{...decision.consultant,action:'amend',reply:null,nextStep:'search'}}:{})};
   if(decision?.consultant){s.consultantDecision={...decision.consultant,question:decision.question,at:now};updateConsultantMemory(s,text,{now,preferences:decision.consultant.preferences});}
   const repeatSearch=Boolean(s.base?.submitted&&['done','failed','paused'].includes(s.status)&&(followup||/(?:شفلي|شوفلي|شوف لي|شيك|ابحث|عيد البحث|اعد البحث|نفس الرحل[هة]|نفس التفاصيل)/.test(t)));
   if(repeatSearch){
@@ -164,7 +223,7 @@ class AssistantEngine{
    if(fields.rangeStart&&fields.rangeEnd||fields.departureDate)decision={...(decision||{}),intent:'change',fields,question:null,option:null};
    else return say('أكيد 🌷 منبحث عن تواريخ تانية على نفس المسار وعدد المسافرين والوزن. أي فترة بتناسبك: هالشهر، الشهر الجاي، أو الاتنين؟');
   }
-  const additional=decision?.intent==='additional_request'||/(?:طلب|رحل[هة]|سفر[هة])\s*(?:تاني|ثاني|تاني[هة]|ثاني[هة])|(?:وكمان|وكمان بدي)\s+(?:بدي\s+)?(?:رحل[هة]|من\s)/.test(t);
+  const additional=choiceMode!=='continue'&&(decision?.intent==='additional_request'||/(?:طلب|رحل[هة]|سفر[هة])\s*(?:تاني|ثاني|تاني[هة]|ثاني[هة])|(?:وكمان|وكمان بدي)\s+(?:بدي\s+)?(?:رحل[هة]|من\s)/.test(t));
   if(additional&&['queued','searching'].includes(s.status)){
    s.pendingRequests ||= [];
    if(s.pendingRequests.some(r=>normalize(r.text)===t))return say('طلبك التاني بانتظار نتيجة الأول، وبس أرسلك الأسعار ببدأ فيه.');
@@ -312,7 +371,7 @@ class AssistantEngine{
   s.history.push({role:'assistant',text:result.reply});s.history=s.history.slice(-24);
   this.save(id,s);return result;
  }
- beginNextRequest(id){const s=this.state(id);if(!s.queueReady||!['done','failed'].includes(s.status)||!s.pendingRequests?.length)return null;const next=s.pendingRequests.shift();s.queueReady=false;s.previous ||= [];if(s.base)s.previous.push(s.base);s.previous=s.previous.slice(-5);s.base=null;s.lastQuestion=null;s.questions={};s.selected=null;s.offers=[];s.comparison=null;s.activeComparisonId=null;s.status='collecting';s.tripId=crypto.randomUUID();legacy.importSession(id,null);this.store.set(id,s);return next;}
+ beginNextRequest(id){const s=this.state(id);if(!s.queueReady||!['done','failed'].includes(s.status)||!s.pendingRequests?.length)return null;const next=s.pendingRequests.shift();s.queueReady=false;s.previous ||= [];if(s.base)s.previous.push(s.base);s.previous=s.previous.slice(-5);s.base=null;s.history=[];s.consultant={};s.lastQuestion=null;s.questions={};s.selected=null;s.offers=[];s.offerMessages={};s.comparison=null;s.activeComparisonId=null;delete s.requestChoice;delete s.pendingQuotedOffer;delete s.offerPages;delete s.handoffId;s.status='collecting';s.tripId=crypto.randomUUID();legacy.importSession(id,null);this.store.set(id,s);return next;}
  proposeSearchExpansion(id,{now=Date.now()}={}){const s=this.state(id);if(!s.base?.submitted||!s.base.request||s.humanOwned)return null;legacy.importSession(id,s.base);const proposal=legacy.proposeExpansion(id,{now,days:7});if(proposal){s.base=legacy.exportSession(id);this.store.set(id,s);}return proposal;}
  jobState(id,status){const s=this.state(id);s.status=status;this.store.set(id,s);}
  progress(id,data,messageId){const s=this.state(id);s.status='searching';if(data.coverage)s.coverage=data.coverage.slice(0,32);if(data.offer){const o=data.offer;if(o.request&&o.timing?.out?.flight&&/^\d+\.\d{2}$/.test(o.price?.sellingTotal||'')){const item={...o,id:offerId(o),messageId};const index=s.offers.findIndex(x=>x.id===item.id);if(index<0)s.offers.push(item);else s.offers[index]=item;s.offers=s.offers.slice(-80);}}this.store.set(id,s);}

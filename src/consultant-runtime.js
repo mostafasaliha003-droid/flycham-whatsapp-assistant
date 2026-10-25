@@ -19,7 +19,7 @@ async function finishConsultantTurn(engine,id,text,result,{now}){
  if(decision){
   c.lastNextStep=decision.nextStep;
   // Application outcomes and exact cards take precedence over proposed wording.
-  const conversational=!result.complete&&!result.cancel&&!result.handoff&&!['unsupported','failed','cancelled'].includes(s.status)&&!/[\d٠-٩]/.test(result.reply||'')&&!s.pendingQuotedOffer;
+  const conversational=!result.requestChoiceHandled&&!result.complete&&!result.cancel&&!result.handoff&&!['unsupported','failed','cancelled'].includes(s.status)&&!/[\d٠-٩]/.test(result.reply||'')&&!s.pendingQuotedOffer;
   if(decision.action==='knowledge'&&conversational){
    const evidence=await searchKnowledge(decision.knowledgeQuery,{env:engine.env,now});
    c.knowledge={status:evidence.status,checkedAt:now,sources:evidence.sources.map(x=>({title:x.title,url:x.url,checkedAt:x.checkedAt})),requiresVerification:true};
