@@ -35,7 +35,7 @@ class PortalMonitor{
  constructor({now=Date.now,ttl=30000}={}){this.now=now;this.ttl=ttl;this.providers=new Map();}
  accept(data){
   if(!PROVIDERS.includes(data?.provider)||!Object.hasOwn(STAGES,data.stage))return false;
-  const old=this.providers.get(data.provider)||{},state=typeof data.state==='string'&&['ready','recovering','verification','blocked','closed','unavailable','stale','starting'].includes(data.state)?data.state:'unavailable';
+  const old=this.providers.get(data.provider)||{},state=typeof data.state==='string'&&['ready','recovering','verification','blocked','closed','unavailable','stale','starting','dormant'].includes(data.state)?data.state:'unavailable';
   const record={provider:data.provider,stage:data.stage,ready:data.ready===true&&state==='ready'&&!['authentication','unavailable'].includes(data.stage),state,updatedAt:this.now(),activeJob:safeJob(data.activeJob),preview:null};
   if(data.preview){
    if(data.preview.redacted!==true||!['search_form','flights','seats','meals','baggage','pricing'].includes(data.stage)||!record.ready||!record.activeJob||typeof data.preview.jpeg!=='string'||data.preview.jpeg.length>700000)return false;
@@ -46,7 +46,7 @@ class PortalMonitor{
  }
  list(readiness={}){return {providers:PROVIDERS.map(provider=>{
   const r=this.providers.get(provider),fresh=r&&this.now()-r.updatedAt<=this.ttl,ready=Boolean(fresh&&r.ready&&readiness[provider]!==false),preview=ready&&r.preview&&this.now()-r.preview.updatedAt<=this.ttl;
-  return {provider,name:provider==='airarabia'?'العربية للطيران':'فلاي شام',state:fresh?r.state:'stale',ready,stage:fresh?r.stage:'unavailable',stageLabel:fresh?STAGES[r.stage]:'بانتظار تحديث مباشر من البوابة',lastSeenAt:r?.updatedAt||null,updatedAt:r?.updatedAt||null,activeJob:fresh?r.activeJob:null,previewAvailable:Boolean(preview),screenshot:preview?{url:'/internal/assistant/portal-monitor/'+provider+'/preview',updatedAt:r.preview.updatedAt,redacted:true}:null};
+  return {provider,name:provider==='airarabia'?'العربية للطيران':'فلاي شام',state:fresh?r.state:'stale',ready,stage:fresh?r.stage:'unavailable',stageLabel:fresh?(r.state==='dormant'?'المتصفح مغلق لتوفير الذاكرة، ويُفتح تلقائيًا عند وجود عمل':STAGES[r.stage]):'بانتظار تحديث مباشر من البوابة',lastSeenAt:r?.updatedAt||null,updatedAt:r?.updatedAt||null,activeJob:fresh?r.activeJob:null,previewAvailable:Boolean(preview),screenshot:preview?{url:'/internal/assistant/portal-monitor/'+provider+'/preview',updatedAt:r.preview.updatedAt,redacted:true}:null};
  })};}
  preview(provider){const r=this.providers.get(provider);return r?.ready&&r.preview&&this.now()-r.updatedAt<=this.ttl&&this.now()-r.preview.updatedAt<=this.ttl?r.preview.bytes:null;}
 }

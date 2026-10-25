@@ -12,6 +12,7 @@ const { validateLiveRequest, quoteFromScans, expandLiveRequests, formatQuoteOpti
 const { waitForFlightResults, readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
 const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
+const { IdlePortalSession } = require('./idle-portal-session');
 
 const LOGIN_URL = 'https://agents.airarabia.com/xbe/public/showLogin.action';
 // Enter through the user-supplied protected portal route so the supplier can
@@ -20,7 +21,7 @@ const LOGIN_ENTRY_URL = 'https://agents.airarabia.com/xbe/private/showXBEMain.ac
 const {AIRPORTS}=require('./airports');
 
 const STAGES = new Set(['CONFIGURATION', 'BROWSER_START', 'OPEN_LOGIN_PAGE', 'LOGIN_FORM', 'LOGIN_SUBMIT', 'LOGIN_CONFIRM', 'VERIFICATION', 'SESSION', 'PROBE']);
-const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'VERIFICATION_EXPIRED', 'VERIFICATION_NOT_CONFIRMED', 'VERIFIED_NAVIGATION_PENDING', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE']);
+const REASONS = new Set(['TIMEOUT', 'NETWORK', 'TLS', 'HTTP_ERROR', 'MANUAL_VERIFICATION', 'LOGIN_NOT_CONFIRMED', 'MISSING_USERNAME', 'MISSING_PASSWORD', 'UNSUPPORTED_ROUTE', 'UNEXPECTED', 'VERIFICATION_TIMEOUT', 'VERIFICATION_REJECTED', 'VERIFICATION_EXPIRED', 'VERIFICATION_NOT_CONFIRMED', 'VERIFIED_NAVIGATION_PENDING', 'FRAME_CHANGED', 'SELECTOR_AMBIGUOUS', 'TYPE_ERROR', 'VERIFICATION_FORM_UNAVAILABLE', 'CLOSE_FAILED']);
 
 class PortalError extends Error {
   constructor(stage, reason) {
@@ -52,8 +53,8 @@ async function atStage(stage, action) {
   }
 }
 
-function requiredEnv(name) {
-  const value = process.env[name];
+function requiredEnv(name, env = process.env) {
+  const value = env[name];
   if (!value?.trim()) throw new PortalError('CONFIGURATION', name.endsWith('USERNAME') ? 'MISSING_USERNAME' : 'MISSING_PASSWORD');
   return value;
 }
@@ -714,30 +715,43 @@ function waitForShutdown() {
   });
 }
 
-async function run({ launch = options => chromium.launch(options), park = waitForShutdown, log = console } = {}) {
-  if (process.env.AIR_ARABIA_KEEPALIVE_ENABLED !== 'true') {
-    log.log('Keepalive is disabled; worker is idle until AIR_ARABIA_KEEPALIVE_ENABLED=true');
-    await park();
-    return;
-  }
-
+// Owns one browser lifetime only. Queue polling and process shutdown belong to
+// the caller, so an idle controller can close and recreate this runtime without
+// parking or restarting the combined worker process.
+async function openAirArabiaRuntime({ env = process.env, launch = options => chromium.launch(options), log = console, onSessionError = () => {} } = {}) {
   let browser;
   let session;
-  let stopPolling;
-  let failed = false;
-  const shutdown = async () => {
-    if(stopPolling) await stopPolling();
-    if (session) await session.stop().catch(() => {});
-    if (browser) await browser.close().catch(() => {});
+  let closing;
+  let closed = false;
+  const close = () => {
+    if (closed) return closing || Promise.resolve();
+    if (!closing) {
+      const attempt = (async () => {
+        let failed = false;
+        try { if (session) await session.stop(); } catch { failed = true; }
+        try {
+          if (browser) await browser.close();
+          if (typeof browser?.isConnected === 'function' && browser.isConnected()) failed = true;
+        } catch { failed = true; }
+        if (failed) throw new PortalError('SESSION', 'CLOSE_FAILED');
+        closed = true;
+      })();
+      closing = attempt;
+      // An explicit owner shutdown can retry a failed cleanup. Concurrent
+      // callers still share one attempt, and successful closure stays final.
+      attempt.catch(() => { if (closing === attempt) closing = null; });
+    }
+    return closing;
   };
   try {
     // Validate secrets before opening any connection. Values are never logged.
     const config = {
-      username: requiredEnv('AIR_ARABIA_AGENT_USERNAME'),
-      password: requiredEnv('AIR_ARABIA_AGENT_PASSWORD'),
-      origin: process.env.AIR_ARABIA_KEEPALIVE_ORIGIN || 'SHJ',
-      destination: process.env.AIR_ARABIA_KEEPALIVE_DESTINATION || 'DAM',
+      username: requiredEnv('AIR_ARABIA_AGENT_USERNAME', env),
+      password: requiredEnv('AIR_ARABIA_AGENT_PASSWORD', env),
+      origin: env.AIR_ARABIA_KEEPALIVE_ORIGIN || 'SHJ',
+      destination: env.AIR_ARABIA_KEEPALIVE_DESTINATION || 'DAM',
       report: code => log.log(code),
+      verificationProvider: options => waitForAirArabiaCode({ ...options, env }),
     };
     log.log('PORTAL_STAGE_BROWSER_START');
     browser = await atStage('BROWSER_START', () => launch({ headless: true, args: ['--no-sandbox'] }));
@@ -748,7 +762,7 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
     log.log('PORTAL_STAGE_INITIAL_HEARTBEAT');
     session = new PortalSession(adapter, { idleMs: HEARTBEAT_IDLE_MS, checkMs: HEARTBEAT_CHECK_MS, report: code => log.log(code) });
     await session.initialize();
-    if (process.env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') {
+    if (env.AIR_ARABIA_INSPECT_SEARCH_UI === 'true') {
       await session.run(async portal => {
         if (await portal.inspectReservationSearch()) await portal.runSearchProbe({ departureDate: randomHeartbeatDate() });
       });
@@ -756,16 +770,66 @@ async function run({ launch = options => chromium.launch(options), park = waitFo
 
     let errorReported = false;
     session.start(code => {
-      if (!errorReported) {
-        errorReported = true;
-        log.error(code);
-        // A failed authentication/search must not start an automatic retry loop.
-        shutdown().catch(() => {});
-        log.error('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY');
-      }
+      if (errorReported || session.closed) return;
+      errorReported = true;
+      if (!session.authBlocked) session.state = 'unavailable';
+      // Stop future heartbeat ticks without closing recursively from a failed
+      // session operation. The owner can drain/close this lifetime safely.
+      if (session.timer) clearInterval(session.timer);
+      session.timer = null;
+      log.error(code);
+      log.error('PORTAL_BLOCKED_OPERATOR_REVIEW_NO_AUTOMATIC_RETRY');
+      try { Promise.resolve(onSessionError(code, session)).catch(() => {}); } catch {}
     });
     log.log('Air Arabia keepalive worker started; idle protected-page refresh interval is 15 minutes.');
-    if(process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true') stopPolling=startQuotePolling(session,{log});
+    return { session, browser, close };
+  } catch (error) {
+    await close();
+    // Factory callers must never receive raw browser errors containing URLs,
+    // credentials or supplier text. Retain only the existing fixed taxonomy.
+    if (session?.authBlocked) throw new PortalError('SESSION', 'MANUAL_VERIFICATION');
+    const code = safeFailureCode(error);
+    for (const stage of STAGES) {
+      const prefix = `PORTAL_${stage}_`;
+      if (code.startsWith(prefix)) throw new PortalError(stage, code.slice(prefix.length));
+    }
+    throw new PortalError('SESSION', 'UNEXPECTED');
+  }
+}
+
+async function run({ launch = options => chromium.launch(options), park = waitForShutdown, log = console, poll = startQuotePolling, openRuntime = openAirArabiaRuntime } = {}) {
+  if (process.env.AIR_ARABIA_KEEPALIVE_ENABLED !== 'true') {
+    log.log('Keepalive is disabled; worker is idle until AIR_ARABIA_KEEPALIVE_ENABLED=true');
+    await park();
+    return;
+  }
+
+  let runtime;
+  let stopPolling;
+  let shuttingDown;
+  let failed = false;
+  const shutdown = () => {
+    if (!shuttingDown) shuttingDown = (async () => {
+      if (stopPolling) await stopPolling();
+      if (runtime) await runtime.close();
+    })();
+    return shuttingDown;
+  };
+  try {
+    const idleEnabled=process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED==='true'&&process.env.GMAIL_OTP_ENABLED==='true'&&process.env.AIR_ARABIA_IDLE_BROWSER_ENABLED!=='false';
+    if(idleEnabled){
+      let managed;
+      managed=new IdlePortalSession({open:()=>openRuntime({launch,log,onSessionError:()=>managed.block()}),idleMs:180000,report:code=>log.log(code+'_AIRARABIA')});
+      log.log('PORTAL_IDLE_POLICY_ENABLED_AIRARABIA');
+      runtime={close:()=>managed.stop()};
+      // Verify the initial deployment's login. Later openings happen only
+      // after the queue reports real customer or budgeted catalogue demand.
+      await managed.ensureAwake();
+      stopPolling=poll(managed,{log});
+    }else{
+      runtime = await openRuntime({ launch, log, onSessionError: () => shutdown() });
+      if (process.env.AIR_ARABIA_QUOTE_QUEUE_ENABLED === 'true') stopPolling = poll(runtime.session, { log });
+    }
     await park();
   } catch (error) {
     failed = true;
@@ -786,4 +850,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { AirArabiaPortalAdapter, AIRPORTS, LOGIN_ENTRY_URL, PortalError, safeFailureCode, run };
+module.exports = { AirArabiaPortalAdapter, AIRPORTS, LOGIN_ENTRY_URL, PortalError, safeFailureCode, openAirArabiaRuntime, run };
