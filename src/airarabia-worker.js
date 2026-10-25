@@ -71,6 +71,7 @@ class AirArabiaPortalAdapter {
     this.report = report;
     this.verificationProvider = verificationProvider;
     this.verificationAttempted = false;
+    this.loginResponsePages = new WeakSet();
   }
 
   async findVisibleControl(frame, pattern) {
@@ -392,6 +393,22 @@ class AirArabiaPortalAdapter {
     await this.assertNoChallenge(target);
   }
 
+  observeLoginResponses(page = this.page) {
+    // Reauthentication can reuse the same named window. Install our bounded
+    // diagnostic once per page without retaining old pages or removing any
+    // response handlers owned by the browser/session observer.
+    if (!page || typeof page.on !== 'function' || this.loginResponsePages.has(page)) return;
+    page.on('response', response => {
+      try {
+        const url = new URL(response.url());
+        if (url.origin === new URL(LOGIN_URL).origin && /\/j_security_check$/.test(url.pathname)) {
+          this.report(`PORTAL_LOGIN_RESPONSE_HTTP_${response.status()}`);
+        }
+      } catch {}
+    });
+    this.loginResponsePages.add(page);
+  }
+
   async signIn() {
     this.verificationAttempted = false;
     this.verificationNavigationResumed = false;
@@ -424,14 +441,7 @@ class AirArabiaPortalAdapter {
       await this.assertLoginTargetSafe(this.loginTarget);
       await this.loginTarget.locator('#j_password').fill(this.password);
     });
-    this.page.on?.('response', response => {
-      try {
-        const url = new URL(response.url());
-        if (url.origin === new URL(LOGIN_URL).origin && /\/j_security_check$/.test(url.pathname)) {
-          this.report(`PORTAL_LOGIN_RESPONSE_HTTP_${response.status()}`);
-        }
-      } catch {}
-    });
+    this.observeLoginResponses();
     this.report('PORTAL_STAGE_LOGIN_SUBMIT');
     await atStage('LOGIN_SUBMIT', async () => {
       await this.assertLoginTargetSafe(this.loginTarget);
