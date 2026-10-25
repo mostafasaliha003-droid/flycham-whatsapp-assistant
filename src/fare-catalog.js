@@ -14,6 +14,11 @@ const same=(a,b)=>key(a)===key(b);
 const nameEqual=(a,b)=>(airportCode(a)||a)===(airportCode(b)||b);
 const amount=o=>BigInt(o.price.sellingTotal.replace('.',''));
 const priceSort=(a,b)=>amount(a)<amount(b)?-1:amount(a)>amount(b)?1:0;
+const REPLY_MAX_CHARS=3600;
+function indicativeCard(o,dt){
+ const r=o.request,line=(label,date,leg)=>`${label} ${date} | ${leg.flight} | ${leg.departure} ← ${leg.arrival}`;
+ return `*${o.provider==='flycham'?'فلاي شام':'العربية للطيران'} — ${r.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}*\nمن ${r.origin} إلى ${r.destination}\n${line('الذهاب:',r.departureDate,o.timing.out)}${o.timing.back?`\n${line('العودة:',r.returnDate,o.timing.back)}\nإقامة مرجعية ${r.stayNights||'بحسب التاريخ'} ليلة`:''}\n🧳 ${o.price.weights.map(w=>w.kg+' كغ مسجل').join(' / ')}${o.provider==='flycham'?' +10 كغ يد':''}\n*آخر إجمالي رصدناه: ${o.price.sellingTotal} درهم*\nآخر تحقق: ${dt.format(o.checkedAt)}`;
+}
 class FareCatalog{
  constructor({now=Date.now,store=null,enabled=true,indicativeMs=INDICATIVE_MS,familyEnabled=false,verifiedFamilyProviders=[],validateRequest=validateLiveRequest}={}){
   Object.assign(this,{now,store,enabled,familyEnabled,validateRequest});this.indicativeMs=Math.max(FRESH_MS,Math.min(DAY_MS,Number(indicativeMs)||INDICATIVE_MS));
@@ -99,11 +104,21 @@ class FareCatalog{
   const shown=[...groups.values()].sort((a,b)=>a.request.departureDate.slice(0,7).localeCompare(b.request.departureDate.slice(0,7))||Number(a.provider!=='flycham')-Number(b.provider!=='flycham')).slice(0,8),picked=new Set(shown.map(o=>key(o.request)));
   for(const o of sorted)if(shown.length<8&&!picked.has(key(o.request))){shown.push(o);picked.add(key(o.request));}
   shown.sort((a,b)=>Number(Boolean(request.origin)&&!nameEqual(a.request.origin,request.origin))-Number(Boolean(request.origin)&&!nameEqual(b.request.origin,request.origin))||a.request.departureDate.slice(0,7).localeCompare(b.request.departureDate.slice(0,7))||Number(a.provider!=='flycham')-Number(b.provider!=='flycham')||priceSort(a,b));
-  const dt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'});
-  return '*رحلات سوريا | مجموعة الرمال*\nأسعار استرشادية من أقل الأسعار التي رصدناها ضمن التواريخ المفحوصة، وليست تأكيدًا للسعر الحالي:\n\n'+shown.map(o=>{
-   const party=fixtureFor(o.request.passengers),p=o.request.passengers;
-   return `*${o.request.departureDate.slice(0,7)} — ${o.request.tripType==='one_way'?'ذهاب فقط':'ذهاب وعودة'}*\nالفئة: ${party?.label||`${p.adults} بالغ، ${p.children} طفل، ${p.infants} رضيع`} — الإجمالي لهذه التركيبة\nشركة الطيران: ${o.provider==='flycham'?'فلاي شام':'العربية للطيران'}\nالمسار: من ${o.request.origin} إلى ${o.request.destination}\n📅 الذهاب: ${o.request.departureDate}\nرقم الرحلة: ${o.timing.out.flight}\nالإقلاع: ${o.timing.out.departure}\nالوصول: ${o.timing.out.arrival}${o.timing.back?`\nالعودة: ${o.request.returnDate} — إقامة مرجعية ${o.request.stayNights||'بحسب التاريخ'} ليلة\n${o.timing.back.flight}: ${o.timing.back.departure} — ${o.timing.back.arrival}`:''}\n🧳 الوزن: ${o.price.weights.map(w=>w.kg+' كيلو مسجل').join(' / ')}${o.provider==='flycham'?' +10 كيلو يد':''}\n💰 *آخر إجمالي رصدناه: ${o.price.sellingTotal} درهم*${o.provider==='flycham'?`\nهدية بعد إصدار التذكرة: فاوجر ${o.price.voucherValue} درهم لخدماتنا القادمة، صالح سنة؛ لا يخصم من السعر الحالي.`:''}\nآخر تحقق: ${dt.format(o.checkedAt)} بتوقيت دبي`;
-  }).join('\n\n')+'\n\nالأسعار شاملة الرسوم وعمولة الخدمة وفق التركيبة والوزن المبينين، والتوفر قابل للتغير. نعيد تأكيد السعر والتوفر قبل متابعة التثبيت. إذا عندك أسبوع أو فترة محددة ابعتها مع عدد المسافرين وأعمار الأطفال لنشيّك السعر المناسب لطلبك.';
+  const dt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'}),party=fixtureFor(shown[0].request.passengers),p=shown[0].request.passengers;
+  const header='*رحلات سوريا | مجموعة الرمال*\nأسعار استرشادية من أقل ما رصدناه ضمن التواريخ المفحوصة، وليست تأكيدًا للسعر الحالي.\nالفئة: '+(party?.label||`${p.adults} بالغ، ${p.children} طفل، ${p.infants} رضيع`)+'؛ الإجمالي لهذه التركيبة. التواقيت: إقلاع ← وصول كما بالبوابة؛ آخر تحقق بتوقيت دبي.';
+  const footer='الأسعار شاملة الرسوم وعمولة الخدمة للوزن المبين، والتوفر قابل للتغير. نعيد تأكيد السعر والتوفر قبل التثبيت. ابعت الفترة وعدد المسافرين وأعمار الأطفال لنتحقق لطلبك.';
+  const voucher='لفلاي شام فقط: فاوجر بعد إصدار التذكرة، 10 دراهم للذهاب و25 للذهاب والعودة، صالح سنة لخدماتنا القادمة؛ لا يخصم من السعر الحالي.';
+  const cards=new Map(shown.map(o=>[o,indicativeCard(o,dt)]));
+  const render=rows=>[header,...rows.map(o=>cards.get(o)),...(unique.size>rows.length?[`لم نعرض ${unique.size-rows.length} من الأمثلة المحفوظة هنا؛ فينا نتابع حسب الفترة المناسبة إلك.`]:[]),...(rows.some(o=>o.provider==='flycham')?[voucher]:[]),footer].join('\n\n');
+  let selected=shown;
+  if(render(selected).length>REPLY_MAX_CHARS){
+   // Preserve month/supplier/trip balance when unusually long supplier facts
+   // leave less space. Never cut a flight, timestamp, price or disclaimer.
+   selected=[];const pending=[...shown],covered=new Set(),features=o=>[o.request.departureDate.slice(0,7),o.provider,o.request.tripType];
+   while(pending.length){pending.sort((a,b)=>features(b).filter(x=>!covered.has(x)).length-features(a).filter(x=>!covered.has(x)).length||cards.get(a).length-cards.get(b).length);const o=pending.shift();if(render([...selected,o]).length<=REPLY_MAX_CHARS){selected.push(o);for(const feature of features(o))covered.add(feature);}}
+   selected.sort((a,b)=>shown.indexOf(a)-shown.indexOf(b));
+  }
+  return render(selected);
  }
  status(){
   this.prune();const records=[...this.records.values()],coverage=[...this.coverage.values()],today=dubaiDay(this.now()),months=[iso(today).slice(0,7),iso(new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+1,1))).slice(0,7)];

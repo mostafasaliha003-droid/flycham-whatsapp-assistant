@@ -27,8 +27,17 @@ class InboxService{
   return result;
  }
  requireCustomer(id){if(!validCustomer(id)||!this.journal.get(id))throw Error('CONVERSATION_NOT_FOUND');}
- async claim(id){this.requireCustomer(id);this.journal.get(id).operatorOwned=true;this.journal.save();const s=this.state(id);s.humanOwned=true;this.store.set(id,s);await this.onClaim(id);return{ok:true,customer:this.summary(id)};}
- release(id){this.requireCustomer(id);this.journal.get(id).operatorOwned=false;this.journal.save();const s=this.state(id);s.humanOwned=false;this.store.set(id,s);return{ok:true,customer:this.summary(id)};}
+ pauseCancelledSearch(state){state.status='paused';state.queueReady=false;state.activeComparisonId=null;}
+ async claim(id){
+  this.requireCustomer(id);const item=this.journal.get(id),s=this.state(id);item.operatorOwned=true;
+  // Cancellation survives a model turn that may still hold an older engine
+  // snapshot. Releasing staff ownership must never revive that cancelled job.
+  if(['queued','searching'].includes(s.status))item.pausedSearch=true;
+  this.journal.save();s.humanOwned=true;if(item.pausedSearch)this.pauseCancelledSearch(s);this.store.set(id,s);await this.onClaim(id);
+  if(item.pausedSearch){const current=this.state(id);this.pauseCancelledSearch(current);current.humanOwned=true;this.store.set(id,current);}
+  return{ok:true,customer:this.summary(id)};
+ }
+ release(id){this.requireCustomer(id);const item=this.journal.get(id),s=this.state(id);item.operatorOwned=false;if(item.pausedSearch||['queued','searching'].includes(s.status))this.pauseCancelledSearch(s);delete item.pausedSearch;this.journal.save();s.humanOwned=false;this.store.set(id,s);return{ok:true,customer:this.summary(id)};}
  note(id,text){this.requireCustomer(id);return{ok:true,note:this.journal.addNote(id,text)};}
  read(id){this.requireCustomer(id);this.journal.markRead(id);return{ok:true};}
  async sendMessage(id,{text,idempotencyKey}={}){

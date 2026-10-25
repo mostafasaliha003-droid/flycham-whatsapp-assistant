@@ -45,3 +45,25 @@ test('short general catalog response reserves both months, trip types and both s
   const r=request({provider,departureDate:date,tripType:nights?'round_trip':'one_way',returnDate:nights?(date==='2026-10-29'?'2026-11-05':'2026-11-18'):null,...(nights?{stayNights:nights}:{})});assert.equal(c.acceptOffer(offer(r,provider==='flycham'?'400.00':'700.00',provider==='flycham'?'XH123':'G9123'),provider),true);
  }const reply=c.reply();assert.equal((reply.match(/آخر إجمالي رصدناه/g)||[]).length,8);assert.match(reply,/2026-10/);assert.match(reply,/2026-11/);assert.match(reply,/فلاي شام/);assert.match(reply,/العربية للطيران/);assert.match(reply,/إقامة مرجعية 7 ليلة/);
 });
+test('eight full round-trip examples fit the WhatsApp budget while retaining actual flight facts and voucher conditions',()=>{
+ let now=NOW;const c=new FareCatalog({now:()=>now}),accepted=[];
+ for(const provider of ['flycham','airarabia'])for(const date of ['2026-10-29','2026-10-30','2026-11-11','2026-11-12']){
+  const returnDate=new Date(Date.parse(date+'T00:00:00Z')+14*86400000).toISOString().slice(0,10),r=request({provider,origin:provider==='flycham'?'دبي':'أبوظبي',destination:'حلب',departureDate:date,returnDate,tripType:'round_trip',stayNights:14});
+  const prefix=provider==='flycham'?'XH':'G9',n=accepted.length+1,o=offer(r,`${9000000+n}.99`,prefix+(8100+n));
+  o.timing={out:{flight:prefix+(8100+n),departure:date+' 23:55',arrival:date+' 23:59'},back:{flight:prefix+(9100+n),departure:returnDate+' 00:05',arrival:returnDate+' 02:55'}};o.price.weights=[{kg:30},{kg:40}];
+  now+=60000;assert.equal(c.acceptOffer(o,provider),true);accepted.push({...o,checkedAt:now});
+ }
+ const reply=c.reply();assert.ok(reply.length<=3600,`Indicative response has ${reply.length} characters`);assert.equal((reply.match(/آخر إجمالي رصدناه/g)||[]).length,8);
+ const dt=new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',dateStyle:'short',timeStyle:'short'});
+ for(const o of accepted){for(const fact of [o.request.origin,o.request.destination,o.request.departureDate,o.request.returnDate,o.timing.out.flight,o.timing.out.departure,o.timing.out.arrival,o.timing.back.flight,o.timing.back.departure,o.timing.back.arrival,o.price.sellingTotal,dt.format(o.checkedAt)])assert.ok(reply.includes(fact),'Missing actual observed fact: '+fact);}
+ assert.match(reply,/30 كغ مسجل \/ 40 كغ مسجل/);assert.match(reply,/\+10 كغ يد/);assert.match(reply,/إقامة مرجعية 14 ليلة/);assert.match(reply,/الفئة: بالغ واحد/);assert.match(reply,/بتوقيت دبي/);assert.match(reply,/استرشادية/);assert.match(reply,/ليست تأكيدًا للسعر الحالي/);assert.match(reply,/لفلاي شام فقط: فاوجر بعد إصدار التذكرة/);assert.match(reply,/10 دراهم للذهاب و25 للذهاب والعودة/);assert.match(reply,/صالح سنة/);assert.match(reply,/لا يخصم من السعر الحالي/);assert.match(reply,/نعيد تأكيد السعر والتوفر/);
+});
+test('oversized supplier timing facts omit whole examples explicitly and preserve balanced observations within the hard budget',()=>{
+ const c=new FareCatalog({now:()=>NOW});let n=0;
+ for(const provider of ['flycham','airarabia'])for(const date of ['2026-10-29','2026-11-11'])for(const nights of [0,7]){
+  const returnDate=nights?new Date(Date.parse(date+'T00:00:00Z')+nights*86400000).toISOString().slice(0,10):null,r=request({provider,departureDate:date,returnDate,tripType:nights?'round_trip':'one_way',...(nights?{stayNights:nights}:{})}),o=offer(r,`${600+(++n)}.00`,(provider==='flycham'?'XH':'G9')+(8100+n));
+  const detail=' (supplier local departure and arrival date with verified timezone information)'.repeat(3);o.timing.out.departure=date+' 10:00'+detail;o.timing.out.arrival=date+' 12:00'+detail;
+  if(o.timing.back){o.timing.back.departure=returnDate+' 13:00'+detail;o.timing.back.arrival=returnDate+' 15:00'+detail;}assert.equal(c.acceptOffer(o,provider),true);
+ }
+ const reply=c.reply(),shown=(reply.match(/آخر إجمالي رصدناه/g)||[]).length;assert.ok(reply.length<=3600);assert.ok(shown>0&&shown<8);assert.ok(reply.includes(`لم نعرض ${8-shown} من الأمثلة المحفوظة`));assert.match(reply,/2026-10/);assert.match(reply,/2026-11/);assert.match(reply,/فلاي شام/);assert.match(reply,/العربية للطيران/);assert.match(reply,/ذهاب فقط/);assert.match(reply,/ذهاب وعودة/);assert.match(reply,/نعيد تأكيد السعر/);assert.doesNotMatch(reply,/أرخص سعر في كامل الشهر|فحصنا كل الشهر/);
+});
