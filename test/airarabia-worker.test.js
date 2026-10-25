@@ -1,6 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const { AirArabiaPortalAdapter, AIRPORTS } = require('../src/airarabia-worker');
 
 test('keepalive adapter permits only registered search candidates; supplier must still confirm selection', () => {
@@ -56,6 +57,37 @@ test('login waits for the document and a visible authenticated control, not thir
   assert.equal(page.calls[0][1].waitUntil, 'domcontentloaded');
   assert.equal(await adapterFor(page).isAuthenticated(), true);
   assert.equal(codes.at(-1), 'PORTAL_AUTHENTICATED');
+});
+
+test('reauthenticating a reused page installs one login response diagnostic without removing other listeners', async () => {
+  const page = fakePage(), events = new EventEmitter(), codes = [];
+  page.on = events.on.bind(events);
+  let unrelated = 0;
+  events.on('response', () => unrelated++);
+  const adapter = adapterFor(page, code => codes.push(code));
+  for (let attempt = 0; attempt < 3; attempt++) await adapter.signIn();
+  assert.equal(events.listenerCount('response'), 2);
+  events.emit('response', { url: () => 'https://agents.airarabia.com/xbe/j_security_check?token=private', status: () => 302 });
+  assert.equal(unrelated, 1);
+  assert.deepEqual(codes.filter(code => code.startsWith('PORTAL_LOGIN_RESPONSE_HTTP_')), ['PORTAL_LOGIN_RESPONSE_HTTP_302']);
+  assert.ok(!codes.join(' ').includes('private'));
+});
+
+test('login response diagnostics bind once to each replacement page and ignore foreign or malformed response URLs', () => {
+  const first = fakePage(), second = fakePage(), events = [new EventEmitter(), new EventEmitter()], codes = [];
+  first.on = events[0].on.bind(events[0]);second.on = events[1].on.bind(events[1]);
+  const adapter = adapterFor(first, code => codes.push(code));
+  adapter.observeLoginResponses();adapter.observeLoginResponses();
+  adapter.page = second;adapter.observeLoginResponses();adapter.observeLoginResponses();
+  assert.equal(events[0].listenerCount('response'), 1);
+  assert.equal(events[1].listenerCount('response'), 1);
+  for (const bus of events) {
+    bus.emit('response', { url: () => 'https://foreign.example/xbe/j_security_check', status: () => 401 });
+    bus.emit('response', { url: () => 'not a URL', status: () => 500 });
+  }
+  assert.deepEqual(codes, []);
+  events[1].emit('response', { url: () => 'https://agents.airarabia.com/xbe/j_security_check', status: () => 200 });
+  assert.deepEqual(codes, ['PORTAL_LOGIN_RESPONSE_HTTP_200']);
 });
 
 test('a visible verification challenge stops before credentials are filled or submitted', async () => {

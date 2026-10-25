@@ -9,15 +9,15 @@ const request={origin:'SHJ',destination:'DAM',departureDate:'2026-11-12',tripTyp
 const drain=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};}
 function fixture({origin='https://agents.airarabia.com',authenticated=true}={}){
- const captures=[],inspections=[];
+ const captures=[],inspections=[],boundsChecks=[];
  const page={url:()=>origin+'/xbe/private/main.action',isClosed:()=>false,frames:()=>frames,screenshot:()=>{throw Error('Full page capture forbidden');}};
  const frames=[];
  function add(options={}){
-  const state={url:origin+'/xbe/private/search.action',sensitive:0,markers:1,visible:true,detached:false,...options};
+  const state={url:origin+'/xbe/private/search.action',sensitive:0,markers:1,visible:true,detached:false,bounds:{x:0,y:0,width:1280,height:720},...options};
   const frame={state,url:()=>state.url,isDetached:()=>state.detached,page:()=>state.owner||page};
   frame.locator=selector=>{
    inspections.push({frame,selector});
-   if(selector==='body')return{isVisible:async()=>state.visible,screenshot:async settings=>{captures.push({frame,settings});if(state.afterCapture)await state.afterCapture();return state.bytes||jpeg;}};
+   if(selector==='body')return{isVisible:async()=>state.visible,boundingBox:async settings=>{boundsChecks.push({frame,settings});if(state.boundsError)throw Error('bounds unavailable');return state.bounds;},screenshot:async settings=>{captures.push({frame,settings});if(state.afterCapture)await state.afterCapture();return state.bytes||jpeg;}};
    if(selector.startsWith('input[type="password"]'))return{count:async()=>state.sensitive};
    if(selector.startsWith('#fAirport:'))return{count:async()=>state.markers};
    return{selector,frame};
@@ -25,7 +25,7 @@ function fixture({origin='https://agents.airarabia.com',authenticated=true}={}){
   frame.getByText=pattern=>({pattern,frame});frames.push(frame);return frame;
  }
  const adapter={page,isAuthenticated:async()=>authenticated,report:()=>{}};
- return{adapter,page,frames,add,captures,inspections};
+ return{adapter,page,frames,add,captures,inspections,boundsChecks};
 }
 function sessionFor(adapter){return{adapter,isReady:()=>true,healthStatus:()=>({state:'ready'})};}
 test('a preview crops the trusted active frame and masks all editable fields, PII and nested documents',async()=>{
@@ -33,6 +33,7 @@ test('a preview crops the trusted active frame and masks all editable fields, PI
  const preview=await captureRedactedPreview(f.adapter,'flights');
  assert.equal(preview.redacted,true);assert.deepEqual(Buffer.from(preview.jpeg,'base64'),jpeg);
  assert.equal(f.captures.length,1);assert.equal(f.captures[0].frame,search);
+ assert.deepEqual(f.boundsChecks,[{frame:search,settings:{timeout:1000}}]);
  const {settings}=f.captures[0];assert.equal(settings.type,'jpeg');assert.equal(settings.timeout,1800);assert.equal(settings.animations,'disabled');
  assert.equal(settings.mask[0].frame,search);
  for(const selector of ['input','textarea','select','[contenteditable]','iframe','frame','object','embed'])assert.ok(settings.mask[0].selector.split(',').includes(selector));
@@ -72,6 +73,13 @@ test('navigation, a newly visible sensitive form and malformed or oversized byte
   const f=fixture();f.adapter.searchFrame=f.add({bytes});assert.equal(await captureRedactedPreview(f.adapter,'flights'),null);
  }
 });
+test('large or invalid rendering bounds are withheld before any screenshot allocation',async()=>{
+ for(const bounds of [null,{x:0,y:0,width:2001,height:2000},{x:0,y:0,width:4097,height:1},{x:0,y:0,width:1,height:4097},{x:0,y:0,width:0,height:100},{x:0,y:0,width:100,height:-1},{x:0,y:0,width:Infinity,height:1},{x:NaN,y:0,width:100,height:100},{x:0,y:0,width:100,height:NaN}]){
+  const f=fixture();f.adapter.searchFrame=f.add({bounds});assert.equal(await captureRedactedPreview(f.adapter,'flights'),null);assert.equal(f.boundsChecks.length,1);assert.equal(f.captures.length,0);
+ }
+ const failed=fixture();failed.adapter.searchFrame=failed.add({boundsError:true});assert.equal(await captureRedactedPreview(failed.adapter,'flights'),null);assert.equal(failed.captures.length,0);
+ const allowed=fixture();allowed.adapter.searchFrame=allowed.add({bounds:{x:0,y:0,width:2000,height:2000}});assert.ok(await captureRedactedPreview(allowed.adapter,'flights'));assert.equal(allowed.captures.length,1);
+});
 test('observer publishes safe job and stage metadata and logs accepted metadata/image proof only once',async()=>{
  const records=[],reports=[],f=fixture();f.adapter.report=code=>reports.push(code);
  let preview=null,time=1000;
@@ -80,7 +88,7 @@ test('observer publishes safe job and stage metadata and logs accepted metadata/
   await obs.job({id:'private-job',lease:'secret',phone:'+971500000000',request:{...request,passengers:{adults:1},customerName:'PRIVATE CUSTOMER'}});
   assert.deepEqual(records[0].activeJob,request);assert.doesNotMatch(JSON.stringify(records),/private-job|secret|PRIVATE|500000000/);
   assert.equal(records[0].stage,'search_form');assert.equal(records[0].previewWithheld,true);
-  f.adapter.report('FLYCHAM_FLIGHT_RESULTS_READY');time+=3000;preview={jpeg:jpeg.toString('base64'),redacted:true};await obs.flush();
+  time+=3000;preview={jpeg:jpeg.toString('base64'),redacted:true};f.adapter.report('FLYCHAM_FLIGHT_RESULTS_READY');await drain();
   assert.equal(records.at(-1).stage,'flights');assert.equal(records.at(-1).preview,preview);
   await obs.flush(true);assert.equal(reports.filter(c=>c==='FLYCHAM_PORTAL_MONITOR_PUBLISH_CONFIRMED').length,1);assert.equal(reports.filter(c=>c==='FLYCHAM_PORTAL_MONITOR_PREVIEW_PUBLISHED').length,1);
   assert.ok(reports.includes('FLYCHAM_FLIGHT_RESULTS_READY'));
@@ -116,14 +124,52 @@ test('stop restores the original report, discards in-flight captures and prevent
  assert.equal(records.length,1);assert.equal(records[0].state,'closed');assert.equal(records[0].preview,null);
  await obs.job(request);await obs.flush(true);await obs.stop();assert.equal(records.length,1);
 });
-test('observer throttles periodic captures and refreshes safe stage metadata without a new log event',async t=>{
+test('metadata refreshes every three seconds while unchanged-stage captures occur at most every ten seconds',async t=>{
  t.mock.timers.enable({apis:['setInterval','Date'],now:1000});
  const f=fixture(),records=[];let captured=0;
- const obs=installPortalObserver(sessionFor(f.adapter),{provider:'airarabia',capture:async()=>{captured++;return null;},publish:async data=>{records.push(data);return{accepted:true};}});
+ const monitor=new PortalMonitor();
+ const obs=installPortalObserver(sessionFor(f.adapter),{provider:'airarabia',capture:async()=>{captured++;return{redacted:true,jpeg:jpeg.toString('base64')};},publish:async data=>{records.push(data);return{accepted:monitor.accept(data)};}});
+ try{
+  await obs.job(request);assert.equal(captured,1);assert.ok(monitor.preview('airarabia'));const imageTime=monitor.list().providers[0].screenshot.updatedAt;
+  for(let i=0;i<3;i++){t.mock.timers.tick(3000);await drain();assert.equal(captured,1);assert.equal(records.at(-1).preview,null);assert.equal(records.at(-1).previewWithheld,false);assert.ok(monitor.preview('airarabia'));assert.equal(monitor.list().providers[0].screenshot.updatedAt,imageTime);}
+  assert.equal(records.length,4);
+  t.mock.timers.tick(1000);await obs.flush(true);assert.equal(captured,2);assert.ok(records.at(-1).preview);assert.equal(records.at(-1).previewWithheld,false);
+  // Repeated forced metadata publication cannot bypass the capture interval.
+  await obs.flush(true);await obs.flush(true);assert.equal(captured,2);
+ }finally{await obs.stop();t.mock.timers.reset();}
+});
+test('accepted previews never carry into a new stage, job, authentication or completion',async()=>{
+ let time=1000,captured=0;const f=fixture(),records=[];
+ const obs=installPortalObserver(sessionFor(f.adapter),{provider:'airarabia',now:()=>time,capture:async()=>{captured++;return{redacted:true,jpeg:jpeg.toString('base64')};},publish:async data=>{records.push(data);return{accepted:true};}});
  try{
   await obs.job(request);assert.equal(captured,1);
-  f.adapter.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');await obs.flush();assert.equal(captured,1);
-  t.mock.timers.tick(3000);await drain();assert.equal(captured,2);assert.equal(records.at(-1).stage,'flights');
-  t.mock.timers.tick(3000);await drain();assert.equal(captured,3);
- }finally{await obs.stop();t.mock.timers.reset();}
+  time+=3000;await obs.flush();assert.equal(records.at(-1).preview,null);assert.equal(records.at(-1).previewWithheld,false);
+  // A new allowed stage gets one fresh image immediately, not the old stage's.
+  f.adapter.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');await drain();assert.equal(captured,2);assert.equal(records.at(-1).stage,'flights');assert.ok(records.at(-1).preview);
+  f.adapter.report('PORTAL_TEST_PASSENGER_FIELDS_READY');await obs.flush(true);assert.equal(captured,2);assert.equal(records.at(-1).preview,null);assert.equal(records.at(-1).previewWithheld,true);
+  f.adapter.report('PORTAL_STAGE_LOGIN_FORM');await obs.flush(true);assert.equal(captured,2);assert.equal(records.at(-1).stage,'authentication');assert.equal(records.at(-1).previewWithheld,true);
+  await obs.job({...request,departureDate:'2026-11-13'});assert.equal(captured,3);assert.ok(records.at(-1).preview);assert.equal(records.at(-1).activeJob.departureDate,'2026-11-13');
+  await obs.finish();assert.equal(captured,3);assert.equal(records.at(-1).preview,null);assert.equal(records.at(-1).previewWithheld,true);assert.equal(records.at(-1).activeJob,null);
+ }finally{await obs.stop();}
+});
+test('failed capture or unaccepted publication cannot establish or renew a preview carry receipt',async()=>{
+ for(const failure of ['capture','reject','throw']){
+  const f=fixture(),records=[];let time=1000,captures=0,failed=false;
+  const obs=installPortalObserver(sessionFor(f.adapter),{provider:'airarabia',now:()=>time,capture:async()=>{captures++;return failed&&failure==='capture'?null:{redacted:true,jpeg:jpeg.toString('base64')};},publish:async data=>{records.push(data);if(failed&&failure==='throw')throw Error('network unavailable');return{accepted:!(failed&&failure==='reject')};}});
+  try{
+   await obs.job(request);time+=3000;await obs.flush();assert.equal(records.at(-1).previewWithheld,false);
+   failed=true;time+=7000;await obs.flush();assert.equal(captures,2);
+   failed=false;time+=3000;await obs.flush();assert.equal(captures,2);assert.equal(records.at(-1).preview,null);assert.equal(records.at(-1).previewWithheld,true,failure);
+   time+=7000;await obs.flush();assert.equal(captures,3);assert.ok(records.at(-1).preview);
+  }finally{await obs.stop();}
+ }
+});
+test('preview receipt age never extends beyond thirty seconds through metadata-only refreshes',async()=>{
+ const f=fixture(),records=[];let time=1000,captures=0;
+ const obs=installPortalObserver(sessionFor(f.adapter),{provider:'airarabia',now:()=>time,captureIntervalMs:30000,capture:async()=>{captures++;return{redacted:true,jpeg:jpeg.toString('base64')};},publish:async data=>{records.push(data);return{accepted:true};}});
+ try{
+  await obs.job(request);time+=29000;await obs.flush(true);assert.equal(captures,1);assert.equal(records.at(-1).previewWithheld,false);
+  // A late accepted POST does not make the original captured image newer.
+  time+=1000;await obs.flush(true);assert.equal(captures,2);assert.ok(records.at(-1).preview);
+ }finally{await obs.stop();}
 });
