@@ -28,6 +28,7 @@ const {POLICY}=require('./assistant-policy');
 const { MessageBatcher } = require('./message-batcher');
 const {handleVoucherRequest}=require('./voucher-http');
 const { sendServiceMenu:rawSendServiceMenu,sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection,changeWhatsAppBlock,sendComplaintNotification } = require('./graph-api');
+const {createServiceMenuSender}=require('./service-menu-delivery');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const {recordDeliveryStatuses,comparisonDeliverySummary}=require('./delivery-status');
 const { expandLiveRequests } = require('./live-quote');
@@ -55,14 +56,7 @@ async function flushComplaint(id){const serviceWindowOpen=journal.summary(COMPLA
 const inbox=new InboxService({store:assistant.store,assistant,journal,complaints,changeBlock:(id,{blocked})=>changeWhatsAppBlock(id,{blocked}),getMedia:id=>visaMedia.list(id),send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>quoteJobs.cancel(id),getSearch:id=>searchStatus(id)});
 function searchStatus(id){const state=assistant.state(id),c=quoteJobs.comparisons.get(state.activeComparisonId);if(!c)return {state:state.status,total:0,completed:0,verifiedOffers:state.offers.length,providers:[]};return {state:state.status,createdAt:c.createdAt,total:c.children.length,completed:c.children.filter(x=>x.status!=='pending').length,verifiedOffers:c.children.reduce((n,x)=>n+x.offers.length,0),providers:c.providers.map(provider=>{const rows=c.children.filter(x=>x.provider===provider);return {provider,name:provider==='flycham'?'فلاي شام':'العربية للطيران',total:rows.length,completed:rows.filter(x=>x.status!=='pending').length,verifiedOffers:rows.reduce((n,x)=>n+x.offers.length,0),activeDates:rows.filter(x=>quoteJobs.jobs.get(x.id)?.state==='claimed').map(x=>x.request.departureDate)};})};}
 async function sendTextMessage(to,text,env=process.env){if(inbox.isHumanOwned(to))throw Error('AI_PAUSED_FOR_STAFF');const result=await rawSendTextMessage(to,text,env);const id=result?.messages?.[0]?.id;if(id&&journal.hasCustomer(to))journal.recordOutbound(to,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}
-async function sendServiceMenu(sender,route,revision){
- return orderedDelivery(sender,async()=>{
-  const session=assistant.store.data.serviceSessions?.[sender];
-  if(inbox.isHumanOwned(sender)||incomingRevision(assistant.store,sender)!==revision||!session?.awaitingService||session.menuId!==route.menuId)return;
-  const result=await rawSendServiceMenu(sender,{text:route.reply,menuId:route.menuId}),id=result?.messages?.[0]?.id;
-  if(id&&journal.hasCustomer(sender))journal.recordOutbound(sender,{id,text:route.reply,actor:'assistant',timestamp:Date.now(),status:'accepted'});
- });
-}
+const sendServiceMenu=createServiceMenuSender({store:assistant.store,inbox,send:rawSendServiceMenu,journal});
 async function sendRequestChoiceMessage(to,text,choiceId){
  if(inbox.isHumanOwned(to)||assistant.state(to).requestChoice?.id!==choiceId)throw Error('REQUEST_CHOICE_SUPERSEDED');
  const result=await rawSendRequestChoiceMessage(to,{text,choiceId}),messageId=result?.messages?.[0]?.id;
@@ -159,7 +153,7 @@ async function processCustomerMessages(sender,messages){
   const turnRevision=incomingRevision(assistant.store,sender);
   const flightState=assistant.state(sender);
   const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
-  if(route.selectedText){text=route.selectedText;messages=messages.map(m=>m.serviceChoice?{...m,text:route.selectedText}:m);}
+  if(route.selectedText){text=route.selectedText;messages=[{...messages.at(-1),text:route.selectedText}];}
   if(route.service==='choose'){const pending=messages.filter(m=>m.media);if(pending.length){assistant.store.data.pendingVisaMedia||={};assistant.store.data.pendingVisaMedia[sender]=[...(assistant.store.data.pendingVisaMedia[sender]||[]),...pending].slice(-20);assistant.store.save();}await sendServiceMenu(sender,route,turnRevision);return;}
   if(route.service==='saudi_visa'){
     if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim())){
