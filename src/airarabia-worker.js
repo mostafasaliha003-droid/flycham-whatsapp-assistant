@@ -9,7 +9,8 @@ const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
 const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
 const { validateLiveRequest, quoteFromScans, expandLiveRequests, formatQuoteOptions } = require('./live-quote');
-const { waitForFlightResults, readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
+const { readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
+const { captureSearchBaseline, waitForSearchIdentity, assertSearchIdentity } = require('./airarabia-search-identity');
 const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 const { IdlePortalSession } = require('./idle-portal-session');
@@ -695,14 +696,20 @@ class AirArabiaPortalAdapter {
     // New protected page for every request, serialized by PortalSession.run.
     await this.refreshProtectedPage();
     if(!await this.inspectReservationSearch())throw Error('SEARCH_NOT_READY');
+    const baseline=await captureSearchBaseline(this.searchFrame);
     const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,report:this.report});
+    const identity={...config,carrier:prepared.carrier,currency:prepared.currency};
     const oneWay=request.tripType==='one_way';
     if(prepared.tripKind!==(oneWay?'one-way':'return'))throw Error('TRIP_NOT_CONFIRMED');
     this.report('PORTAL_QUOTE_WAITING_FOR_FLIGHT_RESULTS');
-    await waitForFlightResults(this.searchFrame,oneWay);
+    const confirmed=await waitForSearchIdentity(this.searchFrame,identity,baseline,{report:this.report});
+    // Empty results establish absence only after a fresh successful supplier
+    // response is bound to this exact route, dates, party and search option.
+    if(!confirmed.outbound||!oneWay&&!confirmed.inbound)throw Error('NO_FLIGHTS_CONFIRMED');
     this.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');
     if(oneWay&&!await this.searchFrame.evaluate(()=>UI_tabSearchFlights.strRetDate===''))throw Error('ONE_WAY_NOT_CONFIRMED');
     const choices=await readFlightTimes(this.searchFrame,oneWay);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{report:this.report});
     if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
     this.onAuthenticatedActivity?.();
     if(discoverOnly)return{choices};
@@ -710,6 +717,7 @@ class AirArabiaPortalAdapter {
       out:choices.out.find(f=>f.selected)||choices.out[0],back:choices.back.find(f=>f.selected)||choices.back[0]};
     if(!timing.out||(!oneWay&&!timing.back))throw Error('FLIGHT_TIMES_UNCONFIRMED');
     if(!choice)await selectFlightTimes(this.searchFrame,timing);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{selected:timing,report:this.report});
     this.report('PORTAL_QUOTE_TIMING_FARE_CONFIRMED');
     const safe=await this.searchFrame.evaluate(()=>typeof DATA_ResPro!=='undefined' && DATA_ResPro.initialParams?.seatBlock===false);
     if(!safe)throw Error('TEMPORARY_BLOCK_NOT_DISABLED');
@@ -717,6 +725,7 @@ class AirArabiaPortalAdapter {
     await continueWithTestPassenger(this.searchFrame,this.report);
     const seats=await scanSeatPrices(this.searchFrame,this.page,this.report);
     const catalogs=await scanAncillaryCatalogs(this.searchFrame,this.page,this.report);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{selected:timing,report:this.report});
     const price=quoteFromScans(request,seats,catalogs);
     if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
     this.onAuthenticatedActivity?.();

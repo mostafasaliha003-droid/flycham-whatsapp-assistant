@@ -157,7 +157,7 @@ test('unselected flight results reach fare selection without waiting for a hidde
    if(args.id==='selSearchOptions'&&args.operation==='confirm')return true;
    if(args.operation)return {status:args.operation==='input'?'INPUT_READY':'READY'};
    if(args.pattern)return args.id==='selectedCurrency'?'AED':'observed-option';
-   if(Object.hasOwn(args,'oneWay'))return {out:1,back:null};
+   if(Object.hasOwn(args,'oneWay')&&typeof args.oneWay==='boolean')return {out:1,back:null};
    return true;
   },
   evaluateHandle:async()=>({asElement:()=>({click:async()=>{}}),dispose:async()=>{}}),
