@@ -136,8 +136,8 @@ test('ambiguous adjacent one-way labels stop without a search', async () => {
 test('selects the live Search G9 label and actual supplier enum AA', async () => {
   const f = fixture();
   const original = f.frame.evaluate;
-  f.frame.evaluate = async (fn, args) => args?.id === 'selSearchOptions'
-    ? vm.runInNewContext(`(${fn.toString()})(args)`, { args, document: { getElementById: () => ({ tagName: 'SELECT', options: [{ value: 'AA', textContent: 'Search G9' }, { value: 'INT', textContent: 'Search All' }] }) } })
+  f.frame.evaluate = async (fn, args) => args?.id === 'selSearchOptions' && args.pattern
+    ? vm.runInNewContext(`(${fn.toString()})(args)`, { args, location:{origin:'https://agents.airarabia.com'},getComputedStyle:()=>({display:'block',visibility:'visible'}),document: {querySelectorAll:()=>[{ tagName: 'SELECT',getClientRects:()=>[1],options: [{ value: 'AA', textContent: 'Search G9' }, { value: 'INT', textContent: 'Search All' }] }]} })
     : original(fn, args);
   const locator = f.frame.locator;
   let selected;
