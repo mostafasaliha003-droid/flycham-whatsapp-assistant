@@ -7,7 +7,7 @@ function setup(){const store={data:{},save(){}},sent=[],journaled=[];let human=f
 test('menu completes while a price delivery waits for a pending inbound batch to settle',async()=>{
  const {store,sent,sender}=setup(),id='synthetic-a';noteIncoming(store,id);const route=routeService(store,id,'الخدمات');
  const batcher=new MessageBatcher(()=>sender(id,route,1),{delay:10000});
- try{const incoming=batcher.push(id,{text:'الخدمات'}),priceDelivery=batcher.settled(id);await batcher.flush(id);await Promise.race([Promise.all([incoming,priceDelivery]),new Promise((_,reject)=>setTimeout(()=>reject(Error('menu blocked inbound settlement')),500))]);assert.equal(sent.length,1);assert.equal(batcher.busy(id),false);}finally{batcher.close();}
+ let timeout;try{const incoming=batcher.push(id,{text:'الخدمات'}),priceDelivery=batcher.settled(id),flush=batcher.flush(id);await Promise.race([Promise.all([incoming,priceDelivery,flush]),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('menu blocked inbound settlement')),500);})]);assert.equal(sent.length,1);assert.equal(batcher.busy(id),false);}finally{clearTimeout(timeout);batcher.close();}
 });
 test('menu delivery suppresses stale revisions, stale menus and staff-owned customers; journals one accepted send',async()=>{
  const s=setup(),id='synthetic-a';noteIncoming(s.store,id);const old=routeService(s.store,id,'مرحبا'),current=routeService(s.store,id,'الخدمات');
