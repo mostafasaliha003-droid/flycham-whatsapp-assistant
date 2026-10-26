@@ -53,6 +53,8 @@ function quoteText(q){
  if(q.paymentFee)text+=`\nرسوم طريقة الدفع: ${MONEY(q.paymentFee)} درهم\n*المجموع بهذه الطريقة: ${MONEY(q.total)} درهم*`;
  else if(q.feePending)text+='\nرسوم وسيلة الدفع تحتاج تأكيداً قبل إصدار رابط الدفع. التحويل البنكي دون عمولة إضافية من المكتب.';
  else text+='\nالتحويل البنكي دون عمولة إضافية من المكتب.';
+ text+='\n\n'+P.REFUND_BENEFIT;
+ if(q.paymentFee||q.feePending)text+='\nرسوم وسيلة الدفع وأي خدمات إضافية تُوضح منفصلة قبل الاتفاق.';
  return text;
 }
 class SaudiVisaEngine{
@@ -157,7 +159,7 @@ class SaudiVisaEngine{
   else if(/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply='الدفع متاح بالتحويل البنكي دون عمولة إضافية من المكتب. رابط الدفع وتابي متاحان حسب إعداد الخدمة وشروط المزود؛ قبل تأكيدك منوضح رسوم كل وسيلة والإجمالي.'+(this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'?' حسب سياسة المكتب المفعّلة: رابط الدفع +5% وتابي +9%.':' رسوم الرابط وتابي بانتظار اعتماد الإعداد التجاري، لذلك لا نؤكد إجماليهما الآن.');
   else if(/90|تسعين|مده الاقامه|مده الفيزا|كم شهر|كل دخول/.test(n)||intent==='visa_duration')reply='السياحية المتعددة في عرضنا صلاحيتها سنة، والإقامة تصل إلى 90 يوماً حسب شروط التأشيرة الصادرة. صلاحية السنة تختلف عن مدة الإقامة؛ ما منعتبر الـ90 يوماً تلقائياً لكل دخول. السفرة الواحدة والعمرة إلهم شروط مختلفة حسب التأشيرة الفعلية.';
   else if(/اوراق|مطلوب|مستندات|كيف اقدم|طريقه التقديم/.test(n)||intent==='requirements')reply=(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS)+(completion?'\n\n'+completion:'\nإذا جاهز للتقديم، فينا نرتب مراجعة المستندات والخطوة التالية.');
-  else if(/غالي|خصم|ارخص|زبط|نزل|فاصل|600|٦٠٠|650|٦٥٠/.test(n)||intent==='negotiate')reply='تكرم عينك 🌷 السعر المعتمد للسياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص. العمرة 850 درهماً للشخص. ما في خصم إضافي غير المعتمد، والتحويل البنكي بيوفر عليك رسوم طريقة الدفع.'+(c.quote?'\n\n'+quoteText(c.quote):'');
+  else if(/غالي|خصم|ارخص|زبط|نزل|فاصل|600|٦٠٠|650|٦٥٠/.test(n)||intent==='negotiate')reply='تكرم عينك 🌷 السعر المعتمد للسياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص. العمرة 850 درهماً للشخص. ما في خصم إضافي غير المعتمد، والتحويل البنكي بيوفر عليك رسوم طريقة الدفع.'+(c.quote?'\n\n'+quoteText(c.quote):products.some(p=>['suspended','unverified'].includes(p.code))?'':'\n\n'+P.REFUND_BENEFIT);
   else if(/برجع|بعدين|وقت تاني|مو هلق|لاحقا|بفكر/.test(n)||intent==='goodbye')reply='أهلاً وسهلاً فيك بأي وقت 🌷 بس تكون جاهز ابعتلنا، ومنكمل من آخر نقطة وصلنالها.';
   else if(/^(?:شكرا|شكراً|يسلمو|مشكور|تسلم)[!. 🌷]*$/.test(n)||intent==='thanks')reply='أهلاً وسهلاً فيك، بالخدمة دائماً 🌷';
   else if(/منتظر|ناطر|بانتظار|جاري/.test(n)||intent==='waiting')reply='شكراً لانتظارك 🌷 تفاصيلك موجودة معنا. '+(c.stage==='documents_pending_review'?'المستندات بانتظار المراجعة، ومنأكدلك الخطوة التالية بعد التحقق.':completion||'إذا حابب نكمل، فينا نرتب مراجعة الأوراق وطريقة الدفع.');
@@ -166,12 +168,12 @@ class SaudiVisaEngine{
   else if(completion){
    const price=/سعر|تكلفه|بكم|قديش|رسوم/.test(n)||intent==='price';
    const known=products[0];
-   reply=(price?'السياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص، والعمرة 850 درهماً. ':known?.code==='umrah'?'حسب سياسة التقديم الحالية لدينا، المسار المناسب لهذه الحالة هو تأشيرة العمرة. ':known?.code==='tourist_single'?'حسب سياسة التقديم الحالية لدينا، السياحية لهذه الحالة سفرة واحدة. ':'')+completion;
+   reply=(price?'السياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص، والعمرة 850 درهماً.\n\n'+P.REFUND_BENEFIT+'\n\n':known?.code==='umrah'?'حسب سياسة التقديم الحالية لدينا، المسار المناسب لهذه الحالة هو تأشيرة العمرة. ':known?.code==='tourist_single'?'حسب سياسة التقديم الحالية لدينا، السياحية لهذه الحالة سفرة واحدة. ':'')+completion;
   }else{
    if(!c.staffVerification?.decision&&c.submissionStatus!=='submitted'&&c.paymentStatus!=='verified')c.stage=c.paymentStatus==='awaiting_verification'?'payment_review':'quoted';c.lastQuestion=null;
    reply=quoteText(c.quote);
    if(c.quote?.requiresReview)c.stage='pricing_review';
-   else reply+='\n\n'+(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS)+'\n\nالمدة المعتادة 6–7 أيام عمل حسب السفارة، دون ضمان للموافقة أو موعد الصدور. بتحب نرتب مراجعة المستندات؟';
+   else reply+='\n\n'+(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS)+'\n\n⏱️ المدة المعتادة 6–7 أيام عمل حسب السفارة، دون ضمان للموافقة أو موعد الصدور.\n\n'+(hasUmrah?'خلّينا نبدأ بالخطوة المناسبة إلك 🌷 بتفضّل تسلّم أصل الجواز والهوية بالمكتب، أو ننسّق استلامهم عبر زاجل برسوم 35 درهماً؟':'خلّينا نبدأ بخطوة بسيطة 🌷 ابعت صور المستندات المطلوبة هون، ومنراجعها معك قبل استكمال التقديم.');
   }
   if(completion&&reply.includes(completion)){c.lastQuestion=nextQuestion;c.askedQuestions=nextAsked;}
   if(first)reply=INTRO+'\n\n'+reply;

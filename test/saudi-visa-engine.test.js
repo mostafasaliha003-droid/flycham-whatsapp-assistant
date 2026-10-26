@@ -42,6 +42,44 @@ test('a bank information answer does not invent an unsent outstanding question',
 test('same-nationality explicit group gets 650 each without invented discounts',async()=>{
  const e=make();const r=await e.handle('a','نحنا 3 كلنا سوريين جواز عادي');assert.equal(r.quote.total,1950);assert.match((await e.handle('a','زبطنا ب600')).reply,/ما في خصم إضافي/);assert.equal(e.getCase('a').quote.total,1950);
 });
+test('each actionable visa quote includes its price, official-refusal refund and next step together',async()=>{
+ for(const {text,total,price,product,cta}of [
+  {text:'سوري جواز عادي لحالي',total:700,price:/700 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/},
+  {text:'مصري جواز عادي لحالي',total:700,price:/700 درهم/,product:'tourist_single',cta:/ابعت صور المستندات المطلوبة هون/},
+  {text:'عراقي جواز عادي لحالي',total:850,price:/850 درهم/,product:'umrah',cta:/المكتب، أو ننسّق استلامهم عبر زاجل برسوم 35 درهماً/},
+  {text:'نحنا 3 كلنا سوريين جواز عادي',total:1950,price:/1,950 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/}
+ ]){
+  const e=make(),r=await e.handle('a',text);assert.equal(r.quote.total,total);assert.equal(r.quote.rows[0].product,product);
+  assert.match(r.reply,price);assert.match(r.reply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);assert.equal((r.reply.match(/مستردة بالكامل/g)||[]).length,1);
+  assert.match(r.reply,/التزام من مكتبنا/);assert.match(r.reply,/شروط الخدمة الموضحة قبل الدفع/);assert.match(r.reply,cta);assert.match(r.reply,/دون ضمان للموافقة أو موعد الصدور/);
+  assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(e.getCase('a').submissionStatus,'not_submitted');
+ }
+});
+test('incomplete price inquiry and negotiations include the refund benefit exactly once',async()=>{
+ const e=make(),price=await e.handle('price','بكم فيزا السعودية');
+ assert.equal(price.quote,null);assert.match(price.reply,/700.*650.*850/);assert.match(price.reply,/شو جنسية/);
+ const unknown=await e.handle('unknown','في خصم؟');assert.equal(unknown.quote,null);assert.match(unknown.reply,/700.*650/);
+ await e.handle('known','سوري جواز عادي لحالي');const known=await e.handle('known','في خصم؟');assert.equal(known.quote.total,700);
+ for(const r of [price,unknown,known]){assert.match(r.reply,/مستردة بالكامل في حال الرفض الرسمي/);assert.equal((r.reply.match(/مستردة بالكامل/g)||[]).length,1);}
+});
+test('refund covers visa fees while payment method totals and separate fee disclosure remain intact',async()=>{
+ for(const {method,enabled,fee,total}of [
+  {method:'رابط الدفع',enabled:true,fee:35,total:735},
+  {method:'تابي',enabled:true,fee:63,total:763},
+  {method:'رابط الدفع',enabled:false,fee:0,total:700}
+ ]){
+  const e=make({env:{SAUDI_VISA_PAYMENT_FEES_ENABLED:String(enabled)}}),r=await e.handle('a','سوري جواز عادي لحالي '+method);
+  assert.equal(r.quote.subtotal,700);assert.equal(r.quote.paymentFee,fee);assert.equal(r.quote.total,total);assert.equal(r.quote.feePending,!enabled);
+  assert.match(r.reply,/إجمالي رسوم التأشيرات: 700 درهم/);assert.match(r.reply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);
+  assert.match(r.reply,/رسوم وسيلة الدفع وأي خدمات إضافية تُوضح منفصلة قبل الاتفاق/);
+  if(enabled)assert.match(r.reply,new RegExp('المجموع بهذه الطريقة: '+total+' درهم'));else assert.doesNotMatch(r.reply,/735|763/);
+ }
+});
+test('refund promotion stays out of suspended intake, child pricing review, complaints and cancellation',async()=>{
+ for(const text of ['افغاني جواز عادي لحالي','سوري جواز عادي شخص واحد طفل','قدمت عندكن وما رجعتوا فلوسي','بدي الغي']){
+  const r=await make().handle('a',text);assert.doesNotMatch(r.reply,/مستردة بالكامل|ميزة خاصة لعملائنا/,text);
+ }
+});
 test('suspended intake does not ask payment or promise an opening date',async()=>{
  const e=make();const r=await e.handle('a','افغاني جواز عادي لحالي');assert.equal(r.quote,null);assert.match(r.reply,/متوقف/);assert.doesNotMatch(r.reply,/700|850|ابعث.*دفع/);
 });

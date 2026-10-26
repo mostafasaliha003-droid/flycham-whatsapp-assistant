@@ -2,6 +2,7 @@
 // These are Remal's dated intake rules, NOT guarantees of government eligibility.
 const POLICY_VERSION='remal-saudi-2026-10-27';
 const PRICES=Object.freeze({tourist:700,touristGroup:650,groupMinimum:3,umrah:850,cancellation:200,courier:35});
+const REFUND_BENEFIT='🛡️ *ميزة خاصة لعملائنا: رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي.*\nهذا التزام من مكتبنا، وفق شروط الخدمة الموضحة قبل الدفع.';
 const OFFICE_ADDRESS='📍 دائرة السياحة والاقتصاد، نفس البناء الحكومي\nBlock B، مكتب رقم 610\nميناء سعيد، دبي';
 function normalize(s){return String(s||'').normalize('NFKC').replace(/[\u064B-\u065F\u0670]/g,'').replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).toLowerCase().trim();}
 const COUNTRY_ALIASES={
@@ -54,4 +55,4 @@ function calculateQuote(c,{feesEnabled=false}={}){
 }
 const TOURIST_DOCS='للتقديم السياحي أونلاين بنحتاج:\n• نسخة جواز سكانر واضحة، الاسم والباركود كاملين ومن دون فلاش أو انعكاس، وصلاحية 6 أشهر عند السفر.\n• وجه الهوية وخلفها بدقة عالية من تطبيق UAEICP.\n• صورة شخصية حديثة بخلفية بيضاء.';
 const UMRAH_DOCS='لتأشيرة العمرة بنحتاج أصل الجواز وأصل الهوية لدخول السفارة، وتاريخ الذهاب والعودة.\nإذا السفر بالطيران: تذكرة مؤكدة. وإذا بالسيارة: الملكية ومنفذ الدخول والخروج.\nوبالنسبة للإقامة: بيانات هوية المستضيف بالسعودية خلال فترة الإقامة، أو حجز الفندق عن طريقنا من خلال نسك. قبول بيانات الاستضافة مرتبط بإجراءات التقديم.';
-module.exports={POLICY_VERSION,PRICES,OFFICE_ADDRESS,normalize,nationalities,canonicalNationality,productFor,calculateQuote,TOURIST_DOCS,UMRAH_DOCS};
+module.exports={POLICY_VERSION,PRICES,REFUND_BENEFIT,OFFICE_ADDRESS,normalize,nationalities,canonicalNationality,productFor,calculateQuote,TOURIST_DOCS,UMRAH_DOCS};

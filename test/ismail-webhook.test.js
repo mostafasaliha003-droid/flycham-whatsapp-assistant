@@ -15,7 +15,8 @@ test('signed multi-service webhook: Saudi quotes, real Cline contract, complaint
   const menuId=posts.at(-1).interactive.action.buttons[1].reply.id;
   await call('/webhooks/whatsapp',{entry:[{changes:[{field:'messages',value:{messages:[{id:'synthetic-button-'+(++sequence),from:'971500000099',timestamp:String(Math.floor(Date.now()/1000)),type:'interactive',interactive:{type:'button_reply',button_reply:{id:menuId,title:'untrusted'}}}]}}]}]},false);
   assert.match(posts.at(-1).text.body,/إسماعيل/);assert.equal((await call('/internal/assistant/conversations/971500000099')).json.customer.service,'saudi_visa');
-  await send('971500000099','بدي فيزا السعودية انا سوري جواز عادي شخص واحد');assert.ok(model);assert.match(posts.at(-1).text.body,/700/);
+  const pricePostCount=posts.length;await send('971500000099','بدي فيزا السعودية انا سوري جواز عادي شخص واحد');assert.ok(model);assert.equal(posts.length,pricePostCount+1);
+  const priceReply=posts.at(-1).text.body;assert.match(priceReply,/700/);assert.match(priceReply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);assert.match(priceReply,/ابعت صور المستندات المطلوبة هون/);assert.match(priceReply,/دون ضمان للموافقة أو موعد الصدور/);
   let detail=(await call('/internal/assistant/conversations/971500000099')).json;assert.equal(detail.customer.service,'saudi_visa');assert.equal(detail.visaCase.quote.total,700);assert.equal(detail.customer.request,null);assert.equal(detail.visaCase.paymentStatus,'unverified');
   await send('971500000099','صرنا ثلاثة كلنا سوريين جوازات عادية');detail=(await call('/internal/assistant/conversations/971500000099')).json;assert.equal(detail.visaCase.quote.total,1950);
   await send('971500000005','مرحبا');let count=posts.length;
