@@ -51,6 +51,15 @@ async function sendRequestChoiceMessage(to,{text,choiceId}={},env=process.env){
  ]}}},env);
 }
 
+async function sendServiceMenu(to,{text,menuId}={},env=process.env){
+ if(typeof text!=='string'||!text.trim()||text.length>1024||typeof menuId!=='string'||!/^[a-f0-9-]{36}$/.test(menuId))throw Error('WHATSAPP_SERVICE_MENU_INVALID');
+ if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return{dryRun:true};
+ return sendGraphMessage({messaging_product:'whatsapp',recipient_type:'individual',to,type:'interactive',interactive:{type:'button',body:{text},action:{buttons:[
+  {type:'reply',reply:{id:'service_flight:'+menuId,title:'✈️ طيران إلى سوريا'}},
+  {type:'reply',reply:{id:'service_saudi_visa:'+menuId,title:'🇸🇦 فيزا السعودية'}}
+ ]}}},env);
+}
+
 async function sendImageMessage(to,png,caption,env=process.env){
  if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return {dryRun:true};
  if(!env.WHATSAPP_ACCESS_TOKEN||!env.WHATSAPP_PHONE_NUMBER_ID)throw Error('VOUCHER_DELIVERY_UNAVAILABLE');
@@ -118,4 +127,4 @@ async function sendComplaintNotification(to,{text,url,caseId,customer,useTemplat
  if(typeof data?.messages?.[0]?.id!=='string'||!data.messages[0].id||data.messages[0].id.length>500)throw Error('WHATSAPP_COMPLAINT_OUTCOME_UNCERTAIN');
  return data;
 }
-module.exports = {sendImageMessage, sendTextMessage,sendRequestChoiceMessage,checkWhatsAppConnection,safeGraphFailure,changeWhatsAppBlock,sendComplaintNotification };
+module.exports = {sendServiceMenu,sendImageMessage, sendTextMessage,sendRequestChoiceMessage,checkWhatsAppConnection,safeGraphFailure,changeWhatsAppBlock,sendComplaintNotification };

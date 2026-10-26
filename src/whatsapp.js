@@ -29,14 +29,15 @@ function extractIncomingMessages(payload) {
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
         if(!message?.from)continue;
-        let text,requestChoice,media;
+        let text,requestChoice,serviceChoice,media;
         if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
         else if(message.type==='interactive'&&message.interactive?.type==='button_reply'){
           const buttonId=message.interactive.button_reply?.id;
           const choice=typeof buttonId==='string'?buttonId.match(/^request_(continue|new):([a-f0-9-]{36})$/):null;
-          if(!choice)continue;
-          requestChoice={id:choice[2],action:choice[1]};
-          text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';
+          const service=typeof buttonId==='string'?buttonId.match(/^service_(flight|saudi_visa):([a-f0-9-]{36})$/):null;
+          if(service){serviceChoice={id:service[2],service:service[1]};text=service[1]==='flight'?'طيران إلى سوريا':'فيزا السعودية';}
+          else if(choice){requestChoice={id:choice[2],action:choice[1]};text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';}
+          else continue;
         }else if(['image','document','audio'].includes(message.type)){
           const item=message[message.type];
           if(!item||typeof item.id!=='string'||!/^\d{1,100}$/.test(item.id))continue;
@@ -52,6 +53,7 @@ function extractIncomingMessages(payload) {
           name: contact?.profile?.name ?? null,
           text,
           ...(requestChoice?{requestChoice}:{}),
+          ...(serviceChoice?{serviceChoice}:{}),
           ...(media?{media}:{}),
           timestamp: message.timestamp ?? null
         });

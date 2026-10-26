@@ -11,8 +11,11 @@ test('signed multi-service webhook: Saudi quotes, real Cline contract, complaint
  const send=(from,text)=>call('/webhooks/whatsapp',{entry:[{changes:[{field:'messages',value:{messages:[{id:'synthetic-in-'+(++sequence),from,timestamp:String(Math.floor(Date.now()/1000)),type:'text',text:{body:text}}]}}]}]},false);
  const wait=async(fn)=>{for(let i=0;i<100;i++){if(await fn())return;await new Promise(r=>setTimeout(r,10));}assert.fail('bounded local processing did not complete');};
  try{
-  await send('971500000099','مرحبا');assert.match(posts.at(-1).text.body,/إسماعيل.*أحمد/);
-  await send('971500000099','بدي فيزا السعودية انا سوري جواز عادي شخص واحد');assert.ok(model);assert.match(posts.at(-1).text.body,/700/);assert.match(posts.at(-1).text.body,/إسماعيل/);
+  await send('971500000099','مرحبا');assert.equal(posts.at(-1).type,'interactive');assert.match(posts.at(-1).interactive.body.text,/أحمد/);assert.match(posts.at(-1).interactive.body.text,/إسماعيل/);
+  const menuId=posts.at(-1).interactive.action.buttons[1].reply.id;
+  await call('/webhooks/whatsapp',{entry:[{changes:[{field:'messages',value:{messages:[{id:'synthetic-button-'+(++sequence),from:'971500000099',timestamp:String(Math.floor(Date.now()/1000)),type:'interactive',interactive:{type:'button_reply',button_reply:{id:menuId,title:'untrusted'}}}]}}]}]},false);
+  assert.match(posts.at(-1).text.body,/إسماعيل/);assert.equal((await call('/internal/assistant/conversations/971500000099')).json.customer.service,'saudi_visa');
+  await send('971500000099','بدي فيزا السعودية انا سوري جواز عادي شخص واحد');assert.ok(model);assert.match(posts.at(-1).text.body,/700/);
   let detail=(await call('/internal/assistant/conversations/971500000099')).json;assert.equal(detail.customer.service,'saudi_visa');assert.equal(detail.visaCase.quote.total,700);assert.equal(detail.customer.request,null);assert.equal(detail.visaCase.paymentStatus,'unverified');
   await send('971500000099','صرنا ثلاثة كلنا سوريين جوازات عادية');detail=(await call('/internal/assistant/conversations/971500000099')).json;assert.equal(detail.visaCase.quote.total,1950);
   await send('971500000005','مرحبا');let count=posts.length;
