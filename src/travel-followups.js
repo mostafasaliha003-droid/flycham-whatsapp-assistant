@@ -11,6 +11,7 @@ function knownTripFollowup(raw,request,now=Date.now(),{monthScope}={}){
  if(scope.kind==='chosen')return {fields:{rangeStart:scope.range.start,rangeEnd:scope.range.end,departureDate:null},sameDates:false,monthScope:true};
  const t=normalize(raw).toLowerCase().replace(/[؟?!،,.]+$/g,'').trim();
  if(/^(?:(?:انا|بدي|بدنا|قصدي)\s+)?من\s+سوري[اةه]$/.test(t))return{fields:{},sameDates:true};
+ if(/^(?:(?:تمام|طيب|اي|نعم)\s+)?(?:ابدا|ابحث|بلش|ابدء|start)(?:\s+(?:البحث|هلق|الان))?$/.test(t))return{fields:{},sameDates:true,start:true};
  const carrier=languagePatch(raw);
  if(carrier.providerExclusive===true&&carrier.provider&&/(?:عيد|اعد|ابحث|بدي|بس|فقط|حصرا)/.test(t)&&!naturalDate(t,now).range&&!/\d|من |الى |كيلو|شخص/.test(t))return {fields:{provider:carrier.provider,providerExclusive:true},sameDates:true};
  const originCity=city(t);

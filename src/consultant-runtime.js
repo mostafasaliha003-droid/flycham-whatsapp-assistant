@@ -6,8 +6,9 @@ const {recordMetric}=require('./consultant-metrics');
 function enabled(env){return env?.CONSULTANT_ORCHESTRATOR_ENABLED==='true';}
 async function finishConsultantTurn(engine,id,text,result,{now}){
  if(!enabled(engine.env))return result;
+ const route=require('./travel-language').languagePatch(text),explicitRoute=Boolean(route.origin&&route.destination);
  const s=engine.state(id),c=updateConsultantMemory(s,text,{now}),decision=s.consultantDecision?.at===now?s.consultantDecision:null;
- if(result.complete&&decision&&!['search','amend','compare'].includes(decision.action)){
+ if(result.complete&&decision&&!(explicitRoute&&['answer','clarify'].includes(decision.action)&&!/(?:لا\s+(?:تبحث|تشيك|تبدا)|الغاء|إلغاء|وقف البحث)/.test(text))&&!['search','amend','compare'].includes(decision.action)){
   result.complete=false;result.request=undefined;s.status='collecting';
   if(s.base){s.base.submitted=false;require('./conversation').importSession(id,s.base);}
   result.reply=canUseReply(decision.reply,{status:s.status})?decision.reply:'تفاصيل رحلتك واضحة 🌷 إذا حابب نبدأ مقارنة الخيارات على هالتفاصيل خبرني.';

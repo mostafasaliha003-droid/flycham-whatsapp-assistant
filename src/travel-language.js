@@ -57,6 +57,11 @@ function reconcileRoute(request,previous={},raw,awaiting){
   const field=negative[1]?/^(?:من|from)$/i.test(negative[1])?'origin':'destination':awaiting;
   if(rejected&&['origin','destination'].includes(field)&&!direct[field]){request[field]=known[field]===rejected?null:known[field];if(!request[field])clarify=field;}
  }
+ // A short Syrian-city answer resolves the requested departure city within Syria.
+ // Preserve the known UAE destination even when the answer starts with الى.
+ if(previous.originCountry==='سوريا'&&!known.origin&&awaiting==='origin'&&!direct.origin&&['دمشق','حلب','اللاذقية'].includes(direct.destination)&&known.destination&&!['دمشق','حلب','اللاذقية'].includes(known.destination)){
+  direct.origin=direct.destination;delete direct.destination;Object.assign(request,known);request.origin=direct.origin;
+ }
  // Explicit positive direction in the customer's wording outranks a conflicting model extraction.
  for(const k of ['origin','destination'])if(direct[k])request[k]=direct[k];
  request.origin=canonical(request.origin);request.destination=canonical(request.destination);

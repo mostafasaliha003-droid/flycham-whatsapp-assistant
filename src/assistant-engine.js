@@ -169,6 +169,26 @@ class AssistantEngine{
   if(quotedOfferReferences.length===1){const quoted=s.offers.find((o,i)=>(o.reference||i+1)===quotedOfferReferences[0]);if(quoted){s.selected=quoted.id;legacy.importSession(id,{request:selectedSupplierRequest(quoted.request),submitted:true,awaiting:null,at:now});s.base=legacy.exportSession(id);}}
   const recoveredRoute=s.status==='unsupported'&&s.base?.request&&!capabilityIssue(s.base.request);
   if(recoveredRoute){s.base.submitted=false;s.base.awaiting=null;s.status='collecting';}
+  // Recover an incoherent saved country route only from the latest explicit
+  // direction in this customer's bounded history, never from a guessed city.
+  if(s.base?.request?.originCountry==='سوريا'&&!s.base.request.origin&&['دمشق','حلب','اللاذقية'].includes(s.base.request.destination)){
+   let datedInJourney=false;
+   for(const message of [...s.history].reverse()){
+    if(message.role!=='user')continue;
+    const parsedDate=naturalDate(message.text,now);datedInJourney ||= Boolean(parsedDate.range||parsedDate.dates?.length);
+    const route=languagePatch(message.text);
+    if(route.origin&&route.destination)break;
+    if(/من\s+سوري[اةه]/.test(normalize(message.text))&&route.destination&&!['دمشق','حلب','اللاذقية'].includes(route.destination)){
+     s.base.request.destination=route.destination;s.base.submitted=false;s.base.awaiting='origin';
+     if(!datedInJourney){s.base.request.departureDate=null;s.base.request.departureRange=null;s.base.request.returnDate=null;}
+     break;
+    }
+   }
+  }
+  const incomingRoute=languagePatch(text),incomingDate=naturalDate(text,now);
+  if(s.base?.request&&['done','failed','paused'].includes(s.status)&&now-(s.base.at||now)>30*60000&&incomingRoute.origin&&incomingRoute.destination&&(incomingRoute.origin!==s.base.request.origin||incomingRoute.destination!==s.base.request.destination)&&!incomingDate.range&&!incomingDate.dates?.length){
+   s.base.request.departureDate=null;s.base.request.departureRange=null;s.base.request.returnDate=null;s.base.submitted=false;s.base.awaiting='departureDate';s.questions={};s.lastQuestion=null;
+  }
   legacy.importSession(id,s.base);
   s.questions ||= {};s.tripId ||= crypto.randomUUID();s.consultantDecision=null;if(enabled(this.env))updateConsultantMemory(s,text,{now});s.history.push({role:'user',text:clean(text)});s.history=s.history.slice(-24);
   const t=normalize(clean(text)),say=reply=>{
@@ -278,8 +298,8 @@ class AssistantEngine{
    return say(heading+'\n\n'+matches.slice(0,6).map(formatOffer).join('\n\n')+'\n\nالسعر والتوفر قابلان للتغير حتى الإصدار. هاد توضيح للعرض؛ ما تغيّر اختيارك وما تم حجز تذكرة.');
   }
 
-  hasChange ||= hasDecisionFields;
-  if(!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
+  hasChange ||= hasDecisionFields||followup?.start;
+  if(!followup?.start&&!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
   if(!hasChange&&(socialIntent==='negotiate'||/زبط|تزبط|خصم|تخفيض|نزل.*سعر|غالي|ارخص من هيك/.test(t))){
    const proposal=legacy.proposeExpansion(id,{now});
    return sayApproved('negotiation_ack',{suffix:proposal?'فينا نقارن سبعة أيام بعد آخر موعد مع الحفاظ على المسار والوزن. بتناسبك نوسّع البحث لهالفترة؟':'فينا نقارن أيام أو تواقيت أوسع إذا بتناسبك، بدون تغيير تفاصيلك من عندنا.'});
