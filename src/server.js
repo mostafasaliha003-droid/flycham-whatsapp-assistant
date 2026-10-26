@@ -1,5 +1,13 @@
 'use strict';
 const {aiStatus}=require('./assistant-nlu');
+const {SaudiVisaEngine}=require('./saudi-visa-engine');
+const {createSaudiVisaUnderstanding}=require('./saudi-visa-nlu');
+const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
+const {ComplaintHandoff}=require('./complaint-handoff');
+const {loadVisaPrivateConfig}=require('./saudi-visa-private');
+const PRIVATE_VISA_CONFIG=loadVisaPrivateConfig();
+const COMPLAINT_RECIPIENT=process.env.SAUDI_VISA_COMPLAINT_RECIPIENT||PRIVATE_VISA_CONFIG.complaintRecipient||'';
+const {visaEnabled,activeService,incomingRevision,noteIncoming,routeService,isComplaint}=require('./service-routing');
 const {GmailOTP,gmailHandler}=require('./gmail-otp');
 const handleGmail=gmailHandler(new GmailOTP());
 
@@ -17,7 +25,7 @@ const {VERIFIED_FAMILY_PROVIDERS,partyCapabilityStatus}=require('./party-capabil
 const {POLICY}=require('./assistant-policy');
 const { MessageBatcher } = require('./message-batcher');
 const {handleVoucherRequest}=require('./voucher-http');
-const { sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection } = require('./graph-api');
+const { sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection,changeWhatsAppBlock,sendComplaintNotification } = require('./graph-api');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const {recordDeliveryStatuses,comparisonDeliverySummary}=require('./delivery-status');
 const { expandLiveRequests } = require('./live-quote');
@@ -37,7 +45,12 @@ const catalog=new FareCatalog({store:assistant.store,enabled:process.env.FARE_CA
 const journal=new ConversationJournal({store:assistant.store});
 for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCustomer(id)&&!journal.hasCustomer(id))journal.importLegacy?.(id,{history:state.history,updatedAt:state.at,name:state.name});
 const portalMonitor=new PortalMonitor();
-const inbox=new InboxService({store:assistant.store,assistant,journal,send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>quoteJobs.cancel(id),getSearch:id=>searchStatus(id)});
+const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
+const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
+const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
+function operationsUrl(customer){const base=process.env.RENDER_EXTERNAL_URL||'https://flycham-whatsapp-assistant.onrender.com';return new URL('/operations?customer='+encodeURIComponent(customer),base).href;}
+function flushComplaint(id){return complaints.flush(id,{serviceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true,templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE)});}
+const inbox=new InboxService({store:assistant.store,assistant,journal,complaints,changeBlock:(id,{blocked})=>changeWhatsAppBlock(id,{blocked}),getMedia:id=>visaMedia.list(id),send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>quoteJobs.cancel(id),getSearch:id=>searchStatus(id)});
 function searchStatus(id){const state=assistant.state(id),c=quoteJobs.comparisons.get(state.activeComparisonId);if(!c)return {state:state.status,total:0,completed:0,verifiedOffers:state.offers.length,providers:[]};return {state:state.status,createdAt:c.createdAt,total:c.children.length,completed:c.children.filter(x=>x.status!=='pending').length,verifiedOffers:c.children.reduce((n,x)=>n+x.offers.length,0),providers:c.providers.map(provider=>{const rows=c.children.filter(x=>x.provider===provider);return {provider,name:provider==='flycham'?'فلاي شام':'العربية للطيران',total:rows.length,completed:rows.filter(x=>x.status!=='pending').length,verifiedOffers:rows.reduce((n,x)=>n+x.offers.length,0),activeDates:rows.filter(x=>quoteJobs.jobs.get(x.id)?.state==='claimed').map(x=>x.request.departureDate)};})};}
 async function sendTextMessage(to,text,env=process.env){if(inbox.isHumanOwned(to))throw Error('AI_PAUSED_FOR_STAFF');const result=await rawSendTextMessage(to,text,env);const id=result?.messages?.[0]?.id;if(id&&journal.hasCustomer(to))journal.recordOutbound(to,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}
 async function sendRequestChoiceMessage(to,text,choiceId){
@@ -50,7 +63,7 @@ const deliveries=new Map();
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
 
 const outbox=new DeliveryOutbox({store:assistant.store,send:sendTextMessage,report:code=>console.log(code),
- isCurrent:async item=>{await batcher.settled(item.recipient);if(inbox.isHumanOwned(item.recipient))return false;if(item.metadata.kind==='offer_page'){const state=assistant.state(item.recipient);if(state.activeComparisonId!==item.metadata.comparisonId||state.offerPages?.revision!==item.metadata.revision)return false;if(item.state==='sent'&&state.offerPages.acceptedPageKeys.includes(item.metadata.pageKey))return true;const page=nextOfferPage(state);return page.status==='ready'&&page.pageKey===item.metadata.pageKey;}const c=quoteJobs.comparisons.get(item.metadata.comparisonId);return c?quoteJobs.isComparisonCurrent(c.id)&&c.revision===item.metadata.revision:item.state==='sent';},
+ isCurrent:async item=>{await batcher.settled(item.recipient);if(inbox.isHumanOwned(item.recipient)||activeService(assistant.store,item.recipient)==='saudi_visa')return false;if(item.metadata.kind==='offer_page'){const state=assistant.state(item.recipient);if(state.activeComparisonId!==item.metadata.comparisonId||state.offerPages?.revision!==item.metadata.revision)return false;if(item.state==='sent'&&state.offerPages.acceptedPageKeys.includes(item.metadata.pageKey))return true;const page=nextOfferPage(state);return page.status==='ready'&&page.pageKey===item.metadata.pageKey;}const c=quoteJobs.comparisons.get(item.metadata.comparisonId);return c?quoteJobs.isComparisonCurrent(c.id)&&c.revision===item.metadata.revision:item.state==='sent';},
  onChunkSent:async(item,index,chunk)=>{
   const state=assistant.state(item.recipient);
   if(chunk.messageId){state.offerMessages||={};state.offerMessages[chunk.messageId]=[...chunk.text.matchAll(/\*الخيار (\d+) —/g)].map(m=>Number(m[1]));state.offerMessages=Object.fromEntries(Object.entries(state.offerMessages).slice(-100));}
@@ -94,7 +107,7 @@ async function deliverComparison(id){
  });
 }
 async function sendSearchWaiting(id){
- const c=quoteJobs.comparisons.get(id);if(!c||c.waitingNotified||Date.now()-c.createdAt<90000||!quoteJobs.isComparisonCurrent(id))return;
+ const c=quoteJobs.comparisons.get(id);if(!c||activeService(assistant.store,c.recipient)==='saudi_visa'||inbox.isHumanOwned(c.recipient)||c.waitingNotified||Date.now()-c.createdAt<90000||!quoteJobs.isComparisonCurrent(id))return;
  return orderedDelivery(c.recipient,async()=>{
   await batcher.settled(c.recipient);if(!quoteJobs.isComparisonCurrent(id)||c.waitingNotified)return;
   // One status notice per search; avoid repeated spam and unsupported progress claims.
@@ -102,6 +115,16 @@ async function sendSearchWaiting(id){
   const recent=c.lastProgressAt&&Date.now()-c.lastProgressAt<120000;
   const text=recent?'شكرًا لصبرك 🌷 عم نكمّل فحص الخيارات حسب تفاصيل رحلتك. عم نجمع العروض المتحققة من الشركات ضمن مقارنة واحدة واضحة، ومنرسلها فور اكتمال المراجعة.':'بنعتذر منك على الانتظار 🌷 طلبك ما زال قيد التحقق، لكن لم يتأكد عرض جاهز للإرسال حتى الآن. ما في داعي تعيد تفاصيل الرحلة.';
   try{await sendTextMessage(c.recipient,text);}catch{console.log('WHATSAPP_WAITING_NOTICE_FAILED');}
+ });
+}
+
+async function sendComplaintAcknowledgment(sender){
+ return orderedDelivery(sender,async()=>{
+ const record=complaints.active(sender),entry=journal.get(sender);
+ if(!record||record.ackState||inbox.isOperatorOwned(sender)||inbox.isBlocked(sender)||['pending','uncertain'].includes(entry?.whatsappBlockState))return;
+ record.ackState='sending';assistant.store.save();
+ const text='منفهم انزعاجك، وبدنا نراجع الموضوع بدقة. تم تحويل المحادثة للإدارة لمراجعة معاملتك والدفعات المرتبطة فيها. ما في داعي تعيد التفاصيل.';
+ try{const result=await rawSendTextMessage(sender,text);const id=result?.messages?.[0]?.id;if(!id)throw Error('NO_MESSAGE_ID');journal.recordOutbound(sender,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});record.ackState='accepted';}catch{record.ackState='uncertain';}assistant.store.save();
  });
 }
 
@@ -115,13 +138,33 @@ function messageChunks(text){
  if(current)chunks.push(current);return chunks;
 }
 
-function prepareCustomerMessages(sender,messages){const state=assistant.state(sender);if(state.offerPages&&isMoreRequest(messages.map(m=>m.text).join('، ')))return;messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);const refs=[...new Set(messages.map(m=>m.contextId).filter(Boolean))];return assistant.prepare(sender,messages.map(m=>m.text).join('، '),{quotedMessageId:refs.length===1?refs[0]:null,turnMessages:messages.map(m=>({text:m.text,quotedOfferReference:state.offers.find(o=>o.messageId===m.contextId)?.reference||null}))});}
+function prepareCustomerMessages(sender,messages){if(visaEnabled()&&(activeService(assistant.store,sender)==='saudi_visa'||messages.some(m=>m.media)||/فيزا|تأشير|تاشير|عمرة|عمره|اسماعيل/.test(messages.map(m=>m.text).join(' '))))return;const state=assistant.state(sender);if(state.offerPages&&isMoreRequest(messages.map(m=>m.text).join('، ')))return;messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);const refs=[...new Set(messages.map(m=>m.contextId).filter(Boolean))];return assistant.prepare(sender,messages.map(m=>m.text).join('، '),{quotedMessageId:refs.length===1?refs[0]:null,turnMessages:messages.map(m=>({text:m.text,quotedOfferReference:state.offers.find(o=>o.messageId===m.contextId)?.reference||null}))});}
 function continueQueuedRequest(sender){setTimeout(()=>{batcher.serial(sender,[]).catch(()=>console.log('WHATSAPP_QUEUED_REQUEST_FAILED'));},0).unref();}
 async function processCustomerMessages(sender,messages){
+  if(!messages.length&&activeService(assistant.store,sender)==='saudi_visa')return;
   if(!messages.length){const next=assistant.beginNextRequest(sender);if(!next)return;messages=[{text:next.text,timestamp:Math.floor(Date.now()/1000)}];}
   messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);
   const text=messages.map(m=>m.text).join('، ');
-  if(inbox.isHumanOwned(sender))return;
+  if(inbox.isHumanOwned(sender)){if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await visaMedia.receive(sender,m);return;}
+  const turnRevision=incomingRevision(assistant.store,sender);
+  const flightState=assistant.state(sender);
+  const route=routeService(assistant.store,sender,text,{media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
+  if(route.service==='choose'){const pending=messages.filter(m=>m.media);if(pending.length){assistant.store.data.pendingVisaMedia||={};assistant.store.data.pendingVisaMedia[sender]=[...(assistant.store.data.pendingVisaMedia[sender]||[]),...pending].slice(-20);assistant.store.save();}await sendTextMessage(sender,route.reply);return;}
+  if(route.service==='saudi_visa'){
+    if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim())){
+      visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
+    }
+    if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
+    const attachments=messages.filter(m=>m.media),mediaReplies=[];
+    for(const m of attachments){const result=await visaMedia.receive(sender,m);mediaReplies.push(result.reply);}
+    const result=await visa.handle(sender,text,{messages});
+    if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
+    if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
+    if(result.superseded||!result.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
+    const reply=attachments.length?[...new Set(mediaReplies)].join('\n\n'):result.reply;
+    await sendTextMessage(sender,reply);return;
+  }
+  if(messages.some(m=>m.media)){await sendTextMessage(sender,'وصل المرفق. لمعالجة طلب الطيران اكتب تفاصيل الرحلة برسالة نصية، أو وضّح إذا كان المرفق لمعاملة فيزا السعودية.');return;}
   const state=assistant.state(sender),prior=state.base?.request;
   if(state.offerPages&&isMoreRequest(text)){
     const page=nextOfferPage(state,{now:Date.now()});
@@ -135,7 +178,7 @@ async function processCustomerMessages(sender,messages){
   const turnMessages=messages.map(m=>({text:m.text,quotedOfferReference:state.offers.find(o=>o.messageId===m.contextId)?.reference||null}));
   const buttonChoice=messages.filter(m=>m.requestChoice).at(-1)?.requestChoice||null;
   const result=await assistant.handle(sender,text,{quotedMessageId:references.length===1?references[0]:null,turnMessages,buttonChoice,choiceExtras:buttonChoice?messages.filter(m=>!m.requestChoice).map(m=>m.text):[]});
-  if(inbox.isHumanOwned(sender))return;
+  if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim()))journal.deleteCustomer(sender);
   if(broad&&!result.requestChoiceHandled){const request=assistant.state(sender).base?.request||{};const card=catalog.reply(request);if(card&&!result.complete){
    const missing=[];if(!request.departureDate&&!request.departureRange)missing.push('عندك أيام معيّنة ببالك');if(!request.passengers)missing.push('كم عدد المسافرين');if(!request.tripType)missing.push('ذهاب بس أو مع رجعة');
@@ -210,11 +253,18 @@ async function handleWebhookPost(request, response) {
 
   response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ received: true }));
   recordDeliveryStatuses(payload,assistant.store);
-  for(const e of payload.entry||[])for(const c of e.changes||[])for(const receipt of c.value?.statuses||[])journal.applyReceipt(receipt);
+  for(const e of payload.entry||[])for(const c of e.changes||[])for(const receipt of c.value?.statuses||[]){journal.applyReceipt(receipt);complaints.handleReceipt(receipt);}
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
     quoteJobs.save();
+    noteIncoming(assistant.store,message.from);
+    if(visaEnabled()&&isComplaint(message.text)&&!inbox.isBlocked(message.from)&&!inbox.isOperatorOwned(message.from)){
+      const record=complaints.create(message.from,{caseId:visa.getCase(message.from)?.id});quoteJobs.cancel(message.from);
+      sendComplaintAcknowledgment(message.from).catch(()=>console.log('VISA_COMPLAINT_ACK_FAILED'));
+      flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));continue;
+    }
+    if(message.from===COMPLAINT_RECIPIENT){for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>{});}
     const fast=Boolean(message.requestChoice)||!batcher.busy(message.from)&&['searching','queued'].includes(assistant.state(message.from).status)&&/^(?:شكرا|شكراً|ناطر|ناطرين|بانتظاركن|بانتظار|منتظر|شو صار|وين وصلتوا|شكرا ناطرك|تمام|اوكي|حاضر)[؟?!. ]*$/.test(message.text);
     const pending=(process.env.ASSISTANT_DEBOUNCE_MS==='0'||fast)?batcher.serial(message.from,[message]):batcher.push(message.from,message);pending.catch(()=>console.error('WHATSAPP_REPLY_FAILED'));
     if(process.env.ASSISTANT_DEBOUNCE_MS==='0')await pending;
@@ -302,10 +352,11 @@ function createServer() {
     }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
+      if(await handleVisaMediaRequest(request,response,url,visaMedia))return;
       if(await handleInboxRequest(request,response,url,readBody,inbox))return;
       if(url.pathname==='/internal/assistant/portal-monitor'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({...portalMonitor.list({airarabia:quoteJobs.ready('airarabia'),flycham:quoteJobs.ready('flycham')}),familyCapabilities:partyCapabilityStatus()}));return;}
       const preview=url.pathname.match(/^\/internal\/assistant\/portal-monitor\/(airarabia|flycham)\/preview$/);if(preview&&request.method==='GET'){const bytes=quoteJobs.ready(preview[1])&&portalMonitor.preview(preview[1]);if(!bytes){response.writeHead(404).end();return;}response.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff','Content-Length':bytes.length}).end(bytes);return;}
-      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));return;}
+      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({...assistant.status(),visa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status(),notifications:{recipientConfigured:Boolean(COMPLAINT_RECIPIENT),templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE),ownerServiceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true}},catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));return;}
       if(url.pathname==='/internal/assistant/handoffs'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(assistant.store.data.handoffs));return;}
       const issued=url.pathname.match(/^\/internal\/assistant\/handoffs\/([a-f0-9-]+)\/issued$/);
       if(issued&&request.method==='POST'){const data=JSON.parse((await readBody(request)).toString());const h=assistant.store.data.handoffs.find(x=>x.id===issued[1]);if(!h||h.state!=='claimed'||data.ticketConfirmed!==true){response.writeHead(409).end();return;}h.state='issued';h.issuedAt=Date.now();const s=assistant.state(h.customer);updateConsultantStage(s,{type:'ticket_issued',verified:true});s.humanOwned=false;if(journal.hasCustomer(h.customer))inbox.release(h.customer);s.status='done';s.handoffId=null;assistant.store.set(h.customer,s);recordMetric(assistant.store,{customer:h.customer,journey:h.journey||s.tripId,event:'issued'});response.writeHead(200).end('{"ok":true}');return;}
@@ -325,7 +376,7 @@ function createServer() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-25.idle-worker.1',configuredProviders:POLICY.providers,consultantEnabled:consultantEnabled(process.env),consultantSmoke,webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, service: 'flycham-whatsapp-assistant', assistant:{version:'2026-10-27.ismail.1',saudiVisa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status()},configuredProviders:POLICY.providers,consultantEnabled:consultantEnabled(process.env),consultantSmoke,webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),...aiStatus(process.env),messageWindowMs:batcher.delay,messageMaxWaitMs:batcher.maxWait,defaultCheckedBaggageKg:30,catalog:catalog.status(),persistentStorageConfigured:Boolean(assistant.store.file),durableStorageConfirmed:assistant.store.status().durableStorageConfirmed,humanRoutingConfigured:Boolean(process.env.HUMAN_HANDOFF_RECIPIENT),flychamCredentialsConfigured:Boolean(process.env.FLYCHAM_AGENT_USERNAME&&process.env.FLYCHAM_AGENT_PASSWORD),airarabiaWorkerReady:quoteJobs.ready('airarabia'),flychamWorkerReady:quoteJobs.ready('flycham'),comparisonEnabled:true,nearbyAlternativeDays:3}, mode: String(process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false' ? 'dry-run' : 'live' }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {
@@ -346,6 +397,7 @@ function createServer() {
   });
   const sweep=setInterval(()=>{
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
+   if(visaEnabled()){visaMedia.prune();for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
    for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
@@ -355,7 +407,7 @@ function createServer() {
 if (require.main === module) {
   if(consultantEnabled(process.env))runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE'));
   checkWhatsAppConnection().then(code=>console.log(code));
-  console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));
+  console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),visa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status(),notifications:{recipientConfigured:Boolean(COMPLAINT_RECIPIENT),templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE),ownerServiceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true}},catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));
   console.log('WHATSAPP_COMPARISON_DELIVERY_HISTORY_'+JSON.stringify(comparisonDeliverySummary(assistant.store)));
   createServer().listen(PORT, () => console.log(`FlyCham WhatsApp Assistant listening on port ${PORT}`));
 }

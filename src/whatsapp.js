@@ -29,7 +29,7 @@ function extractIncomingMessages(payload) {
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
         if(!message?.from)continue;
-        let text,requestChoice;
+        let text,requestChoice,media;
         if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
         else if(message.type==='interactive'&&message.interactive?.type==='button_reply'){
           const buttonId=message.interactive.button_reply?.id;
@@ -37,6 +37,12 @@ function extractIncomingMessages(payload) {
           if(!choice)continue;
           requestChoice={id:choice[2],action:choice[1]};
           text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';
+        }else if(['image','document','audio'].includes(message.type)){
+          const item=message[message.type];
+          if(!item||typeof item.id!=='string'||!/^\d{1,100}$/.test(item.id))continue;
+          media={id:item.id,type:message.type,mimeType:typeof item.mime_type==='string'?item.mime_type.slice(0,120):null};
+          if(message.type==='document'&&typeof item.filename==='string')media.filename=item.filename.replace(/[\x00-\x1f\x7f]/g,'').slice(0,180);
+          text=typeof item.caption==='string'&&item.caption.trim()?item.caption.trim().slice(0,4096):message.type==='audio'?'[مرفق صوتي يحتاج تفريغاً]':message.type==='document'?'[مستند مرفق يحتاج مراجعة]':'[صورة مرفقة تحتاج مراجعة]';
         }else continue;
         const contact = contacts.find((item) => item?.wa_id === message.from);
         messages.push({
@@ -46,6 +52,7 @@ function extractIncomingMessages(payload) {
           name: contact?.profile?.name ?? null,
           text,
           ...(requestChoice?{requestChoice}:{}),
+          ...(media?{media}:{}),
           timestamp: message.timestamp ?? null
         });
       }
