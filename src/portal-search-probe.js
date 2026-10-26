@@ -13,6 +13,53 @@ function airportCodeConfirmed(value, code) {
   return Boolean(AIRPORTS[code]) && hasToken(code) && !Object.keys(AIRPORTS).some(other=>other!==code&&hasToken(other));
 }
 
+// Inspect only the supplier's actual visible option labels and return their
+// observed values. A value such as "AA" is not a carrier identity by itself.
+function searchCarrierOptionAction({ id, origin, pattern, expectedPattern, operation = 'inspect', labelOnly = false, expectedValue }) {
+  if (id !== 'selSearchOptions' || !['https://agents.airarabia.com', 'https://reservations.flycham.com'].includes(origin) || location.origin !== origin) return false;
+  const fields = document.querySelectorAll('[id="selSearchOptions"]');
+  if (fields.length !== 1) return false;
+  const select = fields[0];
+  if (select.tagName !== 'SELECT' || select.disabled || select.getClientRects().length === 0 || getComputedStyle(select).display === 'none' || getComputedStyle(select).visibility === 'hidden') return false;
+  const regex = new RegExp(operation === 'confirm' ? expectedPattern : pattern, 'i');
+  const options = Array.from(select.options);
+  const matches = option => regex.test(option.textContent.replace(/\s+/g, ' ').trim()) || !labelOnly && regex.test(option.value);
+  const matching = options.filter(matches);
+  if (!matching.length) return operation === 'inspect' ? null : false;
+  const enabled = matching.filter(option => !option.disabled && !option.parentElement?.disabled);
+  if (enabled.length !== 1) return false;
+  const option = enabled[0];
+  if (typeof option.value !== 'string' || !option.value.trim() || option.value.length > 80 || options.filter(item => item.value === option.value).length !== 1) return false;
+  if (operation === 'inspect') return option.value;
+  return operation === 'confirm' && option.value === expectedValue && select.value === expectedValue;
+}
+
+async function chooseSearchCarrier(frame, { supplier, origin, destination, report }) {
+  const carrier = supplier === 'flycham' ? 'XH' : origin === 'AUH' || destination === 'AUH' ? '3L' : 'G9';
+  const trustedOrigin = supplier === 'flycham' ? 'https://reservations.flycham.com' : 'https://agents.airarabia.com';
+  const patterns = {
+    XH: '^(?:Fly\\s*Cham(?:\\s*\\(XH\\))?|XH|Search\\s*XH)$',
+    G9: '^(?:Air\\s*Arabia(?:\\s*\\(G9\\))?|G9|Search\\s*G9)$',
+    '3L': '^(?:3L|Search\\s*3L|Air\\s*Arabia\\s*Abu\\s*Dhabi(?:\\s*\\(3L\\))?|Air\\s*Arabia\\s*\\(3L\\))$',
+  };
+  let mode = 'EXPLICIT', pattern = patterns[carrier], labelOnly = carrier === '3L';
+  let value = await frame.evaluate(searchCarrierOptionAction, { id: 'selSearchOptions', origin: trustedOrigin, pattern, labelOnly });
+  // Some group portals expose only G9 and Search All. The latter is an
+  // observed normal UI option; it is not a guessed supplier enum or API call.
+  // An ambiguous/disabled explicit 3L option still stops rather than falling back.
+  if (carrier === '3L' && value === null) {
+    mode = 'SEARCH_ALL';pattern = '^Search\\s*All$';labelOnly = true;
+    value = await frame.evaluate(searchCarrierOptionAction, { id: 'selSearchOptions', origin: trustedOrigin, pattern, labelOnly });
+  }
+  if (typeof value !== 'string' || !value.length) {
+    report('PORTAL_SEARCH_CARRIER_' + carrier + '_NOT_CONFIRMED');
+    throw Error('SEARCH_CARRIER_NOT_CONFIRMED');
+  }
+  await frame.locator('#selSearchOptions').selectOption(value);
+  report('PORTAL_SEARCH_CARRIER_' + carrier + '_' + mode + '_SELECTED');
+  return { value, carrier, mode, pattern, labelOnly, trustedOrigin };
+}
+
 // A bounded synthetic search only; this module has no booking/passenger actions.
 async function chooseAirport(frame, inputId, hiddenId, code, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), lookupMs = 10000, report = () => {}, origin='https://agents.airarabia.com' } = {}) {
   const names = { SHJ: 'Sharjah', DAM: 'Damascus', ALP:'Aleppo',DXB:'Dubai',AUH:'Abu Dhabi',DWC:'Al Maktoum' };
@@ -121,16 +168,6 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     returnDate = requestTripType==='one_way'?'':requestedReturnDate || `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
     if (requestTripType==='round_trip' && !/^\d{2}\/\d{2}\/\d{4}$/.test(requestedReturnDate || '')) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   }
-  report('PORTAL_PROBE_STAGE_ORIGIN');
-  await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
-  report('PORTAL_PROBE_STAGE_DESTINATION');
-  await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
-  report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
-  await frame.locator('#departureDate').fill(departureDate);
-  if (returnDate!==null) await frame.locator('#returnDate').fill(returnDate);
-  await frame.locator('#adultCount').fill('1');
-  await frame.locator('#childCount').fill('0');
-  await frame.locator('#infantCount').fill('0');
   // Choose existing supplier options by their observed names; unknown forms stop.
   report('PORTAL_PROBE_STAGE_SUPPLIER_OPTIONS');
   const currency=supplier==='flycham'?await frame.evaluate(()=>{const s=document.getElementById('selectedCurrency');if(!s||s.tagName!=='SELECT')return null;for(const code of ['AED','USD'])if([...s.options].some(o=>!o.disabled&&(o.value===code||o.textContent.trim()===code)))return code;return null;}):'AED';
@@ -138,7 +175,6 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
   for (const [id, pattern] of [
     ['selectedCurrency', '^'+currency+'$'],
     ['classOfService', '^Economy(?:\\s*Class)?$'],
-    ['selSearchOptions', supplier==='flycham'?'^(?:Fly\\s*Cham(?:\\s*\\(XH\\))?|XH|Search\\s*XH)$':'^(?:Air\\s*Arabia(?:\\s*\\(G9\\))?|G9|Search\\s*G9)$'],
     ['bookingType', '^Normal$'],
   ]) {
     const option = await frame.evaluate(({ id, pattern }) => {
@@ -151,8 +187,25 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     if (option === null) throw new Error('SEARCH_OPTION_NOT_CONFIRMED');
     await frame.locator(`#${id}`).selectOption(option);
   }
+  report('PORTAL_PROBE_STAGE_CARRIER');
+  const carrier = await chooseSearchCarrier(frame, { supplier, origin, destination, report });
+  report('PORTAL_PROBE_STAGE_ORIGIN');
+  await chooseAirport(frame, 'fAirport', 'fromAirport', origin, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
+  report('PORTAL_PROBE_STAGE_DESTINATION');
+  await chooseAirport(frame, 'tAirport', 'toAirport', destination, { report,origin:supplier==='flycham'?'https://reservations.flycham.com':'https://agents.airarabia.com' });
+  report('PORTAL_PROBE_STAGE_DATES_AND_COUNTS');
+  await frame.locator('#departureDate').fill(departureDate);
+  if (returnDate!==null) await frame.locator('#returnDate').fill(returnDate);
+  await frame.locator('#adultCount').fill('1');
+  await frame.locator('#childCount').fill('0');
+  await frame.locator('#infantCount').fill('0');
+  if (await frame.evaluate(searchCarrierOptionAction, { id: 'selSearchOptions', origin: carrier.trustedOrigin, operation: 'confirm', expectedPattern: carrier.pattern, labelOnly: carrier.labelOnly, expectedValue: carrier.value }) !== true) {
+    report('PORTAL_SEARCH_CARRIER_SELECTION_CHANGED');
+    throw Error('SEARCH_CARRIER_NOT_CONFIRMED');
+  }
+  report('PORTAL_SEARCH_CARRIER_' + carrier.carrier + '_' + carrier.mode + '_CONFIRMED');
   report('PORTAL_PROBE_STAGE_VALIDATE_INPUTS');
-  const validation = await frame.evaluate(({ origin, destination, departureDate, returnDate, currency }) => {
+  const validation = await frame.evaluate(({ origin, destination, departureDate, returnDate, currency, carrierValue }) => {
     const value = id => document.getElementById(id)?.value;
     const hasCode = (raw, code) => {
       const normalized = String(raw || '').trim().toUpperCase();
@@ -162,8 +215,8 @@ async function prepareSearch(frame, { origin, destination, departureDate, reques
     return hasCode(value('fromAirport'), origin) && hasCode(value('toAirport'), destination)
       && value('departureDate') === departureDate && value('adultCount') === '1'
       && value('childCount') === '0' && value('infantCount') === '0'
-      && value('selectedCurrency') === currency && (returnDate===null || value('returnDate') === returnDate);
-  }, { origin, destination, departureDate, returnDate, currency });
+      && value('selectedCurrency') === currency && value('selSearchOptions') === carrierValue && (returnDate===null || value('returnDate') === returnDate);
+  }, { origin, destination, departureDate, returnDate, currency, carrierValue: carrier.value });
   if (validation !== true) throw new Error('SEARCH_INPUTS_NOT_CONFIRMED');
   return { tripKind: returnDate ? 'return' : 'one-way' };
 }
@@ -187,4 +240,4 @@ async function submitProbe(frame, config) {
   return { submitted: true, tripKind: prepared.tripKind };
 }
 
-module.exports = { airportCodeConfirmed, chooseAirport, prepareSearch, submitProbe,clickSearchControl };
+module.exports = { airportCodeConfirmed, chooseAirport, prepareSearch, submitProbe,clickSearchControl, searchCarrierOptionAction, chooseSearchCarrier };

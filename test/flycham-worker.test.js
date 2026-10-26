@@ -154,6 +154,7 @@ test('unselected flight results reach fare selection without waiting for a hidde
   evaluate:async(fn,args)=>{
    if(typeof args==='boolean')return {out:1,back:null};
    if(!args)return fn.toString().includes('selectedCurrency')?'AED':0;
+   if(args.id==='selSearchOptions'&&args.operation==='confirm')return true;
    if(args.operation)return {status:args.operation==='input'?'INPUT_READY':'READY'};
    if(args.pattern)return args.id==='selectedCurrency'?'AED':'observed-option';
    if(Object.hasOwn(args,'oneWay'))return {out:1,back:null};

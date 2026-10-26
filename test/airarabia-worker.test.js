@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const vm = require('node:vm');
 const { AirArabiaPortalAdapter, AIRPORTS } = require('../src/airarabia-worker');
 
 test('keepalive adapter permits only registered search candidates; supplier must still confirm selection', () => {
@@ -170,6 +171,101 @@ test('an unconfirmed login does not declare authentication successful', async ()
   adapter.waitForAuthentication = () => adapter.isAuthenticated();
   await assert.rejects(adapter.signIn(), /LOGIN_NOT_CONFIRMED/);
   assert.ok(!codes.includes('PORTAL_AUTHENTICATED'));
+});
+
+function partialLoginFixture({ recovered = true, text = '', visibleLogin = false, hiddenLogin = false, captcha = false, otp = false, supplierError = false, unavailable = false, foreign = false, noSignOut = false, foreignOwner = false, hiddenFrame = false, missingBody = false } = {}) {
+  const page = fakePage(), codes = [], waits = [];
+  let repaired = false;
+  const element = (label = '', parentElement = null) => ({ textContent: label, parentElement, hidden: false, getClientRects: () => [1], getAttribute: name => name === 'title' ? label : null, closest: () => null });
+  const body = element(), hidden = element();hidden.hidden = true;
+  const signOut = element('Sign Out', body), login = element('', hiddenLogin ? hidden : body), challenge = element('', body), message = element(text, body), error = element(supplierError ? 'private supplier error 123456' : '', body);
+  const view = {};view.top = view;
+  if (hiddenFrame) { const parent = { location: { origin: 'https://agents.airarabia.com' } };parent.top = parent;view.parent = parent;view.top = parent;view.frameElement = hidden; }
+  const document = {
+    body: missingBody ? null : body,
+    querySelectorAll: selector => {
+      if (selector.startsWith('a,button')) return noSignOut ? [] : [signOut];
+      if (selector.startsWith('#username_txt')) return visibleLogin || hiddenLogin ? [login] : [];
+      if (selector.startsWith('#userOtp')) return captcha || otp ? [challenge] : [];
+      if (selector.startsWith('#errorMSG')) return supplierError ? [error] : [];
+      return [];
+    },
+    createTreeWalker: () => { let visited = false;return { currentNode: null, nextNode() { if (visited) return false;visited = true;this.currentNode = { parentElement: message, textContent: text };return true; } }; },
+  };
+  const control = visible => ({ count: async () => 1, nth() { return this; }, isVisible: async () => visible });
+  const frame = {
+    url: () => foreign ? 'https://foreign.example/private/showTop' : otp ? 'https://agents.airarabia.com/xbe/private/sendOTP.action' : 'https://agents.airarabia.com/xbe/private/showTop',
+    locator: () => ({ isVisible: async () => false }),
+    getByText: pattern => control(pattern.test('Sign Out') || (repaired && recovered && pattern.test('Make Reservation'))),
+    evaluate: async fn => {
+      if (unavailable) throw Error('private detached frame and session');
+      return vm.runInNewContext('(' + fn.toString() + ')()', { document, window: view, location: { origin: 'https://agents.airarabia.com' }, NodeFilter: { SHOW_TEXT: 4 }, getComputedStyle: node => ({ display: node.hidden ? 'none' : 'block', visibility: 'visible' }) });
+    },
+  };
+  page.frames = () => [frame];
+  const navigate = page.goto;
+  page.goto = async (...args) => { const response = await navigate(...args);if (page.calls.filter(([op]) => op === 'goto').length > 1) repaired = true;return response; };
+  const adapter = adapterFor(page, code => codes.push(code));
+  // Isolate the initial wait deadline. The recovery must still satisfy the real
+  // unchanged authenticated-navigation predicate before it may report success.
+  adapter.waitForAuthentication = async (timeout, options) => { waits.push({ timeout, options });if (foreignOwner && waits.length === 1) page.url = () => 'https://foreign.example/login';return waits.length > 1 && adapter.isAuthenticated(); };
+  return { adapter, page, codes, waits };
+}
+
+test('one protected navigation recovers an observable partial login without resubmitting credentials', async () => {
+  const f = partialLoginFixture();await f.adapter.signIn();
+  assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 2);
+  assert.equal(f.page.calls.filter(([op]) => op === 'fill').length, 2);
+  assert.equal(f.page.calls.filter(([op, selector]) => op === 'click' && selector === '#btnLogin').length, 1);
+  assert.equal(f.waits.length, 2);assert.deepEqual(f.waits[0].options, { operatorVerification: true });assert.equal(f.waits[1].options, undefined);
+  assert.ok(f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED'));assert.ok(f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_CONFIRMED'));assert.equal(f.codes.at(-1), 'PORTAL_AUTHENTICATED');
+});
+
+test('a still-partial login cannot trigger a second recovery navigation or claim authentication', async () => {
+  const f = partialLoginFixture({ recovered: false });await assert.rejects(f.adapter.signIn(), /PORTAL_LOGIN_CONFIRM_LOGIN_NOT_CONFIRMED/);
+  assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 2);assert.equal(f.waits.length, 2);
+  assert.equal(f.page.calls.filter(([op, selector]) => op === 'click' && selector === '#btnLogin').length, 1);
+  assert.ok(f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_NOT_CONFIRMED'));assert.ok(!f.codes.includes('PORTAL_AUTHENTICATED'));
+});
+
+test('partial-login recovery ignores hidden old login inputs but requires visible same-window sign-out evidence', async () => {
+  const hidden = partialLoginFixture({ hiddenLogin: true });await hidden.adapter.signIn();assert.ok(hidden.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_CONFIRMED'));
+  for (const config of [{ noSignOut: true }, { hiddenFrame: true }, { missingBody: true }]) {
+    const f = partialLoginFixture(config);assert.equal(await f.adapter.partialLoginRecoveryEligible(), false);
+  }
+  const selected = partialLoginFixture({ noSignOut: true }), other = partialLoginFixture();selected.page.context = () => ({ pages: () => [selected.page, other.page] });
+  assert.equal(await selected.adapter.partialLoginRecoveryEligible(), false);
+  const popup = partialLoginFixture(), hiddenLauncher = fakePage();popup.page.context = () => ({ pages: () => [hiddenLauncher, popup.page] });
+  assert.equal(await popup.adapter.partialLoginRecoveryEligible(), true);
+});
+
+test('partial-login recovery refuses visible security/login responses and foreign or unavailable frames', async () => {
+  for (const config of [{ visibleLogin: true }, { captcha: true }, { otp: true }, { text: 'Access denied' }, { text: 'Invalid username or password' }, { text: 'Change your password' }, { text: 'Another session is active' }, { text: 'Your account is locked' }, { supplierError: true }, { unavailable: true }, { foreign: true }, { foreignOwner: true }]) {
+    const f = partialLoginFixture(config);await assert.rejects(f.adapter.signIn(), /PORTAL_LOGIN_CONFIRM_(?:LOGIN_NOT_CONFIRMED|MANUAL_VERIFICATION)/);
+    assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 1, JSON.stringify(config));assert.ok(f.waits.length <= 1, JSON.stringify(config));
+    assert.ok(!f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED'));assert.ok(!f.codes.includes('PORTAL_AUTHENTICATED'));
+    assert.doesNotMatch(JSON.stringify(f.codes), /123456|private detached|private supplier/);
+  }
+});
+
+test('a typed challenge during the initial authentication wait never enters partial-login recovery', async () => {
+  const f = partialLoginFixture();f.adapter.waitForAuthentication = async () => { throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION'); };
+  await assert.rejects(f.adapter.signIn(), /PORTAL_VERIFICATION_MANUAL_VERIFICATION/);assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 1);assert.ok(!f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED'));
+});
+
+test('a security challenge after the single recovery navigation stops without submitting another code or credentials', async () => {
+  const f = partialLoginFixture();let waited = 0;
+  f.adapter.waitForAuthentication = async (timeout, options) => { if (!waited++) return false;assert.equal(options, undefined);throw new PortalError('VERIFICATION', 'MANUAL_VERIFICATION'); };
+  await assert.rejects(f.adapter.signIn(), /PORTAL_VERIFICATION_MANUAL_VERIFICATION/);
+  assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 2);assert.equal(f.page.calls.filter(([op]) => op === 'fill').length, 2);assert.equal(f.page.calls.filter(([op, selector]) => op === 'click' && selector === '#btnLogin').length, 1);
+  assert.ok(f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED'));assert.ok(!f.codes.includes('PORTAL_PARTIAL_LOGIN_RECOVERY_CONFIRMED'));assert.ok(!f.codes.includes('PORTAL_AUTHENTICATED'));
+});
+
+test('a failed protected recovery response stops after one navigation with a fixed diagnostic', async () => {
+  const f = partialLoginFixture(), navigate = f.page.goto;
+  f.page.goto = async (...args) => { const response = await navigate(...args);return f.page.calls.filter(([op]) => op === 'goto').length > 1 ? { status: () => 503 } : response; };
+  await assert.rejects(f.adapter.signIn(), /^Error: PORTAL_LOGIN_CONFIRM_HTTP_ERROR$/);
+  assert.equal(f.page.calls.filter(([op]) => op === 'goto').length, 2);assert.equal(f.waits.length, 1);assert.ok(!f.codes.includes('PORTAL_AUTHENTICATED'));
 });
 
 test('failure diagnostics never include raw errors, URLs or secret values', () => {

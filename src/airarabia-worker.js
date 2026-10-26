@@ -410,6 +410,79 @@ class AirArabiaPortalAdapter {
     this.loginResponsePages.add(page);
   }
 
+  async partialLoginRecoveryEligible() {
+    // A sign-out header by itself is not an authenticated portal. Permit one
+    // ordinary protected-page navigation only when the selected supplier
+    // window is fully observable and has no visible login/security response.
+    // Do not combine evidence from the hidden launcher or another popup.
+    try {
+      if (this.page.isClosed?.() || new URL(this.page.url()).origin !== new URL(LOGIN_URL).origin) return false;
+      const frames = this.page.frames();
+      if (!frames.length) return false;
+      let signOut = false;
+      for (const frame of frames) {
+        const url = new URL(frame.url());
+        if (url.origin !== new URL(LOGIN_URL).origin || /\/(?:sendOTP|verifyOTP)(?:\.action)?$/.test(url.pathname.split(';')[0])) return false;
+        const state = await frame.evaluate(() => {
+          if (!document.body) return { observed: false };
+          const visible = element => {
+            if (!element || !element.getClientRects().length) return false;
+            for (let current = element; current; current = current.parentElement) {
+              const style = getComputedStyle(current);
+              if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+            }
+            return true;
+          };
+          let frameVisible = true;
+          try {
+            for (let view = window; view !== view.top; view = view.parent) {
+              if (view.parent.location.origin !== location.origin || !visible(view.frameElement)) { frameVisible = false; break; }
+            }
+          } catch { return { observed: false }; }
+          const shown = element => frameVisible && visible(element);
+          const chunks = [];
+          if (document.body) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const parent = walker.currentNode.parentElement;
+              if (parent && !parent.closest('script,style,noscript') && shown(parent)) chunks.push(walker.currentNode.textContent);
+            }
+          }
+          const text = chunks.join(' ').replace(/\s+/g, ' ');
+          const controls = Array.from(document.querySelectorAll('a,button,img,input,[role="button"],[role="link"],[role="menuitem"]')).filter(shown);
+          const named = element => ['alt', 'title', 'value', 'aria-label'].map(name => element.getAttribute(name) || '').concat(element.textContent || '');
+          return {
+            observed: true,
+            signOut: controls.some(element => named(element).some(label => /^(?:sign|log)\s*out$/i.test(label.trim()))),
+            visibleLogin: Array.from(document.querySelectorAll('#username_txt,#j_password,#btnLogin,input[type="password"]')).some(shown),
+            verification: Array.from(document.querySelectorAll('#userOtp,#captcha_txt,iframe[src*="captcha"]')).some(shown) || /captcha|verify (?:you|that you) are human|one[- ]time|\botp\b|verification code|security (?:code|challenge)|looked like a bot/i.test(text),
+            accessDenied: /access denied|request (?:was )?(?:blocked|rejected)|forbidden|not authorized|account.{0,20}(?:locked|disabled|inactive)/i.test(text),
+            invalidCredentials: /invalid.{0,30}(?:password|user)|incorrect.{0,30}(?:password|user)|credentials? (?:are |were )?(?:invalid|rejected)/i.test(text),
+            passwordChange: /change (?:your )?password|password.{0,20}expir/i.test(text),
+            sessionNotice: /already logged|active session|another session|concurrent session/i.test(text),
+            supplierError: Array.from(document.querySelectorAll('#errorMSG,#spnError')).some(element => shown(element) && Boolean(element.textContent?.trim())),
+          };
+        });
+        const vetoes = ['visibleLogin', 'verification', 'accessDenied', 'invalidCredentials', 'passwordChange', 'sessionNotice', 'supplierError'];
+        if (state?.observed !== true || typeof state.signOut !== 'boolean' || vetoes.some(key => typeof state[key] !== 'boolean' || state[key])) return false;
+        signOut ||= state.signOut;
+      }
+      return signOut;
+    } catch { return false; }
+  }
+
+  async recoverPartialLogin() {
+    if (!await this.partialLoginRecoveryEligible()) return false;
+    this.report('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED');
+    const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (response && response.status() >= 400) throw new PortalError('LOGIN_CONFIRM', 'HTTP_ERROR');
+    // This is a single normal navigation, without credentials or an OTP
+    // resubmission. A new challenge still stops through the usual guard.
+    const confirmed = await this.waitForAuthentication(30000);
+    this.report(confirmed ? 'PORTAL_PARTIAL_LOGIN_RECOVERY_CONFIRMED' : 'PORTAL_PARTIAL_LOGIN_RECOVERY_NOT_CONFIRMED');
+    return confirmed;
+  }
+
   async signIn() {
     this.verificationAttempted = false;
     this.verificationNavigationResumed = false;
@@ -450,7 +523,7 @@ class AirArabiaPortalAdapter {
     });
     this.report('PORTAL_STAGE_LOGIN_CONFIRM');
     await atStage('LOGIN_CONFIRM', async () => {
-      if (!await this.waitForAuthentication(30000, { operatorVerification: true })) {
+      if (!await this.waitForAuthentication(30000, { operatorVerification: true }) && !await this.recoverPartialLogin()) {
         await this.assertNoChallenge();
         await this.reportLoginResult();
         throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
