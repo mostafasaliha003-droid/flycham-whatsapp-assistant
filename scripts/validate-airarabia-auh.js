@@ -30,7 +30,7 @@ function parseArgs(argv, { now = Date.now, realpath = fs.realpathSync } = {}) {
   const options = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i], value = argv[i + 1];
-    if (!['--source-root', '--date', '--price', '--max-memory-percent'].includes(key) || Object.hasOwn(options, key) || typeof value !== 'string' || value.startsWith('--')) throw Error('DIAGNOSTIC_ARGUMENTS_INVALID');
+    if (!['--source-root', '--date', '--price', '--max-memory-percent', '--origin'].includes(key) || Object.hasOwn(options, key) || typeof value !== 'string' || value.startsWith('--')) throw Error('DIAGNOSTIC_ARGUMENTS_INVALID');
     options[key] = value;
   }
   if (!options['--source-root'] || !path.isAbsolute(options['--source-root'])) throw Error('DIAGNOSTIC_STAGING_REQUIRED');
@@ -45,7 +45,9 @@ function parseArgs(argv, { now = Date.now, realpath = fs.realpathSync } = {}) {
   if (row !== undefined && (!/^[1-9]\d{0,2}$/.test(row) || Number(row) > 200)) throw Error('DIAGNOSTIC_PRICE_ROW_INVALID');
   const percent = options['--max-memory-percent'];
   if (percent !== undefined && (!/^\d{2}$/.test(percent) || Number(percent) < 75 || Number(percent) > 85)) throw Error('DIAGNOSTIC_ARGUMENTS_INVALID');
-  return { sourceRoot, date, priceRow: row === undefined ? null : Number(row), maxMemoryPercent: percent === undefined ? 75 : Number(percent) };
+  const origin = options['--origin'] === undefined ? 'AUH' : options['--origin'];
+  if (!['AUH', 'SHJ'].includes(origin)) throw Error('DIAGNOSTIC_ARGUMENTS_INVALID');
+  return { sourceRoot, date, origin, priceRow: row === undefined ? null : Number(row), maxMemoryPercent: percent === undefined ? 75 : Number(percent) };
 }
 
 // Execute inside an explicitly trusted AA search frame. Never returns source
@@ -106,6 +108,15 @@ function safeChoices(choices) {
   const time = value => typeof value === 'string' && /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?\d{1,2}[ ./-]*[A-Za-z]{3}[ ./-]*(?:\d{4}|\d{2})\s+\d{1,2}:\d{2}$/.test(value.trim()) ? value.trim() : null;
   const read = rows => Array.isArray(rows) ? rows.slice(0, 20).map(row => ({ row: Number.isInteger(row?.row) && row.row >= 1 && row.row <= 200 ? row.row : null, flight: flight(row?.flight), departure: time(row?.departure), arrival: time(row?.arrival) })) : [];
   return { out: read(choices?.out), back: read(choices?.back) };
+}
+
+function safeWeights(weights, { minimumKg = 0 } = {}) {
+  if (!Number.isFinite(minimumKg) || minimumKg < 0 || minimumKg > 100 || !Array.isArray(weights) || !weights.length || weights.length > 16) throw Error('PRICE_NOT_VERIFIED');
+  return Array.from(weights, weight => {
+    const segmentsCount = Array.isArray(weight?.segments) ? weight.segments.length : null;
+    if (!Number.isSafeInteger(segmentsCount) || segmentsCount < 1 || segmentsCount > 16 || !Number.isFinite(weight?.kg) || weight.kg < minimumKg || weight.kg > 100) throw Error('PRICE_NOT_VERIFIED');
+    return { segmentsCount, kg: weight.kg };
+  });
 }
 
 function safeLoginShape(value) {
@@ -228,11 +239,11 @@ async function main(argv, { env = process.env, write = value => process.stdout.w
     const dependencies = load(config.sourceRoot);
     const report = value => { const shape = safeLoginShape(value);if (shape) emit(shape);else if (SIMPLE_EVENTS.has(value)) emit({ event: value }); };
     const log = { log: report, error: report };
-    emit({ event: 'DIAGNOSTIC_STARTED', origin: 'AUH', destination: 'DAM', date: config.date, adults: 1, mode: config.priceRow === null ? 'discovery' : 'explicit_row_price', priceRow: config.priceRow });
+    emit({ event: 'DIAGNOSTIC_STARTED', origin: config.origin, destination: 'DAM', date: config.date, adults: 1, mode: config.priceRow === null ? 'discovery' : 'explicit_row_price', priceRow: config.priceRow });
     memoryFailure = new Promise((_, reject) => { rejectMemory = reject; });
     const operation = (async () => {
       runtime = await dependencies.openAirArabiaRuntime({
-        env: { ...env, AIR_ARABIA_KEEPALIVE_ORIGIN: 'AUH', AIR_ARABIA_KEEPALIVE_DESTINATION: 'DAM', AIR_ARABIA_INSPECT_SEARCH_UI: 'false' }, log,
+        env: { ...env, AIR_ARABIA_KEEPALIVE_ORIGIN: config.origin, AIR_ARABIA_KEEPALIVE_DESTINATION: 'DAM', AIR_ARABIA_INSPECT_SEARCH_UI: 'false' }, log,
         launch: async options => {
           if (launched || stopped()) throw Error('DIAGNOSTIC_ONE_BROWSER_ONLY');
           checkMemory();
@@ -250,7 +261,7 @@ async function main(argv, { env = process.env, write = value => process.stdout.w
         },
       });
       if (stopped()) return;
-      const request = { provider: 'airarabia', origin: 'AUH', destination: 'DAM', departureDate: config.date, tripType: 'one_way', passengers: { adults: 1, children: 0, infants: 0 }, baggageRequest: { checkedWeightKg: 30, requestedByCustomer: false, source: 'default30' } };
+      const request = { provider: 'airarabia', origin: config.origin, destination: 'DAM', departureDate: config.date, tripType: 'one_way', passengers: { adults: 1, children: 0, infants: 0 }, baggageRequest: { checkedWeightKg: 30, requestedByCustomer: false, source: 'default30' } };
       const discovery = await runtime.session.run(portal => portal.runCustomerQuoteVariant(request, null, true));
       if (stopped()) return;
       emit({ event: 'DIAGNOSTIC_DISCOVERY_CONFIRMED', choices: safeChoices(discovery.choices) });
@@ -260,7 +271,7 @@ async function main(argv, { env = process.env, write = value => process.stdout.w
         const quote = await runtime.session.run(portal => portal.runCustomerQuoteVariant(request, { out: choice, back: null }, false));
         if (stopped()) return;
         if (quote.price?.currency !== 'AED' || !/^\d{1,8}\.\d{2}$/.test(quote.price.sellingTotal || '')) throw Error('PRICE_NOT_VERIFIED');
-        emit({ event: 'DIAGNOSTIC_PRICE_CONFIRMED', currency: 'AED', sellingTotal: quote.price.sellingTotal, timing: safeChoices({ out: [quote.timing?.out] }) });
+        emit({ event: 'DIAGNOSTIC_PRICE_CONFIRMED', currency: 'AED', sellingTotal: quote.price.sellingTotal, weights: safeWeights(quote.price.weights, { minimumKg: request.baggageRequest.checkedWeightKg }), timing: safeChoices({ out: [quote.timing?.out] }) });
       }
     })();
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => { timedOut = true;reject(Error('DIAGNOSTIC_TIMED_OUT')); }, timeoutMs); });
@@ -302,4 +313,4 @@ async function main(argv, { env = process.env, write = value => process.stdout.w
 }
 
 if (require.main === module) main(process.argv.slice(2)).then(code => process.exit(code), () => process.exit(1));
-module.exports = { parseArgs, inspectSearchModelAction, safeChoices, safeLoginShape, main, failureCode, readCgroupMemory, openDiagnosticRuntime };
+module.exports = { parseArgs, inspectSearchModelAction, safeChoices, safeWeights, safeLoginShape, main, failureCode, readCgroupMemory, openDiagnosticRuntime };

@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
-const { parseArgs, inspectSearchModelAction, safeChoices, main, readCgroupMemory, safeLoginShape, openDiagnosticRuntime } = require('../scripts/validate-airarabia-auh');
+const { parseArgs, inspectSearchModelAction, safeChoices, safeWeights, main, readCgroupMemory, safeLoginShape, openDiagnosticRuntime } = require('../scripts/validate-airarabia-auh');
 
 const NOW = Date.UTC(2026, 9, 26, 12);
 const args = extra => ['--source-root', '/tmp/aa-validated-stage', '--date', '2026-11-11', ...(extra || [])];
@@ -15,6 +15,7 @@ test('one-off discovery requires an explicit staged source and future date', () 
   assert.equal(config.date, '2026-11-11');
   assert.equal(config.priceRow, null);
   assert.equal(config.maxMemoryPercent, 75);
+  assert.equal(config.origin, 'AUH');
   assert.equal(parseArgs(args(['--price', '2']), options).priceRow, 2);
 });
 
@@ -23,6 +24,12 @@ test('one-off raised memory budget is explicit and limited to integer percentage
   for (const value of ['74', '86', '100', '0', '-1', '84.5', '85.0', 'eighty-five', 'Infinity']) assert.throws(() => parseArgs(args(['--max-memory-percent', value]), options), value);
   assert.throws(() => parseArgs(args(['--max-memory-percent']), options));
   assert.throws(() => parseArgs(args(['--max-memory-percent', '80', '--max-memory-percent', '85']), options));
+});
+
+test('one-off origin is limited to explicit AUH or SHJ with DAM fixed as destination', () => {
+  for (const origin of ['AUH', 'SHJ']) assert.equal(parseArgs(args(['--origin', origin]), options).origin, origin);
+  for (const origin of ['DXB', 'DWC', 'DAM', 'ALP', 'SHJ-DAM', 'shj', 'AUH ', 'SECRET_ORIGIN_SENTINEL']) assert.throws(() => parseArgs(args(['--origin', origin]), options));
+  assert.throws(() => parseArgs(args(['--origin']), options));assert.throws(() => parseArgs(args(['--origin', 'SHJ', '--origin', 'AUH']), options));assert.throws(() => parseArgs(args(['--destination', 'ALP']), options));
 });
 
 test('one-off source paths cannot reach the live app or escape staging through a symlink', () => {
@@ -88,7 +95,7 @@ test('one-off flight choices are bounded and cannot print arbitrary source strin
 });
 
 const deferred = () => { let resolve, reject;const promise = new Promise((a, b) => { resolve = a;reject = b; });return { promise, resolve, reject }; };
-function runtimeFixture({ searchFailure = null, quoteGate = null, launchGate = null, doubleLaunch = false, closeFailure = false, loginDiagnostics = [] } = {}) {
+function runtimeFixture({ searchFailure = null, quoteGate = null, launchGate = null, doubleLaunch = false, closeFailure = false, loginDiagnostics = [], priceWeights = [{ segments: ['synthetic-out'], kg: 30 }] } = {}) {
   const calls = [], output = [], env = { AIR_ARABIA_AGENT_USERNAME: 'SECRET_USERNAME_SENTINEL', AIR_ARABIA_AGENT_PASSWORD: 'SECRET_LOGIN_SENTINEL', AIR_ARABIA_INSPECT_SEARCH_UI: 'true', GMAIL_OTP_ENABLED: 'true' };
   const choices = { out: [1, 2].map(row => ({ row, flight: '3L50' + row, departure: '11 Nov 2026 09:20', arrival: '11 Nov 2026 11:50', selected: row === 1 })), back: [] };
   const browser = { close: async () => { calls.push(['browser-close']);if (closeFailure) throw Error('SECRET_CLOSE_SENTINEL'); } };
@@ -98,7 +105,7 @@ function runtimeFixture({ searchFailure = null, quoteGate = null, launchGate = n
       calls.push(['search', structuredClone(request), structuredClone(choice), discovery]);
       if (quoteGate) await quoteGate.promise;
       if (searchFailure) throw searchFailure;
-      return discovery ? { choices } : { price: { currency: 'AED', sellingTotal: '643.00' }, timing: choice };
+      return discovery ? { choices } : { price: { currency: 'AED', sellingTotal: '643.00', weights: priceWeights }, timing: choice };
     },
   };
   const runtime = { session: { adapter, run: async task => { calls.push(['session-run']);return task(adapter); } }, close: async () => { calls.push(['runtime-close']); } };
@@ -135,8 +142,31 @@ test('one-off price mode requires an explicitly available discovered row and pre
   const f = runtimeFixture();assert.equal(await f.run(['--price', '2']), 0);
   const searches = f.calls.filter(([event]) => event === 'search');assert.equal(searches.length, 2);assert.equal(searches[0][3], true);assert.equal(searches[1][3], false);
   assert.deepEqual(searches[1][2], { out: f.choices.out[1], back: null });assert.deepEqual(searches[1][1], searches[0][1]);
-  assert.ok(f.output.some(item => item.event === 'DIAGNOSTIC_PRICE_CONFIRMED' && item.currency === 'AED' && item.sellingTotal === '643.00'));
+  assert.ok(f.output.some(item => item.event === 'DIAGNOSTIC_PRICE_CONFIRMED' && item.currency === 'AED' && item.sellingTotal === '643.00'));assert.deepEqual(f.output.find(item => item.event === 'DIAGNOSTIC_PRICE_CONFIRMED').weights, [{ segmentsCount: 1, kg: 30 }]);
   const missing = runtimeFixture();assert.equal(await missing.run(['--price', '3']), 1);assert.equal(missing.calls.filter(([event]) => event === 'search').length, 1);assert.ok(missing.output.some(item => item.reason === 'DIAGNOSTIC_PRICE_ROW_UNAVAILABLE'));
+});
+
+test('one-off SHJ selection drives the event, runtime environment and customer-free request while keeping DAM', async () => {
+  const f = runtimeFixture();assert.equal(await f.run(['--origin', 'SHJ']), 0);
+  const started = f.output.find(item => item.event === 'DIAGNOSTIC_STARTED');assert.equal(started.origin, 'SHJ');assert.equal(started.destination, 'DAM');
+  const environment = f.calls.find(([event]) => event === 'open')[1];assert.equal(environment.AIR_ARABIA_KEEPALIVE_ORIGIN, 'SHJ');assert.equal(environment.AIR_ARABIA_KEEPALIVE_DESTINATION, 'DAM');
+  const searches = f.calls.filter(([event]) => event === 'search');assert.equal(searches.length, 1);assert.equal(searches[0][1].origin, 'SHJ');assert.equal(searches[0][1].destination, 'DAM');assert.equal(searches[0][3], true);assert.equal(searches[0][2], null);
+});
+
+test('price weight diagnostics expose only bounded segment counts and numeric kilograms', () => {
+  const input = [{ segments: ['SECRET_SEGMENT_ONE_SENTINEL', 'SECRET_SEGMENT_TWO_SENTINEL'], kg: 30, customer: 'SECRET_CUSTOMER_SENTINEL' }, { segments: ['SECRET_SEGMENT_THREE_SENTINEL'], kg: 0 }], before = JSON.stringify(input);
+  assert.deepEqual(safeWeights(input), [{ segmentsCount: 2, kg: 30 }, { segmentsCount: 1, kg: 0 }]);assert.equal(JSON.stringify(input), before);assert.doesNotMatch(JSON.stringify(safeWeights(input)), /SECRET_|"segments"|customer/);
+  assert.deepEqual(safeWeights([{ segments: Array(16).fill('unused'), kg: 100 }]), [{ segmentsCount: 16, kg: 100 }]);
+  assert.throws(() => safeWeights([{ segments: ['out'], kg: 20 }], { minimumKg: 30 }), /^Error: PRICE_NOT_VERIFIED$/);
+  assert.deepEqual(safeWeights([{ segments: ['out'], kg: 30 }], { minimumKg: 30 }), [{ segmentsCount: 1, kg: 30 }]);
+});
+
+test('unavailable or malformed price weights stop before a confirmed-price event', async () => {
+  const invalid = [undefined, null, [], Array(17).fill({ segments: ['out'], kg: 30 }), [null], [{}], [{ segments: [], kg: 30 }], [{ segments: Array(17).fill('out'), kg: 30 }], [{ segments: ['out'], kg: -1 }], [{ segments: ['out'], kg: 101 }], [{ segments: ['out'], kg: Infinity }], [{ segments: ['out'], kg: NaN }], [{ segments: ['out'], kg: '30' }]];
+  for (const weights of invalid) assert.throws(() => safeWeights(weights), /^Error: PRICE_NOT_VERIFIED$/);
+  for (const priceWeights of [null, [], [{ segments: ['out'], kg: '30' }], [{ segments: ['out'], kg: 20 }]]) {
+    const f = runtimeFixture({ priceWeights });assert.equal(await f.run(['--price', '1']), 1);assert.ok(!f.output.some(item => item.event === 'DIAGNOSTIC_PRICE_CONFIRMED'));assert.ok(f.output.some(item => item.reason === 'PRICE_NOT_VERIFIED'));
+  }
 });
 
 test('a strict search failure produces only a fixed reason and redacted model, then closes its own resources', async () => {
