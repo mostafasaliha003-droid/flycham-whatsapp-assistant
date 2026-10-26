@@ -4,6 +4,8 @@ const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding}=require('./saudi-visa-nlu');
 const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
 const {ComplaintHandoff}=require('./complaint-handoff');
+const {createComplaintTemplateGate}=require('./complaint-template');
+const complaintTemplateReady=createComplaintTemplateGate();
 const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const PRIVATE_VISA_CONFIG=loadVisaPrivateConfig();
 const COMPLAINT_RECIPIENT=process.env.SAUDI_VISA_COMPLAINT_RECIPIENT||PRIVATE_VISA_CONFIG.complaintRecipient||'';
@@ -49,7 +51,7 @@ const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisa
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
 function operationsUrl(customer){const base=process.env.RENDER_EXTERNAL_URL||'https://flycham-whatsapp-assistant.onrender.com';return new URL('/operations?customer='+encodeURIComponent(customer),base).href;}
-function flushComplaint(id){return complaints.flush(id,{serviceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true,templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE)});}
+async function flushComplaint(id){const serviceWindowOpen=journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true;return complaints.flush(id,{serviceWindowOpen,templateConfigured:serviceWindowOpen?false:await complaintTemplateReady()});}
 const inbox=new InboxService({store:assistant.store,assistant,journal,complaints,changeBlock:(id,{blocked})=>changeWhatsAppBlock(id,{blocked}),getMedia:id=>visaMedia.list(id),send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>quoteJobs.cancel(id),getSearch:id=>searchStatus(id)});
 function searchStatus(id){const state=assistant.state(id),c=quoteJobs.comparisons.get(state.activeComparisonId);if(!c)return {state:state.status,total:0,completed:0,verifiedOffers:state.offers.length,providers:[]};return {state:state.status,createdAt:c.createdAt,total:c.children.length,completed:c.children.filter(x=>x.status!=='pending').length,verifiedOffers:c.children.reduce((n,x)=>n+x.offers.length,0),providers:c.providers.map(provider=>{const rows=c.children.filter(x=>x.provider===provider);return {provider,name:provider==='flycham'?'فلاي شام':'العربية للطيران',total:rows.length,completed:rows.filter(x=>x.status!=='pending').length,verifiedOffers:rows.reduce((n,x)=>n+x.offers.length,0),activeDates:rows.filter(x=>quoteJobs.jobs.get(x.id)?.state==='claimed').map(x=>x.request.departureDate)};})};}
 async function sendTextMessage(to,text,env=process.env){if(inbox.isHumanOwned(to))throw Error('AI_PAUSED_FOR_STAFF');const result=await rawSendTextMessage(to,text,env);const id=result?.messages?.[0]?.id;if(id&&journal.hasCustomer(to))journal.recordOutbound(to,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}

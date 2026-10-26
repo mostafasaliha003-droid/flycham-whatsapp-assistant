@@ -29,3 +29,7 @@ Existing admin authentication remains mandatory and memory-only in the page. Ser
 Tests cover signed ingress, isolated services, deterministic money, contextual edits, family/document ambiguities, late replies, privacy, takeover, idempotency, provider fallback, receipt state, file encryption, guarded staff actions and block ambiguity. Mock-provider tests establish integration, not actual live language quality. Live Cline replay must use isolated memory without customer sends. End-to-end government submission, banking confirmation, courier dispatch and phone answering are not automated in this release. They require their own integrations and verification. No unlimited intelligence or sales conversion guarantee is made.
 
 Company bank accounts and the notification recipient are provisioned in a private AES-GCM encrypted configuration on the existing disk, not GitHub source.
+
+## Template rollout update
+
+An Arabic utility template named `remal_admin_visa_complaint` was submitted to the matching WhatsApp account. Meta approval is asynchronous. `SAUDI_VISA_WABA_ID`, template name and language are configured only on the web service. The runtime checks actual approval and the expected body/button schema with a 60-second cache before outside-window sends. Pending or rejected approval never turns a waiting notification into a false sent claim. No notification test is represented as customer delivery.
