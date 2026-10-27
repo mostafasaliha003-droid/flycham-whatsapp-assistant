@@ -4,7 +4,7 @@ const root=require('node:path').resolve(__dirname,'..');
 const copy=value=>JSON.parse(JSON.stringify(value));
 const descendants=node=>[node,...(node?.children||[]).flatMap(descendants)];
 const mappingPreview=(id,summary)=>({mode:'preview_only',canExecute:false,draftRevision:summary.revision,caseId:'visa-'+id,fields:[{sourceField:'fields.passportNumber',portalLabel:'رقم جواز السفر في البوابة',controlId:'ContentPlaceHolder1_txtPassportNo',kind:'text',value:summary.fields.passportNumber,status:'mapped'},{sourceField:'fields.visitPurpose',portalLabel:'نوع التأشيرة',controlName:'VisaKind',kind:'select',value:'19',displayValue:'زيارة سياحية',status:'reviewed_option'},{sourceField:'fields.mission',portalLabel:'أقرب ممثلية سعودية',controlName:'EmbassyCode',kind:'select',value:'214',displayValue:'أبوظبي',status:'reviewed_option'},{sourceField:'fields.birthDate',portalLabel:'تاريخ الميلاد في البوابة',controlId:'ContentPlaceHolder1_BirthDate',kind:'date',value:'1990-02-03',displayValue:{label:'عرض غير صالح'},status:'mapped'}],unresolved:['يلزم مطابقة مكان الميلاد.'],notices:['ملاحظة محلية للمراجعة فقط.']});
-function setup({owned=true,fields={passportNumber:'A1234567'},documents={passport:'passport-own-12345'},summaryState='draft',issues=[],previewResponse=null,hybridResponse=null,extraMedia=[],reviewRequiredFields=['fields.passportNumber','documents.passport']}={}){
+function setup({owned=true,fields={passportNumber:'A1234567'},documents={passport:'passport-own-12345'},summaryState='draft',issues=[],previewResponse=null,hybridResponse=null,mofaResponse=null,extraMedia=[],reviewRequiredFields=['fields.passportNumber','documents.passport']}={}){
  const nodes=new Map(),requests=[],customers=[{id:'971500000001',name:'العميل الأول',service:'saudi_visa',staffClaimed:owned,humanOwned:true,serviceWindowOpen:true,status:'idle'},{id:'971500000002',name:'العميل الثاني',service:'saudi_visa',staffClaimed:owned,humanOwned:true,serviceWindowOpen:true,status:'idle'}],summaries=new Map(),derivedByCustomer=new Map();
  for(const customer of customers)for(let index=0;index<2;index++)summaries.set(customer.id+':'+index,{applicantIndex:index,jobId:'raad-'+customer.id+'-'+index,revision:4,state:summaryState,fields:index===0?copy(fields):{passportNumber:'B7654321'},defaults:{mission:'Abu Dhabi',residenceCountryCode:'ARE',entries:'multiple',visaValidityDays:365,applicationPhone:'971500001111'},documents:copy(documents),issues:copy(issues),missing:[],reviewRequiredFields:[...reviewRequiredFields],review:{confirmedFields:[],requiredFields:[...reviewRequiredFields],complete:false},portal:{connected:false,mode:'preparation'}});
  class Element{
@@ -22,7 +22,8 @@ function setup({owned=true,fields={passportNumber:'A1234567'},documents={passpor
  const detail=customer=>({customer:copy(customer),visaCase:{id:'visa-'+customer.id,stage:'quoted',applicantCount:2,applicants:[{nationality:'سوريا',documentType:'passport'},{nationality:'مصر',documentType:'passport'}]},messages:[],notes:[],media:media(customer.id),sendAttempts:[]});
  const context={document,location:{search:'?customer='+customers[0].id,origin:'https://example.test'},URL,URLSearchParams,Intl,Date,Map,Set,Number,String,Array,Object,JSON,AbortController,AbortSignal,crypto:require('node:crypto').webcrypto,structuredClone,confirm:()=>true,prompt:()=>null,setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,clearInterval(){},window:{addEventListener(){}},console,fetch:async(path,options={})=>{
   requests.push({path:String(path),options});const url=new URL(path,'https://example.test');let data={};
-  if(url.pathname.startsWith('/internal/assistant/synthetic-hybrid')&&hybridResponse)data=await hybridResponse({url,options});
+  if(url.pathname.startsWith('/internal/assistant/mofa-login-pilot')&&mofaResponse)data=await mofaResponse({url,options});
+  else if(url.pathname.startsWith('/internal/assistant/synthetic-hybrid')&&hybridResponse)data=await hybridResponse({url,options});
   else if(url.pathname==='/internal/assistant/status')data={};
   else if(url.pathname==='/internal/assistant/conversations')data={items:copy(customers)};
   else if(url.pathname.startsWith('/internal/assistant/raad/')){
@@ -67,6 +68,21 @@ test('synthetic hybrid UI uses the staff bearer header, reveals a safe private l
  assert.equal(reveals,1);const anchor=ui.nodes.get('hybrid-link').children[0];assert.equal(anchor.href,link);assert.equal(anchor.target,'_blank');assert.equal(anchor.rel,'noopener noreferrer');assert.equal(anchor.referrerPolicy,'no-referrer');
  const requests=ui.requests.filter(r=>r.path.includes('synthetic-hybrid'));assert.ok(requests.length>=4);assert.ok(requests.every(r=>r.options.headers.Authorization==='Bearer test-admin-key'));assert.ok(requests.every(r=>!r.path.includes('SYNTHETIC_CAPABILITY')));
  ui.nodes.get('logout').onclick();assert.equal(ui.nodes.get('hybrid-link').children.length,0);assert.equal(ui.nodes.get('key').value,'');
+});
+
+test('manual MOFA UI protects bearer link and explicitly leaves authentication unverified',async()=>{
+ const id='c'.repeat(32),link='https://production-lon.browserless.io/e/test/live/index.html?t=PRIVATE_CAPABILITY';let finished=false;
+ const ui=setup({mofaResponse:({url,options})=>{
+  if(url.pathname==='/internal/assistant/mofa-login-pilot')return options.method==='POST'?{id}:{enabled:true,configured:true};
+  if(url.pathname.endsWith('/link'))return{link};
+  if(url.pathname.endsWith('/cancel'))return{cancelling:true};
+  return finished?{id,state:'finished',result:{handoffCompleted:true,cleanupConfirmed:true,authenticated:false}}:{id,state:'ready'};
+ }});
+ await ui.login();ui.nodes.get('navigation').onclick({target:{closest:()=>({dataset:{view:'portals'}})}});await ui.settle();
+ assert.equal(ui.nodes.get('mofa-start').disabled,false);await ui.invoke(ui.nodes.get('mofa-start'));await ui.invoke(ui.nodes.get('mofa-refresh'));await ui.invoke(ui.nodes.get('mofa-reveal'));
+ const anchor=ui.nodes.get('mofa-link').children[0];assert.equal(anchor.href,link);assert.equal(anchor.rel,'noopener noreferrer');assert.equal(anchor.referrerPolicy,'no-referrer');
+ finished=true;await ui.invoke(ui.nodes.get('mofa-refresh'));assert.match(ui.nodes.get('mofa-state').textContent,/تسجيل الدخول غير متحقق/);assert.equal(ui.nodes.get('mofa-link').children.length,0);
+ const requests=ui.requests.filter(r=>r.path.includes('mofa-login-pilot'));assert.ok(requests.every(r=>r.options.headers.Authorization==='Bearer test-admin-key'));assert.ok(requests.every(r=>!r.path.includes('PRIVATE_CAPABILITY')));
 });
 
 test('neutral PDF previews never appear in document or residence-source selectors',async()=>{

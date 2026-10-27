@@ -26,7 +26,7 @@ function createHybridHandoffManager({env = process.env, run = runSyntheticHybrid
     if (job.expiresAt <= now() && !job.done) { job.link = null; job.controller.abort(); }
     if (job.done && job.result?.cleanupConfirmed === true && job.finishedAt + RESULT_RETENTION_MS <= now()) clear();
   }
-  const enabled = () => !disposed && env.RAAD_SYNTHETIC_HYBRID_ENABLED === 'true';
+  const enabled = () => !disposed && env.RAAD_SYNTHETIC_HYBRID_ENABLED === 'true' && env.RAAD_MOFA_LOGIN_PILOT_ENABLED !== 'true';
   const configuration = () => ({enabled:enabled(),configured:typeof env.BROWSERLESS_API_TOKEN==='string' && /^[\x21-\x7e]{1,4096}$/.test(env.BROWSERLESS_API_TOKEN)});
   function status(id) {
     prune();

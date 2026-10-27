@@ -47,3 +47,7 @@ test('disposing while an asynchronous runner is still active is terminal',async(
  let signal;const h=setup({runner:o=>{signal=o.signal;return new Promise(()=>{});}});h.req('POST',ROOT);await tick();h.manager.dispose();
  assert.equal(signal.aborted,true);assert.equal(h.req('POST',ROOT).status,404);assert.equal(h.req('GET',ROOT+'/'+ID).status,404);
 });
+test('synthetic pilot cannot start if the MOFA pilot is simultaneously enabled',()=>{
+ let runs=0;const h=setup({runner:()=>{runs++;}});h.env.RAAD_MOFA_LOGIN_PILOT_ENABLED='true';
+ assert.equal(h.req('GET',ROOT).body.enabled,false);assert.equal(h.req('POST',ROOT).status,404);assert.equal(runs,0);h.manager.dispose();
+});
