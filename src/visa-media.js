@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {validCustomer}=require('./conversation-journal');
 const {persistentMount}=require('./state-storage');
+const {safeOcrAdvisory}=require('./raad-ocr-advisory');
 const MAX_BYTES=10*1024*1024,RETENTION_MS=30*86400000;
 const MIME=new Map([['image/jpeg','jpg'],['image/png','png'],['image/webp','webp'],['application/pdf','pdf'],['audio/ogg','ogg'],['audio/mpeg','mp3'],['audio/mp4','m4a'],['audio/wav','wav'],['audio/x-wav','wav']]);
 const cleanMime=value=>typeof value==='string'?value.toLowerCase().split(';')[0].trim():'';
@@ -39,7 +40,7 @@ class VisaMediaStore{
   this.durable=Boolean(this.directory&&this.key&&(env.NODE_ENV!=='production'||persistentMount(store.file)));
   this.locks=new Map();this.epochs=new Map();
  }
- public(record){if(!record)return null;const prep=record.pdfPreparation;const safePrep=prep&&['queued','running','ready','failed','unsupported'].includes(prep.status)?{status:prep.status,...(typeof prep.reason==='string'&&/^[A-Z_]{1,60}$/.test(prep.reason)?{reason:prep.reason}:{})}:null;return{id:record.id,customer:record.customer,type:record.type,mimeType:record.mimeType,filename:record.filename,size:record.size,status:record.status,receivedAt:record.receivedAt,expiresAt:record.expiresAt,...(safePrep?{pdfPreparation:safePrep}:{}),...(record.purpose==='raad_portal_upload'?{purpose:record.purpose,needsVisualReview:true}:record.purpose==='raad_pdf_preview'?{purpose:record.purpose,page:record.page,needsVisualReview:true}:{})};}
+ public(record){if(!record)return null;const prep=record.pdfPreparation;const safePrep=prep&&['queued','running','ready','failed','unsupported'].includes(prep.status)?{status:prep.status,...(typeof prep.reason==='string'&&/^[A-Z_]{1,60}$/.test(prep.reason)?{reason:prep.reason}:{}),...(prep.status==='ready'&&prep.advisory?{advisory:safeOcrAdvisory(prep.advisory)}:{})}:null;return{id:record.id,customer:record.customer,type:record.type,mimeType:record.mimeType,filename:record.filename,size:record.size,status:record.status,receivedAt:record.receivedAt,expiresAt:record.expiresAt,...(safePrep?{pdfPreparation:safePrep}:{}),...(record.purpose==='raad_portal_upload'?{purpose:record.purpose,needsVisualReview:true}:record.purpose==='raad_pdf_preview'?{purpose:record.purpose,page:record.page,needsVisualReview:true}:{})};}
  list(customer){if(!validCustomer(customer))return[];return Object.values(this.records).filter(x=>x.customer===customer&&x.expiresAt>this.now()).sort((a,b)=>b.receivedAt-a.receivedAt).slice(0,50).map(x=>this.public(x));}
  get(id,{customer}={}){const r=this.records[id];if(typeof id!=='string'||!/^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(id)||typeof customer!=='string'||!validCustomer(customer)||!r||r.customer!==customer||r.expiresAt<=this.now())throw Error('MEDIA_NOT_FOUND');return this.public(r);}
  read(id,{customer}={}){

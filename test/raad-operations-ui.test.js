@@ -58,6 +58,12 @@ test('neutral PDF previews never appear in document or residence-source selector
  assert.match(ui.panel().textContent,/معاينة الصفحات جاهزة للتنزيل والمراجعة/);
 });
 
+test('OCR hint is tied to its file and does not automatically choose a page or rotation',async()=>{
+ const ui=setup({extraMedia:[{id:'pdf-source-12345678',filename:'document.pdf',status:'pending_review',pdfPreparation:{status:'ready',advisory:{status:'matched',page:2,rotation:90}}}]});await ui.login();
+ assert.match(ui.panel().textContent,/document\.pdf · 12345678 — اقتراح يحتاج مراجعة: الصفحة 2، التدوير 90 درجة/);
+ assert.equal(ui.role('pdf_page').value,'');assert.equal(ui.role('pdf_rotation').value,'');
+});
+
 test('Raad exposes preparation and manual portal checkpoints while requiring a staff claim for mutation',async()=>{
  const ui=setup({owned:false});await ui.login();assert.equal(ui.panel().hidden,false);assert.match(ui.panel().textContent,/رعد/);assert.match(ui.panel().textContent,/تجهيز ومراجعة — البوابة غير متصلة بعد/);assert.match(ui.panel().textContent,/CAPTCHA/);assert.match(ui.panel().textContent,/يدوي/);assert.ok(ui.requests.some(request=>request.path==='/internal/assistant/raad/971500000001?applicantIndex=0'));
  const before=raadPosts(ui).length;assert.equal(ui.action('prepare').disabled,true);await ui.invoke(ui.action('prepare'));assert.equal(raadPosts(ui).length,before);
