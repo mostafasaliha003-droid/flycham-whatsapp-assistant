@@ -34,6 +34,13 @@ inference from age, sex, companion or insurance price. A minor requires an
 explicit father/mother relationship and an already-issued guardian visa reference
 reviewed by staff; the reference is not checked against a government system.
 
+The second portal agreement personally asserts that the applicant has not been
+deported from Saudi Arabia or another GCC state and has not violated their rules.
+Raad therefore requires explicit `priorGccDeportation` and `priorGccRuleViolation`
+answers. Neither defaults to false. An affirmative answer keeps preparation in
+staff applicability review; it is not a finding of visa rejection, a ban or
+ineligibility. Saving or reviewing these facts does not accept the legal pledge.
+
 Abu Dhabi mission, UAE residence country, Egypt single/90-day versus other
 supported tourist multiple/365-day settings, air transport, King Khalid arrival
 and entry date +15 days are tentative office suggestions. The actual trip and
@@ -77,11 +84,19 @@ are not the total visa or insurance cost; platform fees are nonrefundable once
 paid. They also cover information processing and sharing with Saudi government
 authorities, and service, warranty and liability limitations.
 
-The consent boundary is clicking **I AGREE**. Explicit action-time approval for
-this concrete agreement is the next gate; it cannot authorize a later agreement
-that has not yet been read. No agreement was accepted, payment made or application
-created during this inspection. Application-form fields beyond the agreement
-remain unverified. Do not derive production selectors from a description or
+The consent boundary is clicking **I AGREE**. After the owner explicitly approved
+this concrete services agreement at action time on 27 October 2026, one acceptance
+click succeeded and reached `/SmartForm/ElectronicAgreement`. The second page has
+11 applicant declarations and an **Agree** link to `/SmartForm/TraditionalApp`.
+That second agreement has not been accepted. No payment was made and no applicant
+data was entered or application saved. Application-form fields remain unverified.
+Its full text was read in a separate authenticated run at the same second-page
+URL. It includes biometric consent, truthful-data and no-prior-deportation pledges,
+visitor-purpose and departure commitments, and acknowledgements of applicable
+rules and penalties. The actual form is still behind its **Agree** control.
+The first approval and a general instruction to accept future terms do not replace
+the separate approval required for another legal agreement or declarations about
+a particular applicant. Do not derive production selectors from a description or
 bypass authentication challenges.
 
 The profile's `signed_in_sites` metadata remained empty despite authenticated

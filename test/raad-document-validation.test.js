@@ -23,6 +23,7 @@ function applicant(overrides = {}) {
     sex: 'female', latinFirstName: 'Synthetic', latinFamilyName: 'Example', emiratesId: '784-0000-0000000-0',
     residenceExpiry: '2028-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false,
     performUmrah: false, saudiAddress: 'Synthetic address', entryDate: '2026-11-10', transport: 'air', arrivalPort: 'Synthetic airport', gccResident: true,
+    priorGccDeportation: false, priorGccRuleViolation: false,
     health: { hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false }, ...overrides,
   };
 }
@@ -98,7 +99,7 @@ test('complete adult applicant validates with truthful affirmative health answer
 });
 
 test('every required declaration must be an actual explicit boolean', () => {
-  for (const field of ['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident']) {
+  for (const field of ['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident', 'priorGccDeportation', 'priorGccRuleViolation']) {
     assert.equal(validateApplicant(applicant({ [field]: undefined }), { referenceDate }).issues.some(item => item.field === field && item.code === 'explicit_boolean_required'), true);
   }
   for (const field of ['hospitalizedOrEmergency', 'accidentDisability', 'congenitalCondition']) {
@@ -110,6 +111,17 @@ test('every required declaration must be an actual explicit boolean', () => {
   assert.equal(validateApplicant(applicant({ previousNationality: true }), { referenceDate }).ok, false);
   assert.equal(validateApplicant(applicant({ travelledLastFiveYears: true }), { referenceDate }).ok, false);
   assert.equal(validateApplicant(applicant({ previousNationality: true, previousNationalityDetails: 'Synthetic former nationality', travelledLastFiveYears: true, travelHistory: ['Synthetic visit'] }), { referenceDate }).ok, true);
+});
+
+test('affirmative GCC pledge answers require staff applicability review without an eligibility conclusion', () => {
+  for (const field of ['priorGccDeportation', 'priorGccRuleViolation']) {
+    const fields = applicant({ [field]: true });
+    const result = validateApplicant(fields, { referenceDate });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.issues, [{ field, code: 'APPLICANT_PLEDGE_REQUIRES_REVIEW', message: 'Staff must review the applicability of the applicant pledge before any portal action.' }]);
+    assert.equal(fields[field], true);
+    assert.equal(validateApplicant(applicant({ [field]: 'false' }), { referenceDate }).issues.some(item => item.field === field && item.code === 'explicit_boolean_required'), true);
+  }
 });
 
 test('calendar validity uses six and three calendar months with end-of-month clamping', () => {

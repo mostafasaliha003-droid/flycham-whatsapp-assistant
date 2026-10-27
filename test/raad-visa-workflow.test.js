@@ -29,7 +29,7 @@ function applicant(overrides = {}) {
     maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false,
     performUmrah: false, saudiAddress: 'Synthetic hotel, Synthetic Street',
     entryDate: '2026-11-20', transport: 'land', arrivalPort: 'Synthetic land port',
-    gccResident: true,
+    gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false,
     health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false},
     ...overrides
   };
@@ -78,7 +78,7 @@ test('get is read only and proposals do not invent applicant facts or actual tra
   assert.equal(summary.defaults.residenceCountryCode, 'ARE');
   assert.equal(summary.defaults.transport, 'air');
   assert.equal(summary.defaults.arrivalPort, 'مطار الملك خالد الدولي');
-  for (const key of ['entryDate', 'saudiAddress', 'health', 'maritalStatus', 'previousNationality', 'performUmrah', 'gccResident', 'applicationPhone', 'contactEmail']) assert.equal(Object.hasOwn(summary.defaults, key), false, key);
+  for (const key of ['entryDate', 'saudiAddress', 'health', 'maritalStatus', 'previousNationality', 'performUmrah', 'gccResident', 'priorGccDeportation', 'priorGccRuleViolation', 'applicationPhone', 'contactEmail']) assert.equal(Object.hasOwn(summary.defaults, key), false, key);
   assert.deepEqual(summary.portal, {connected: false, mode: 'preparation', reason: 'PORTAL_NOT_CONNECTED'});
   assert.equal(JSON.stringify(f.store.data), before);
   assert.equal(f.saves(), 0);
@@ -142,8 +142,10 @@ test('incomplete drafts save without invented negatives or configured contact va
   assert.equal(saved.fields.nationalityCode, 'SYR');
   assert.equal(saved.fields.latinFamilyName, undefined);
   assert.equal(saved.fields.previousNationality, undefined);
+  assert.equal(saved.fields.priorGccDeportation, undefined);
+  assert.equal(saved.fields.priorGccRuleViolation, undefined);
   assert.equal(saved.fields.health, undefined);
-  for (const field of ['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'birthDate', 'entryDate', 'transport', 'health.congenitalCondition', 'previousNationality', 'documents.passport', 'evidence.payment', 'evidence.documents']) assert.ok(saved.missing.includes(field), field);
+  for (const field of ['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'birthDate', 'entryDate', 'transport', 'health.congenitalCondition', 'previousNationality', 'priorGccDeportation', 'priorGccRuleViolation', 'documents.passport', 'evidence.payment', 'evidence.documents']) assert.ok(saved.missing.includes(field), field);
   assert.equal(review(f, saved).state, 'needs_information');
 });
 
@@ -198,6 +200,55 @@ test('a negative GCC residence declaration blocks this route, and flight suggest
   assert.equal(review(f, saved).state, 'needs_information');
   saved = f.workflow.prepare(CUSTOMER, {expectedRevision: 2, fields: {transport: 'air', arrivalPort: 'Confirmed synthetic airport'}, confirm: true});
   assert.equal(review(f, saved).state, 'needs_information');
+});
+
+test('GCC pledge facts require explicit declarations and are never inferred or accepted as legal consent', () => {
+  const f = fixture();
+  const fields = applicant();
+  delete fields.priorGccDeportation;
+  delete fields.priorGccRuleViolation;
+  const saved = prepare(f, {fields});
+  assert.equal(saved.state, 'needs_information');
+  for (const field of ['priorGccDeportation', 'priorGccRuleViolation']) {
+    assert.equal(Object.hasOwn(saved.fields, field), false);
+    assert.equal(Object.hasOwn(saved.defaults, field), false);
+    assert.ok(saved.missing.includes(field));
+    assert.ok(saved.issues.some(item => item.field === field && item.code === 'explicit_boolean_required'));
+    assert.throws(() => f.workflow.prepare(CUSTOMER, {expectedRevision: 1, fields: {[field]: 'false'}, confirm: true}), {code: 'RAAD_FIELDS_INVALID'});
+  }
+  assert.equal(review(f, saved).state, 'needs_information');
+  assert.equal(f.c.submissionStatus, 'not_submitted');
+  assert.equal(f.c.staffVerification.decision, undefined);
+  assert.equal(f.c.staffVerification.submission, undefined);
+  assert.doesNotMatch(JSON.stringify(f.store.data.raadApplications), /"(?:automaticAccept|legalConsent|pledgeAccepted)"/);
+});
+
+test('a true GCC declaration requires staff applicability review and invalidates previous draft review', () => {
+  for (const field of ['priorGccDeportation', 'priorGccRuleViolation']) {
+    const f = fixture();
+    const parent = structuredClone(f.c);
+    const ready = review(f, prepare(f));
+    assert.equal(ready.state, 'ready_for_portal_review');
+    const changed = f.workflow.prepare(CUSTOMER, {expectedRevision: ready.revision, fields: {[field]: true}, confirm: true});
+    assert.equal(changed.revision, 3);
+    assert.equal(changed.state, 'needs_information');
+    assert.equal(changed.fields[field], true);
+    assert.equal(changed.review.complete, false);
+    assert.deepEqual(changed.review.confirmedFields, []);
+    assert.ok(changed.reviewRequiredFields.includes('fields.' + field));
+    assert.ok(changed.issues.some(item => item.field === field && item.code === 'APPLICANT_PLEDGE_REQUIRES_REVIEW'));
+    assert.throws(() => review(f, ready), {code: 'RAAD_REVISION_CONFLICT'});
+    const reviewed = review(f, changed);
+    assert.equal(reviewed.state, 'needs_information');
+    assert.equal(reviewed.review.scope, 'staff_data_review');
+    assert.equal(reviewed.portal.connected, false);
+    assert.deepEqual(f.c, parent);
+    const corrected = f.workflow.prepare(CUSTOMER, {expectedRevision: reviewed.revision, fields: {[field]: false}, confirm: true});
+    assert.equal(corrected.state, 'draft');
+    assert.equal(corrected.review.complete, false);
+    assert.deepEqual(corrected.review.confirmedFields, []);
+    assert.equal(review(f, corrected).state, 'ready_for_portal_review');
+  }
 });
 
 test('Umrah, travel documents, suspended and unknown products cannot be coerced into tourist drafts', () => {

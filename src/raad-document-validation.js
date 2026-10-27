@@ -160,8 +160,11 @@ function validateApplicant(fields, { referenceDate = today() } = {}) {
   if (requiredText('maritalStatus') && !['single', 'married', 'divorced', 'widowed', 'widow', 'separated'].includes(fields.maritalStatus.toLowerCase())) issues.push(issue('maritalStatus', 'invalid_marital_status', 'Confirm the applicant marital status.'));
   if (requiredText('emiratesId') && !/^784\d{12}$/.test(fields.emiratesId.replace(/[ -]/g, ''))) issues.push(issue('emiratesId', 'invalid_emirates_id', 'The Emirates ID must be 784 followed by twelve digits; only spaces and hyphens may separate digits.'));
   if (requiredText('transport') && !['air', 'land', 'sea'].includes(fields.transport)) issues.push(issue('transport', 'invalid_transport', 'Choose air, land, or sea.'));
-  for (const field of ['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident']) {
+  for (const field of ['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident', 'priorGccDeportation', 'priorGccRuleViolation']) {
     if (typeof fields[field] !== 'boolean') issues.push(issue(field, 'explicit_boolean_required', 'An explicit true or false answer is required.'));
+  }
+  for (const field of ['priorGccDeportation', 'priorGccRuleViolation']) {
+    if (fields[field] === true) issues.push(issue(field, 'APPLICANT_PLEDGE_REQUIRES_REVIEW', 'Staff must review the applicability of the applicant pledge before any portal action.'));
   }
   const hasDetails = value => hasText(value) || (Array.isArray(value) && value.length > 0 && value.every(item => hasText(item) || (item && typeof item === 'object' && !Array.isArray(item) && Object.values(item).some(hasText))));
   for (const [answer, details] of [['previousNationality', 'previousNationalityDetails'], ['travelledLastFiveYears', 'travelHistory']]) {
