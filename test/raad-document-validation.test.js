@@ -138,6 +138,15 @@ test('affirmative GCC pledge answers require staff applicability review without 
   }
 });
 
+test('Saudi ban question does not replace the separate GCC deportation declaration', () => {
+  for (const value of ['false', true]) {
+    const result = validateApplicant(applicant({saudiDeportationOrEntryBan:value, priorGccDeportation:undefined}), {referenceDate});
+    assert.ok(result.issues.some(item=>item.field==='priorGccDeportation' && item.code==='explicit_boolean_required'));
+    assert.ok(result.issues.some(item=>item.field==='saudiDeportationOrEntryBan' && item.code===(value===true?'APPLICANT_PLEDGE_REQUIRES_REVIEW':'explicit_boolean_required')));
+  }
+  assert.equal(validateApplicant(applicant({saudiDeportationOrEntryBan:false}), {referenceDate}).ok, true);
+});
+
 test('calendar validity uses six and three calendar months with end-of-month clamping', () => {
   const options = { referenceDate: '2026-01-31' };
   const fields = applicant({ entryDate: '2026-03-31', expiryDate: '2026-09-30', residenceExpiry: '2026-04-30' });

@@ -9,7 +9,7 @@ const {guardMessage}=require('../src/raad-questionnaire-inbound-guard');
 function fixture(){
  const customer='971500000001', token='a'.repeat(32),visaCase={id:'case-test',policyVersion:'p',applicantCount:1,applicants:[{nationality:'SYR'}],quote:{total:700},documents:[],paymentStatus:'verified'};
  const sig=visaCaseSignature(visaCase);visaCase.staffVerification={payment:{caseSignature:sig,amount:700}};
- const draft={jobId:'draft-test',revision:3,state:'draft',caseId:visaCase.id,caseSignature:sig,applicantIndex:0,fields:{maritalStatus:'single',previousNationality:false,travelledLastFiveYears:false,performUmrah:false}};
+ const draft={jobId:'draft-test',revision:3,state:'draft',caseId:visaCase.id,caseSignature:sig,applicantIndex:0,fields:{saudiDeportationOrEntryBan:false,priorGccDeportation:false,maritalStatus:'single',previousNationality:false,travelledLastFiveYears:false,performUmrah:false}};
  const choices=postPaymentQuestion({visaCase,draft,applicantIndex:0}).question.choices;
  const choicesDigest=createHash('sha256').update(JSON.stringify(choices)).digest('hex');
  const session={customer,state:'awaiting_reply',token,caseId:visaCase.id,caseSignature:sig,jobId:draft.jobId,revision:3,applicantIndex:0,questionKey:'health.hospitalizedOrEmergency',questionMessageId:'wamid.question',choicesDigest,expiresAt:1000};
@@ -34,6 +34,15 @@ test('uncertain is not a health fact and the committer can record a stale race s
  assert.equal(record.kind,'needs_private_review');assert.equal(record.value,'unsure');
  assert.equal(record.caseSignature,x.session.caseSignature);assert.equal(record.token,x.session.token);assert.equal(record.questionMessageId,x.session.questionMessageId);
  assert.deepEqual(await guardMessage({...x,commit:async()=> 'stale_recorded'}),{action:'quarantined',duplicate:false});
+});
+test('positive Saudi entry-ban answer is routed to private review rather than inferred as deportation',async()=>{
+ const x=fixture(); delete x.draft.fields.saudiDeportationOrEntryBan;
+ x.session.questionKey='saudiDeportationOrEntryBan';
+ const question=postPaymentQuestion({visaCase:x.visaCase,draft:x.draft,applicantIndex:0}).question;
+ x.session.choicesDigest=createHash('sha256').update(JSON.stringify(question.choices)).digest('hex');
+ let record;const result=await guardMessage({...x,commit:async value=>{record=value;return 'saved';}});
+ assert.equal(result.action,'accepted');assert.equal(record.kind,'needs_private_review');assert.equal(record.questionKey,'saudiDeportationOrEntryBan');assert.equal(record.value,'yes');
+ assert.equal(Object.hasOwn(record,'priorGccDeportation'),false);
 });
 test('stale, mismatched, unpaid and out-of-context replies are quarantined without their contents',async()=>{
  for(const change of [x=>x.message.context.id='wamid.other',x=>x.message.interactive.button_reply.id='rq1:'+'b'.repeat(32)+':0',x=>x.now=1000,x=>x.draft.revision++,x=>x.visaCase.paymentStatus='unverified',x=>x.visaCase.applicants[0].nationality='EGY',x=>x.session.applicantIndex=1,x=>x.session.questionKey='health.accidentDisability',x=>x.session.choicesDigest='0'.repeat(64)]){

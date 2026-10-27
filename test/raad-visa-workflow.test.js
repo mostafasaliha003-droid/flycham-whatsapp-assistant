@@ -211,6 +211,7 @@ test('incomplete drafts save without invented negatives or configured contact va
   assert.equal(saved.fields.nationalityCode, 'SYR');
   assert.equal(saved.fields.latinFamilyName, undefined);
   assert.equal(saved.fields.previousNationality, undefined);
+  assert.equal(saved.fields.saudiDeportationOrEntryBan, undefined);
   assert.equal(saved.fields.priorGccDeportation, undefined);
   assert.equal(saved.fields.priorGccRuleViolation, undefined);
   assert.equal(saved.fields.health, undefined);

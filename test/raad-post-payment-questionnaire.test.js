@@ -15,9 +15,9 @@ function fixture() {
 test('only the bound applicant with a current, verified paid case receives a proposal', () => {
   const x=fixture(), before=structuredClone(x);
   const q=postPaymentQuestion(x);
-  assert.equal(q.status,'question'); assert.equal(q.question.key,'maritalStatus');
-  assert.ok(q.question.choices.some(c=>c.value==='widowed'));
-  assert.ok(q.question.choices.some(c=>c.value==='other'));
+  assert.equal(q.status,'question'); assert.equal(q.question.key,'saudiDeportationOrEntryBan');
+  assert.equal(q.question.prompt,'هل سبق ترحيلك أو حرمانك من دخول السعودية؟');
+  assert.deepEqual(q.question.choices.map(c=>c.label),['نعم','لا']);
   assert.deepEqual(x,before);
   x.visaCase.paymentStatus='awaiting_verification'; assert.equal(postPaymentQuestion(x).status,'payment_or_case_not_verified');
   x.visaCase.paymentStatus='verified'; x.visaCase.staffVerification.payment.amount=1399; assert.equal(postPaymentQuestion(x).status,'payment_or_case_not_verified');
@@ -33,6 +33,10 @@ test('a mismatched or unconfirmed applicant and an amended or submitted case nev
 });
 test('explicit true and false answers advance without inferred facts; affirmative details are requested', () => {
   const x=fixture(), f=x.draft.fields;
+  f.saudiDeportationOrEntryBan=false;
+  assert.equal(postPaymentQuestion(x).question.key,'priorGccDeportation');
+  f.priorGccDeportation=false;
+  assert.equal(postPaymentQuestion(x).question.key,'maritalStatus');
   f.maritalStatus='married'; assert.equal(postPaymentQuestion(x).question.key,'previousNationality');
   f.previousNationality=true; assert.equal(postPaymentQuestion(x).question.key,'previousNationalityDetails');
   f.previousNationalityDetails='Synthetic'; assert.equal(postPaymentQuestion(x).question.key,'travelledLastFiveYears');
@@ -43,9 +47,22 @@ test('explicit true and false answers advance without inferred facts; affirmativ
   assert.deepEqual(postPaymentQuestion(x),{status:'questions_complete'});
 });
 test('ambiguous and stringified answers never count as yes or no', () => {
-  const x=fixture();x.draft.fields={maritalStatus:'other'};
+  const x=fixture();x.draft.fields={saudiDeportationOrEntryBan:false,priorGccDeportation:false,maritalStatus:'other'};
   assert.equal(postPaymentQuestion(x).question.key,'maritalStatus');
-  x.draft.fields={maritalStatus:'single',previousNationality:'false'};
+  x.draft.fields={saudiDeportationOrEntryBan:false,priorGccDeportation:false,maritalStatus:'single',previousNationality:'false'};
   const q=postPaymentQuestion(x);assert.equal(q.question.key,'previousNationality');
   assert.ok(q.question.choices.some(c=>c.value==='unsure'));
+});
+test('Saudi ban/deportation and GCC deportation require independent evidence, and positive answers stop for review', () => {
+  const x=fixture(), f=x.draft.fields;
+  f.saudiDeportationOrEntryBan='false';
+  assert.equal(postPaymentQuestion(x).question.key,'saudiDeportationOrEntryBan');
+  f.saudiDeportationOrEntryBan=true;
+  assert.deepEqual(postPaymentQuestion(x),{status:'staff_review_required'});
+  f.saudiDeportationOrEntryBan=false;
+  assert.equal(postPaymentQuestion(x).question.key,'priorGccDeportation');
+  f.priorGccDeportation=true;
+  assert.deepEqual(postPaymentQuestion(x),{status:'staff_review_required'});
+  f.priorGccDeportation=false;
+  assert.equal(postPaymentQuestion(x).question.key,'maritalStatus');
 });

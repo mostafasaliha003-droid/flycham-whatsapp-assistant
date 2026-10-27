@@ -166,6 +166,10 @@ function validateApplicant(fields, { referenceDate = today() } = {}) {
   for (const field of ['priorGccDeportation', 'priorGccRuleViolation']) {
     if (fields[field] === true) issues.push(issue(field, 'APPLICANT_PLEDGE_REQUIRES_REVIEW', 'Staff must review the applicability of the applicant pledge before any portal action.'));
   }
+  if (Object.hasOwn(fields, 'saudiDeportationOrEntryBan')) {
+    if (typeof fields.saudiDeportationOrEntryBan !== 'boolean') issues.push(issue('saudiDeportationOrEntryBan', 'explicit_boolean_required', 'An explicit true or false answer is required.'));
+    else if (fields.saudiDeportationOrEntryBan) issues.push(issue('saudiDeportationOrEntryBan', 'APPLICANT_PLEDGE_REQUIRES_REVIEW', 'Staff must review the applicant statement before any portal action.'));
+  }
   const hasDetails = value => hasText(value) || (Array.isArray(value) && value.length > 0 && value.every(item => hasText(item) || (item && typeof item === 'object' && !Array.isArray(item) && Object.values(item).some(hasText))));
   for (const [answer, details] of [['previousNationality', 'previousNationalityDetails'], ['travelledLastFiveYears', 'travelHistory']]) {
     if (fields[answer] === true && !hasDetails(fields[details])) issues.push(issue(details, 'required', 'Details are required for an affirmative answer.'));

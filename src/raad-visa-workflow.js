@@ -16,12 +16,12 @@ const FIELD_ALLOWLIST = Object.freeze([
   'maritalStatus', 'previousNationality', 'previousNationalityDetails',
   'travelledLastFiveYears', 'travelHistory', 'performUmrah', 'saudiAddress',
   'entryDate', 'transport', 'arrivalPort', 'gccResident', 'health', 'guardian',
-  'priorGccDeportation', 'priorGccRuleViolation',
+  'saudiDeportationOrEntryBan', 'priorGccDeportation', 'priorGccRuleViolation',
   'mission', 'residenceCountryCode', 'visitPurpose', 'entries', 'visaValidityDays',
   'applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'city', 'postOfficeBox'
 ]);
 const FIELD_SET = new Set(FIELD_ALLOWLIST);
-const BOOLEAN_FIELDS = new Set(['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident', 'priorGccDeportation', 'priorGccRuleViolation']);
+const BOOLEAN_FIELDS = new Set(['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident', 'saudiDeportationOrEntryBan', 'priorGccDeportation', 'priorGccRuleViolation']);
 const HEALTH_FIELDS = Object.freeze(['hospitalizedOrEmergency', 'accidentDisability', 'congenitalCondition']);
 const GUARDIAN_FIELDS = Object.freeze(['relationship', 'visaReference', 'status']);
 const DOCUMENT_KINDS = Object.freeze(['passport', 'residence', 'photo']);

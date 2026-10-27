@@ -9,7 +9,16 @@ const YES_NO = Object.freeze([
   {value: 'no', label: 'لا'},
   {value: 'unsure', label: 'غير متأكد'}
 ]);
+// A Saudi ban is not equivalent to deportation, and a Saudi-only answer does
+// not establish whether the applicant was deported from another GCC country.
+// Keep these facts separate and never infer one from the other.
+const SAUDI_CHOICES = Object.freeze([
+  {value: 'yes', label: 'نعم'},
+  {value: 'no', label: 'لا'}
+]);
 const QUESTIONS = Object.freeze([
+  {key: 'saudiDeportationOrEntryBan', prompt: 'هل سبق ترحيلك أو حرمانك من دخول السعودية؟', choices: SAUDI_CHOICES},
+  {key: 'priorGccDeportation', prompt: 'هل سبق ترحيلك من السعودية أو أي دولة خليجية أخرى؟', choices: YES_NO},
   {key: 'maritalStatus', prompt: 'ما هي حالتك الاجتماعية الحالية؟', choices: [
     {value: 'single', label: 'أعزب أو عزباء'},
     {value: 'married', label: 'متزوج أو متزوجة'},
@@ -57,6 +66,11 @@ function postPaymentQuestion({visaCase, draft, applicantIndex} = {}) {
     const value = answer(fields, item.key);
     if (item.key === 'maritalStatus' ? !HAS_TEXT(value) || !STATUSES.has(value.toLowerCase()) : !BOOLEAN(value)) {
       return {status: 'question', question: {key: item.key, prompt: item.prompt, choices: item.choices.map(x => ({...x}))}};
+    }
+    if (['saudiDeportationOrEntryBan', 'priorGccDeportation'].includes(item.key) && value === true) {
+      // An affirmative answer is not a denial or an eligibility conclusion.
+      // A person must resolve the declaration and applicable process.
+      return {status: 'staff_review_required'};
     }
     if (item.key === 'previousNationality' && value && !HAS_TEXT(fields.previousNationalityDetails)) {
       return {status: 'question', question: {key: 'previousNationalityDetails', prompt: 'ما جنسيتك السابقة؟', choices: []}};

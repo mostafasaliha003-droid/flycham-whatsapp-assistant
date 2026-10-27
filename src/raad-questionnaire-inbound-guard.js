@@ -42,11 +42,12 @@ function classify(message, session, visaCase, draft, now = Date.now()) {
   const value = proposed.question.choices[Number(match[2])]?.value;
   if (typeof value !== 'string') return hidden;
   // The answer remains in memory until passed to the injected atomic store.
+  const requiresReview=['unsure','other'].includes(value) || value==='yes' && ['saudiDeportationOrEntryBan','priorGccDeportation'].includes(session.questionKey);
   return {action:'accept',answer:{messageId:message.id,customer:message.from,
     caseId:session.caseId,caseSignature:session.caseSignature,applicantIndex:session.applicantIndex,jobId:session.jobId,
     revision:session.revision,questionKey:session.questionKey,questionMessageId:session.questionMessageId,choicesDigest,
     token:session.token,expiresAt:session.expiresAt,
-    kind:['unsure','other'].includes(value)?'needs_private_review':'answer',value}};
+    kind:requiresReview?'needs_private_review':'answer',value}};
 }
 
 async function guardMessage({message, session, visaCase, draft, now, encryptedDurable, commit} = {}) {

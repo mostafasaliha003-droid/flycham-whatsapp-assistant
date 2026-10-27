@@ -75,7 +75,7 @@ test('post-payment question preview requires staff ownership, current revision, 
   assert.equal(r.status,200);assert.equal(r.body.status,'payment_or_case_not_verified');
   c.paymentStatus='verified';c.staffVerification={payment:{amount:700,caseSignature:signature}};
   r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:4}});
-  assert.equal(r.body.status,'question');assert.equal(r.body.question.key,'maritalStatus');
+  assert.equal(r.body.status,'question');assert.equal(r.body.question.key,'saudiDeportationOrEntryBan');
   assert.equal(f.calls.prepare.length+f.calls.review.length+f.calls.storeDerived.length,0);
   r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:3}});assert.equal(r.status,409);
   f.inbox.owned=false;r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:4}});assert.equal(r.status,409);
