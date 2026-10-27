@@ -9,16 +9,16 @@ const TTL=12*60*1000;
 function createPilot({env=process.env,launch,now=Date.now}={}) {
  const key=env.RAAD_PILOT_KEY||'',origin=env.RAAD_PILOT_ORIGIN||'';
  if(key.length<43||!/^https:\/\/[^/]+$/.test(origin))throw Error('PILOT_CONFIGURATION_REQUIRED');
- let job=null,busy=false,shutting=false,starts=[];
+ let job=null,busy=false,shutting=false,starts=[],lastOutcome=null;
  const equal=value=>{const b=Buffer.from(value||''),a=Buffer.from('Bearer '+key);return a.length===b.length&&crypto.timingSafeEqual(a,b);};
  const headers={'Cache-Control':'no-store, private','Pragma':'no-cache','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"};
  function reply(res,status,value,type='application/json'){res.writeHead(status,{...headers,'Content-Type':type});res.end(type==='application/json'?JSON.stringify(value):value);}
  async function boundedClose(browser){let timer;try{return await Promise.race([browser.close().then(()=>true),new Promise(resolve=>{timer=setTimeout(()=>resolve(false),5000);})]);}catch{return false;}finally{clearTimeout(timer);}}
- async function close(){const old=job;if(!old)return true;old.stage='closing';clearTimeout(old.timer);try{if(!await boundedClose(old.browser))throw Error('CLEANUP_UNCONFIRMED');if(job===old)job=null;return true;}catch{old.stage='cleanup_unconfirmed';return false;}}
+ async function close(){const old=job;if(!old)return true;if(old.stage!=='closing'&&old.stage!=='cleanup_unconfirmed')lastOutcome=old.stage;old.stage='closing';clearTimeout(old.timer);try{if(!await boundedClose(old.browser))throw Error('CLEANUP_UNCONFIRMED');if(job===old)job=null;return true;}catch{old.stage='cleanup_unconfirmed';return false;}}
  function requireJob(id){if(!job||id!==job.id||job.expires<=now())throw Error('SESSION_UNAVAILABLE');return job;}
  async function guard(j){if(j!==job||j.expires<=now()||!j.browser.isConnected()||j.page.isClosed()||new URL(j.page.url()).origin!=='https://visa.mofa.gov.sa')throw Error('SESSION_UNAVAILABLE');}
  async function body(req){if(req.headers['content-type']!=='application/json')throw Error('INPUT_INVALID');let size=0,parts=[];for await(const p of req){size+=p.length;if(size>2048)throw Error('INPUT_INVALID');parts.push(p);}const value=JSON.parse(Buffer.concat(parts).toString('utf8'));parts=[];return value;}
- async function start(){if(job&&!await close())throw Error('CLEANUP_REQUIRED');starts=starts.filter(t=>t>now()-600000);if(starts.length>=3)throw Error('START_LIMIT');starts.push(now());
+ async function start(){if(job)throw Error('SESSION_EXISTS');starts=starts.filter(t=>t>now()-600000);if(starts.length>=3)throw Error('START_LIMIT');starts.push(now());
   const browser=await launch({headless:true,args:['--no-sandbox']});
   const j={id:crypto.randomBytes(24).toString('hex'),browser,page:null,stage:'starting',expires:now()+TTL};job=j;
   j.timer=setTimeout(()=>{void close();},TTL);j.timer.unref?.();
@@ -36,14 +36,15 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(req.method==='GET'&&url.pathname==='/health'){reply(res,200,{ready:!shutting});return;}
   if(req.method==='GET'&&staticAssets[url.pathname]){const [content,type]=staticAssets[url.pathname];reply(res,200,content,type);return;}
-  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close'];
+  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current'];
   if(!allowed.includes(url.pathname)){reply(res,404,{error:'NOT_FOUND'});return;}
   if(!equal(req.headers.authorization)){reply(res,401,{error:'UNAUTHORIZED'});return;}
   if(env.RAAD_DIRECT_LOGIN_ENABLED!=='true'||shutting){reply(res,503,{error:'DISABLED'});return;}
   if(req.method!=='POST'||req.headers.origin!==origin){reply(res,403,{error:'FORBIDDEN'});return;}
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
-   if(url.pathname==='/api/start'){reply(res,200,await start());}
+   if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,expiresAt:job.expires});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
