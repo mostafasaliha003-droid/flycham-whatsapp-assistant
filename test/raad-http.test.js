@@ -371,6 +371,12 @@ test('image preparation rechecks staff ownership after conversion before saving'
   assert.equal((await f.call({body: {action: 'prepare_image', confirm: true, kind: 'photo', sourceIds: ['missing']}})).body.error, 'MEDIA_NOT_FOUND');
 });
 
+test('neutral auto previews cannot be wrapped as portal upload derivatives',async()=>{
+ const f=fixture();f.mediaStore.read=()=>({bytes:Buffer.from('preview'),metadata:{mimeType:'image/png',purpose:'raad_pdf_preview'}});
+ const result=await f.call({body:{action:'prepare_image',confirm:true,kind:'passport',sourceIds:['neutral-preview']}});
+ assert.equal(result.status,422);assert.equal(result.body.error,'RAAD_DOCUMENT_PREVIEW_ONLY');assert.equal(f.calls.storeDerived.length,0);
+});
+
 test('owned image conversion saves only a review-required derivative with this customer and source', async () => {
   const sharp = require('sharp');
   const bytes = await sharp({create: {width: 1000, height: 650, channels: 3, background: '#557799'}}).png().toBuffer();

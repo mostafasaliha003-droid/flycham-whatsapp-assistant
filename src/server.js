@@ -3,6 +3,7 @@ const {aiStatus}=require('./assistant-nlu');
 const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding}=require('./saudi-visa-nlu');
 const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
+const {VisaPdfAutoPreparer}=require('./visa-pdf-auto');
 const {RaadVisaWorkflow}=require('./raad-visa-workflow');
 const {handleRaadRequest}=require('./raad-http');
 const {RaadTinyFishProfile}=require('./raad-tinyfish-profile');
@@ -53,6 +54,9 @@ for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCu
 const portalMonitor=new PortalMonitor();
 const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
+const visaPdfAuto=new VisaPdfAutoPreparer({media:visaMedia,store:assistant.store,report:code=>console.log(code)});
+if(visaEnabled())visaPdfAuto.start();
+async function receiveVisaMedia(customer,message){const result=await visaMedia.receive(customer,message);if(result.ok&&result.media?.mimeType==='application/pdf'){try{visaPdfAuto.enqueue(customer,result.media.id);}catch{console.log('PDF_AUTO_ENQUEUE_FAILED');}}return result;}
 const raad=new RaadVisaWorkflow({store:assistant.store,mediaStore:visaMedia,env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
 const raadProvider=new RaadTinyFishProfile({env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
@@ -154,7 +158,7 @@ async function processCustomerMessages(sender,messages){
   if(!messages.length){const next=assistant.beginNextRequest(sender);if(!next)return;messages=[{text:next.text,timestamp:Math.floor(Date.now()/1000)}];}
   messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);
   let text=messages.map(m=>m.text).join('، ');
-  if(inbox.isHumanOwned(sender)){if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await visaMedia.receive(sender,m);return;}
+  if(inbox.isHumanOwned(sender)){if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await receiveVisaMedia(sender,m);return;}
   const turnRevision=incomingRevision(assistant.store,sender);
   const flightState=assistant.state(sender);
   const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
@@ -166,7 +170,7 @@ async function processCustomerMessages(sender,messages){
     }
     if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
     const attachments=messages.filter(m=>m.media),mediaReplies=[];
-    for(const m of attachments){const result=await visaMedia.receive(sender,m);mediaReplies.push(result.reply);}
+    for(const m of attachments){const result=await receiveVisaMedia(sender,m);mediaReplies.push(result.reply);}
     const result=await visa.handle(sender,text,{messages});
     if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}

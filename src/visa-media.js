@@ -39,7 +39,7 @@ class VisaMediaStore{
   this.durable=Boolean(this.directory&&this.key&&(env.NODE_ENV!=='production'||persistentMount(store.file)));
   this.locks=new Map();this.epochs=new Map();
  }
- public(record){if(!record)return null;return{id:record.id,customer:record.customer,type:record.type,mimeType:record.mimeType,filename:record.filename,size:record.size,status:record.status,receivedAt:record.receivedAt,expiresAt:record.expiresAt,...(record.purpose==='raad_portal_upload'?{purpose:record.purpose,needsVisualReview:true}:{})};}
+ public(record){if(!record)return null;const prep=record.pdfPreparation;const safePrep=prep&&['queued','running','ready','failed','unsupported'].includes(prep.status)?{status:prep.status,...(typeof prep.reason==='string'&&/^[A-Z_]{1,60}$/.test(prep.reason)?{reason:prep.reason}:{})}:null;return{id:record.id,customer:record.customer,type:record.type,mimeType:record.mimeType,filename:record.filename,size:record.size,status:record.status,receivedAt:record.receivedAt,expiresAt:record.expiresAt,...(safePrep?{pdfPreparation:safePrep}:{}),...(record.purpose==='raad_portal_upload'?{purpose:record.purpose,needsVisualReview:true}:record.purpose==='raad_pdf_preview'?{purpose:record.purpose,page:record.page,needsVisualReview:true}:{})};}
  list(customer){if(!validCustomer(customer))return[];return Object.values(this.records).filter(x=>x.customer===customer&&x.expiresAt>this.now()).sort((a,b)=>b.receivedAt-a.receivedAt).slice(0,50).map(x=>this.public(x));}
  get(id,{customer}={}){const r=this.records[id];if(typeof id!=='string'||!/^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(id)||typeof customer!=='string'||!validCustomer(customer)||!r||r.customer!==customer||r.expiresAt<=this.now())throw Error('MEDIA_NOT_FOUND');return this.public(r);}
  read(id,{customer}={}){
@@ -58,6 +58,20 @@ class VisaMediaStore{
   const duplicate=Object.values(this.records).find(r=>r.customer===customer&&r.purpose==='raad_portal_upload'&&r.kind===kind&&r.checksum===checksum&&r.expiresAt>this.now()&&JSON.stringify(r.sourceIds)===JSON.stringify(sourceIds));if(duplicate)return this.public(duplicate);
   if(this.list(customer).length>=50||Object.keys(this.records).length>=500)throw Error('MEDIA_CAPACITY_REACHED');
   const id=crypto.randomUUID(),receivedAt=this.now(),record={id,customer,type:'image',mimeType,filename:'raad-'+kind+'.'+MIME.get(mimeType),size:bytes.length,checksum,status:'pending_review',purpose:'raad_portal_upload',kind,sourceIds:[...sourceIds],receivedAt,expiresAt:Math.min(receivedAt+RETENTION_MS,...sources.map(s=>s.expiresAt))};
+  fs.mkdirSync(this.directory,{recursive:true,mode:0o700});const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',this.key,iv);cipher.setAAD(Buffer.from(id+':'+customer));const encrypted=Buffer.concat([cipher.update(bytes),cipher.final()]),target=path.join(this.directory,id+'.enc');
+  fs.writeFileSync(target,Buffer.concat([iv,cipher.getAuthTag(),encrypted]),{mode:0o600,flag:'wx',flush:true});this.records[id]=record;
+  try{this.store.save();}catch{delete this.records[id];try{fs.unlinkSync(target);}catch{}throw Error('MEDIA_STORAGE_UNAVAILABLE');}return this.public(record);
+ }
+ storePdfPreview(customer,{sourceId,page,bytes,mimeType}={}){
+  if(!validCustomer(customer)||!this.durable)throw Error('MEDIA_STORAGE_UNAVAILABLE');
+  if(!Number.isInteger(page)||page<1||page>2)throw Error('MEDIA_INVALID');
+  const source=this.get(sourceId,{customer});
+  if(source.mimeType!=='application/pdf'||source.type!=='document'||source.purpose)throw Error('MEDIA_INVALID');
+  if(!['image/jpeg','image/png'].includes(mimeType)||!Buffer.isBuffer(bytes)||bytes.length>1000000)throw Error('MEDIA_CONTENT_INVALID');
+  validateBytes(bytes,mimeType);const checksum=crypto.createHash('sha256').update(bytes).digest('hex');
+  const duplicate=Object.values(this.records).find(r=>r.customer===customer&&r.purpose==='raad_pdf_preview'&&r.sourceIds?.length===1&&r.sourceIds[0]===sourceId&&r.page===page&&r.checksum===checksum&&r.expiresAt>this.now());if(duplicate){try{this.read(duplicate.id,{customer});}catch{throw Error('MEDIA_CONTENT_INVALID');}return this.public(duplicate);}
+  if(this.list(customer).length>=50||Object.keys(this.records).length>=500)throw Error('MEDIA_CAPACITY_REACHED');
+  const id=crypto.randomUUID(),receivedAt=this.now(),record={id,customer,type:'image',mimeType,filename:'raad-pdf-page-'+page+'.'+MIME.get(mimeType),size:bytes.length,checksum,status:'pending_review',purpose:'raad_pdf_preview',page,sourceIds:[sourceId],receivedAt,expiresAt:Math.min(receivedAt+RETENTION_MS,source.expiresAt)};
   fs.mkdirSync(this.directory,{recursive:true,mode:0o700});const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',this.key,iv);cipher.setAAD(Buffer.from(id+':'+customer));const encrypted=Buffer.concat([cipher.update(bytes),cipher.final()]),target=path.join(this.directory,id+'.enc');
   fs.writeFileSync(target,Buffer.concat([iv,cipher.getAuthTag(),encrypted]),{mode:0o600,flag:'wx',flush:true});this.records[id]=record;
   try{this.store.save();}catch{delete this.records[id];try{fs.unlinkSync(target);}catch{}throw Error('MEDIA_STORAGE_UNAVAILABLE');}return this.public(record);

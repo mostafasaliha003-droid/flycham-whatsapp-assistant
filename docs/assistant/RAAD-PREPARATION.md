@@ -28,6 +28,13 @@ proof of eligibility.
    can be combined. Multi-page passports require an explicitly selected data
    page; staff can select rotation. No automatic OCR or orientation detection is
    implied. This uses pdfinfo and pdftoppm and retains the original source.
+   Newly received Saudi-visa PDFs of at most two pages are also converted in a
+   bounded background worker to encrypted neutral page previews. These are
+   linked to the original and need visual review; they are not application
+   documents and cannot be bound or re-prepared as such. Staff select the
+   original PDF, data page and rotation when preparing the final derivative.
+   Larger PDFs show an unsupported status. Queued work recovers after restart,
+   shares a single conversion lock, and rechecks source ownership and expiry.
 5. Save the draft and resolve all issues. Current original-case payment and
    document evidence must be verified, and exact selected files are reviewed
    separately for Raad. Their content hashes and expiry invalidate stale review.

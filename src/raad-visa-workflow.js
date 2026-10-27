@@ -185,6 +185,7 @@ class RaadVisaWorkflow {
       const snapshot = {mediaId: id, mimeType: metadata.mimeType, size: metadata.size, status: metadata.status || null, receivedAt: metadata.receivedAt ?? null, expiresAt: metadata.expiresAt ?? null};
       const details = {};
       for (const name of ['purpose', 'sourceIds', 'needsVisualReview', 'width', 'height']) if (metadata[name] !== undefined || record?.[name] !== undefined) details[name] = metadata[name] ?? record[name];
+      if (details.purpose === 'raad_pdf_preview') snapshot.purpose = 'raad_pdf_preview';
       return {...snapshot, fingerprint: hash({...snapshot, digest, details})};
     } catch { return null; }
   }
@@ -197,6 +198,7 @@ class RaadVisaWorkflow {
       const metadata = this.observeDocument(saved.mediaId, context);
       if (!metadata || metadata.expiresAt !== null && metadata.expiresAt <= this.now()) { issues.push(issue(field, 'DOCUMENT_UNAVAILABLE', 'The selected document is unavailable.')); continue; }
       current[kind] = metadata;
+      if (metadata.purpose === 'raad_pdf_preview') issues.push(issue(field, 'DOCUMENT_PREVIEW_ONLY', 'A neutral preview cannot be used as an application document. Prepare and review the appropriate document first.'));
       if (ids.has(metadata.mediaId)) issues.push(issue(field, 'DOCUMENT_REUSED', 'Select a separate document for each document type.'));
       ids.add(metadata.mediaId);
       if (!['image/jpeg', 'image/png'].includes(metadata.mimeType)) issues.push(issue(field, 'DOCUMENT_FORMAT_INVALID', 'Portal preparation accepts JPEG or PNG documents.'));
@@ -282,6 +284,7 @@ class RaadVisaWorkflow {
       if (typeof id !== 'string' || !UUID.test(id)) fail('RAAD_DOCUMENTS_INVALID');
       const metadata = this.observeDocument(id, context);
       if (!metadata) fail('RAAD_DOCUMENT_UNAVAILABLE', 404);
+      if (metadata.purpose === 'raad_pdf_preview') fail('RAAD_DOCUMENT_PREVIEW_ONLY', 422);
       nextDocuments[kind] = metadata;
     }
     // Re-observe existing attachments, including their content digest, on rebase.

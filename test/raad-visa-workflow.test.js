@@ -66,6 +66,23 @@ function review(f, summary) {
   return f.workflow.review(CUSTOMER, {applicantIndex: summary.applicantIndex, expectedRevision: summary.revision, confirmedFields: summary.reviewRequiredFields, confirm: true});
 }
 
+test('neutral PDF page previews cannot be bound as any applicant document', () => {
+  for (const kind of ['passport', 'residence', 'photo']) {
+    const f=fixture();f.records[IDS.derived].purpose='raad_pdf_preview';
+    const documents={passport:IDS.passport,residence:IDS.residence,photo:IDS.photo,[kind]:IDS.derived};
+    assert.throws(()=>prepare(f,{documents}),{code:'RAAD_DOCUMENT_PREVIEW_ONLY',statusCode:422});
+    assert.equal(f.store.data.raadApplications,undefined);
+  }
+});
+
+test('a previously saved source becoming a neutral preview cannot remain portal ready', () => {
+  const f=fixture();const saved=prepare(f);f.records[IDS.passport].purpose='raad_pdf_preview';
+  const current=f.workflow.get(CUSTOMER);
+  assert.ok(current.issues.some(item=>item.code==='DOCUMENT_PREVIEW_ONLY'));
+  assert.notEqual(current.state,'ready_for_portal_review');
+  assert.throws(()=>review(f,saved),{code:'RAAD_APPLICATION_STALE'});
+});
+
 test('get is read only and proposals do not invent applicant facts or actual travel', () => {
   const f = fixture({contacts: false});
   const before = JSON.stringify(f.store.data);

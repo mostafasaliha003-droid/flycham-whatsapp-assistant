@@ -22,4 +22,36 @@ async function rasterizePdf(bytes,{kind,page,rotation=0}={}){
   return await Promise.all(files.map(async f=>{let bytes=await fs.readFile(path.join(dir,f));if(rotation)bytes=await require('sharp')(bytes,{limitInputPixels:20000000}).rotate(rotation).png().toBuffer();return{bytes,mimeType:'image/png'};}));
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 }
-module.exports={rasterizePdf};
+// Neutral previews never choose a passport page or assert that a scanned page
+// is upright. The same bounded, private rasterizer supports one or two pages.
+async function rasterizePdfPages(bytes){
+ const rendered=await rasterizePdf(bytes,{kind:'residence'});
+ return {pageCount:rendered.length,pages:rendered.map((part,index)=>({pageNumber:index+1,bytes:part.bytes,mimeType:part.mimeType,orientationVerified:false,needsVisualReview:true}))};
+}
+// On restart, discard only old private rasterizer workspaces we own. Never
+// follow links, recurse into unknown content, or disclose paths in reports.
+async function cleanupStalePdfTemps({directory=os.tmpdir(),now=Date.now}={}){
+ const uid=typeof process.getuid==='function'?process.getuid():null;
+ if(uid===null)return{scanned:0,removed:0};
+ const started=Date.now();let scanned=0,removed=0,root;
+ try{
+  root=await fs.opendir(directory);
+  while(scanned<512&&Date.now()-started<2000){
+   const item=await root.read();if(!item)break;scanned++;
+   if(!item.isDirectory()||!/^raad-pdf-[A-Za-z0-9]+$/.test(item.name))continue;
+   const target=path.join(directory,item.name);
+   try{
+    const info=await fs.lstat(target);if(!info.isDirectory()||info.isSymbolicLink()||info.uid!==uid||!Number.isFinite(info.mtimeMs)||now()-info.mtimeMs<30*60000)continue;
+    const children=[];let sub;try{sub=await fs.opendir(target);while(children.length<=16&&Date.now()-started<2000){const c=await sub.read();if(!c)break;children.push(c);}}finally{try{await sub?.close();}catch{}}
+    if(Date.now()-started>=2000||children.length>16||children.some(c=>!c.isFile()||!(/^(?:source\.pdf|page-\d+\.png)$/.test(c.name))))continue;
+    let safe=true;for(const child of children){const s=await fs.lstat(path.join(target,child.name));if(!s.isFile()||s.isSymbolicLink()||s.uid!==uid){safe=false;break;}}
+    if(!safe)continue;
+    for(const child of children)await fs.unlink(path.join(target,child.name));
+    await fs.rmdir(target);removed++;
+   }catch{/* best effort: preserve unknown or concurrently changed entries */}
+  }
+ }catch{/* missing/unreadable temp root is not fatal */}
+ finally{try{await root?.close();}catch{}}
+ return{scanned,removed};
+}
+module.exports={rasterizePdf,rasterizePdfPages,cleanupStalePdfTemps};
