@@ -1,0 +1,11 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {rasterizePdf}=require('../src/raad-pdf');
+function pdf(pages){
+ const objects=['<< /Type /Catalog /Pages 2 0 R >>',`<< /Type /Pages /Kids [${Array.from({length:pages},(_,i)=>`${i+3} 0 R`).join(' ')}] /Count ${pages} >>`,...Array.from({length:pages},()=> '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Resources << >> >>')];
+ let s='%PDF-1.4\n',offsets=[0];for(let i=0;i<objects.length;i++){offsets.push(Buffer.byteLength(s));s+=`${i+1} 0 obj\n${objects[i]}\nendobj\n`;}
+ const x=Buffer.byteLength(s);s+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(n=>`${String(n).padStart(10,'0')} 00000 n \n`).join('')+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;return Buffer.from(s);
+}
+test('one page becomes a PNG and two residence pages remain separate for combining',async()=>{assert.equal((await rasterizePdf(pdf(1),{kind:'passport'})).length,1);const pages=await rasterizePdf(pdf(2),{kind:'residence'});assert.equal(pages.length,2);assert.ok(pages.every(p=>p.mimeType==='image/png'&&p.bytes.subarray(1,4).toString()==='PNG'));});
+test('ambiguous multi-page passport and unsupported page counts fail closed',async()=>{await assert.rejects(rasterizePdf(pdf(2),{kind:'passport'}),{code:'PDF_PAGE_SELECTION_REQUIRED'});await assert.rejects(rasterizePdf(pdf(3),{kind:'residence'}),{code:'PDF_PAGE_COUNT_UNSUPPORTED'});await assert.rejects(rasterizePdf(Buffer.from('not pdf'),{kind:'passport'}),{code:'PDF_INVALID'});});
+test('explicit passport page and rotation produce exactly one correctly oriented raster',async()=>{const sharp=require('sharp');const a=await rasterizePdf(pdf(2),{kind:'passport',page:2}),b=await rasterizePdf(pdf(2),{kind:'passport',page:2,rotation:90});const x=await sharp(a[0].bytes).metadata(),y=await sharp(b[0].bytes).metadata();assert.equal(a.length,1);assert.equal(x.width,y.height);assert.equal(x.height,y.width);await assert.rejects(rasterizePdf(pdf(2),{kind:'passport',page:3}),{code:'PDF_INVALID'});});

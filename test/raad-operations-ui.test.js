@@ -104,6 +104,10 @@ test('image preparation requires selected sources and leaves binding and visual 
  await ui.invoke(ui.action('prepare'));const saved=JSON.parse(raadPosts(ui).at(-1).options.body);assert.equal(saved.documents.residence,'residence-own-1234');assert.equal(saved.documents.passport,null);assert.doesNotMatch(JSON.stringify(saved.documents),/prepared-image-12345/);
 });
 
+test('PDF page and orientation are sent only when explicitly chosen',async()=>{
+ const ui=setup();await ui.login();await ui.edit(ui.role('pdf_page'),'2');await ui.edit(ui.role('pdf_rotation'),'90');await ui.invoke(ui.action('prepare_image'));const body=JSON.parse(raadPosts(ui).at(-1).options.body);assert.equal(body.pdfPage,2);assert.equal(body.pdfRotation,90);assert.equal(body.kind,'passport');
+});
+
 test('a server-stale case permits a fresh preparation and blocks review until that preparation is saved',async()=>{
  const ui=setup({summaryState:'stale'});await ui.login();assert.equal(ui.action('prepare').disabled,false);assert.equal(ui.action('review').disabled,true);const checkbox=ui.role('review');checkbox.checked=true;await checkbox.onchange({target:checkbox});const before=raadPosts(ui).length;await ui.invoke(ui.action('review'));assert.equal(raadPosts(ui).length,before);
  await ui.invoke(ui.action('prepare'));const prepared=JSON.parse(raadPosts(ui).at(-1).options.body);assert.equal(prepared.action,'prepare');assert.equal(prepared.expectedRevision,4);assert.equal(ui.role('review').disabled,false);assert.equal(ui.role('review').checked,false);assert.equal(ui.action('review').disabled,true);

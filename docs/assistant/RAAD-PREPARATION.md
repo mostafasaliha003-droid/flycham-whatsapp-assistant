@@ -23,7 +23,11 @@ proof of eligibility.
 4. Select the applicant's owned passport, residence and portrait attachments.
    Optionally make protected JPEG/PNG derivatives under 1,000,000 bytes. Two
    residence images can be combined without cropping. Originals are retained;
-   derivatives still need visual review. PDF raster conversion is not included.
+   derivatives still need visual review. PDF conversion runs when staff prepare
+   a derivative: one-page PDFs convert directly and up to two residence pages
+   can be combined. Multi-page passports require an explicitly selected data
+   page; staff can select rotation. No automatic OCR or orientation detection is
+   implied. This uses pdfinfo and pdftoppm and retains the original source.
 5. Save the draft and resolve all issues. Current original-case payment and
    document evidence must be verified, and exact selected files are reviewed
    separately for Raad. Their content hashes and expiry invalidate stale review.
