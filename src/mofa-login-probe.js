@@ -3,7 +3,8 @@
 // Opt-in manual MOFA login probe: no applicant data or automatic form actions.
 // The private link is a bearer secret, delivered only to an authenticated admin.
 const HOSTS = Object.freeze({lon: 'production-lon.browserless.io', ams: 'production-ams.browserless.io', sfo: 'production-sfo.browserless.io'});
-const MAX_SESSION_MS = 120000;
+const FREE_SESSION_MS = 120000;
+const PAID_SESSION_MS = 900000;
 const DEFAULT_LINK_MS = 90000;
 const CLEANUP_MS = 3000;
 const MOFA_LOGIN_URL = 'https://visa.mofa.gov.sa/Account/Loginindividuals';
@@ -49,13 +50,14 @@ async function defaultConnect(url, options) {return require('playwright').chromi
  * customer records, a screenshot or provider errors.
  */
 async function runMofaLoginProbe({enabled = false, token, region = 'lon', deliverPrivateLink, waitForContinuityCheck, connect = defaultConnect,
-  signal, workMs = 110000, linkMs = DEFAULT_LINK_MS, cleanupMs = CLEANUP_MS} = {}) {
+  signal, sessionMs = FREE_SESSION_MS, workMs = 110000, linkMs = DEFAULT_LINK_MS, cleanupMs = CLEANUP_MS} = {}) {
   const result = {tested:false, handoffCompleted:false, continuityVerified:false, authenticated:false, cleanupConfirmed:false, reason:'DISABLED'};
   if (enabled !== true) return result;
   const host = HOSTS[region];
   if (!host || typeof token !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(token) ||
       typeof deliverPrivateLink !== 'function' || typeof waitForContinuityCheck !== 'function' || typeof connect !== 'function' ||
-      !Number.isSafeInteger(workMs) || workMs < 1 || workMs > MAX_SESSION_MS ||
+      ![FREE_SESSION_MS, PAID_SESSION_MS].includes(sessionMs) ||
+      !Number.isSafeInteger(workMs) || workMs < 1 || workMs >= sessionMs ||
       !Number.isSafeInteger(linkMs) || linkMs < 1 || linkMs >= workMs ||
       !Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 5000 ||
       (signal !== undefined && (!signal || typeof signal.addEventListener !== 'function'))) return {...result, reason:'CONFIG_INVALID'};
@@ -64,7 +66,7 @@ async function runMofaLoginProbe({enabled = false, token, region = 'lon', delive
   try {
     if (scope.signal.aborted) throw invalid('TIMEOUT');
     const endpoint = new URL(`wss://${host}/`);
-    endpoint.searchParams.set('token', token); endpoint.searchParams.set('timeout', String(MAX_SESSION_MS));
+    endpoint.searchParams.set('token', token); endpoint.searchParams.set('timeout', String(sessionMs));
     endpoint.searchParams.set('record', 'false'); endpoint.searchParams.set('replay', 'false');
     // A connection resolving after a timeout still owns a remote browser; close
     // it as soon as it appears instead of leaving the session orphaned.

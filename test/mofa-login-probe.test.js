@@ -22,3 +22,14 @@ test('another destination after the handoff never verifies and is not exposed',a
 test('unexpected redirect prevents link handoff and closes browser',async()=>{const f=fixture({destination:'https://evil.example/login'});const r=await runMofaLoginProbe(f.options);assert.equal(r.reason,'PAGE_INVALID');assert.equal(r.cleanupConfirmed,true);assert.equal(f.events.some(e=>e[0]==='deliver'),false);});
 test('cancel or failure never reports completed login',async()=>{for(const ending of ['userFailed','timeout','closed','viewerDisconnected']){const f=fixture({ending});const r=await runMofaLoginProbe(f.options);assert.equal(r.reason,'HANDOFF_NOT_COMPLETED');assert.equal(r.handoffCompleted,false);assert.equal(r.authenticated,false);}});
 test('cleanup failure fails closed',async()=>{const f=fixture({closeFails:true});const r=await runMofaLoginProbe(f.options);assert.equal(r.reason,'CLEANUP_UNCONFIRMED');assert.equal(r.cleanupConfirmed,false);assert.equal(r.authenticated,false);});
+test('paid mode passes only the explicit bounded session and link timeouts to the provider',async()=>{
+ const f=fixture();let seen;const original=f.options.connect;
+ const out=await runMofaLoginProbe({...f.options,sessionMs:900000,workMs:880000,linkMs:840000,connect:async(url,opts)=>{seen=new URL(url);return original(url,opts);}});
+ assert.equal(out.continuityVerified,true);assert.equal(out.authenticated,false);assert.equal(out.cleanupConfirmed,true);
+ assert.equal(seen.searchParams.get('timeout'),'900000');assert.equal(f.events.find(x=>x[0]==='cdp'&&x[1]==='Browserless.liveURL')[2].timeout,840000);
+});
+test('free limit cannot be exceeded and unknown paid session limits fail before connecting',async()=>{
+ for(const overrides of [{workMs:880000,linkMs:840000},{sessionMs:900001,workMs:880000,linkMs:840000},{sessionMs:900000,workMs:900000,linkMs:840000},{sessionMs:900000,workMs:880000,linkMs:880000}]){
+  const f=fixture();const out=await runMofaLoginProbe({...f.options,...overrides});assert.equal(out.reason,'CONFIG_INVALID');assert.deepEqual(f.events,[]);
+ }
+});

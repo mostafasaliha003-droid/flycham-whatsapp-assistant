@@ -9,7 +9,19 @@ const {validQueueKey} = require('./quote-jobs');
 const {runMofaLoginProbe} = require('./mofa-login-probe');
 
 const ROOT = '/internal/assistant/mofa-login-pilot';
-const TTL_MS = 110000;
+// The paid profile is explicitly opt-in and must only be configured after an
+// operator has verified the Browserless subscription. It does not upgrade or
+// verify the provider plan. Times leave a cleanup margin before plan expiry.
+const SESSION_PROFILES = Object.freeze({
+  free: Object.freeze({sessionMs:120000,workMs:110000,linkMs:90000}),
+  prototyping_15m: Object.freeze({sessionMs:900000,workMs:880000,linkMs:840000})
+});
+function sessionProfile(env) {
+  const requested=env.RAAD_MOFA_SESSION_PROFILE;
+  if (requested===undefined || requested==='free') return SESSION_PROFILES.free;
+  if (requested==='prototyping_15m') return SESSION_PROFILES.prototyping_15m;
+  return null;
+}
 const RESULT_RETENTION_MS = 60000;
 const ID = /^[a-f0-9]{32}$/;
 const REASONS = new Set(['DISABLED','CONFIG_INVALID','PROBE_FAILED','TIMEOUT','CONTEXT_INVALID','PAGE_INVALID','LIVE_LINK_INVALID','HANDOFF_NOT_COMPLETED','MANUAL_HANDOFF_COMPLETED_AUTH_UNVERIFIED','CONTINUITY_VERIFIED_AUTH_UNVERIFIED','CONTINUITY_UNAVAILABLE','CLEANUP_UNCONFIRMED']);
@@ -27,7 +39,7 @@ function createMofaLoginManager({env = process.env, run = runMofaLoginProbe, now
     if (job.done && job.result?.cleanupConfirmed === true && job.finishedAt + RESULT_RETENTION_MS <= now()) clear();
   }
   const enabled = () => !disposed && env.RAAD_MOFA_LOGIN_PILOT_ENABLED === 'true' && env.RAAD_SYNTHETIC_HYBRID_ENABLED !== 'true';
-  const configuration = () => ({enabled:enabled(),configured:typeof env.BROWSERLESS_API_TOKEN==='string' && /^[\x21-\x7e]{1,4096}$/.test(env.BROWSERLESS_API_TOKEN)});
+  const configuration = () => ({enabled:enabled(),configured:sessionProfile(env)!==null && typeof env.BROWSERLESS_API_TOKEN==='string' && /^[\x21-\x7e]{1,4096}$/.test(env.BROWSERLESS_API_TOKEN)});
   function status(id) {
     prune();
     if (!job || job.id !== id) return null;
@@ -38,14 +50,15 @@ function createMofaLoginManager({env = process.env, run = runMofaLoginProbe, now
     prune();
     if (!enabled()) return {error:'DISABLED', status:404};
     const token = env.BROWSERLESS_API_TOKEN;
-    if (typeof token !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(token)) return {error:'NOT_CONFIGURED', status:503};
+    const limits = sessionProfile(env);
+    if (!limits || typeof token !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(token)) return {error:'NOT_CONFIGURED', status:503};
     if (job && (!job.done || !job.result?.cleanupConfirmed)) return {error:'BUSY', status:409};
     if (job) clear();
     const id = makeId();
     if (!ID.test(id)) return {error:'UNAVAILABLE', status:503};
-    const current = {id, controller:new AbortController(), link:null, claimed:false, done:false, result:null, continuityResolve:null, expiresAt:now()+TTL_MS};
+    const current = {id, controller:new AbortController(), link:null, claimed:false, done:false, result:null, continuityResolve:null, expiresAt:now()+limits.workMs};
     job = current;
-    current.timer = setTimeout(() => { if (job===current && !current.done) { current.link=null; current.controller.abort(); } }, TTL_MS); current.timer.unref?.();
+    current.timer = setTimeout(() => { if (job===current && !current.done) { current.link=null; current.controller.abort(); } }, limits.workMs); current.timer.unref?.();
     // The link is held only inside this process and only the authenticated
     // endpoint can consume it. This does not make the provider link itself
     // one-use; anyone holding that link can use it until its own expiry.
@@ -58,7 +71,7 @@ function createMofaLoginManager({env = process.env, run = runMofaLoginProbe, now
       current.link = null;
       current.continuityResolve = resolve;
     });
-    Promise.resolve().then(() => run({enabled:true, token, deliverPrivateLink, waitForContinuityCheck, signal:current.controller.signal})).then(value => {
+    Promise.resolve().then(() => run({enabled:true, token, deliverPrivateLink, waitForContinuityCheck, signal:current.controller.signal, ...limits})).then(value => {
       if (job !== current) return;
       const reason = REASONS.has(value?.reason) ? value.reason : 'PROBE_FAILED';
       clearTimeout(current.timer); current.link = null; current.continuityResolve = null; current.done = true; current.finishedAt = now();

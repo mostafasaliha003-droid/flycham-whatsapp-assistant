@@ -71,3 +71,23 @@ test('expired or cancelled wait never accepts a check',async()=>{
  let wait;const c=setup({runner:o=>{wait=o.waitForContinuityCheck;return new Promise(()=>{});}});
  c.req('POST',ROOT);await tick();wait();assert.equal(c.req('POST',ROOT+'/'+ID+'/cancel').status,202);assert.equal(c.req('POST',ROOT+'/'+ID+'/check').status,409);c.manager.dispose();
 });
+test('free session limits remain the default and paid limits require an explicit profile',async()=>{
+ for(const [profile,expected] of [[undefined,{sessionMs:120000,workMs:110000,linkMs:90000}],['free',{sessionMs:120000,workMs:110000,linkMs:90000}],['prototyping_15m',{sessionMs:900000,workMs:880000,linkMs:840000}]]){
+  let options;const h=setup({runner:o=>{options=o;return new Promise(()=>{});}});
+  if(profile!==undefined)h.env.RAAD_MOFA_SESSION_PROFILE=profile;
+  assert.equal(h.req('POST',ROOT).status,202);await tick();
+  assert.deepEqual({sessionMs:options.sessionMs,workMs:options.workMs,linkMs:options.linkMs},expected);h.manager.dispose();
+ }
+});
+test('unknown or malformed session profile fails closed without initiating a browser',()=>{
+ for(const profile of ['','paid','prototyping_15m ','900000','PROTOTYPING_15M']){
+  let runs=0;const h=setup({runner:()=>{runs++;}});h.env.RAAD_MOFA_SESSION_PROFILE=profile;
+  assert.equal(h.req('GET',ROOT).body.configured,false);assert.equal(h.req('POST',ROOT).status,503);assert.equal(runs,0);h.manager.dispose();
+ }
+});
+test('paid profile still expires, aborts and revokes the private link at its work deadline',async()=>{
+ let stamp=1000,deliver,signal;const h=setup({now:()=>stamp,runner:o=>{deliver=o.deliverPrivateLink;signal=o.signal;return new Promise(()=>{});}});
+ h.env.RAAD_MOFA_SESSION_PROFILE='prototyping_15m';h.req('POST',ROOT);await tick();await deliver(LINK);
+ stamp+=880001;assert.equal(h.req('POST',ROOT+'/'+ID+'/link').status,409);assert.equal(signal.aborted,true);
+ assert.equal(h.req('POST',ROOT).status,409);h.manager.dispose();
+});
