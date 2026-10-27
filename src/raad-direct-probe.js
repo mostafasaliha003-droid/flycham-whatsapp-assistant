@@ -12,9 +12,10 @@ server.listen(process.env.PORT || 10000, '0.0.0.0');
  try {
   browser = await chromium.launch({headless:true,args:['--no-sandbox']});
   const page = await browser.newPage();
-  const response = await page.goto('https://visa.mofa.gov.sa/Account/Login/enjazcompany',{waitUntil:'domcontentloaded',timeout:45000});
+  const response = await page.goto('https://visa.mofa.gov.sa/Account/Loginindividuals',{waitUntil:'domcontentloaded',timeout:45000});
   const url = new URL(page.url());
-  state = {stage:'page_loaded',httpStatus:response?.status() || null,officialHost:url.hostname==='visa.mofa.gov.sa',authenticated:false, startedAt:new Date().toISOString()};
+  const fields = {}; for (const [key, selector] of Object.entries({username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'})) { fields[key] = await page.locator(selector).count() === 1 && await page.locator(selector).isVisible().catch(()=>false); }
+  state = {fields,stage:'page_loaded',httpStatus:response?.status() || null,officialHost:url.hostname==='visa.mofa.gov.sa',authenticated:false, startedAt:new Date().toISOString()};
   console.log('MOFA_DIRECT_PROBE '+JSON.stringify(state));
   setTimeout(async()=>{state={...state,stage:'finished',pageOpen:!page.isClosed() && browser.isConnected()};console.log('MOFA_DIRECT_PROBE '+JSON.stringify(state));await browser.close();},120000).unref();
  } catch(e) { state={stage:'failed',reason:e.name === 'TimeoutError'?'timeout':'browser_or_navigation_error',authenticated:false};console.log('MOFA_DIRECT_PROBE '+JSON.stringify(state));if(browser)await browser.close().catch(()=>{}); }
