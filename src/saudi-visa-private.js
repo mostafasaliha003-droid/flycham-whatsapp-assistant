@@ -11,7 +11,8 @@ function loadVisaPrivateConfig({env=process.env,file}={}){
   const config=JSON.parse(Buffer.concat([d.update(b.subarray(28)),d.final()]).toString());
   const banks=Array.isArray(config.banks)?config.banks.filter(x=>x&&['bank','name','account','iban'].every(k=>typeof x[k]==='string'&&x[k].length>0&&x[k].length<120)&&/^AE\d{21}$/.test(x.iban)&&/^\d{5,30}$/.test(x.account)).slice(0,5):[];
   const complaintRecipient=/^\d{8,15}$/.test(config.complaintRecipient||'')?config.complaintRecipient:null;
-  return{banks,complaintRecipient};
+  const raad={};for(const key of ['applicationPhone','contactEmail','insurancePhone','city','postalCode','postOfficeBox'])if(typeof config.raad?.[key]==='string'&&config.raad[key].trim().length<=160&&!/[\r\n\x00]/.test(config.raad[key]))raad[key]=config.raad[key].trim();
+  return{banks,complaintRecipient,...(Object.keys(raad).length?{raad}:{})};
  }catch{return{};}
 }
 module.exports={loadVisaPrivateConfig};

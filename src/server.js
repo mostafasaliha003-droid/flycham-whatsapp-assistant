@@ -3,6 +3,8 @@ const {aiStatus}=require('./assistant-nlu');
 const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding}=require('./saudi-visa-nlu');
 const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
+const {RaadVisaWorkflow}=require('./raad-visa-workflow');
+const {handleRaadRequest}=require('./raad-http');
 const {ComplaintHandoff}=require('./complaint-handoff');
 const {createComplaintTemplateGate}=require('./complaint-template');
 const complaintTemplateReady=createComplaintTemplateGate();
@@ -50,6 +52,7 @@ for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCu
 const portalMonitor=new PortalMonitor();
 const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
+const raad=new RaadVisaWorkflow({store:assistant.store,mediaStore:visaMedia,env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
 function operationsUrl(customer){const base=process.env.RENDER_EXTERNAL_URL||'https://flycham-whatsapp-assistant.onrender.com';return new URL('/operations?customer='+encodeURIComponent(customer),base).href;}
 async function flushComplaint(id){const serviceWindowOpen=journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true;return complaints.flush(id,{serviceWindowOpen,templateConfigured:serviceWindowOpen?false:await complaintTemplateReady()});}
@@ -357,6 +360,7 @@ function createServer() {
     }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
+      if(await handleRaadRequest(request,response,url,{readBody,workflow:raad,inbox,mediaStore:visaMedia}))return;
       if(await handleVisaMediaRequest(request,response,url,visaMedia))return;
       if(await handleInboxRequest(request,response,url,readBody,inbox))return;
       if(url.pathname==='/internal/assistant/portal-monitor'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({...portalMonitor.list({airarabia:quoteJobs.ready('airarabia'),flycham:quoteJobs.ready('flycham')}),familyCapabilities:partyCapabilityStatus()}));return;}

@@ -43,3 +43,57 @@ test('restart reads durable encrypted media; expired records cannot be read',asy
  const{media,store}=setup(t),r=await media.receive(customer,message);const restarted=new VisaMediaStore({store,env:{NODE_ENV:'test'},now:()=>1000001});assert.deepEqual(restarted.read(r.media.id,{customer}).bytes,pdf);
  const expired=new VisaMediaStore({store,env:{NODE_ENV:'test'},now:()=>r.media.expiresAt+1});assert.throws(()=>expired.read(r.media.id,{customer}),/MEDIA_NOT_FOUND/);expired.prune();assert.equal(Object.keys(store.data.visaMedia).length,0);
 });
+
+const syntheticPNG = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.from('Synthetic derived image fixture')]);
+
+test('derived portal media is encrypted, private, pending visual review and never alters original bytes',async t=>{
+ const{media,store,dir}=setup(t),source=(await media.receive(customer,message)).media;
+ const originalRecord=structuredClone(store.data.visaMedia[source.id]),originalFile=fs.readFileSync(path.join(dir,'visa-media',source.id+'.enc'));
+ const derived=media.storeDerived(customer,{sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'passport'});
+ assert.equal(derived.customer,customer);assert.equal(derived.filename,'raad-passport.png');assert.equal(derived.type,'image');assert.equal(derived.mimeType,'image/png');assert.equal(derived.status,'pending_review');assert.equal(derived.purpose,'raad_portal_upload');assert.equal(derived.needsVisualReview,true);
+ assert.equal(derived.size,syntheticPNG.length);assert.equal(derived.expiresAt,source.expiresAt);
+ assert.equal(Object.hasOwn(derived,'sourceIds'),false);assert.equal(Object.hasOwn(derived,'checksum'),false);
+ const target=path.join(dir,'visa-media',derived.id+'.enc'),encrypted=fs.readFileSync(target);
+ assert.equal(encrypted.includes(syntheticPNG),false);assert.equal(fs.statSync(target).mode&0o777,0o600);
+ assert.deepEqual(media.read(derived.id,{customer}).bytes,syntheticPNG);assert.throws(()=>media.read(derived.id,{customer:other}),/MEDIA_NOT_FOUND/);
+ const restarted=new VisaMediaStore({store,env:{NODE_ENV:'test'},now:()=>1000001});assert.deepEqual(restarted.read(derived.id,{customer}).bytes,syntheticPNG);
+ assert.deepEqual(store.data.visaMedia[source.id],originalRecord);assert.deepEqual(fs.readFileSync(path.join(dir,'visa-media',source.id+'.enc')),originalFile);assert.deepEqual(media.read(source.id,{customer}).bytes,pdf);
+});
+
+test('derived media requires owned live sources and rejects duplicate or malformed parent sets before saving',async t=>{
+ const{media,store,dir}=setup(t,{info:{id:null}}),source=(await media.receive(customer,message)).media;
+ const foreign=(await media.receive(other,{media:{...message.media,id:'987654321'}})).media;
+ const options={sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'residence'},before=JSON.stringify(store.data.visaMedia),files=fs.readdirSync(path.join(dir,'visa-media')).sort(),saves=store.saves;
+ for(const sourceIds of [[foreign.id],[source.id,foreign.id],['00000000-0000-0000-0000-000000000000']])assert.throws(()=>media.storeDerived(customer,{...options,sourceIds}),/MEDIA_NOT_FOUND/);
+ for(const sourceIds of [undefined,[],[source.id,source.id],[source.id,foreign.id,'third'],'not-an-array'])assert.throws(()=>media.storeDerived(customer,{...options,sourceIds}),/MEDIA_INVALID/);
+ assert.throws(()=>media.storeDerived(customer,{...options,kind:'audio'}),/MEDIA_INVALID/);
+ assert.equal(JSON.stringify(store.data.visaMedia),before);assert.equal(store.saves,saves);assert.deepEqual(fs.readdirSync(path.join(dir,'visa-media')).sort(),files);
+ const expired=new VisaMediaStore({store,env:{NODE_ENV:'test'},now:()=>source.expiresAt});assert.throws(()=>expired.storeDerived(customer,options),/MEDIA_NOT_FOUND/);
+});
+
+test('derived media deduplicates identical inputs and expires at the earliest parent expiry',async t=>{
+ const{media,store,dir}=setup(t,{info:{id:null}}),first=(await media.receive(customer,message)).media,second=(await media.receive(customer,{media:{...message.media,id:'234567890'}})).media;
+ store.data.visaMedia[first.id].expiresAt=1200000;store.data.visaMedia[second.id].expiresAt=1100000;
+ const options={sourceIds:[first.id,second.id],bytes:syntheticPNG,mimeType:'image/png',kind:'residence'},derived=media.storeDerived(customer,options),saves=store.saves,files=fs.readdirSync(path.join(dir,'visa-media')).sort();
+ assert.equal(derived.expiresAt,1100000);assert.deepEqual(media.storeDerived(customer,options),derived);assert.equal(store.saves,saves);assert.deepEqual(fs.readdirSync(path.join(dir,'visa-media')).sort(),files);
+ const separateSource=media.storeDerived(customer,{...options,sourceIds:[first.id]}),separateKind=media.storeDerived(customer,{...options,sourceIds:[first.id],kind:'passport'});assert.notEqual(separateSource.id,derived.id,'different source sets have distinct derived identities');assert.notEqual(separateKind.id,separateSource.id,'document kinds have distinct derived identities');
+ const expired=new VisaMediaStore({store,env:{NODE_ENV:'test'},now:()=>1100000});assert.throws(()=>expired.read(derived.id,{customer}),/MEDIA_NOT_FOUND/);assert.deepEqual(expired.read(first.id,{customer}).bytes,pdf);
+});
+
+test('derived portal uploads enforce the exact 1,000,000-byte limit and JPEG/PNG content types',async t=>{
+ const{media,store}=setup(t),source=(await media.receive(customer,message)).media;
+ const options={sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'photo'},saves=store.saves;
+ for(const mimeType of ['image/webp','application/pdf','text/html',undefined,'IMAGE/PNG'])assert.throws(()=>media.storeDerived(customer,{...options,mimeType}),/MEDIA_CONTENT_INVALID/);
+ for(const bytes of [Buffer.alloc(0),Buffer.alloc(1000001),'not-a-buffer',Buffer.from('not a PNG')])assert.throws(()=>media.storeDerived(customer,{...options,bytes}),/MEDIA_(?:SIZE|CONTENT)_INVALID/);
+ assert.throws(()=>media.storeDerived(customer,{...options,mimeType:'image/jpeg'}),/MEDIA_CONTENT_INVALID/);
+ assert.equal(store.saves,saves);assert.equal(media.list(customer).length,1);
+ const maximum=Buffer.alloc(1000000);syntheticPNG.copy(maximum);
+ const derived=media.storeDerived(customer,{...options,bytes:maximum});assert.equal(derived.size,1000000);assert.deepEqual(media.read(derived.id,{customer}).bytes,maximum);
+});
+
+test('failed derived index persistence rolls back its encrypted file and record while preserving sources',async t=>{
+ const{media,store,dir}=setup(t),source=(await media.receive(customer,message)).media,before=structuredClone(store.data.visaMedia),files=fs.readdirSync(path.join(dir,'visa-media')).sort(),sourceFile=fs.readFileSync(path.join(dir,'visa-media',source.id+'.enc'));
+ store.save=()=>{throw Error('PRIVATE_STORAGE_PATH_AND_SECRET');};
+ assert.throws(()=>media.storeDerived(customer,{sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'passport'}),{message:'MEDIA_STORAGE_UNAVAILABLE'});
+ assert.deepEqual(store.data.visaMedia,before);assert.deepEqual(fs.readdirSync(path.join(dir,'visa-media')).sort(),files);assert.deepEqual(fs.readFileSync(path.join(dir,'visa-media',source.id+'.enc')),sourceFile);assert.deepEqual(media.read(source.id,{customer}).bytes,pdf);
+});
