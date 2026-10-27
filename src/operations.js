@@ -120,7 +120,7 @@
   ['التواصل والعنوان',[
    ['applicationPhone','هاتف الطلب','tel'],['contactEmail','البريد الإلكتروني','email'],['insurancePhone','هاتف التأمين','tel'],['city','المدينة'],['postalCode','الرمز البريدي'],['postOfficeBox','صندوق البريد']]],
   ['الإفصاح الصحي',[
-   ['health.hospitalizedOrEmergency','هل سبق دخول المستشفى أو الطوارئ؟','boolean'],['health.accidentDisability','هل توجد إعاقة نتيجة حادث؟','boolean'],['health.congenitalCondition','هل توجد حالة خلقية؟','boolean']]],
+   ['health.hospitalizedOrEmergency','هل هناك حالة تنويم في المستشفى حاليًا أو تتلقى علاج الطوارئ؟','boolean'],['health.accidentDisability','هل تعرضت لحادث أدى إلى إصابتك بعلة أو إعاقة؟','boolean'],['health.congenitalCondition','هل لديك حالات ضعف أو تشوه خلقي؟','boolean']]],
   ['ولي أمر القاصر (عند الحاجة)',[
    ['guardian.relationship','صلة ولي الأمر','select',[['father','الأب'],['mother','الأم']]],['guardian.visaReference','مرجع تأشيرة ولي الأمر'],['guardian.status','حالة تأشيرة ولي الأمر','select',[['issued','صدرت فعلياً']]]]],
   ['إعدادات الطلب المقترحة — تحتاج تحققاً',[
@@ -190,6 +190,8 @@
   const suggestions=el('details','raad-group raad-suggestions'),suggestionBody=el('div','raad-group-body');suggestions.append(el('summary','','اقتراحات الإعداد — ليست حقائق مؤكدة'));const defaults=draft.summary?.defaults||{};
   const defaultLabels=raadSuggestedLabels;
   suggestionBody.append(el('p','small muted','البعثة المقترحة: أبوظبي · بلد الإقامة: ARE. الجنسية EGY: سفرة واحدة / 90 يوماً؛ غيرها: متعددة / 365 يوماً. تحقق من ملاءمة المسار قبل المراجعة.'));
+  if(draft.summary?.officeHotelSuggestion){suggestionBody.append(detailRow('الفندق المقترح',draft.summary.officeHotelSuggestion));suggestionBody.append(el('p','small muted','اقتراح الفندق لا يؤكد الحجز أو عنوان الإقامة. تحقق من العنوان الفعلي قبل إدخاله.'));}
+  if(defaults.proposedEntryDate)suggestionBody.append(el('p','small muted','تاريخ الدخول المقترح محسوب من تجهيز المسودة. تحقق منه عند التقديم ومن خطة السفر الفعلية.'));
   for(const [path,title]of Object.entries(defaultLabels))if(defaults[path]!==undefined)suggestionBody.append(detailRow(title,defaults[path]));
   const useDefaults=el('button','button subtle small','نسخ الاقتراحات إلى المسودة للمراجعة');useDefaults.type='button';useDefaults.dataset.raadAction='use_defaults';useDefaults.onclick=()=>{if(!raadCurrent(id,index)||!staffOwns(state.detail?.customer)||draft.busy)return;for(const path of Object.keys(defaultLabels))if(defaults[path]!==undefined)raadSet(draft.fields,path==='proposedEntryDate'?'entryDate':path,defaults[path]);raadEdited(draft);renderRaad(c,data,true);};view.controls.push(useDefaults);suggestionBody.append(useDefaults);suggestions.append(suggestionBody);box.append(suggestions);
   const mrzGroup=el('details','raad-group'),mrzBody=el('div','raad-group-body'),mrz=el('textarea');mrzGroup.append(el('summary','','قراءة MRZ المنسوخ'));mrz.rows=3;mrz.maxLength=100;mrz.dir='ltr';mrz.autocomplete='off';mrz.spellcheck=false;mrz.dataset.raadRole='mrz';mrz.setAttribute('aria-label','سطرا MRZ من الجواز');const parse=el('button','button subtle small','تحليل MRZ محلياً');parse.type='button';parse.dataset.raadAction='parse_mrz';parse.onclick=()=>raadAction('parse_mrz',view,mrz);view.controls.push(mrz,parse);mrzBody.append(el('p','small muted','يلزم التحقق من التواريخ والأسماء مع الجواز. أدخل تاريخ الميلاد والانتهاء الكاملين من الجواز لتأكيد القرن. لا يُحفظ نص MRZ ولا يُرسل إلى بوابة التأشيرات.'),mrz,parse);view.mrzIssues=el('ul','raad-mrz-issues');mrzBody.append(view.mrzIssues);mrzGroup.append(mrzBody);box.append(mrzGroup);

@@ -134,6 +134,11 @@ class RaadVisaWorkflow {
 
   portalStatus() { return {connected: false, mode: 'preparation', reason: 'PORTAL_NOT_CONNECTED'}; }
 
+  hotelSuggestion() {
+    const value = this.env.RAAD_SAUDI_HOTEL_SUGGESTION ?? this.privateConfig.raad?.hotelSuggestion;
+    return typeof value === 'string' && value.trim() && value.trim().length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value) ? value.trim() : 'Hilton Al Riyadh';
+  }
+
   context(customer, applicantIndex) {
     if (!validCustomer(customer)) fail('INVALID_CUSTOMER');
     const c = Object.hasOwn(this.store.data.visaCases || {}, customer) ? this.store.data.visaCases[customer] : null;
@@ -249,12 +254,12 @@ class RaadVisaWorkflow {
   summary(context, job, assessment = this.assess(context, job)) {
     const review = job.review || {};
     const state = assessment.stale ? 'stale' : assessment.issues.length ? 'needs_information' : assessment.complete ? 'ready_for_portal_review' : 'draft';
-    return clone({applicantIndex: context.applicantIndex, jobId: job.jobId, revision: job.revision, state, fields: job.fields, defaults: assessment.defaults, defaultStatus: 'suggestions_pending_portal_review', issues: assessment.issues, missing: assessment.missing, reviewRequiredFields: assessment.requiredFields, review: {scope: 'staff_data_review', confirmedFields: assessment.stale ? [] : review.confirmedFields || [], requiredFields: assessment.requiredFields, complete: assessment.complete, invalidated: assessment.stale, reviewedAt: assessment.complete ? review.reviewedAt : null}, portal: this.portalStatus(), caseId: job.caseId, caseSignature: job.caseSignature, documents: job.documents, age: assessment.age ?? null, isMinor: assessment.isMinor ?? null, ...(context.blockedReason ? {blockedReason: context.blockedReason} : {})});
+    return clone({applicantIndex: context.applicantIndex, jobId: job.jobId, revision: job.revision, state, fields: job.fields, defaults: assessment.defaults, officeHotelSuggestion: this.hotelSuggestion(), defaultStatus: 'suggestions_pending_portal_review', issues: assessment.issues, missing: assessment.missing, reviewRequiredFields: assessment.requiredFields, review: {scope: 'staff_data_review', confirmedFields: assessment.stale ? [] : review.confirmedFields || [], requiredFields: assessment.requiredFields, complete: assessment.complete, invalidated: assessment.stale, reviewedAt: assessment.complete ? review.reviewedAt : null}, portal: this.portalStatus(), caseId: job.caseId, caseSignature: job.caseSignature, documents: job.documents, age: assessment.age ?? null, isMinor: assessment.isMinor ?? null, ...(context.blockedReason ? {blockedReason: context.blockedReason} : {})});
   }
 
   get(customer, {applicantIndex = 0} = {}) {
     const context = this.context(customer, applicantIndex), job = this.job(context);
-    if (!job) return clone({applicantIndex, jobId: null, revision: 0, state: 'not_started', fields: {}, defaults: this.defaults(context, dubaiDate(this.now())), defaultStatus: 'suggestions_pending_portal_review', documents: {}, missing: [], issues: [], reviewRequiredFields: [], review: {scope: 'staff_data_review', confirmedFields: [], requiredFields: [], complete: false, invalidated: false, reviewedAt: null}, portal: this.portalStatus(), caseId: context.c.id, caseSignature: context.caseSignature, ...(context.blockedReason ? {blockedReason: context.blockedReason} : {})});
+    if (!job) return clone({applicantIndex, jobId: null, revision: 0, state: 'not_started', fields: {}, defaults: this.defaults(context, dubaiDate(this.now())), officeHotelSuggestion: this.hotelSuggestion(), defaultStatus: 'suggestions_pending_portal_review', documents: {}, missing: [], issues: [], reviewRequiredFields: [], review: {scope: 'staff_data_review', confirmedFields: [], requiredFields: [], complete: false, invalidated: false, reviewedAt: null}, portal: this.portalStatus(), caseId: context.c.id, caseSignature: context.caseSignature, ...(context.blockedReason ? {blockedReason: context.blockedReason} : {})});
     return this.summary(context, job);
   }
 

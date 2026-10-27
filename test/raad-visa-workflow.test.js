@@ -91,6 +91,7 @@ test('get is read only and proposals do not invent applicant facts or actual tra
   assert.equal(summary.revision, 0);
   assert.deepEqual(summary.fields, {});
   assert.equal(summary.defaults.proposedEntryDate, '2026-11-11');
+  assert.equal(summary.officeHotelSuggestion, 'Hilton Al Riyadh');
   assert.equal(summary.defaults.mission, 'Abu Dhabi');
   assert.equal(summary.defaults.residenceCountryCode, 'ARE');
   assert.equal(summary.defaults.transport, 'air');
@@ -101,6 +102,23 @@ test('get is read only and proposals do not invent applicant facts or actual tra
   assert.equal(f.saves(), 0);
   summary.defaults.mission = 'mutated';
   assert.equal(f.workflow.get(CUSTOMER).defaults.mission, 'Abu Dhabi');
+});
+
+test('hotel suggestion is configurable but never becomes a claimed booked address or personal answer', () => {
+  const f = fixture();
+  const workflow = new RaadVisaWorkflow({...f.config, env: {...CONTACTS, RAAD_SAUDI_HOTEL_SUGGESTION: '  Test Hotel Riyadh  '}});
+  const initial = workflow.get(CUSTOMER);
+  assert.equal(initial.officeHotelSuggestion, 'Test Hotel Riyadh');
+  assert.equal(initial.fields.saudiAddress, undefined);
+  assert.equal(initial.defaults.saudiAddress, undefined);
+  const draft = workflow.prepare(CUSTOMER, {expectedRevision: 0, fields: applicant({saudiAddress: null, maritalStatus: null, health: null, travelledLastFiveYears: null}), confirm: true});
+  assert.equal(draft.officeHotelSuggestion, 'Test Hotel Riyadh');
+  for (const key of ['saudiAddress','maritalStatus','health','travelledLastFiveYears']) {
+    assert.equal(draft.fields[key], undefined);
+    assert.equal(draft.defaults[key], undefined);
+  }
+  assert.ok(draft.missing.includes('saudiAddress'));
+  assert.ok(!draft.reviewRequiredFields.includes('officeHotelSuggestion'));
 });
 
 test('only explicit save changes state, with exact optimistic revisions and no parent mutation', () => {

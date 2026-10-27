@@ -94,6 +94,15 @@ test('document selectors only offer available media belonging to the active cust
 });
 
 
+test('hotel remains informational and copying suggestions never supplies an address or health response',async()=>{
+ const ui=setup({fields:{}}),summary=ui.summaries.get(ui.customers[0].id+':0');summary.officeHotelSuggestion='Hilton Al Riyadh';summary.defaults.proposedEntryDate='2026-11-11';
+ await ui.login();assert.match(ui.panel().textContent,/Hilton Al Riyadh/);assert.match(ui.panel().textContent,/لا يؤكد الحجز أو عنوان الإقامة/);assert.match(ui.panel().textContent,/محسوب من تجهيز المسودة/);
+ assert.equal(ui.input('health.hospitalizedOrEmergency').attributes['aria-label'],'هل هناك حالة تنويم في المستشفى حاليًا أو تتلقى علاج الطوارئ؟');
+ assert.equal(ui.input('health.accidentDisability').attributes['aria-label'],'هل تعرضت لحادث أدى إلى إصابتك بعلة أو إعاقة؟');assert.equal(ui.input('health.congenitalCondition').attributes['aria-label'],'هل لديك حالات ضعف أو تشوه خلقي؟');
+ await ui.invoke(ui.action('use_defaults'));assert.equal(ui.input('saudiAddress').value,'');assert.equal(ui.input('health.hospitalizedOrEmergency').value,'');
+ await ui.invoke(ui.action('prepare'));const body=JSON.parse(raadPosts(ui).at(-1).options.body);assert.equal(Object.hasOwn(body.fields,'saudiAddress'),false);assert.equal(Object.hasOwn(body.fields,'health'),false);assert.equal(body.fields.entryDate,'2026-11-11');
+});
+
 test('a newer saved revision preserves local edits and requires an explicit reload before review',async()=>{
  const ui=setup();await ui.login();await ui.edit(ui.input('passportNumber'),'UNSAVED-LOCAL');const summary=ui.summaries.get(ui.customers[0].id+':0');summary.revision=8;summary.fields.passportNumber='REMOTE-SAVED';await ui.refresh();assert.equal(ui.input('passportNumber').value,'UNSAVED-LOCAL');assert.equal(ui.action('review').disabled,true);assert.equal(ui.role('review').checked,false);
  await ui.invoke(ui.action('reload'));assert.equal(ui.input('passportNumber').value,'REMOTE-SAVED');await ui.edit(ui.input('passportNumber'),'FINAL-DRAFT');await ui.invoke(ui.action('prepare'));const body=JSON.parse(raadPosts(ui).at(-1).options.body);assert.equal(body.expectedRevision,8);assert.equal(body.fields.passportNumber,'FINAL-DRAFT');
