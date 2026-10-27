@@ -190,6 +190,23 @@ See also [webhook verification](https://docs.tinyfish.ai/webhooks). This phase
 does not implement portal submission, and `portal.connected` remains false until
 Raad has a verified executor bound to its own workflow.
 
+### Manual synthetic upload probe
+
+`node scripts/raad-tinyfish-upload-probe.js` is a separate, explicitly invoked
+capability check. With missing runtime configuration it performs no network
+request. With configured credentials it requests a short-lived blank profile
+setup session, connects through the provider's verified CDP endpoint and places
+an in-memory synthetic PNG into a local file input. It never navigates to MOFA,
+uses an applicant document, reads cookies/storage, enters credentials, saves the
+profile or submits a form. The fixed cancel endpoint is called for cleanup.
+
+Only sanitized result flags are printed. `uploadVerified` concerns the synthetic
+input, not a government upload or an authenticated MOFA session.
+`cleanupConfirmed` must be true before treating the probe as complete, and
+`executionConnected` remains false. Run this check before any real document
+transfer. Tests use injected responses; a passing test suite is not a live
+provider result. This probe does not repair ChatGPT's browser handoff.
+
 A later portal adapter must bind the exact reviewed draft, applicant, source files
 and live portal session; stop at changed fields, unsupported eligibility or expired
 session. Legal declarations require explicit approval for that concrete version.
