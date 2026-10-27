@@ -7,6 +7,7 @@ const {VisaPdfAutoPreparer}=require('./visa-pdf-auto');
 const {RaadVisaWorkflow}=require('./raad-visa-workflow');
 const {handleRaadRequest}=require('./raad-http');
 const {RaadTinyFishProfile}=require('./raad-tinyfish-profile');
+const {createHybridHandoffManager,createSyntheticHybridHandler}=require('./hybrid-handoff-manager');
 const {ComplaintHandoff}=require('./complaint-handoff');
 const {createComplaintTemplateGate}=require('./complaint-template');
 const complaintTemplateReady=createComplaintTemplateGate();
@@ -289,6 +290,8 @@ function customerSearchActive(){return [...quoteJobs.jobs.values()].some(job=>jo
 function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(provider);if(j)assistant.jobState(quoteJobs.jobs.get(j.id).recipient,'searching');return j||(includeCatalog&&!customerSearchActive()?catalog.claim(provider||'airarabia'):null)||{};}
 
 function createServer() {
+  const hybridManager=createHybridHandoffManager();
+  const handleHybrid=createSyntheticHybridHandler({manager:hybridManager});
   const server=http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
     if(await handleGmail(request,response,url,{readBody}))return;
@@ -366,6 +369,7 @@ function createServer() {
     }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
+      if(handleHybrid(request,response,url))return;
       if(await handleRaadRequest(request,response,url,{readBody,workflow:raad,inbox,mediaStore:visaMedia,provider:raadProvider}))return;
       if(await handleVisaMediaRequest(request,response,url,visaMedia))return;
       if(await handleInboxRequest(request,response,url,readBody,inbox))return;
@@ -416,7 +420,7 @@ function createServer() {
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
    for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
-  },5000);sweep.unref();server.once('close',()=>clearInterval(sweep));return server;
+  },5000);sweep.unref();server.once('close',()=>{clearInterval(sweep);hybridManager.dispose();});return server;
 }
 
 if (require.main === module) {
