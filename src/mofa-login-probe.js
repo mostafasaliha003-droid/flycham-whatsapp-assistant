@@ -48,18 +48,18 @@ async function defaultConnect(url, options) {return require('playwright').chromi
  * Returns fixed status flags only. Never returns credentials, live URL, DOM,
  * customer records, a screenshot or provider errors.
  */
-async function runMofaLoginProbe({enabled = false, token, region = 'lon', deliverPrivateLink, connect = defaultConnect,
+async function runMofaLoginProbe({enabled = false, token, region = 'lon', deliverPrivateLink, waitForContinuityCheck, connect = defaultConnect,
   signal, workMs = 110000, linkMs = DEFAULT_LINK_MS, cleanupMs = CLEANUP_MS} = {}) {
-  const result = {tested:false, handoffCompleted:false, cleanupConfirmed:false, reason:'DISABLED'};
+  const result = {tested:false, handoffCompleted:false, continuityVerified:false, authenticated:false, cleanupConfirmed:false, reason:'DISABLED'};
   if (enabled !== true) return result;
   const host = HOSTS[region];
   if (!host || typeof token !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(token) ||
-      typeof deliverPrivateLink !== 'function' || typeof connect !== 'function' ||
+      typeof deliverPrivateLink !== 'function' || typeof waitForContinuityCheck !== 'function' || typeof connect !== 'function' ||
       !Number.isSafeInteger(workMs) || workMs < 1 || workMs > MAX_SESSION_MS ||
       !Number.isSafeInteger(linkMs) || linkMs < 1 || linkMs >= workMs ||
       !Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 5000 ||
       (signal !== undefined && (!signal || typeof signal.addEventListener !== 'function'))) return {...result, reason:'CONFIG_INVALID'};
-  let browser, cdp, listener, complete, reason = 'PROBE_FAILED', handoffCompleted = false;
+  let browser, cdp, listener, complete, reason = 'PROBE_FAILED', handoffCompleted = false, continuityVerified = false;
   const scope = deadlineSignal(workMs, signal);
   try {
     if (scope.signal.aborted) throw invalid('TIMEOUT');
@@ -95,9 +95,23 @@ async function runMofaLoginProbe({enabled = false, token, region = 'lon', delive
     const ending = await bounded(complete, scope.signal);
     if (ending !== 'userDone') throw invalid('HANDOFF_NOT_COMPLETED');
     handoffCompleted = true;
-    // Done proves only a user handoff. The pilot never inspects the page or
-    // assumes login; no observed reliable authentication marker is available.
-    reason = 'MANUAL_HANDOFF_COMPLETED_AUTH_UNVERIFIED';
+    // Hold this exact browser and page until an authenticated admin requests a
+    // narrowly scoped continuity check. No DOM, network, CAPTCHA or login data.
+    await bounded(Promise.resolve().then(() => waitForContinuityCheck()), scope.signal);
+    const after = new URL(page.url());
+    const pageAvailable = browser.isConnected() === true && page.isClosed() === false &&
+      after.protocol === 'https:' && after.hostname === 'visa.mofa.gov.sa' &&
+      context.pages().includes(page);
+    if (pageAvailable) {
+      // This harmless target-scoped CDP round trip verifies remote responsiveness;
+      // do not inspect, persist, log or expose the returned layout measurements.
+      await bounded(cdp.send('Page.getLayoutMetrics'), scope.signal);
+      const finalTarget = new URL(page.url());
+      continuityVerified = browser.isConnected() === true && page.isClosed() === false &&
+        finalTarget.protocol === 'https:' && finalTarget.hostname === 'visa.mofa.gov.sa' &&
+        context.pages().includes(page);
+    }
+    reason = continuityVerified ? 'CONTINUITY_VERIFIED_AUTH_UNVERIFIED' : 'CONTINUITY_UNAVAILABLE';
   } catch (e) {
     const codes = new Set(['TIMEOUT','CONTEXT_INVALID','PAGE_INVALID','LIVE_LINK_INVALID','HANDOFF_NOT_COMPLETED','UPLOAD_NOT_VERIFIED']);
     reason = codes.has(e?.code) ? e.code : 'PROBE_FAILED';
@@ -106,7 +120,7 @@ async function runMofaLoginProbe({enabled = false, token, region = 'lon', delive
     if (cdp && listener) try {cdp.off('Browserless.liveComplete', listener);} catch {}
   }
   const cleanupConfirmed = await closeBounded(browser, cleanupMs);
-  return {tested:Boolean(browser), handoffCompleted, authenticated:false, cleanupConfirmed,
+  return {tested:Boolean(browser), handoffCompleted, continuityVerified, authenticated:false, cleanupConfirmed,
     reason: browser && !cleanupConfirmed ? 'CLEANUP_UNCONFIRMED' : reason};
 }
 module.exports = {runMofaLoginProbe, MOFA_LOGIN_URL};

@@ -70,18 +70,21 @@ test('synthetic hybrid UI uses the staff bearer header, reveals a safe private l
  ui.nodes.get('logout').onclick();assert.equal(ui.nodes.get('hybrid-link').children.length,0);assert.equal(ui.nodes.get('key').value,'');
 });
 
-test('manual MOFA UI protects bearer link and explicitly leaves authentication unverified',async()=>{
- const id='c'.repeat(32),link='https://production-lon.browserless.io/e/test/live/index.html?t=PRIVATE_CAPABILITY';let finished=false;
+test('manual MOFA UI protects bearer link and checks continuity while leaving authentication unverified',async()=>{
+ const id='c'.repeat(32),link='https://production-lon.browserless.io/e/test/live/index.html?t=PRIVATE_CAPABILITY';let phase='ready';
  const ui=setup({mofaResponse:({url,options})=>{
   if(url.pathname==='/internal/assistant/mofa-login-pilot')return options.method==='POST'?{id}:{enabled:true,configured:true};
   if(url.pathname.endsWith('/link'))return{link};
   if(url.pathname.endsWith('/cancel'))return{cancelling:true};
-  return finished?{id,state:'finished',result:{handoffCompleted:true,cleanupConfirmed:true,authenticated:false}}:{id,state:'ready'};
+  if(url.pathname.endsWith('/check'))return{checking:true};
+  return phase==='finished'?{id,state:'finished',result:{handoffCompleted:true,continuityVerified:true,cleanupConfirmed:true,authenticated:false}}:{id,state:phase};
  }});
  await ui.login();ui.nodes.get('navigation').onclick({target:{closest:()=>({dataset:{view:'portals'}})}});await ui.settle();
  assert.equal(ui.nodes.get('mofa-start').disabled,false);await ui.invoke(ui.nodes.get('mofa-start'));await ui.invoke(ui.nodes.get('mofa-refresh'));await ui.invoke(ui.nodes.get('mofa-reveal'));
  const anchor=ui.nodes.get('mofa-link').children[0];assert.equal(anchor.href,link);assert.equal(anchor.rel,'noopener noreferrer');assert.equal(anchor.referrerPolicy,'no-referrer');
- finished=true;await ui.invoke(ui.nodes.get('mofa-refresh'));assert.match(ui.nodes.get('mofa-state').textContent,/تسجيل الدخول غير متحقق/);assert.equal(ui.nodes.get('mofa-link').children.length,0);
+ phase='awaiting_continuity_check';await ui.invoke(ui.nodes.get('mofa-refresh'));assert.equal(ui.nodes.get('mofa-check').disabled,false);assert.equal(ui.nodes.get('mofa-link').children.length,0);
+ await ui.invoke(ui.nodes.get('mofa-check'));assert.ok(ui.requests.some(r=>r.path.endsWith('/check')&&r.options.method==='POST'));
+ phase='finished';await ui.invoke(ui.nodes.get('mofa-refresh'));assert.match(ui.nodes.get('mofa-state').textContent,/تسجيل الدخول غير متحقق/);
  const requests=ui.requests.filter(r=>r.path.includes('mofa-login-pilot'));assert.ok(requests.every(r=>r.options.headers.Authorization==='Bearer test-admin-key'));assert.ok(requests.every(r=>!r.path.includes('PRIVATE_CAPABILITY')));
 });
 

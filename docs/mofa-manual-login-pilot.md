@@ -23,11 +23,17 @@ Reloading the UI loses the job ID. No re-start should be done until a prior
 provider session is confirmed closed if cleanup is uncertain.
 
 The free-plan test has at most 90 seconds for the handoff and 110 seconds total;
-network latency and manual authentication may exceed that. On Done the session
-closes and login remains explicitly unverified. It cannot continue an application
-in the same session. A later executor requires a genuinely preserved browser
-session, verified reliable login indicators, secure delivery, tests and separate
-approval before any applicant information is sent to Browserless.
+network latency and manual authentication may exceed that. After Done the browser stays open until a time-bounded, authenticated admin
+check or expiry. The read-only check confirms only that the same browser is
+connected and its page remains open on the official hostname; a bounded CDP
+layout-metrics command also confirms the remote target responds, discarding
+the result. It navigates nowhere, reads no DOM and does not prove login or
+page function; it then
+closes the browser. The provider URL can still be used until expiry, including
+after Done, so no actions on sensitive data should occur during this check.
+It cannot continue an application. A later executor requires reliable login
+indicators, secure delivery, tests and separate approval before applicant data
+is sent to Browserless.
 
 Verified mocked-node tests do not verify the remote provider, MOFA connectivity,
 manual login success, liveURL permissions, browser shutdown or session retention.

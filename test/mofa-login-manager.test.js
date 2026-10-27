@@ -51,3 +51,23 @@ test('MOFA pilot cannot start if the synthetic pilot is simultaneously enabled',
  let runs=0;const h=setup({runner:()=>{runs++;}});h.env.RAAD_SYNTHETIC_HYBRID_ENABLED='true';
  assert.equal(h.req('GET',ROOT).body.enabled,false);assert.equal(h.req('POST',ROOT).status,404);assert.equal(runs,0);h.manager.dispose();
 });
+test('continuity check requires auth, readiness and is single-use; login remains unverified',async()=>{
+ let ready,finish;
+ const h=setup({runner:o=>{ready=o.waitForContinuityCheck;return new Promise(resolve=>{finish=resolve;});}});
+ assert.equal(h.req('POST',ROOT).status,202);await tick();
+ assert.equal(h.req('POST',ROOT+'/'+ID+'/check').status,409);
+ const pending=ready();
+ assert.equal(h.req('GET',ROOT+'/'+ID).body.state,'awaiting_continuity_check');
+ assert.equal(h.req('POST',ROOT+'/'+ID+'/check','Bearer wrong').status,401);
+ assert.equal(h.req('POST',ROOT+'/'+ID+'/check').status,202);
+ assert.equal(h.req('POST',ROOT+'/'+ID+'/check').status,409);await pending;
+ finish({tested:true,handoffCompleted:true,continuityVerified:true,authenticated:true,cleanupConfirmed:true,reason:'CONTINUITY_VERIFIED_AUTH_UNVERIFIED'});await tick();
+ const result=h.req('GET',ROOT+'/'+ID).body.result;assert.equal(result.continuityVerified,true);assert.equal(result.authenticated,false);h.manager.dispose();
+});
+test('expired or cancelled wait never accepts a check',async()=>{
+ let stamp=1000,ready;
+ const h=setup({now:()=>stamp,runner:o=>{ready=o.waitForContinuityCheck;return new Promise(()=>{});}});
+ h.req('POST',ROOT);await tick();ready();stamp+=110001;assert.equal(h.req('POST',ROOT+'/'+ID+'/check').status,409);h.manager.dispose();
+ let wait;const c=setup({runner:o=>{wait=o.waitForContinuityCheck;return new Promise(()=>{});}});
+ c.req('POST',ROOT);await tick();wait();assert.equal(c.req('POST',ROOT+'/'+ID+'/cancel').status,202);assert.equal(c.req('POST',ROOT+'/'+ID+'/check').status,409);c.manager.dispose();
+});
