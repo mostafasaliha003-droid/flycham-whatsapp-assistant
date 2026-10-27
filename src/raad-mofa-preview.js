@@ -100,7 +100,7 @@ function buildMofaPreview(summary) {
   unresolved.push('عناصر رفع الجواز والإقامة والصورة الشخصية غير متحققة؛ لا تُرفع مستندات من هذه المعاينة.');
   unresolved.push('عدد الدخول وصلاحية التأشيرة ومدة الإقامة تتطلب تحققاً بعد اختيار الجنسية؛ لم تُحوّل سياسة المكتب إلى قيم بوابة.');
   if (fields.some(field => field.controlId === 'ADDRESS_HOME')) notices.push('ربط عنوان السعودية يستند إلى التسمية المرصودة KSA Home Address؛ يجب التحقق من التسمية الحالية قبل أي تنفيذ مستقبلي.');
-  if (fields.some(field => field.sourceField === 'defaults.proposedEntryDate')) notices.push('تاريخ الدخول المقترح محسوب من تجهيز المسودة؛ تحقق منه عند التقديم ومن موعد السفر الفعلي.');
+  if (fields.some(field => field.sourceField === 'defaults.proposedEntryDate')) notices.push('تاريخ الدخول التقديري محسوب بعد ١٥ يومًا من تاريخ المعاينة بتوقيت دبي، ويجب إعادة حسابه يوم التقديم.');
   if (fields.some(field => field.sourceField.startsWith('defaults.'))) notices.push('كل قيمة مصدرها defaults اقتراح ظاهر للمراجعة، وليست حقيقة شخصية مستنتجة.');
   if (summary.state === 'needs_information') notices.push('المسودة تحتاج معلومات أو مراجعة إضافية؛ ظهور حقل في المعاينة لا يؤكد اكتمال الطلب.');
   return {mode: 'preview_only', canExecute: false, draftRevision: summary.revision, caseId: summary.caseId, fields, unresolved, notices};

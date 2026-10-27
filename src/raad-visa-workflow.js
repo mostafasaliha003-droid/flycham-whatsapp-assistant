@@ -213,7 +213,11 @@ class RaadVisaWorkflow {
   }
 
   assess(context, job) {
-    const referenceDate = dubaiDate(this.now()), fields = job.fields || {}, defaults = job.defaults || this.defaults(context, referenceDate);
+    const referenceDate = dubaiDate(this.now()), fields = job.fields || {}, storedDefaults = job.defaults || this.defaults(context, referenceDate);
+    // Recalculate only the office estimate as the Dubai date changes; never
+    // replace an applicant's explicitly supplied entry date. At this stage no
+    // request is submitted, so this is still a preview-time estimate.
+    const defaults = Object.hasOwn(fields, 'entryDate') ? storedDefaults : {...storedDefaults, proposedEntryDate: proposedEntryDate(referenceDate)};
     const validation = validateApplicant(fields, {referenceDate});
     const issues = [...validation.issues];
     const source = sourceFields(context.person);

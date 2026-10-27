@@ -104,6 +104,40 @@ test('get is read only and proposals do not invent applicant facts or actual tra
   assert.equal(f.workflow.get(CUSTOMER).defaults.mission, 'Abu Dhabi');
 });
 
+test('entry estimate refreshes at Dubai midnight without modifying a saved draft', () => {
+  const f = fixture();
+  for (const record of Object.values(f.records)) record.expiresAt = NOW + 10 * 86400000;
+  let clock = Date.parse('2026-10-27T19:59:59Z'); // 23:59 on 27 October in Dubai.
+  f.workflow.now = () => clock;
+  const saved = prepare(f, {fields: applicant({entryDate: null})});
+  const reviewed = review(f, saved);
+  assert.equal(reviewed.defaults.proposedEntryDate, '2026-11-11');
+  assert.equal(reviewed.review.complete, true);
+  assert.equal(reviewed.state, 'needs_information');
+  const revision = reviewed.revision, saves = f.saves();
+  clock = Date.parse('2026-10-27T20:00:00Z'); // 00:00 on 28 October in Dubai.
+  const refreshed = f.workflow.get(CUSTOMER);
+  assert.equal(refreshed.defaults.proposedEntryDate, '2026-11-12');
+  assert.equal(Object.hasOwn(refreshed.fields, 'entryDate'), false);
+  assert.equal(refreshed.review.complete, false);
+  assert.equal(refreshed.revision, revision);
+  assert.equal(f.saves(), saves);
+});
+
+test('an explicit entry date is retained across midnight and reviewed normally', () => {
+  const f = fixture();
+  for (const record of Object.values(f.records)) record.expiresAt = NOW + 10 * 86400000;
+  let clock = Date.parse('2026-10-27T19:59:59Z');
+  f.workflow.now = () => clock;
+  const reviewed = review(f, prepare(f));
+  assert.equal(reviewed.review.complete, true);
+  clock = Date.parse('2026-10-27T20:00:00Z');
+  const refreshed = f.workflow.get(CUSTOMER);
+  assert.equal(refreshed.fields.entryDate, '2026-11-20');
+  assert.equal(refreshed.review.complete, true);
+  assert.equal(refreshed.defaults.proposedEntryDate, '2026-11-11');
+});
+
 test('hotel suggestion is configurable but never becomes a claimed booked address or personal answer', () => {
   const f = fixture();
   const workflow = new RaadVisaWorkflow({...f.config, env: {...CONTACTS, RAAD_SAUDI_HOTEL_SUGGESTION: '  Test Hotel Riyadh  '}});
