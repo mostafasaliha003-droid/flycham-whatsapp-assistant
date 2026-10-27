@@ -29,7 +29,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
    j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires};
   }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
- const staticAssets={};for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
+ const staticAssets=Object.create(null);for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
  async function classify(j){await guard(j);const loginVisible=await j.page.locator(SEL.password).isVisible().catch(()=>false);if(loginVisible)return 'login_not_completed';const codes=j.page.locator('input[autocomplete="one-time-code"]:visible');if(await codes.count()>0)return 'verification_required';return 'result_unverified';}
  const server=http.createServer(async(req,res)=>{
   let url;try{url=new URL(req.url,'https://pilot.invalid');}catch{reply(res,400,{error:'INVALID_REQUEST'});return;}
