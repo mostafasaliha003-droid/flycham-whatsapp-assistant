@@ -2,6 +2,7 @@
 const {validCustomer}=require('./conversation-journal');
 const {parseTD3MRZ}=require('./raad-document-validation');
 const {buildMofaPreview}=require('./raad-mofa-preview');
+const {postPaymentQuestion}=require('./raad-post-payment-questionnaire');
 const {preparePortalImage,prepareResidenceImage}=require('./raad-attachments');
 const {rasterizePdf}=require('./raad-pdf');
 const preparationLock=require('./raad-preparation-lock');
@@ -47,6 +48,14 @@ async function handleRaadRequest(request,response,url,{readBody,workflow,inbox,m
    const draft=workflow.get(customer,{applicantIndex});
    if(!Number.isSafeInteger(body.expectedRevision)||body.expectedRevision!==draft.revision)throw Object.assign(Error('RAAD_REVISION_CONFLICT'),{code:'RAAD_REVISION_CONFLICT',statusCode:409});
    reply(200,buildMofaPreview(draft));return true;
+  }
+  // Staff-only, revision-bound proposal. This route does not deliver messages,
+  // record responses, or claim that an application has been filed.
+  if(body.action==='preview_post_payment_question'){
+   const draft=workflow.get(customer,{applicantIndex});
+   if(!Number.isSafeInteger(body.expectedRevision)||body.expectedRevision!==draft.revision)throw Object.assign(Error('RAAD_REVISION_CONFLICT'),{code:'RAAD_REVISION_CONFLICT',statusCode:409});
+   const visaCase=workflow.store?.data?.visaCases?.[customer];
+   reply(200,postPaymentQuestion({visaCase,draft,applicantIndex}));return true;
   }
   if(!['prepare','review'].includes(body.action))throw Error('INVALID_RAAD_ACTION');
   const result=body.action==='prepare'?workflow.prepare(customer,{...body,applicantIndex}):workflow.review(customer,{...body,applicantIndex});reply(200,result);return true;

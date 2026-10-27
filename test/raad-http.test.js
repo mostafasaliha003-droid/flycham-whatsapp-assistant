@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {handleRaadRequest} = require('../src/raad-http');
+const {visaCaseSignature} = require('../src/visa-case-signature');
 
 const customer = '971500000031';
 const other = '971500000032';
@@ -64,6 +65,21 @@ function safePreviewSummary() {
     review: {complete: false, invalidated: false, confirmedFields: []}
   };
 }
+
+test('post-payment question preview requires staff ownership, current revision, and matching verified payment; it never sends', async () => {
+  const f=fixture(), c={id:'synthetic-case',applicantCount:1,applicants:[{}],quote:{total:700},documents:[],paymentStatus:'unverified'};
+  const signature=visaCaseSignature(c);
+  f.workflow.store={data:{visaCases:{[customer]:c}}};
+  f.state.draft={revision:4,jobId:'job-synthetic',caseId:c.id,caseSignature:signature,applicantIndex:0,state:'draft',fields:{}};
+  let r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:4}});
+  assert.equal(r.status,200);assert.equal(r.body.status,'payment_or_case_not_verified');
+  c.paymentStatus='verified';c.staffVerification={payment:{amount:700,caseSignature:signature}};
+  r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:4}});
+  assert.equal(r.body.status,'question');assert.equal(r.body.question.key,'maritalStatus');
+  assert.equal(f.calls.prepare.length+f.calls.review.length+f.calls.storeDerived.length,0);
+  r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:3}});assert.equal(r.status,409);
+  f.inbox.owned=false;r=await f.call({body:{action:'preview_post_payment_question',expectedRevision:4}});assert.equal(r.status,409);
+});
 
 test('only the RAAD route is handled; GET is read-only and replies are private JSON', async () => {
   const f = fixture({owned: false});
