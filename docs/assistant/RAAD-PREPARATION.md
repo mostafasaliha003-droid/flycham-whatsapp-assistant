@@ -5,9 +5,9 @@ This release prepares and reviews local drafts. Authenticated MOFA access throug
 an interactive TinyFish saved profile has been verified separately, but the
 Render app has **no bound live MOFA session, portal executor, OCR service, OTP
 endpoint, CAPTCHA solver, legal-consent action, insurance purchase, government
-payment, official PDF capture, or customer PDF
-delivery**. `portal.connected` remains false. A ready draft is not a submitted
-application, an issued visa, or proof of eligibility.
+payment, official PDF capture, or customer PDF delivery**. `portal.connected`
+remains false. A ready draft is not a submitted application, an issued visa, or
+proof of eligibility.
 
 ## Implemented path
 
@@ -18,6 +18,8 @@ application, an issued visa, or proof of eligibility.
    require confirmation against the printed document. Names are not invented or
    split into father/grandfather names automatically. Passport numbers are not
    changed by nationality, and issuing country is separate from nationality.
+   Separate Arabic father/grandfather names may be recorded when provided; their
+   absence never authorizes inference from another name or language.
 4. Select the applicant's owned passport, residence and portrait attachments.
    Optionally make protected JPEG/PNG derivatives under 1,000,000 bytes. Two
    residence images can be combined without cropping. Originals are retained;
@@ -27,6 +29,8 @@ application, an issued visa, or proof of eligibility.
    separately for Raad. Their content hashes and expiry invalidate stale review.
 6. Confirm the exact saved version's facts, suggestions and selected documents.
    It can then be ready **for portal review**, never marked submitted by Raad.
+7. Preview the local field mapping for that saved revision. This is a guarded
+   local preview with `canExecute: false`; it does not open or fill the portal.
 
 Unknown marital status, previous nationality, travel history, Umrah intent and
 health declarations remain unanswered. There are no "all no" defaults and no
@@ -41,16 +45,18 @@ answers. Neither defaults to false. An affirmative answer keeps preparation in
 staff applicability review; it is not a finding of visa rejection, a ban or
 ineligibility. Saving or reviewing these facts does not accept the legal pledge.
 
-Abu Dhabi mission, UAE residence country, Egypt single/90-day versus other
-supported tourist multiple/365-day settings, air transport, King Khalid arrival
-and entry date +15 days are tentative office suggestions. The actual trip and
-current portal options still require confirmation. Unsupported and Umrah-only
-cases do not enter this tourist workflow.
+The agency route always uses Abu Dhabi mission; the live form also exposes a
+Dubai option, which is not this agency route. UAE residence country, Egypt
+single/90-day versus other supported tourist multiple/365-day settings, air
+transport, King Khalid arrival and entry date +15 days remain office suggestions.
+Live inspection has not established visa/stay duration or eligibility for a
+particular applicant. The actual trip and current portal options still require
+confirmation. Unsupported and Umrah-only cases do not enter this tourist workflow.
 
 ## Protected API
 
-All routes use the existing admin authorization; mutations require current staff
-ownership, rechecked after body upload and image processing.
+The case routes use the existing admin authorization; mutations require current
+staff ownership, rechecked after body upload and image processing.
 
 - `GET /internal/assistant/raad/:customer?applicantIndex=0`
 - `POST /internal/assistant/raad/:customer`
@@ -59,6 +65,33 @@ ownership, rechecked after body upload and image processing.
   - `parse_mrz`: parse ephemeral TD3 text, optionally with independently confirmed
     full birth/expiry dates. Never stored in drafts, journal or logs.
   - `prepare_image`: make a reviewed-later derivative of owned source UUIDs.
+  - `preview_mapping`: return a local mapping preview for the saved revision,
+    guarded by current staff ownership, case state and revision. It always
+    returns `canExecute: false`; it sends no applicant data or documents to MOFA
+    or TinyFish and provides no portal execution action.
+
+The provider configuration checker is separate from applicant preparation and
+uses global admin authorization:
+
+- `GET /internal/assistant/raad-provider`: local configuration booleans only;
+  no network request.
+- `POST /internal/assistant/raad-provider/check`: explicitly checks only the
+  configured profile's metadata through TinyFish's fixed
+  `GET /v1/profiles/{profileId}` endpoint. It cannot start a browser/Agent run,
+  inspect MOFA, accept terms, upload files or enter an OTP.
+
+Configure `RAAD_TINYFISH_API_KEY` as a server secret and
+`RAAD_TINYFISH_PROFILE_ID` as private runtime configuration, or use encrypted
+private configuration's `tinyfishProfileId` for the profile ID. The API key has
+no private-file fallback. The checker uses a 15-second deadline, a 200 KiB
+response cap, rejects redirects and verifies the documented response shape and
+exact configured profile identity. It returns only safe status/reason fields,
+never the profile ID, name, domains, cookies, credentials or raw provider errors.
+`providerReachable` and `profileAvailable` concern provider metadata access;
+`portalAuthenticationChecked` and `executionConnected` always remain false.
+An empty `signed_in_sites` list cannot prove a logged-out portal session.
+This checker has passed tests with mocked responses only. It has not been live
+configured or checked, and does not establish an authenticated Render executor.
 
 There is deliberately no submit, pay, accept-all, OTP or arbitrary URL action.
 Drafts and media use the encrypted existing store. Draft retention is 30 days;
@@ -68,40 +101,25 @@ constants. No external AI receives identity or health information through Raad.
 
 ## Observed portal access: 27 October 2026
 
-The public SmartForm link initially redirected to the MOFA home page. The visitor
-account sign-in page requires authentication and an image CAPTCHA. Subsequently,
-an authorized TinyFish run using a saved Browser Context Profile showed the
-authenticated welcome header, avatar and account dropdown, and reached SmartForm
-My Applications. Its **Add A New Application** link opened the
-[agreement page](https://visa.mofa.gov.sa/SmartForm/Agreement), which was read
-without accepting it.
+Authorized interactive TinyFish inspection established a signed-in MOFA session,
+reached My Applications, and opened the blank Traditional Application after the
+owner separately approved each of the two displayed agreements at action time.
+Each agreement was accepted once. No real applicant data was entered, documents
+uploaded, application saved/submitted or payment made. Subsequent legal gates
+still require approval for the specific agreement and applicant declarations.
 
-Following that link to read the agreement is a read-only inspection step. The
-page heading was **VISA Portal Services Agreement**, with **I AGREE**, Back and
-Close controls. Its terms state that acceptance is a legally binding signature.
-They describe a USD 10 processing fee plus USD 0.50 banking fee per visa, which
-are not the total visa or insurance cost; platform fees are nonrefundable once
-paid. They also cover information processing and sharing with Saudi government
-authorities, and service, warranty and liability limitations.
+The observed controls, navigation and unresolved mappings are recorded in
+[MOFA observations](RAAD-MOFA-OBSERVATIONS.md). These are evidence for the local
+preview and future validation, not a completed portal adapter. Empty
+`signed_in_sites` metadata or a generic login link alone does not invalidate
+authenticated page evidence. Do not derive selectors from descriptions or bypass
+authentication challenges.
 
-The consent boundary is clicking **I AGREE**. After the owner explicitly approved
-this concrete services agreement at action time on 27 October 2026, one acceptance
-click succeeded and reached `/SmartForm/ElectronicAgreement`. The second page has
-11 applicant declarations and an **Agree** link to `/SmartForm/TraditionalApp`.
-That second agreement has not been accepted. No payment was made and no applicant
-data was entered or application saved. Application-form fields remain unverified.
-Its full text was read in a separate authenticated run at the same second-page
-URL. It includes biometric consent, truthful-data and no-prior-deportation pledges,
-visitor-purpose and departure commitments, and acknowledgements of applicable
-rules and penalties. The actual form is still behind its **Agree** control.
-The first approval and a general instruction to accept future terms do not replace
-the separate approval required for another legal agreement or declarations about
-a particular applicant. Do not derive production selectors from a description or
-bypass authentication challenges.
-
-The profile's `signed_in_sites` metadata remained empty despite authenticated
-page evidence. Neither that metadata nor a generic login link alone proves that
-the live browser is logged out. Recheck the actual page and account controls.
+The last focused route inspection failed its selection postconditions: Tourism
+and Syrian nationality were shown, but residence was Australia after an unsaved
+generic selection and mission remained Select. That result is inconclusive for
+the UAE/Abu Dhabi route and establishes no visa validity, stay duration or UAE
+restriction. Dates, GCC permit fields and upload behavior remain unverified.
 
 ## Next portal integration checkpoint
 
@@ -117,12 +135,14 @@ Profiles are [scoped to the TinyFish account and API-key owner](https://docs.tin
 Organization workflow keys cannot use them. The ChatGPT plugin uses OAuth with a
 TinyFish account; the [REST API requires an `X-API-Key` header](https://docs.tinyfish.ai/authentication).
 It is an inference that a personal REST key for that same account can use the
-profile saved through the plugin. Verify this through the profile-list endpoint
-before connecting Raad. The plugin connection alone supplies no Render API key.
+profile saved through the plugin. Verify access through the implemented
+read-only profile-detail checker before connecting Raad. The plugin connection
+alone supplies no Render API key.
 Keep the key in a server secret and the profile ID in private runtime
 configuration; no concrete profile ID or credential belongs in source control.
 
-The minimal next phase is a staff-only, read-only inspection adapter:
+The provider metadata checker is implemented; a portal inspection adapter is not.
+The next phase remains a staff-only, read-only inspection adapter:
 
 1. Provision a same-account personal API key privately and verify access to the
    configured profile without exposing cookies or credentials.
@@ -141,13 +161,31 @@ The minimal next phase is a staff-only, read-only inspection adapter:
 
 The [Agent API reference](https://docs.tinyfish.ai/agent-api/reference) documents
 creation, polling, cancellation and streaming, but no approval pause/resume, OTP
-input or manual CAPTCHA takeover endpoint. Its live stream is documented as a
-[preview](https://docs.tinyfish.ai/live-preview), not a human-input channel.
+input, manual CAPTCHA takeover or file/buffer/upload-URL attachment endpoint.
+Profile `/upload` accepts cookies and storage, not applicant document files.
+Its live stream is documented as a [preview](https://docs.tinyfish.ai/live-preview),
+not a human-input channel.
 Strict mode and custom step limits require beta access. The separate
 [Browser API](https://docs.tinyfish.ai/browser-api/reference) provides CDP control,
 but its sessions are isolated and its documented creation request has no profile
-parameter; do not assume it resumes an Agent run. Genuine secure human control
-must be implemented and verified before claiming an OTP or CAPTCHA gate works.
+parameter; do not assume it resumes an Agent run.
+
+The documented profile setup-session `cdp_url` can be controlled with standard
+Playwright/CDP. It is a candidate for a controller that keeps one live browser
+through staff gates, not a verified Raad executor. TinyFish does not explicitly
+document preloading existing profile state into setup sessions, document-buffer
+uploads there, or using setup sessions as a production workflow executor. The
+[public schema](https://agent.tinyfish.ai/v1/openapi/main) allows a setup timeout
+of 5–86400 seconds capped by the account maximum and returns `expires_at`. Explicit
+save captures setup browser state and may clean up the session. Ordinary Agent
+writeback of every cookie/storage change is not guaranteed by the documentation;
+run-attributed profile-write metadata alone does not prove consent continuity.
+Validate authentication reuse, synthetic file uploads, session lifetime and
+private one-use job-bound OTP input before transmitting customer documents.
+The provider checker is not yet live configured. No upload test, OTP channel or
+official PDF capture is present.
+Genuine secure human control must be implemented and verified before claiming
+an OTP or CAPTCHA gate works.
 See also [webhook verification](https://docs.tinyfish.ai/webhooks). This phase
 does not implement portal submission, and `portal.connected` remains false until
 Raad has a verified executor bound to its own workflow.

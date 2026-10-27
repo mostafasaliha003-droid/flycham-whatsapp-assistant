@@ -12,7 +12,7 @@ const customer = '971500000031';
 const other = '971500000032';
 const prefix = '/internal/assistant/raad/';
 
-function fixture({owned = true} = {}) {
+function fixture({owned = true, provider} = {}) {
   const calls = {readBody: 0, requireCustomer: [], get: [], prepare: [], review: [], read: [], storeDerived: []};
   const state = {draft: {revision: 4, fields: {latinFirstName: 'Synthetic'}}};
   const inbox = {
@@ -37,7 +37,7 @@ function fixture({owned = true} = {}) {
       end(value) { data = value; }
     };
     const handled = await handleRaadRequest({method}, response, new URL(route, 'https://synthetic.invalid'), {
-      inbox, workflow, mediaStore,
+      inbox, workflow, mediaStore, provider,
       readBody: async () => { calls.readBody++; return bytes; }
     });
     return {handled, status, headers, body: data === undefined ? undefined : JSON.parse(data)};
@@ -56,6 +56,15 @@ function syntheticMRZ() {
   return first + '\n' + second + digit(second.slice(0, 10) + second.slice(13, 20) + second.slice(21, 43));
 }
 
+function safePreviewSummary() {
+  return {
+    jobId: 'synthetic-job', caseId: 'synthetic-case', applicantIndex: 2, revision: 7, state: 'draft',
+    fields: {latinFirstName: 'Synthetic', passportNumber: 'N0001'},
+    defaults: {visitPurpose: 'tourism', mission: 'Abu Dhabi'},
+    review: {complete: false, invalidated: false, confirmedFields: []}
+  };
+}
+
 test('only the RAAD route is handled; GET is read-only and replies are private JSON', async () => {
   const f = fixture({owned: false});
   assert.equal((await f.call({route: '/internal/assistant/conversations/' + customer})).handled, false);
@@ -71,11 +80,85 @@ test('only the RAAD route is handled; GET is read-only and replies are private J
   assert.equal(f.calls.readBody, 0);
 });
 
+test('provider status is a global private read without a staff claim, body, customer lookup or network call', async () => {
+  const {RaadTinyFishProfile} = require('../src/raad-tinyfish-profile');
+  let networkCalls = 0;
+  const provider = new RaadTinyFishProfile({
+    env: {RAAD_TINYFISH_API_KEY: 'synthetic-server-key', RAAD_TINYFISH_PROFILE_ID: 'synthetic-server-profile'},
+    fetchImpl: async () => { networkCalls++; throw Error('STATUS_MUST_NOT_FETCH'); }
+  });
+  const f = fixture({owned: false, provider}), before = structuredClone(f.state);
+  const result = await f.call({method: 'GET', route: '/internal/assistant/raad-provider?url=https://untrusted.invalid&profileId=untrusted'});
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {configured: true, profileConfigured: true, executionConnected: false});
+  assert.match(result.headers['Cache-Control'], /no-store/);
+  assert.equal(result.headers['X-Content-Type-Options'], 'nosniff');
+  assert.equal(networkCalls, 0);
+  assert.equal(f.calls.readBody + f.calls.requireCustomer.length + f.calls.get.length + f.calls.prepare.length + f.calls.review.length + f.calls.read.length + f.calls.storeDerived.length, 0);
+  assert.deepEqual(f.state, before);
+});
+
+test('provider check uses only injected private configuration and returns a safe result without client state writes', async () => {
+  const {RaadTinyFishProfile} = require('../src/raad-tinyfish-profile');
+  const networkCalls = [];
+  const provider = new RaadTinyFishProfile({
+    env: {RAAD_TINYFISH_API_KEY: 'synthetic-server-key', RAAD_TINYFISH_PROFILE_ID: 'synthetic-server-profile'},
+    fetchImpl: async (url, options) => {
+      networkCalls.push({url, options});
+      return Response.json({id: 'synthetic-server-profile', name: 'PRIVATE_PROFILE_NAME', created_at: '2026-10-27T00:00:00Z', domains: [], providerDebug: 'PRIVATE_COOKIE_OR_TOKEN'});
+    }
+  });
+  const f = fixture({owned: false, provider}), before = structuredClone(f.state);
+  const result = await f.call({method: 'POST', route: '/internal/assistant/raad-provider/check?url=https://untrusted.invalid&profileId=untrusted', body: {
+    url: 'https://untrusted.invalid', key: 'INJECTED_KEY', apiKey: 'INJECTED_API_KEY', profileId: 'INJECTED_PROFILE',
+    env: {RAAD_TINYFISH_API_KEY: 'INJECTED_ENV_KEY', RAAD_TINYFISH_PROFILE_ID: 'INJECTED_ENV_PROFILE'}
+  }});
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {configured: true, profileConfigured: true, executionConnected: false, checked: true, providerReachable: true, profileAvailable: true, portalAuthenticationChecked: false, ok: true, reason: 'TINYFISH_PROFILE_AVAILABLE'});
+  assert.doesNotMatch(JSON.stringify(result.body), /PRIVATE_|INJECTED_|synthetic-server|untrusted\.invalid/);
+  assert.equal(networkCalls.length, 1);
+  assert.equal(networkCalls[0].url, 'https://agent.tinyfish.ai/v1/profiles/synthetic-server-profile');
+  assert.equal(networkCalls[0].options.method, 'GET');
+  assert.equal(networkCalls[0].options.headers['X-API-Key'], 'synthetic-server-key');
+  assert.equal(networkCalls[0].options.redirect, 'error');
+  assert.equal(f.calls.readBody + f.calls.requireCustomer.length + f.calls.get.length + f.calls.prepare.length + f.calls.review.length + f.calls.read.length + f.calls.storeDerived.length, 0);
+  assert.deepEqual(f.state, before);
+});
+
+test('provider routes reject unsupported methods before calling the provider and sanitize missing or failed providers', async () => {
+  let providerCalls = 0;
+  const provider = {
+    status() { providerCalls++; throw Error('PRIVATE_API_KEY_AND_PROFILE_NAME'); },
+    async check() { providerCalls++; throw Object.assign(Error('https://provider.invalid/PRIVATE_TOKEN'), {code: 'RAAD_PRIVATE_DETAIL', statusCode: 401}); }
+  };
+  const f = fixture({owned: false, provider});
+  for (const [route, methods] of [['/internal/assistant/raad-provider', ['POST', 'PUT', 'DELETE']], ['/internal/assistant/raad-provider/check', ['GET', 'PUT', 'DELETE']]]) {
+    for (const method of methods) {
+      const result = await f.call({method, route});
+      assert.equal(result.status, 405);
+      assert.deepEqual(result.body, {error: 'METHOD_NOT_ALLOWED'});
+    }
+  }
+  assert.equal(providerCalls, 0);
+  for (const [route, method] of [['/internal/assistant/raad-provider', 'GET'], ['/internal/assistant/raad-provider/check', 'POST']]) {
+    const failed = await f.call({route, method});
+    assert.equal(failed.status, 503);
+    assert.deepEqual(failed.body, {ok: false, error: 'RAAD_PROVIDER_UNAVAILABLE'});
+    const missing = await fixture({owned: false}).call({route, method});
+    assert.equal(missing.status, 503);
+    assert.deepEqual(missing.body, {ok: false, error: 'RAAD_PROVIDER_UNAVAILABLE'});
+  }
+  assert.equal(providerCalls, 2);
+  assert.equal(f.calls.readBody + f.calls.requireCustomer.length, 0);
+  assert.equal((await f.call({route: '/internal/assistant/raad-provider/check/extra'})).handled, false);
+});
+
 test('a staff claim is required before reading or parsing any mutation body or opening media', async () => {
   const f = fixture({owned: false}), before = structuredClone(f.state);
   for (const body of [
     {action: 'prepare', confirm: true},
     {action: 'review', confirm: true},
+    {action: 'preview_mapping', applicantIndex: 2, expectedRevision: 7},
     {action: 'parse_mrz', mrz: syntheticMRZ()},
     {action: 'prepare_image', confirm: true, kind: 'passport', sourceIds: ['synthetic-source']}
   ]) {
@@ -88,10 +171,11 @@ test('a staff claim is required before reading or parsing any mutation body or o
   assert.deepEqual(f.state, before);
 });
 
-test('releasing a staff claim while the JSON body streams prevents prepare, review and MRZ dispatch', async () => {
+test('releasing a staff claim while the JSON body streams prevents prepare, review, preview and MRZ dispatch', async () => {
   for (const body of [
     {action: 'prepare', confirm: true, expectedRevision: 4},
     {action: 'review', confirm: true, expectedRevision: 4},
+    {action: 'preview_mapping', applicantIndex: 2, expectedRevision: 7},
     {action: 'parse_mrz', mrz: syntheticMRZ(), confirmedBirthDate: '1990-01-15', confirmedExpiryDate: '2031-01-01'}
   ]) {
     const f = fixture(), before = structuredClone(f.state);
@@ -165,6 +249,69 @@ test('requires bounded object JSON and rejects all portal, OTP, payment and cons
   const json = JSON.stringify({action: 'prepare', expectedRevision: 0});
   assert.equal((await f.call({raw: json + ' '.repeat(100000 - Buffer.byteLength(json))})).status, 200);
   assert.equal(f.calls.prepare.length, 1, 'the documented 100,000-byte boundary is inclusive');
+});
+
+test('mapping preview reads only the requested current draft and never uses request field data or a provider', async () => {
+  const {buildMofaPreview} = require('../src/raad-mofa-preview');
+  const f = fixture();
+  f.state.draft = safePreviewSummary();
+  const before = structuredClone(f.state), originalFetch = global.fetch;
+  let networkCalls = 0;
+  global.fetch = async () => { networkCalls++; throw Error('PREVIEW_MUST_NOT_CONTACT_A_PROVIDER'); };
+  try {
+    const result = await f.call({route: prefix + customer + '?applicantIndex=1', body: {
+      action: 'preview_mapping', applicantIndex: 2, expectedRevision: 7, confirm: true,
+      fields: {latinFirstName: 'INJECTED_REQUEST_FIELD', passportNumber: 'INJECTED_PASSPORT'},
+      defaults: {mission: 'INJECTED_MISSION'},
+      jobId: 'INJECTED_JOB', caseId: 'INJECTED_CASE',
+      url: 'https://provider.invalid/submit', otp: 'INJECTED_OTP'
+    }});
+    assert.equal(result.status, 200);
+    assert.equal(result.body.mode, 'preview_only');
+    assert.equal(result.body.canExecute, false);
+    assert.equal(result.body.draftRevision, 7);
+    assert.equal(result.body.caseId, 'synthetic-case');
+    assert.deepEqual(result.body, buildMofaPreview(safePreviewSummary()));
+    assert.doesNotMatch(JSON.stringify(result.body), /INJECTED_|provider\.invalid/);
+    assert.match(result.headers['Cache-Control'], /no-store/);
+    assert.deepEqual(f.calls.get, [{id: customer, options: {applicantIndex: 2}}]);
+    assert.equal(f.calls.prepare.length + f.calls.review.length + f.calls.read.length + f.calls.storeDerived.length, 0);
+    assert.deepEqual(f.state, before);
+    assert.equal(networkCalls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('mapping preview rejects stale or noninteger revisions before reading data for the preview', async () => {
+  const f = fixture(), before = structuredClone(f.state), originalFetch = global.fetch;
+  let networkCalls = 0, previewDataReads = 0;
+  global.fetch = async () => { networkCalls++; throw Error('PREVIEW_MUST_NOT_CONTACT_A_PROVIDER'); };
+  f.workflow.get = (id, options) => {
+    f.calls.get.push({id, options});
+    return new Proxy(safePreviewSummary(), {
+      get(summary, property) {
+        if (property === 'revision') return summary.revision;
+        previewDataReads++;
+        throw Error('STALE_DRAFT_MUST_NOT_BE_BUILT');
+      }
+    });
+  };
+  try {
+    for (const expectedRevision of [6, 8, -1, 7.5, '7', null, undefined]) {
+      const result = await f.call({body: {action: 'preview_mapping', applicantIndex: 2, expectedRevision}});
+      assert.equal(result.status, 409, String(expectedRevision));
+      assert.deepEqual(result.body, {ok: false, error: 'RAAD_REVISION_CONFLICT'});
+    }
+    assert.equal(f.calls.get.length, 7);
+    assert.ok(f.calls.get.every(call => call.id === customer && call.options.applicantIndex === 2));
+    assert.equal(previewDataReads, 0, 'stale revisions cannot reach the preview builder’s input data');
+    assert.equal(networkCalls, 0);
+    assert.equal(f.calls.prepare.length + f.calls.review.length + f.calls.read.length + f.calls.storeDerived.length, 0);
+    assert.deepEqual(f.state, before);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('MRZ parsing returns unreviewed proposals without touching any workflow or media state', async () => {
@@ -262,22 +409,32 @@ test('unexpected failures never expose storage paths, passwords, stack traces or
   assert.deepEqual(conflict.body, {ok: false, error: 'RAAD_REVISION_CONFLICT'});
 });
 
-test('the real HTTP server authenticates RAAD endpoints before routing and requires a staff claim for parsing', async t => {
+test('the real HTTP server authenticates draft and provider endpoints before routing and requires a staff claim for parsing', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'raad-server-'));
   const file = path.join(directory, 'state.enc'), key = 'synthetic-raad-test-state-key', admin = 'synthetic-raad-admin-key-xxxxxxxxxxxxxxxx';
-  const values = {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: key, ASSISTANT_ADMIN_KEY: admin, SAUDI_VISA_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', DRY_RUN: 'true'};
+  const values = {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: key, ASSISTANT_ADMIN_KEY: admin, SAUDI_VISA_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', DRY_RUN: 'true', RAAD_TINYFISH_API_KEY: 'synthetic-root-provider-key', RAAD_TINYFISH_PROFILE_ID: 'synthetic-root-profile'};
   const previous = Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]));
   Object.assign(process.env, values);
   const {AssistantState} = require('../src/assistant-state');
   const {ConversationJournal} = require('../src/conversation-journal');
+  const {RaadTinyFishProfile} = require('../src/raad-tinyfish-profile');
+  const providerStatusSpy = t.mock.method(RaadTinyFishProfile.prototype, 'status');
+  const providerCheckSpy = t.mock.method(RaadTinyFishProfile.prototype, 'check');
   const store = new AssistantState({file, key});
   const journal = new ConversationJournal({store});
   journal.recordInbound(customer, {id: 'raad-synthetic-inbound', text: 'Synthetic local conversation'});
+  const originalFetch = global.fetch, providerNetworkCalls = [];
+  global.fetch = async (url, options) => {
+    providerNetworkCalls.push({url, options});
+    assert.equal(url, 'https://agent.tinyfish.ai/v1/profiles/synthetic-root-profile');
+    return Response.json({id: 'synthetic-root-profile', name: 'PRIVATE_ROOT_PROFILE', created_at: '2026-10-27T00:00:00Z', domains: []});
+  };
   const {createServer} = require('../src/server');
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
+    global.fetch = originalFetch;
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
@@ -297,12 +454,42 @@ test('the real HTTP server authenticates RAAD endpoints before routing and requi
     req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   for (const token of [null, 'synthetic-wrong-admin-key-xxxxxxxxxxxxxxxx']) {
+    for (const [route, method] of [['/internal/assistant/raad-provider', 'GET'], ['/internal/assistant/raad-provider/check', 'POST']]) {
+      const denied = await request(route, {method, token, body: method === 'POST' ? {url: 'https://untrusted.invalid', apiKey: 'INJECTED_KEY'} : undefined});
+      assert.equal(denied.status, 401);
+      assert.equal(denied.text, '');
+    }
     for (const method of ['GET', 'POST']) {
       const result = await request(prefix + customer, {method, token, body: method === 'POST' ? {action: 'parse_mrz', mrz: syntheticMRZ()} : undefined});
       assert.equal(result.status, 401);
       assert.equal(result.text, '');
     }
+    const preview = await request(prefix + customer, {method: 'POST', token, body: {action: 'preview_mapping', applicantIndex: 2, expectedRevision: 7}});
+    assert.equal(preview.status, 401);
+    assert.equal(preview.text, '');
   }
+  assert.equal(providerStatusSpy.mock.callCount(), 0, 'unauthorized requests cannot inspect provider configuration');
+  assert.equal(providerCheckSpy.mock.callCount(), 0, 'unauthorized requests cannot trigger a provider check');
+  assert.equal(providerNetworkCalls.length, 0, 'unauthorized provider requests never reach the network');
+  const providerBefore = fs.readFileSync(file);
+  const providerStatus = await request('/internal/assistant/raad-provider');
+  assert.equal(providerStatus.status, 200);
+  assert.deepEqual(providerStatus.json, {configured: true, profileConfigured: true, executionConnected: false});
+  assert.equal(providerStatusSpy.mock.callCount(), 1);
+  assert.equal(providerNetworkCalls.length, 0, 'authenticated status only checks local configuration');
+  const providerCheck = await request('/internal/assistant/raad-provider/check?profileId=INJECTED_PROFILE', {method: 'POST', body: {url: 'https://untrusted.invalid', key: 'INJECTED_KEY', profileId: 'INJECTED_PROFILE'}});
+  assert.equal(providerCheck.status, 200);
+  assert.equal(providerCheck.json.ok, true);
+  assert.equal(providerCheck.json.executionConnected, false);
+  assert.equal(providerCheck.json.portalAuthenticationChecked, false);
+  assert.doesNotMatch(providerCheck.text, /PRIVATE_|INJECTED_|synthetic-root/);
+  assert.equal(providerNetworkCalls.length, 1);
+  assert.equal(providerCheckSpy.mock.callCount(), 1);
+  assert.equal(providerNetworkCalls[0].options.headers['X-API-Key'], 'synthetic-root-provider-key');
+  assert.deepEqual(fs.readFileSync(file), providerBefore, 'provider checks never alter a client or case snapshot');
+  const unclaimedPreview = await request(prefix + customer, {method: 'POST', body: {action: 'preview_mapping', applicantIndex: 2, expectedRevision: 7}});
+  assert.equal(unclaimedPreview.status, 409);
+  assert.equal(unclaimedPreview.json.error, 'CLAIM_REQUIRED');
   const unclaimed = await request(prefix + customer, {method: 'POST', body: {action: 'parse_mrz', mrz: syntheticMRZ()}});
   assert.equal(unclaimed.status, 409);
   assert.equal(unclaimed.json.error, 'CLAIM_REQUIRED');

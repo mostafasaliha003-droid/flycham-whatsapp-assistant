@@ -12,6 +12,7 @@ function loadVisaPrivateConfig({env=process.env,file}={}){
   const banks=Array.isArray(config.banks)?config.banks.filter(x=>x&&['bank','name','account','iban'].every(k=>typeof x[k]==='string'&&x[k].length>0&&x[k].length<120)&&/^AE\d{21}$/.test(x.iban)&&/^\d{5,30}$/.test(x.account)).slice(0,5):[];
   const complaintRecipient=/^\d{8,15}$/.test(config.complaintRecipient||'')?config.complaintRecipient:null;
   const raad={};for(const key of ['applicationPhone','contactEmail','insurancePhone','city','postalCode','postOfficeBox'])if(typeof config.raad?.[key]==='string'&&config.raad[key].trim().length<=160&&!/[\r\n\x00]/.test(config.raad[key]))raad[key]=config.raad[key].trim();
+  const profile=config.raad?.tinyfishProfileId;if(typeof profile==='string'&&profile.match(/^prof_[A-Za-z0-9_-]{1,120}$/)?.[0]===profile)raad.tinyfishProfileId=profile;
   return{banks,complaintRecipient,...(Object.keys(raad).length?{raad}:{})};
  }catch{return{};}
 }

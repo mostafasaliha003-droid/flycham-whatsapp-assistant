@@ -21,3 +21,20 @@ test('malformed optional RAAD values are omitted without changing the old bank/c
  assert.deepEqual(fixture.read(),{banks:[],complaintRecipient:null});
  for(const raad of [null,[],false,'unsupported'])assert.deepEqual(encryptedConfig(t,{raad}).read(),{banks:[],complaintRecipient:null});
 });
+
+test('optional TinyFish profile identifiers are strictly whitelisted and remain encrypted without passing through access keys',t=>{
+ const banks=[{bank:'Synthetic Bank',name:'Synthetic Company',account:'00000001',iban:'AE000000000000000000000'}],complaintRecipient='971500000005';
+ const fixture=encryptedConfig(t,{banks,complaintRecipient,tinyfishAccessKey:'SYNTHETIC_ACCESS_KEY',TINYFISH_API_KEY:'SYNTHETIC_ACCESS_KEY',raad:{tinyfishProfileId:'prof_test123',contactEmail:' synthetic-raad@example.invalid ',tinyfishAccessKey:'SYNTHETIC_ACCESS_KEY',tinyfishApiKey:'SYNTHETIC_ACCESS_KEY',apiKey:'SYNTHETIC_ACCESS_KEY',accessKey:'SYNTHETIC_ACCESS_KEY',TINYFISH_API_KEY:'SYNTHETIC_ACCESS_KEY'}});
+ const result=fixture.read();
+ assert.deepEqual(result,{banks,complaintRecipient,raad:{contactEmail:'synthetic-raad@example.invalid',tinyfishProfileId:'prof_test123'}});
+ assert.doesNotMatch(JSON.stringify(result),/SYNTHETIC_ACCESS_KEY|accessKey|apiKey|API_KEY/i);
+ assert.equal(fs.readFileSync(fixture.file).includes(Buffer.from('prof_test123')),false);
+ for(const tinyfishProfileId of ['prof_test_A-1','prof_'+'a'.repeat(120)])assert.equal(encryptedConfig(t,{raad:{tinyfishProfileId}}).read().raad.tinyfishProfileId,tinyfishProfileId);
+});
+
+test('malformed TinyFish profile identifiers are ignored without trimming, coercion or access-key fallback',t=>{
+ for(const tinyfishProfileId of ['', 'prof_', 'PROF_test123', 'profile_test123', 'prof_test.123', 'prof_test/123', 'prof_test:123', ' prof_test123', 'prof_test123 ', 'prof_test123\n', 'prof_test123\r\n', 'prof_test\t123', 'prof_'+'a'.repeat(121), null, true, 123, {}, []]){
+  const result=encryptedConfig(t,{tinyfishAccessKey:'SYNTHETIC_ACCESS_KEY',raad:{tinyfishProfileId,accessKey:'SYNTHETIC_ACCESS_KEY'}}).read();
+  assert.deepEqual(result,{banks:[],complaintRecipient:null});
+ }
+});

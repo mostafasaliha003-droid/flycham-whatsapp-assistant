@@ -153,7 +153,7 @@ function validateApplicant(fields, { referenceDate = today() } = {}) {
   for (const field of ['latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName']) {
     if ((['latinFirstName', 'latinFamilyName'].includes(field) ? requiredText(field) : hasText(fields[field])) && !/^[\p{Script=Latin}\p{M} .'-]+$/u.test(fields[field])) issues.push(issue(field, 'invalid_latin_name', 'Use the Latin name exactly as confirmed from the document.'));
   }
-  for (const field of ['arabicFirstName', 'arabicFamilyName']) {
+  for (const field of ['arabicFirstName', 'arabicFamilyName', 'arabicFatherName', 'arabicGrandfatherName']) {
     if (hasText(fields[field]) && !/^[\p{Script=Arabic}\p{M} .'-]+$/u.test(fields[field])) issues.push(issue(field, 'invalid_arabic_name', 'Use the Arabic name as independently confirmed.'));
   }
   if (requiredText('sex') && !['m', 'f', 'x', 'male', 'female', 'unspecified'].includes(fields.sex.toLowerCase())) issues.push(issue('sex', 'invalid_sex', 'Provide an explicitly confirmed sex value.'));

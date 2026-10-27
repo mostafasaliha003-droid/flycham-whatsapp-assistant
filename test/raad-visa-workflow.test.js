@@ -159,6 +159,23 @@ test('private contact suggestions need exact review and can be supplied without 
   assert.equal(summary.state, 'draft');
 });
 
+test('optional Arabic father and grandfather names are saved exactly and never inferred', () => {
+  const f = fixture();
+  let saved = prepare(f);
+  assert.equal(saved.fields.arabicFatherName, undefined);
+  assert.equal(saved.fields.arabicGrandfatherName, undefined);
+  saved = f.workflow.prepare(CUSTOMER, {expectedRevision: 1, fields: {arabicFatherName: 'محمد', arabicGrandfatherName: 'عبد الله'}, confirm: true});
+  assert.equal(saved.fields.arabicFatherName, 'محمد');
+  assert.equal(saved.fields.arabicGrandfatherName, 'عبد الله');
+  assert.ok(saved.reviewRequiredFields.includes('fields.arabicFatherName'));
+  assert.ok(saved.reviewRequiredFields.includes('fields.arabicGrandfatherName'));
+  assert.equal(review(f, saved).state, 'ready_for_portal_review');
+  saved = f.workflow.prepare(CUSTOMER, {expectedRevision: 3, fields: {arabicFatherName: 'INVALID LATIN'}, confirm: true});
+  assert.equal(saved.state, 'needs_information');
+  assert.equal(saved.review.complete, false);
+  assert.ok(saved.issues.some(item => item.field === 'arabicFatherName' && item.code === 'invalid_arabic_name'));
+});
+
 test('Egyptian entry suggestions depend on nationality, never on passport issuing country', () => {
   const egyptian = fixture({nationality: 'مصر'});
   const egyptianDraft = prepare(egyptian, {fields: applicant({nationalityCode: 'EGY', issuingCountryCode: 'EGY'})});

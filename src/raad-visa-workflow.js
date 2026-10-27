@@ -12,7 +12,7 @@ const FIELD_ALLOWLIST = Object.freeze([
   'nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode',
   'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex',
   'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName',
-  'arabicFirstName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry',
+  'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry',
   'maritalStatus', 'previousNationality', 'previousNationalityDetails',
   'travelledLastFiveYears', 'travelHistory', 'performUmrah', 'saudiAddress',
   'entryDate', 'transport', 'arrivalPort', 'gccResident', 'health', 'guardian',

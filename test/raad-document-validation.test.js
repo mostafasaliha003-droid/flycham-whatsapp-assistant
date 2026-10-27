@@ -98,6 +98,20 @@ test('complete adult applicant validates with truthful affirmative health answer
   assert.equal(fields.health.hospitalizedOrEmergency, true);
 });
 
+test('Arabic father and grandfather names remain optional and use the Arabic name validation', () => {
+  const absent = applicant();
+  assert.equal(validateApplicant(absent, { referenceDate }).ok, true);
+  assert.equal(Object.hasOwn(absent, 'arabicFatherName'), false);
+  assert.equal(Object.hasOwn(absent, 'arabicGrandfatherName'), false);
+  assert.equal(validateApplicant(applicant({ arabicFatherName: 'افتراضي', arabicGrandfatherName: 'مصطنع' }), { referenceDate }).ok, true);
+  for (const field of ['arabicFatherName', 'arabicGrandfatherName']) {
+    assert.equal(validateApplicant(applicant({ [field]: '' }), { referenceDate }).ok, true);
+    const result = validateApplicant(applicant({ [field]: 'Synthetic123' }), { referenceDate });
+    assert.equal(result.ok, false);
+    assert.equal(result.issues.some(item => item.field === field && item.code === 'invalid_arabic_name'), true);
+  }
+});
+
 test('every required declaration must be an actual explicit boolean', () => {
   for (const field of ['previousNationality', 'travelledLastFiveYears', 'performUmrah', 'gccResident', 'priorGccDeportation', 'priorGccRuleViolation']) {
     assert.equal(validateApplicant(applicant({ [field]: undefined }), { referenceDate }).issues.some(item => item.field === field && item.code === 'explicit_boolean_required'), true);
