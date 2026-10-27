@@ -12,7 +12,7 @@ server.listen(process.env.PORT || 10000, '0.0.0.0');
  try {
   browser = await chromium.launch({headless:true,args:['--no-sandbox']});
   const page = await browser.newPage();
-  const response = await page.goto('https://visa.mofa.gov.sa/Account/Loginindividuals',{waitUntil:'domcontentloaded',timeout:45000});
+  const response = await page.goto('https://visa.mofa.gov.sa/Account/Login/enjazcompany',{waitUntil:'domcontentloaded',timeout:45000});
   const url = new URL(page.url());
   state = {stage:'page_loaded',httpStatus:response?.status() || null,officialHost:url.hostname==='visa.mofa.gov.sa',authenticated:false, startedAt:new Date().toISOString()};
   console.log('MOFA_DIRECT_PROBE '+JSON.stringify(state));
