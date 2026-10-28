@@ -7,7 +7,9 @@ const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function validEmail(v){return typeof v==='string'&&v.length<=254&&/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(v);}
 function inspectMofaMessage(message,{recipient,requestedAt,now=Date.now()}={}){
  if(!validEmail(recipient))return {code:null,rejection:'recipient'};
- const at=Number(message?.internalDate);if(!Number.isFinite(at)||at<requestedAt||at>now+5000||now-at>WINDOW)return {code:null,rejection:'freshness'};
+ // Gmail candidate timestamps may have second precision; match the existing
+ // query's same-second lower bound, never an earlier second.
+ const at=Number(message?.internalDate);if(!Number.isFinite(at)||at<Math.floor(requestedAt/1000)*1000||at>now+5000||now-at>WINDOW)return {code:null,rejection:'freshness'};
  const headers=message.payload?.headers||[],h=name=>headers.filter(x=>String(x.name).toLowerCase()===name).map(x=>String(x.value||''));
  const sender=h('from');if(sender.length!==1||!/^\s*(?:[^<>]*<)?no-reply@mofa\.gov\.sa>?\s*$/i.test(sender[0]))return {code:null,rejection:'sender'};
  const auth=h('authentication-results').find(v=>/^mx\.google\.com;/i.test(v));
