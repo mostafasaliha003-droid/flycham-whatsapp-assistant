@@ -5,6 +5,7 @@ const {extractIncomingMessages} = require('../src/whatsapp');
 const {questionFor} = require('../src/visa-client-questions');
 const {VisaFulfilment} = require('../src/visa-fulfilment');
 const {visaCaseSignature} = require('../src/visa-case-signature');
+const {ConversationJournal} = require('../src/conversation-journal');
 
 const CUSTOMER = '971500000001', OWNER = '971500000005', OTHER = '971500000009';
 const TOKEN = '12345678-1234-4321-abcd-123456789abc', JOB = '12345678-1234-4321-abcd-123456789abd', MEDIA = '12345678-1234-4321-abcd-123456789abe';
@@ -274,6 +275,38 @@ test('notification readiness only reads cached approval gates and is false witho
     const inactive = createVisaWhatsAppAdapter({env: invalid, templateGate: noCheck, paymentTemplateGate: noCheck, fetchImpl: noCheck});
     assert.deepEqual(await inactive.notificationReadiness(), {paymentTemplateApproved: false, ownerTemplateApproved: false});
   }
+});
+
+test('owner readiness uses the real inbound timestamp and requires at least 35 minutes remaining without writes or sends', async () => {
+  let at = 2000000000000, writes = 0;
+  const store = {data: {}, save() { writes++; }}, journal = new ConversationJournal({store, now: () => at});
+  journal.recordInbound(OWNER, {id: 'synthetic-owner-inbound', text: 'متابعة المهمة', timestamp: at});
+  const noRequest = async () => assert.fail('real sufficiently long service window needs no template fetch or send');
+  const adapter = createVisaWhatsAppAdapter({env, journal, now: () => at, fetchImpl: noRequest});
+  const before = writes;
+  assert.equal(await adapter.ownerNotificationReady(), true);
+  at += 86400000 - 35 * 60000; assert.equal(await adapter.ownerNotificationReady(), true);
+  at++; assert.equal(journal.summary(OWNER).serviceWindowOpen, true); assert.equal(await adapter.ownerNotificationReady(), false);
+  at += 35 * 60000; assert.equal(await adapter.ownerNotificationReady(), false);
+  assert.equal(writes, before); assert.equal(journal.get(OWNER).lastInboundAt, 2000000000000);
+});
+
+test('owner readiness fails closed for unknown expiry, invalid owner/config and dry run, but allows a verified task template', async () => {
+  const settings = {...env, SAUDI_VISA_WABA_ID: '100000000002', RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_action_required'}, at = 2000000000000;
+  for (const lastInboundAt of [undefined, null, at + 1, Infinity, String(at), at - 86400000 + 35 * 60000 - 1]) {
+    const journal = {summary: recipient => { assert.equal(recipient, OWNER); return {serviceWindowOpen: true, lastInboundAt}; }};
+    const blocked = createVisaWhatsAppAdapter({env: settings, journal, now: () => at, templateGate: async () => false, fetchImpl: async () => assert.fail('no sends')});
+    assert.equal(await blocked.ownerNotificationReady(), false);
+    const approved = createVisaWhatsAppAdapter({env: settings, journal, now: () => at, templateGate: async () => true, fetchImpl: async () => assert.fail('no sends')});
+    assert.equal(await approved.ownerNotificationReady(), true);
+  }
+  const noRead = () => assert.fail('invalid configuration cannot inspect window or query gate');
+  for (const invalid of [{...settings, DRY_RUN: 'true'}, {...settings, RAAD_OTP_OWNER_WHATSAPP: 'invalid'}, {...settings, RAAD_OTP_OWNER_WHATSAPP: ''}, {...settings, WHATSAPP_PHONE_NUMBER_ID: 'invalid'}]) {
+    const adapter = createVisaWhatsAppAdapter({env: invalid, journal: {summary: noRead, get: noRead}, templateGate: noRead, fetchImpl: noRead});
+    assert.equal(await adapter.ownerNotificationReady(), false);
+  }
+  const fallback = createVisaWhatsAppAdapter({env, now: () => at, journal: {summary: () => ({serviceWindowOpen: true}), get: () => ({id: OWNER, lastInboundAt: at})}, fetchImpl: async () => assert.fail('no requests')});
+  assert.equal(await fallback.ownerNotificationReady(), true);
 });
 
 test('invalid payload bounds and recipient binding never reach Meta', async () => {

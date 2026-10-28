@@ -272,20 +272,33 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     }
     return result;
   }
+  async function templateReady(configFor, requestFor, check) {
+    try {
+      credentials(env);
+      const config = configFor(env); requestFor(config);
+      if (!/^\d{5,30}$/.test(config.wabaId)) return false;
+      return await check() === true;
+    } catch { return false; }
+  }
   async function notificationReadiness() {
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return {paymentTemplateApproved: false, ownerTemplateApproved: false};
-    const ready = async (configFor, requestFor, check) => {
-      try {
-        credentials(env);
-        const config = configFor(env); requestFor(config);
-        if (!/^\d{5,30}$/.test(config.wabaId)) return false;
-        return await check() === true;
-      } catch { return false; }
-    };
-    const [paymentTemplateApproved, ownerTemplateApproved] = await Promise.all([ready(visaPaymentTemplateConfig, visaPaymentTemplateRequest, paymentGate), ready(visaTemplateConfig, visaTemplateRequest, gate)]);
+    const [paymentTemplateApproved, ownerTemplateApproved] = await Promise.all([templateReady(visaPaymentTemplateConfig, visaPaymentTemplateRequest, paymentGate), templateReady(visaTemplateConfig, visaTemplateRequest, gate)]);
     return {paymentTemplateApproved, ownerTemplateApproved};
   }
-  return {send, sendOperatorOtp, notificationReadiness, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
+  async function ownerNotificationReady() {
+    if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return false;
+    let owner;
+    try { owner = recipientNumber(env.RAAD_OTP_OWNER_WHATSAPP || env.RAAD_OTP_OWNER_RECIPIENT); credentials(env); }
+    catch { return false; }
+    try {
+      const summary = journal?.summary?.(owner), lastInboundAt = summary?.lastInboundAt ?? journal?.get?.(owner)?.lastInboundAt, currentTime = now();
+      // The native application can take 30 minutes and its challenge 5 more.
+      // A boolean window flag cannot prove that this much time remains.
+      if (summary?.serviceWindowOpen === true && Number.isFinite(lastInboundAt) && Number.isFinite(currentTime) && lastInboundAt >= 0 && lastInboundAt <= currentTime && currentTime - lastInboundAt <= 86400000 - 35 * 60000) return true;
+    } catch {}
+    return templateReady(visaTemplateConfig, visaTemplateRequest, gate);
+  }
+  return {send, sendOperatorOtp, notificationReadiness, ownerNotificationReady, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
 }
 
 module.exports = {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY, createVisaPaymentTemplateGate, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY};

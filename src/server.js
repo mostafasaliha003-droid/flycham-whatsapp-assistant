@@ -83,7 +83,7 @@ const deliveries=new Map();
 const visaWhatsApp=createVisaWhatsAppAdapter({env:process.env,mediaStore:visaMedia,journal});
 let visaDispatcher;
 const visaFulfilment=new VisaFulfilment({store:assistant.store,inbox,journal,mediaStore:visaMedia,raad,env:process.env,canAutomate:id=>!inbox.isHumanOwned(id),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata);const messageId=result?.messages?.[0]?.id;if(messageId&&journal.hasCustomer(to))journal.recordOutbound(to,{id:messageId,text:payload.type==='document'?'[نسخة طلب تأشيرة PDF]':payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),resumeOtp:input=>visaDispatcher.resumeOtp(input)});
-visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,notificationReadiness:()=>visaWhatsApp.notificationReadiness()});
+visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
 const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured()});

@@ -251,6 +251,39 @@ test('cold browser readiness uses safe GET retries before acquiring lease or sta
   assert.equal(f.store.data.visaPortalRuns[job.id].phase, 'running'); assert.ok(f.fulfilment.data().lease); assert.equal(job.blockedReason, undefined);
 });
 
+test('unreachable owner notification channel pauses before any browser request and resumes once ready', async () => {
+  const f = fixture(), [job] = await f.activate();
+  let ready = false;
+  f.dispatcher.ownerNotificationReady = async () => ready;
+  await f.dispatcher.launch(job);
+  assert.equal(job.blockedReason, 'OWNER_NOTIFICATION_NOT_READY'); assert.equal(job.state, 'ready');
+  assert.equal(f.calls.length, 0); assert.equal(f.fulfilment.data().lease, null); assert.equal(f.store.data.visaPortalRuns[job.id], undefined);
+  ready = true; await f.dispatcher.launch(job);
+  assert.equal(f.calls.filter(call => call.path === '/internal/raad/jobs' && call.method === 'POST').length, 1);
+  assert.equal(f.store.data.visaPortalRuns[job.id].phase, 'running'); assert.equal(job.blockedReason, undefined);
+});
+
+test('unverified or truthy nonboolean owner readiness cannot start native work', async () => {
+  for (const readiness of ['unknown', 'true', 'throw']) {
+    const f = fixture(), [job] = await f.activate();
+    f.dispatcher.ownerNotificationReady = async () => { if (readiness === 'throw') throw Error('synthetic readiness failure'); return readiness; };
+    await f.dispatcher.launch(job);
+    assert.equal(job.blockedReason, 'OWNER_NOTIFICATION_NOT_READY'); assert.equal(f.calls.length, 0); assert.equal(f.fulfilment.data().lease, null);
+  }
+});
+
+test('a document review changed during asynchronous readiness cannot submit the earlier dossier', async () => {
+  for (const stage of ['owner', 'browser']) {
+    const f = fixture(), [job] = await f.activate();
+    const changeReviewedDraft = () => { f.drafts[0].fields.latinFirstName = 'Updated'; f.drafts[0].review.fingerprint = 'new-reviewed-fingerprint'; };
+    if (stage === 'owner') f.dispatcher.ownerNotificationReady = async () => { changeReviewedDraft(); return true; };
+    else { const fetcher = f.dispatcher.fetchImpl; f.dispatcher.fetchImpl = async (url, options) => { if (new URL(url).pathname === '/health') changeReviewedDraft(); return fetcher(url, options); }; }
+    await f.dispatcher.launch(job);
+    assert.equal(job.blockedReason, 'DOCUMENTS_REVIEW_REQUIRED'); assert.equal(f.fulfilment.data().lease, null);
+    assert.equal(f.calls.some(call => call.path === '/internal/raad/jobs'), false); assert.equal(f.store.data.visaPortalRuns[job.id], undefined);
+  }
+});
+
 test('unavailable readiness GET remains retryable without quarantining an uncertain POST', async () => {
   const f = fixture(), [job] = await f.activate(), fetcher = f.dispatcher.fetchImpl;
   let cold = true;
