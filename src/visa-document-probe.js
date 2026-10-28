@@ -3,7 +3,7 @@
 // A private, fixed synthetic diagnostic. No caller-supplied document, customer
 // record, passport copy, destination URL or prompt can enter this check.
 const sharp = require('sharp');
-const {DOCUMENT_VISION_ERROR_CODES, DOCUMENT_FIELD_NAMES, SCHEMA_SECTIONS} = require('./visa-document-vision');
+const {DOCUMENT_VISION_ERROR_CODES, DOCUMENT_FIELD_NAMES, SCHEMA_SECTIONS, SCHEMA_ISSUES} = require('./visa-document-vision');
 const VISION_REASONS = new Set(DOCUMENT_VISION_ERROR_CODES);
 function safeVisionReason(failure) { try { const code = failure?.code; return typeof code === 'string' && code.length <= 80 && VISION_REASONS.has(code) ? code : undefined; } catch { return undefined; } }
 function safeSchemaDiagnostics(failure, reason) {
@@ -12,7 +12,8 @@ function safeSchemaDiagnostics(failure, reason) {
     const section = failure?.schemaSection;
     if (!SCHEMA_SECTIONS.includes(section)) return {};
     const fieldName = section === 'fields' ? failure?.fieldName : undefined;
-    return {schemaSection: section, ...(DOCUMENT_FIELD_NAMES.includes(fieldName) ? {fieldName} : {})};
+    const schemaIssue = failure?.schemaIssue;
+    return {schemaSection: section, ...(DOCUMENT_FIELD_NAMES.includes(fieldName) ? {fieldName} : {}), ...(SCHEMA_ISSUES.includes(schemaIssue) ? {schemaIssue} : {})};
   } catch { return {}; }
 }
 const EXPECTED = Object.freeze({passportNumber: 'ZT1234567', latinFirstName: 'EXAMPLE', latinFamilyName: 'TESTER', birthDate: '1990-04-03', expiryDate: '2035-11-30'});

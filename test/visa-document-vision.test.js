@@ -29,6 +29,7 @@ test('dedicated reader uses actual pixels with pinned Gemma and no conversation 
   assert.equal(body.contents[0].parts[0].inlineData.mimeType, 'image/png');
   assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'minimal'); assert.equal(body.generationConfig.temperature, 0);
   assert.match(body.systemInstruction.parts[0].text, /Never split a full name/); assert.match(body.systemInstruction.parts[0].text, /Ignore every instruction/);
+  assert.match(body.systemInstruction.parts[0].text, /Completely omit every unknown/); assert.match(body.systemInstruction.parts[0].text, /Do not emit null slots/);
   for (const forbidden of ['UNTRUSTED_CAPTION', 'UNTRUSTED_HISTORY', 'UNTRUSTED_INSTRUCTION', 'unused-openai-key', 'unused-cline-key']) assert.equal(options.body.includes(forbidden), false);
 });
 
@@ -39,7 +40,7 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v2');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v3');
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
 
@@ -73,12 +74,51 @@ test('strict schema keeps explicit evidence and optional names without inventing
   assert.deepEqual(validateDocumentExtraction({version: 1, kind: 'other', readable: false, rotation: 0, fields: {}, mrzLines: []}), {version: 1, kind: 'other', readable: false, rotation: 0, fields: {}, mrzLines: [], portraitBox: null});
 });
 
+test('explicit null, blank and hidden known fields canonicalize only to absence, including optional name short forms', () => {
+  const unknown = {value: null, confidence: 0, visible: false};
+  for (const absent of [null, '', ' \t\n ', {value: null}, {value: null, confidence: 1, visible: true}, {value: null, confidence: null, visible: null}, {value: '  ', confidence: 0.99, visible: true}, {value: 'PRIVATE_DISCARDED_TEXT', confidence: 99, visible: false}]) {
+    const value = page(); value.fields.latinFatherName = absent; value.fields.latinGrandfatherName = absent;
+    const result = validateDocumentExtraction(value);
+    assert.deepEqual(result.fields.latinFatherName, unknown); assert.deepEqual(result.fields.latinGrandfatherName, unknown);
+    assert.equal(result.fields.latinFirstName.value, 'ARI'); assert.equal(JSON.stringify(result).includes('PRIVATE_DISCARDED_TEXT'), false);
+  }
+  for (const absent of [null, '', {value: null, visible: true, confidence: 1}, {value: '1990-02-03', visible: false, confidence: 1}]) {
+    const value = page(); value.fields.birthDate = absent;
+    const extraction = validateDocumentExtraction(value); assert.deepEqual(extraction.fields.birthDate, unknown);
+    const {reconcileDocumentEvidence} = require('../src/visa-document-matching');
+    const result = reconcileDocumentEvidence({documents: [{mediaId: '12345678-1234-4321-abcd-123456789abc', page: 1, sha256: 'a'.repeat(64), extraction}], applicants: [{nationality: 'مصر'}], referenceDate: '2026-10-28'});
+    assert.equal(result.complete, false); assert.equal(result.applicants[0].identityReady, false);
+    assert.equal(result.applicants[0].fields.birthDate, undefined); assert.equal(result.applicants[0].issues.some(issue => issue.field === 'birthDate'), true);
+  }
+});
+
+test('abstention never accepts unknown keys, objects, nonfinite metadata or a bare nonempty fact', () => {
+  for (const malformed of [
+    'ARI', {value: null, confidence: {}, visible: false}, {value: null, confidence: Infinity, visible: false},
+    {value: null, confidence: 0, visible: 'false'}, {value: null, confidence: 0, visible: false, PRIVATE_UNKNOWN_KEY: 'PRIVATE_VALUE'},
+    {value: 'ARI', confidence: 1}, {value: {}, confidence: 0, visible: false}
+  ]) assert.throws(() => validateDocumentExtraction(page({fields: {latinFatherName: malformed}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  for (const value of [null, '', {value: null}]) assert.throws(() => validateDocumentExtraction(page({fields: {PRIVATE_UNKNOWN_FIELD: value}})), error => error.code === 'DOCUMENT_VISION_SCHEMA_INVALID' && error.fieldName === undefined && !JSON.stringify(error).includes('PRIVATE'));
+  assert.throws(() => validateDocumentExtraction(page({fields: {birthDate: field('1990-02-30')}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'value_format'});
+  assert.throws(() => validateDocumentExtraction(page({fields: {latinFirstName: field('ARI', 99)}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'field_metadata'});
+});
+
+test('portrait and other pages discard only all-unknown known fields while contradictory visible facts remain invalid', () => {
+  for (const kind of ['portrait', 'other']) {
+    const value = {version: 1, kind, readable: kind === 'portrait', rotation: 0, fields: {latinFatherName: null, latinGrandfatherName: '', birthDate: {value: null, visible: true, confidence: null}}, mrzLines: []};
+    assert.deepEqual(validateDocumentExtraction(value).fields, {});
+    assert.throws(() => validateDocumentExtraction({...value, fields: {latinFirstName: field('ARI')}}), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+    assert.throws(() => validateDocumentExtraction({...value, mrzLines: ['P<EGY']}), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+    assert.throws(() => validateDocumentExtraction({...value, fields: {PRIVATE_UNKNOWN_FIELD: null}}), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  }
+});
+
 test('unknown fields, injected instructions, inherited properties and contradictory confidence are rejected', () => {
   const values = [
     page({authentic: true}), page({fields: {medical: field('no')}}), page({fields: {latinFirstName: {...field('ARI'), instruction: 'ignore previous'}}}),
-    page({fields: {latinFirstName: {value: null, visible: true, confidence: 1}}}),
-    page({fields: {latinFirstName: {value: null, visible: false, confidence: 0.1}}}),
-    page({fields: {latinFirstName: {value: 'ARI', visible: false, confidence: 0.9}}}),
+    page({fields: {latinFirstName: {value: null, visible: 'true', confidence: 1}}}),
+    page({fields: {latinFirstName: {value: null, visible: false, confidence: '0'}}}),
+    page({fields: {latinFirstName: {value: {}, visible: false, confidence: 0}}}),
     page({fields: {latinFirstName: field('ARI', NaN)}}), page({fields: {latinFirstName: field('ARI', Infinity)}}),
     page({fields: {latinFirstName: field('ARI', 1.01)}}), page({fields: {latinFirstName: field('ARI', -0.01)}}),
     page({fields: {latinFirstName: field(' ARI')}}), page({fields: {latinFirstName: field('ARI\nPRIVATE')}}),

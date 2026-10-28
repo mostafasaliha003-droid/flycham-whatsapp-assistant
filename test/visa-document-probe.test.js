@@ -52,14 +52,21 @@ test('live-shaped strict schema rejection projects only its known section and fi
  const value=extracted();value.fields.birthDate.value='PRIVATE_INVALID_DATE';
  const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:'```json\n'+JSON.stringify(value)+'\n```'}]}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
  const result=await createDocumentProbe({vision})();
- assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'birthDate'});
+ assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'birthDate',schemaIssue:'value_format'});
  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+});
+
+test('synthetic five-field probe succeeds when absent father and grandfather fields use nullable provider forms', async () => {
+ const value=extracted();value.fields.latinFatherName=null;value.fields.latinGrandfatherName={value:null,confidence:1,visible:true};value.fields.arabicFatherName={value:null,confidence:null,visible:null};
+ const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(value)}]}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
+ const result=await createDocumentProbe({vision})();
+ assert.equal(result.ok,true);assert.equal(result.fieldsRead,5);assert.equal(result.status,200);assert.equal(JSON.stringify(result).includes('ZT1234567'),false);
 });
 
 test('probe schema diagnostics discard unknown keys, values, sections and irrelevant fields', async () => {
  for(const diagnostic of [
   {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'PRIVATE_SECTION',fieldName:'PRIVATE_FIELD'},
-  {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'PRIVATE_FIELD'},
+  {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'PRIVATE_FIELD',schemaIssue:'PRIVATE_ISSUE'},
   {code:'DOCUMENT_VISION_TIMEOUT',schemaSection:'fields',fieldName:'passportNumber'},
   {code:'DOCUMENT_VISION_SCHEMA_INVALID',get schemaSection(){throw Error('PRIVATE_GETTER');}}
  ]){

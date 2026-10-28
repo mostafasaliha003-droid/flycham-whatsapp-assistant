@@ -6,8 +6,9 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-28.v2';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-28.v3';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
+const ABSTENTION_POLICY = 'known-empty-or-explicitly-hidden-fields-to-unknown-v1';
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -32,7 +33,8 @@ const PROMPT = [
   'readable means the supported page and its important identity text are visibly legible. Return kind other, readable false, empty fields, empty mrzLines, and null portraitBox for unrelated content.',
   'rotation is the clockwise correction needed to make the page upright: exactly 0, 90, 180, or 270.',
   'The only allowed field names are: ' + DOCUMENT_FIELD_NAMES.join(', ') + '.',
-  'Each included field is exactly {"value":string-or-null,"confidence":number-from-0-to-1,"visible":boolean}. Omit fields not present or return {"value":null,"confidence":0,"visible":false}.',
+  'fields is sparse: include a field ONLY when its nonempty value is clearly visible. Each included field is exactly {"value":string,"confidence":number-from-0-to-1,"visible":true}.',
+  'Completely omit every unknown, absent, ambiguous, hidden, or empty field. Especially omit father and grandfather names unless separately and explicitly printed. Do not emit null slots, empty strings, placeholders, or metadata for an absent field; the application will leave omitted fields blank.',
   'Read only what is actually visible. Never complete hidden, cropped, blurred, or ambiguous characters, never infer a missing fact, and never claim authenticity or official validity.',
   'Names: copy the exact labelled given name(s) into latinFirstName and exact labelled surname into latinFamilyName. Keep a full printed name in latinFullName or arabicFullName. Never split a full name to invent father or grandfather names. Fill father or grandfather fields only when separately and explicitly labelled.',
   'For UAE identity cards a whole printed name belongs in latinFullName or arabicFullName; do not guess how it splits. Keep nationality distinct from the issuing country and residence country.',
@@ -46,10 +48,11 @@ const PROMPT = [
   'For a standalone portrait return kind portrait and empty fields and mrzLines. No personal, medical, marital, religion, or immigration-history inference is permitted.',
   'Confidence is uncertainty about the exact transcription, not a guarantee. If unreadable, report uncertainty rather than guessing.'
 ].join(' ');
-const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, model: MODEL, prompt: PROMPT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
+const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, model: MODEL, prompt: PROMPT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
 const RETRYABLE_CODES = Object.freeze(['DOCUMENT_VISION_BUSY', 'DOCUMENT_VISION_COOLDOWN', 'DOCUMENT_VISION_RATE_LIMITED', 'DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 'DOCUMENT_VISION_TIMEOUT', 'DOCUMENT_VISION_NETWORK']);
 const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT']);
 const SCHEMA_SECTIONS = Object.freeze(['root', 'fields', 'mrzLines', 'portraitBox']);
+const SCHEMA_ISSUES = Object.freeze(['root_shape', 'root_value', 'field_shape', 'null_metadata', 'field_metadata', 'value_type', 'value_format', 'mrz_format', 'portrait_bounds']);
 
 function failure(code, retryAfterMs) {
   return Object.assign(Error(code), {code, retryable: RETRYABLE_CODES.includes(code), ...(Number.isFinite(retryAfterMs) ? {retryAfterMs} : {})});
@@ -64,39 +67,51 @@ function finiteUnit(value) { return typeof value === 'number' && Number.isFinite
 function validString(value, limit = 200) { return typeof value === 'string' && value.length > 0 && value.length <= limit && value === value.trim() && !CONTROL.test(value); }
 
 function validateDocumentExtraction(value) {
-  const invalid = (schemaSection = 'root', fieldName) => { throw Object.assign(failure('DOCUMENT_VISION_SCHEMA_INVALID'), {schemaSection, ...(FIELD_SET.has(fieldName) ? {fieldName} : {})}); };
+  const invalid = (schemaSection = 'root', fieldName, schemaIssue = 'root_shape') => { throw Object.assign(failure('DOCUMENT_VISION_SCHEMA_INVALID'), {schemaSection, schemaIssue, ...(FIELD_SET.has(fieldName) ? {fieldName} : {})}); };
   if (!plain(value) || Object.keys(value).some(key => !ROOT_KEYS.has(key)) || REQUIRED_KEYS.some(key => !Object.hasOwn(value, key))) return invalid();
-  if (value.version !== 1 || !KINDS.has(value.kind) || typeof value.readable !== 'boolean' || ![0, 90, 180, 270].includes(value.rotation)) return invalid();
-  if (!plain(value.fields)) return invalid('fields');
+  if (value.version !== 1 || !KINDS.has(value.kind) || typeof value.readable !== 'boolean' || ![0, 90, 180, 270].includes(value.rotation)) return invalid('root', undefined, 'root_value');
+  if (!plain(value.fields)) return invalid('fields', undefined, 'field_shape');
   const fields = {};
   for (const [name, field] of Object.entries(value.fields)) {
-    if (!FIELD_SET.has(name)) return invalid('fields');
-    if (!exactKeys(field, ['value', 'confidence', 'visible']) || !finiteUnit(field.confidence) || typeof field.visible !== 'boolean') return invalid('fields', name);
-    if (field.value === null) {
-      if (field.visible !== false || field.confidence !== 0) return invalid('fields', name);
-    } else {
-      if (!validString(field.value, ['latinFullName', 'arabicFullName'].includes(name) ? 300 : 200) || field.visible !== true) return invalid('fields', name);
-      if (['nationalityCode', 'issuingCountryCode'].includes(name) && !/^[A-Z]{3}$/.test(field.value)) return invalid('fields', name);
+    if (!FIELD_SET.has(name)) return invalid('fields', undefined, 'field_shape');
+    if (field === null || typeof field === 'string' && field.trim() === '') { fields[name] = {value: null, confidence: 0, visible: false}; continue; }
+    if (!plain(field) || !Object.hasOwn(field, 'value') || Object.keys(field).some(key => !['value', 'confidence', 'visible'].includes(key))) return invalid('fields', name, 'field_shape');
+    const abstaining = field.value === null || typeof field.value === 'string' && (field.value.trim() === '' || field.visible === false);
+    if (abstaining) {
+      // Discard explicit absence; never turn uncertain metadata into a fact.
+      // Missing critical values still fail deterministic document matching.
+      if (Object.hasOwn(field, 'visible') && field.visible !== null && typeof field.visible !== 'boolean' || Object.hasOwn(field, 'confidence') && field.confidence !== null && (typeof field.confidence !== 'number' || !Number.isFinite(field.confidence))) return invalid('fields', name, 'null_metadata');
+      fields[name] = {value: null, confidence: 0, visible: false}; continue;
+    }
+    if (!exactKeys(field, ['value', 'confidence', 'visible'])) return invalid('fields', name, 'field_shape');
+    if (!finiteUnit(field.confidence) || typeof field.visible !== 'boolean') return invalid('fields', name, 'field_metadata');
+    if (typeof field.value !== 'string') return invalid('fields', name, 'value_type');
+    {
+      if (!validString(field.value, ['latinFullName', 'arabicFullName'].includes(name) ? 300 : 200) || field.visible !== true) return invalid('fields', name, 'value_format');
+      if (['nationalityCode', 'issuingCountryCode'].includes(name) && !/^[A-Z]{3}$/.test(field.value)) return invalid('fields', name, 'value_format');
       if (['birthDate', 'issueDate', 'expiryDate', 'residenceExpiry'].includes(name)) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(field.value)) return invalid('fields', name);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(field.value)) return invalid('fields', name, 'value_format');
         const parsed = new Date(field.value + 'T00:00:00Z');
-        if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== field.value) return invalid('fields', name);
+        if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== field.value) return invalid('fields', name, 'value_format');
       }
-      if (name === 'sex' && !['M', 'F', 'X'].includes(field.value)) return invalid('fields', name);
-      if (name === 'passportType' && !['ordinary', 'diplomatic', 'service', 'special'].includes(field.value)) return invalid('fields', name);
-      if (name === 'passportNumber' && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name);
-      if (name === 'emiratesId' && !/^(?:\d{15}|\d{3}-\d{4}-\d{7}-\d)$/.test(field.value)) return invalid('fields', name);
+      if (name === 'sex' && !['M', 'F', 'X'].includes(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'passportType' && !['ordinary', 'diplomatic', 'service', 'special'].includes(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'passportNumber' && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'emiratesId' && !/^(?:\d{15}|\d{3}-\d{4}-\d{7}-\d)$/.test(field.value)) return invalid('fields', name, 'value_format');
     }
     fields[name] = {value: field.value, confidence: field.confidence, visible: field.visible};
   }
-  if (!Array.isArray(value.mrzLines) || value.mrzLines.length > 3 || value.mrzLines.some(line => typeof line !== 'string' || !/^[A-Z0-9<]{1,44}$/.test(line))) return invalid('mrzLines');
-  if (['portrait', 'other'].includes(value.kind) && Object.keys(fields).length) return invalid('fields');
-  if (['portrait', 'other'].includes(value.kind) && value.mrzLines.length) return invalid('mrzLines');
-  if (value.kind === 'other' && value.readable) return invalid();
+  if (!Array.isArray(value.mrzLines) || value.mrzLines.length > 3 || value.mrzLines.some(line => typeof line !== 'string' || !/^[A-Z0-9<]{1,44}$/.test(line))) return invalid('mrzLines', undefined, 'mrz_format');
+  if (['portrait', 'other'].includes(value.kind)) {
+    if (Object.values(fields).some(field => field.value !== null || field.visible !== false)) return invalid('fields', undefined, 'value_format');
+    for (const name of Object.keys(fields)) delete fields[name];
+    if (value.mrzLines.length) return invalid('mrzLines', undefined, 'mrz_format');
+  }
+  if (value.kind === 'other' && value.readable) return invalid('root', undefined, 'root_value');
   const portraitBox = value.portraitBox ?? null;
   if (portraitBox !== null) {
-    if (!['passport', 'uae_id_front', 'uae_id_back'].includes(value.kind) || !exactKeys(portraitBox, ['x', 'y', 'width', 'height', 'confidence'])) return invalid('portraitBox');
-    if (Object.values(portraitBox).some(item => !finiteUnit(item)) || portraitBox.width <= 0 || portraitBox.height <= 0 || portraitBox.x + portraitBox.width > 1 || portraitBox.y + portraitBox.height > 1) return invalid('portraitBox');
+    if (!['passport', 'uae_id_front', 'uae_id_back'].includes(value.kind) || !exactKeys(portraitBox, ['x', 'y', 'width', 'height', 'confidence'])) return invalid('portraitBox', undefined, 'portrait_bounds');
+    if (Object.values(portraitBox).some(item => !finiteUnit(item)) || portraitBox.width <= 0 || portraitBox.height <= 0 || portraitBox.x + portraitBox.width > 1 || portraitBox.y + portraitBox.height > 1) return invalid('portraitBox', undefined, 'portrait_bounds');
   }
   return {version: 1, kind: value.kind, readable: value.readable, rotation: value.rotation, fields, mrzLines: [...value.mrzLines], portraitBox: portraitBox === null ? null : {...portraitBox}};
 }
@@ -187,4 +202,4 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
   return {extract, ready, status};
 }
 
-module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, POLICY_FINGERPRINT, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};
+module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, POLICY_FINGERPRINT, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, SCHEMA_ISSUES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};
