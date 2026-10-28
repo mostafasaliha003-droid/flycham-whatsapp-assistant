@@ -22,7 +22,8 @@ function inspectPortalFields({fields,originals,bind=false}){
   const identity=[el.id,el.name,el.getAttribute('autocomplete')].filter(Boolean).join(' ');
   if(sensitive.test(identity)||['hidden','password','file','submit','button','reset','image'].includes(type))fail('PORTAL_FILL_FIELD_FORBIDDEN');
   const form=el.form;
-  if(!form||form.tagName!=='FORM'||form.ownerDocument!==document||!form.isConnected||!safeAction(form.getAttribute('action'))||el.hasAttribute('formaction')&&!safeAction(el.getAttribute('formaction')))fail('PORTAL_FILL_FORM_UNAVAILABLE');
+  const agreementCheck=!form&&location.pathname==='/SmartForm/Agreement'&&field.kind==='check'&&el.tagName==='INPUT'&&type==='checkbox';
+  if(!agreementCheck&&(!form||form.tagName!=='FORM'||form.ownerDocument!==document||!form.isConnected||!safeAction(form.getAttribute('action'))||el.hasAttribute('formaction')&&!safeAction(el.getAttribute('formaction'))))fail('PORTAL_FILL_FORM_UNAVAILABLE');
   if(field.kind==='text'){
    if(el.tagName!=='TEXTAREA'&&(el.tagName!=='INPUT'||!['text','email','tel','number','search','url','date','time','datetime-local','month','week'].includes(type)))fail('PORTAL_FILL_KIND_MISMATCH');
    if(Number.isInteger(el.maxLength)&&el.maxLength>=0&&field.value.length>el.maxLength)fail('PORTAL_FILL_INPUT_INVALID');

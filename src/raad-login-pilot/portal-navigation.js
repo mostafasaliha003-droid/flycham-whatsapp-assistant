@@ -18,8 +18,8 @@ function inspectObservedNavigation({path,label}){
    const u=new URL(raw,location.href),copy=el.cloneNode(true);for(const node of copy.querySelectorAll('input,textarea,select,button,script,style'))node.remove();const caption=safe(copy.textContent||el.getAttribute('aria-label'));
    if(u.origin!==location.origin||u.protocol!=='https:'||u.username||u.password||u.pathname!==path||caption!==label)continue;
    const unsafeQuery=Array.from(u.searchParams.keys()).some(key=>/^(?:action|operation|command|delete|pay|cancel|logout|submit|save)$/i.test(key))||Array.from(u.searchParams.values()).some(value=>/delete|logout|logoff|signout|payment|pay|cancel|remove|submit|save|confirm|accept|approve|حذف|خروج|إلغاء|الغاء|دفع|سداد|تسديد|حفظ|إرسال|ارسال|تأكيد|تاكيد/i.test(value));
-   const relevant=u.pathname+' '+caption;
-   if(unsafeQuery||blocked.test(relevant)||actionPath.test(u.pathname)||actionLabel.test(caption)||!service.test(relevant))continue;
+   const relevant=(u.pathname+' '+caption).normalize('NFKC');
+   if(unsafeQuery||blocked.test(relevant)||actionPath.test(u.pathname)||actionLabel.test(caption.normalize('NFKC'))||!service.test(relevant))continue;
    matches.push(u.href);
   }
   const targets=[...new Set(matches)];return targets.length===1?{href:targets[0]}:null;
