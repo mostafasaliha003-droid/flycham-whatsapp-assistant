@@ -16,6 +16,7 @@ function text(value, max = 150) {
   return value.trim();
 }
 function amountMinor(value) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null; }
+function providerMessageId(value) { return typeof value === 'string' && value.length > 0 && value.length <= 500 && value === value.trim() && !/[\u0000-\u0020\u007f-\u009f]/u.test(value); }
 function setField(target, field, value) {
   const names = field.split('.');
   if (names.length === 1) target[field] = value;
@@ -277,7 +278,19 @@ class VisaFulfilment {
   requeuePausedMessages(customerOrOwner) {
     const target = phone(customerOrOwner);
     if (!target) return {ok: true, requeued: 0, messageIds: []};
-    const ids = Object.values(this.data().outbox).filter(item => item.state === 'cancelled' && item.failure === 'DELIVERY_PAUSED' && (phone(item.customer) === target || phone(item.recipient) === target) && this.messageCurrent(item)).map(item => item.id);
+    const ids = Object.values(this.data().outbox).filter(item => item.state === 'cancelled' && item.failure === 'DELIVERY_PAUSED' && !(item.kind === 'owner_otp_request' && item.ownerActionRequired && !item.ownerAction?.confirmed) && (phone(item.customer) === target || phone(item.recipient) === target) && this.messageCurrent(item)).map(item => item.id);
+    if (!ids.length) return {ok: true, requeued: 0, messageIds: []};
+    return this.commit(() => { for (const id of ids) { const item = this.data().outbox[id]; item.state = 'pending'; delete item.failure; item.updatedAt = this.now(); } return {ok: true, requeued: ids.length, messageIds: ids}; });
+  }
+  requeueApprovedNotifications({paymentTemplateApproved = false, ownerTemplateApproved = false} = {}) {
+    const ids = [];
+    for (const item of Object.values(this.data().outbox)) {
+      if (item.state !== 'cancelled' || item.failure !== 'DELIVERY_PAUSED') continue;
+      if (item.kind === 'payment_confirmation' ? paymentTemplateApproved !== true : item.kind === 'owner_otp_request' ? ownerTemplateApproved !== true || item.noticeMessageId || item.ownerActionRequired : true) continue;
+      try { if (!this.messageCurrent(item)) continue; if (item.kind === 'owner_otp_request') this.ownerChallengeContext(item.challengeId); }
+      catch { continue; }
+      ids.push(item.id);
+    }
     if (!ids.length) return {ok: true, requeued: 0, messageIds: []};
     return this.commit(() => { for (const id of ids) { const item = this.data().outbox[id]; item.state = 'pending'; delete item.failure; item.updatedAt = this.now(); } return {ok: true, requeued: ids.length, messageIds: ids}; });
   }
@@ -291,6 +304,10 @@ class VisaFulfilment {
       if (item.kind === 'applicant_answer_summary' && (job.state !== 'awaiting_answer_confirmation' || job.summary?.token !== item.payload.token)) return false;
     }
     if (item.challengeId) { const challenge = this.data().challenges[item.challengeId]; if (challenge?.state !== 'pending' || challenge.expiresAt <= this.now()) return false; }
+    if (item.kind === 'owner_otp_request') {
+      try { if (this.ownerChallengeContext(item.challengeId).item.id !== item.id || item.ownerActionRequired && !item.ownerAction?.confirmed) return false; }
+      catch { return false; }
+    }
     return true;
   }
   dispatchMessage(id) {
@@ -311,10 +328,23 @@ class VisaFulfilment {
     const guard = () => { if (!this.messageCurrent(this.data().outbox[id])) throw Object.assign(Error('MESSAGE_SUPERSEDED'), {notDispatched: true}); };
     try {
       guard();
-      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {})}));
+      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {}), ...(item.noticeMessageId ? {noticeMessageId: item.noticeMessageId} : {})}));
+      if (item.kind === 'owner_otp_request' && result?.paused === true && result.reason === 'owner_action_required') {
+        const noticeMessageId = result.noticeMessageId || item.noticeMessageId;
+        if (!providerMessageId(noticeMessageId) || item.noticeMessageId && noticeMessageId !== item.noticeMessageId) throw Error('OWNER_NOTICE_RESPONSE_INVALID');
+        return this.commit(() => {
+          item = this.data().outbox[id]; item.state = 'cancelled'; item.failure = 'DELIVERY_PAUSED'; item.pauseReason = 'owner_action_required'; item.ownerActionRequired = true; item.updatedAt = this.now();
+          if (noticeMessageId) {
+            item.noticeMessageId = noticeMessageId; item.noticeState ||= 'accepted'; item.noticeAcceptedAt ||= this.now();
+            const challenge = this.data().challenges[item.challengeId];
+            if (challenge?.state === 'pending' && challenge.jobId === item.jobId && challenge.customer === item.customer && challenge.owner === phone(item.recipient)) { challenge.noticeMessageId = noticeMessageId; challenge.noticeState ||= item.noticeState; }
+          }
+          return item;
+        });
+      }
       if (result?.dryRun === true || result?.paused === true || result?.notDispatched === true) throw Object.assign(Error('MESSAGE_NOT_DISPATCHED'), {notDispatched: true, reason: result?.paused === true ? 'DELIVERY_PAUSED' : 'DELIVERY_NOT_DISPATCHED'});
       const messageId = result?.messages?.[0]?.id || result?.messageId;
-      if (typeof messageId !== 'string' || !messageId || messageId.length > 500) throw Error('DELIVERY_RESPONSE_INVALID');
+      if (typeof messageId !== 'string' || !messageId || messageId.length > 500 || item.kind === 'owner_otp_request' && messageId === item.noticeMessageId) throw Error('DELIVERY_RESPONSE_INVALID');
       return this.commit(() => {
         item = this.data().outbox[id]; item.state = 'accepted'; item.messageId = messageId; item.updatedAt = this.now();
         if (item.challengeId && this.data().challenges[item.challengeId]?.state === 'pending') this.data().challenges[item.challengeId].messageId = messageId;
@@ -333,8 +363,14 @@ class VisaFulfilment {
   }
   recordDelivery(messageId, status) {
     if (!['sent', 'delivered', 'read', 'failed'].includes(status)) fail('VISA_DELIVERY_STATUS_INVALID', 400);
-    const item = Object.values(this.data().outbox).find(record => record.messageId === messageId);
+    const item = Object.values(this.data().outbox).find(record => record.messageId === messageId) || Object.values(this.data().outbox).find(record => record.noticeMessageId === messageId);
     if (!item) return null;
+    if (item.noticeMessageId === messageId && item.messageId !== messageId) return this.commit(() => {
+      if (item.noticeState !== 'delivered') { if (['delivered', 'read'].includes(status)) item.noticeState = 'delivered'; else if (status === 'failed') item.noticeState = 'failed'; }
+      const challenge = this.data().challenges[item.challengeId];
+      if (challenge?.noticeMessageId === messageId) challenge.noticeState = item.noticeState;
+      item.updatedAt = this.now(); return item;
+    });
     if (item.state === 'delivered' || status === 'sent' && item.state === 'accepted') return clone(item);
     return this.commit(() => { if (['delivered', 'read'].includes(status)) item.state = 'delivered'; else if (status === 'failed') { item.state = 'failed'; item.failure = 'PROVIDER_DELIVERY_FAILED'; } item.updatedAt = this.now(); return item; });
   }
@@ -469,12 +505,42 @@ class VisaFulfilment {
     if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > OTP_TTL) fail('VISA_OTP_TTL_INVALID', 400);
     if (Object.values(this.data().challenges).some(item => item.jobId === jobId && item.state === 'pending' && item.expiresAt > this.now())) fail('VISA_OTP_ALREADY_PENDING');
     return this.commit(() => {
-      const challenge = {id: randomUUID(), jobId, customer: job.customer, applicantIndex: job.applicantIndex, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobRevision: job.revision, leaseToken: lease.token, portalChallengeId: portalContext, contextId: context, owner, state: 'pending', attempts: 0, maxAttempts: 3, createdAt: this.now(), expiresAt: this.now() + ttlMs};
+      const challenge = {id: randomUUID(), jobId, customer: job.customer, applicantIndex: job.applicantIndex, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobRevision: job.revision, leaseToken: lease.token, portalChallengeId: portalContext, contextId: context, owner, state: 'pending', attempts: 0, maxAttempts: 3, createdAt: this.now(), expiresAt: this.now() + ttlMs};
       this.data().challenges[challenge.id] = challenge; job.state = 'waiting_otp';
       lease.expiresAt = Math.max(lease.expiresAt, challenge.expiresAt + 30000);
-      const message = this.enqueue({key: 'otp:' + challenge.id, kind: 'owner_otp_request', customer: job.customer, recipient: owner, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, challengeId: challenge.id, payload: {type: 'text', text: `رعد يحتاج رمز التحقق لمتابعة طلب المسافر ${job.applicantIndex + 1}. مرجع المتابعة: ${challenge.id.slice(0, 8)}. رد على هذه الرسالة برمز التحقق فقط خلال ${Math.ceil(ttlMs / 60000)} دقائق. لن يتم حفظ الرمز في سجل المحادثة.`}});
+      const message = this.enqueue({key: 'otp:' + challenge.id, kind: 'owner_otp_request', customer: job.customer, recipient: owner, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, challengeId: challenge.id, payload: {type: 'text', text: `رعد يحتاج رمز التحقق لمتابعة طلب المسافر ${job.applicantIndex + 1}. مرجع المتابعة: ${challenge.id.slice(0, 8)}. رد على هذه الرسالة برمز التحقق فقط قبل انتهاء صلاحية الرمز. لن يتم حفظ الرمز في سجل المحادثة.`}});
+      challenge.outboxMessageId = message.id;
       return {challengeId: challenge.id, jobId, expiresAt: challenge.expiresAt, messageId: message.id};
     });
+  }
+  ownerChallengeContext(challengeId) {
+    const challenge = this.data().challenges[challengeId];
+    if (!challenge || challenge.state !== 'pending' || challenge.expiresAt <= this.now() || challenge.owner !== this.otpOwner()) fail('OWNER_ACTION_CHALLENGE_STALE');
+    const {job, lease} = this.guardLease(challenge.jobId, challenge.leaseToken);
+    if (job.state !== 'waiting_otp' || job.revision !== challenge.jobRevision || job.approvalId !== challenge.approvalId || job.caseSignature !== challenge.caseSignature || lease.jobId !== challenge.jobId) fail('OWNER_ACTION_CHALLENGE_STALE');
+    const item = this.data().outbox[challenge.outboxMessageId];
+    if (!item || item.kind !== 'owner_otp_request' || item.challengeId !== challengeId || item.jobId !== job.id || item.customer !== challenge.customer || phone(item.recipient) !== challenge.owner || item.approvalId !== job.approvalId || item.caseSignature !== job.caseSignature) fail('OWNER_ACTION_CHALLENGE_STALE');
+    return {challenge, job, item};
+  }
+  openOwnerAction({sender, challengeId, contextId} = {}) {
+    const reject = reason => ({handled: true, ok: false, reason});
+    const owner = this.otpOwner();
+    if (!owner || phone(sender) !== owner) return reject('OWNER_ACTION_SENDER_INVALID');
+    if (typeof challengeId !== 'string' || !Object.hasOwn(this.data().challenges, challengeId) || !providerMessageId(contextId)) return reject('OWNER_ACTION_CONTEXT_INVALID');
+    let context;
+    try { context = this.ownerChallengeContext(challengeId); }
+    catch { return reject('OWNER_ACTION_CHALLENGE_STALE'); }
+    const {challenge, job, item} = context;
+    if (!providerMessageId(challenge.noticeMessageId) || contextId !== challenge.noticeMessageId || item.noticeMessageId !== contextId) return reject('OWNER_ACTION_CONTEXT_INVALID');
+    if (item.ownerAction?.confirmed && challenge.ownerAction?.confirmed && item.ownerAction.noticeMessageId === contextId && challenge.ownerAction.noticeMessageId === contextId) return {handled: true, ok: true, duplicate: true, jobId: job.id, challengeId, requeued: 0, messageIds: []};
+    if (!['accepted', 'delivered'].includes(item.noticeState) || !['accepted', 'delivered'].includes(challenge.noticeState)) return reject('OWNER_ACTION_NOTICE_UNCONFIRMED');
+    if (item.state !== 'cancelled' || item.failure !== 'DELIVERY_PAUSED' || item.pauseReason !== 'owner_action_required' || item.ownerActionRequired !== true) return reject('OWNER_ACTION_NOT_PAUSED');
+    try { return this.commit(() => {
+      const action = {confirmed: true, at: this.now(), owner, noticeMessageId: contextId};
+      item.ownerAction = clone(action); challenge.ownerAction = clone(action); item.state = 'pending'; delete item.failure; item.updatedAt = this.now();
+      this.audit('owner_action_confirmed', {customer: job.customer, jobId: job.id, challengeId});
+      return {handled: true, ok: true, duplicate: false, jobId: job.id, challengeId, requeued: 1, messageIds: [item.id]};
+    }); } catch { return reject('OWNER_ACTION_SAVE_FAILED'); }
   }
   // Call directly from the webhook BEFORE journaling/batching/model processing.
   // All owner messages containing only OTP digits are consumed, even if rejected.

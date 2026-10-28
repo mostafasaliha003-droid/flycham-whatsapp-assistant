@@ -83,7 +83,7 @@ const deliveries=new Map();
 const visaWhatsApp=createVisaWhatsAppAdapter({env:process.env,mediaStore:visaMedia,journal});
 let visaDispatcher;
 const visaFulfilment=new VisaFulfilment({store:assistant.store,inbox,journal,mediaStore:visaMedia,raad,env:process.env,canAutomate:id=>!inbox.isHumanOwned(id),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata);const messageId=result?.messages?.[0]?.id;if(messageId&&journal.hasCustomer(to))journal.recordOutbound(to,{id:messageId,text:payload.type==='document'?'[نسخة طلب تأشيرة PDF]':payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),resumeOtp:input=>visaDispatcher.resumeOtp(input)});
-visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store});
+visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,notificationReadiness:()=>visaWhatsApp.notificationReadiness()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
 const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured()});
@@ -287,6 +287,12 @@ async function handleWebhookPost(request, response) {
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
     quoteJobs.save();noteIncoming(assistant.store,message.from);
+    if(message.visaOwnerAction){
+      journal.recordInbound(message.from,{id:message.id,text:'[متابعة إجراء التأشيرة]',timestamp:message.timestamp,name:message.name});
+      const result=visaFulfilment.openOwnerAction({sender:message.from,challengeId:message.visaOwnerAction.challengeId,contextId:message.contextId});
+      if(!result.ok&&message.from===visaFulfilment.otpOwner())await rawSendTextMessage(message.from,'تعذر فتح إجراء التحقق الحالي. قد تكون انتهت صلاحيته؛ انتظر إشعار المتابعة الجديد من رعد.').catch(()=>{});
+      wakeVisa();continue;
+    }
     if(visaFulfilment.isOtpMessage({sender:message.from,contextId:message.contextId,text:message.text})){
       journal.recordInbound(message.from,{id:message.id,text:'[رمز تحقق محجوب]',timestamp:message.timestamp,name:message.name});
       const result=await visaFulfilment.consumeOtp({sender:message.from,contextId:message.contextId,text:message.text});message.text='';

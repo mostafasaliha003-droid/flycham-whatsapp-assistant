@@ -441,3 +441,191 @@ test('paused-message inbound event helper ignores nonphone legacy routing identi
   for (const sender of ['synthetic-nearby-customer', 'private-recipient', undefined, null, {}, '']) assert.deepEqual(f.service.requeuePausedMessages(sender), {ok: true, requeued: 0, messageIds: []});
   assert.equal(f.stats().saves, saves);
 });
+
+async function ownerNoticeFixture({noticeMessageId = 'accepted-owner-task-notice', send, resumeOtp} = {}) {
+  const metadata = [];
+  const f = fixture({resumeOtp, send: send || (async (_recipient, _payload, guard, meta) => {
+    guard(); metadata.push(structuredClone(meta));
+    return meta.kind === 'owner_otp_request' ? {paused: true, reason: 'owner_action_required', noticeMessageId} : {messageId: 'accepted-payment-before-notice'};
+  })});
+  const result = await f.activate(), work = f.service.acquireJob(result.jobs[0].id, {workerId: 'owner-task-worker'});
+  const request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'owner-task-portal-challenge', contextId: 'owner-task-form-context'});
+  const notice = await f.service.dispatchMessage(request.messageId);
+  return {...f, work, request, notice, metadata, challenge: () => f.service.data().challenges[request.challengeId], original: () => f.service.data().outbox[request.messageId]};
+}
+
+test('accepted utility notice is separate from the paused OTP prompt and cannot resume a code', async () => {
+  let resumed = 0;
+  const f = await ownerNoticeFixture({resumeOtp: async () => { resumed++; return {ok: true}; }});
+  assert.equal(f.notice.state, 'cancelled'); assert.equal(f.notice.failure, 'DELIVERY_PAUSED'); assert.equal(f.notice.noticeMessageId, 'accepted-owner-task-notice'); assert.equal(f.notice.noticeState, 'accepted');
+  assert.match(f.notice.payload.text, /قبل انتهاء صلاحية الرمز/); assert.doesNotMatch(f.notice.payload.text, /خلال \d+ دقائق/);
+  assert.equal(f.challenge().noticeMessageId, f.notice.noticeMessageId); assert.equal(f.challenge().messageId, undefined);
+  assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: f.notice.noticeMessageId, text: '831472'})).ok, false); assert.equal(resumed, 0);
+  assert.equal(f.service.requeuePausedMessages(OWNER).requeued, 0); assert.equal(f.service.requeuePausedMessages(CUSTOMER).requeued, 0);
+  const status = f.service.recordDelivery(f.notice.noticeMessageId, 'delivered');
+  assert.equal(status.state, 'cancelled'); assert.equal(status.noticeState, 'delivered'); assert.equal(f.challenge().noticeState, 'delivered'); assert.equal(f.challenge().messageId, undefined);
+});
+
+test('exact owner notice action requeues only original OTP prompt without extending TTL or starting portal work', async () => {
+  let resumed = 0;
+  const f = await ownerNoticeFixture({resumeOtp: async () => { resumed++; return {ok: true}; }}), expiresAt = f.challenge().expiresAt, leaseExpiresAt = f.service.data().lease.expiresAt, attempts = f.original().attempts;
+  const other = f.service.commit(() => f.service.enqueue({key: 'unrelated-paused-message', kind: 'payment_confirmation', customer: CUSTOMER, recipient: CUSTOMER, approvalId: f.work.job.approvalId, caseSignature: f.work.job.caseSignature, payload: {type: 'text', text: 'Example unrelated pending item'}}));
+  f.service.data().outbox[other.id].state = 'cancelled'; f.service.data().outbox[other.id].failure = 'DELIVERY_PAUSED';
+  const action = f.service.openOwnerAction({sender: '+' + OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  assert.deepEqual(action, {handled: true, ok: true, duplicate: false, jobId: f.work.job.id, challengeId: f.request.challengeId, requeued: 1, messageIds: [f.request.messageId]});
+  assert.equal(f.original().state, 'pending'); assert.equal(f.original().attempts, attempts); assert.equal(f.service.data().outbox[other.id].state, 'cancelled');
+  assert.equal(f.challenge().expiresAt, expiresAt); assert.equal(f.service.data().lease.expiresAt, leaseExpiresAt); assert.equal(f.challenge().messageId, undefined); assert.equal(resumed, 0);
+  const duplicate = f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  assert.equal(duplicate.ok, true); assert.equal(duplicate.duplicate, true); assert.equal(duplicate.requeued, 0); assert.equal(f.original().attempts, attempts);
+  f.service.send = async (_recipient, _payload, guard, meta) => { guard(); assert.equal(meta.noticeMessageId, f.notice.noticeMessageId); return {messageId: 'accepted-real-otp-prompt'}; };
+  const prompt = await f.service.dispatchMessage(f.request.messageId);
+  assert.equal(prompt.state, 'accepted'); assert.equal(f.challenge().messageId, 'accepted-real-otp-prompt'); assert.notEqual(f.challenge().messageId, f.challenge().noticeMessageId);
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId}).requeued, 0);
+});
+
+test('wrong sender, missing or mismatched notice context and unknown owner actions are safely consumed', async () => {
+  const f = await ownerNoticeFixture(), before = structuredClone(f.service.data());
+  for (const action of [{sender: OTHER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId}, {sender: OWNER, challengeId: f.request.challengeId}, {sender: OWNER, challengeId: f.request.challengeId, contextId: 'unrelated-provider-message'}, {sender: OWNER, challengeId: 'unknown-challenge', contextId: f.notice.noticeMessageId}, {}]) {
+    const outcome = f.service.openOwnerAction(action); assert.equal(outcome.handled, true); assert.equal(outcome.ok, false);
+  }
+  assert.deepEqual(f.service.data(), before);
+});
+
+test('owner action rejects stale TTL, lease, revision, material case or payment evidence', async () => {
+  for (const mutation of ['expiry', 'lease', 'revision', 'case', 'payment', 'owner']) {
+    const f = await ownerNoticeFixture();
+    if (mutation === 'expiry') f.tick(5 * 60000 + 1);
+    if (mutation === 'lease') f.service.data().lease.token = 'different-active-lease';
+    if (mutation === 'revision') f.service.job(f.work.job.id).revision++;
+    if (mutation === 'case') f.c.applicants[0].latinFirstName = 'Changed example identity';
+    if (mutation === 'payment') f.c.staffVerification.payment.reference = 'REPLACED-REFERENCE';
+    if (mutation === 'owner') f.options.env.RAAD_OTP_OWNER_WHATSAPP = OTHER;
+    const action = f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+    assert.equal(action.handled, true); assert.equal(action.ok, false); assert.notEqual(f.original().state, 'pending');
+  }
+});
+
+test('owner action never revives uncertain, failed, sending or already accepted OTP sends', async () => {
+  for (const state of ['uncertain', 'failed', 'sending', 'accepted']) {
+    const f = await ownerNoticeFixture(); f.original().state = state;
+    const action = f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+    assert.equal(action.handled, true); assert.equal(action.ok, false); assert.equal(f.original().state, state);
+    assert.equal(f.service.requeuePausedMessages(OWNER).requeued, 0);
+    assert.equal(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).requeued, 0);
+  }
+});
+
+test('duplicate owner clicks cannot replay an uncertain OTP send or resend its utility notice', async () => {
+  const f = await ownerNoticeFixture(); f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  let sends = 0;
+  f.service.send = async (_recipient, _payload, guard, meta) => { guard(); sends++; assert.equal(meta.noticeMessageId, f.notice.noticeMessageId); throw Error('EXAMPLE_OTP_DELIVERY_TIMEOUT'); };
+  assert.equal((await f.service.dispatchMessage(f.request.messageId)).state, 'uncertain');
+  const duplicate = f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  assert.equal(duplicate.duplicate, true); assert.equal(duplicate.requeued, 0); assert.equal(f.original().state, 'uncertain');
+  await f.service.dispatchMessage(f.request.messageId); assert.equal(sends, 1);
+});
+
+test('notice IDs are bounded and a notice provider ID can never count as actual OTP prompt acceptance', async () => {
+  const invalid = await ownerNoticeFixture({noticeMessageId: 'x'.repeat(501)});
+  assert.equal(invalid.original().state, 'uncertain'); assert.equal(invalid.original().noticeMessageId, undefined); assert.equal(invalid.challenge().noticeMessageId, undefined); assert.equal(invalid.challenge().messageId, undefined);
+  const f = await ownerNoticeFixture(); f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  f.service.send = async () => ({messageId: f.notice.noticeMessageId});
+  assert.equal((await f.service.dispatchMessage(f.request.messageId)).state, 'uncertain'); assert.equal(f.challenge().messageId, undefined);
+});
+
+test('notice failed-delivery events cannot confirm owner action or mark OTP prompt failed', async () => {
+  const f = await ownerNoticeFixture(); f.service.recordDelivery(f.notice.noticeMessageId, 'failed');
+  assert.equal(f.original().state, 'cancelled'); assert.equal(f.original().noticeState, 'failed'); assert.equal(f.challenge().messageId, undefined);
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId}).ok, false);
+});
+
+test('owner action persistence failure leaves original safely paused and permits exact retry', async () => {
+  const f = await ownerNoticeFixture(), save = f.store.save;
+  f.store.save = () => { throw Error('EXAMPLE_ACTION_SAVE_FAILURE'); };
+  const failed = f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  assert.equal(failed.reason, 'OWNER_ACTION_SAVE_FAILED'); assert.equal(f.original().state, 'cancelled'); assert.equal(f.challenge().ownerAction, undefined);
+  f.store.save = save;
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId}).requeued, 1);
+});
+
+test('notice acceptance racing a released challenge never reopens or binds that old OTP prompt', async () => {
+  let finish;
+  const f = fixture({send: async (_recipient, _payload, guard, meta) => { guard(); if (meta.kind !== 'owner_otp_request') return {messageId: 'accepted-payment'}; return new Promise(resolve => { finish = resolve; }); }});
+  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'racing-owner-task'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'racing-portal-challenge', contextId: 'racing-form-context'});
+  const sending = f.service.dispatchMessage(request.messageId);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: request.challengeId, contextId: 'racing-notice'}).ok, false);
+  f.service.releaseJob(work.job.id, {leaseToken: work.lease.token});
+  finish({paused: true, reason: 'owner_action_required', noticeMessageId: 'racing-notice'}); await sending;
+  const challenge = f.service.data().challenges[request.challengeId];
+  assert.equal(challenge.state, 'cancelled'); assert.equal(challenge.noticeMessageId, undefined); assert.equal(challenge.messageId, undefined);
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: request.challengeId, contextId: 'racing-notice'}).ok, false);
+});
+
+test('verified template approval requeues only known paused payment and eligible owner notifications', async () => {
+  const f = fixture({send: async () => ({paused: true, reason: 'template_not_approved'})}), approval = f.approve(); f.claim(false);
+  await f.service.dispatchMessage(approval.jobs[0].paymentNoticeId);
+  assert.equal(f.service.requeueApprovedNotifications().requeued, 0);
+  assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: 'true'}).requeued, 0);
+  assert.deepEqual(f.service.requeueApprovedNotifications({paymentTemplateApproved: true}).messageIds, [approval.jobs[0].paymentNoticeId]);
+  f.service.send = async () => ({messageId: 'accepted-approved-payment'}); await f.service.dispatchMessage(approval.jobs[0].paymentNoticeId);
+  const work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'approved-owner-template'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'approved-owner-challenge', contextId: 'approved-owner-context'});
+  f.service.send = async () => ({paused: true, reason: 'template_not_approved'}); await f.service.dispatchMessage(request.messageId);
+  assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: true}).requeued, 0);
+  assert.deepEqual(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).messageIds, [request.messageId]);
+  f.service.data().outbox[request.messageId].state = 'cancelled'; f.service.data().outbox[request.messageId].failure = 'DELIVERY_PAUSED'; f.tick(5 * 60000 + 1);
+  assert.equal(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).requeued, 0);
+});
+
+test('template approvals never reopen owner notices, client questions, PDFs or uncertain external effects', async () => {
+  const f = await ownerNoticeFixture();
+  for (const [kind, state] of [['payment_confirmation', 'uncertain'], ['payment_confirmation', 'failed'], ['payment_confirmation', 'accepted'], ['applicant_question', 'cancelled'], ['application_request_copy', 'cancelled']]) {
+    const item = f.service.enqueue({key: 'ineligible-template-' + kind + '-' + state, kind, customer: CUSTOMER, recipient: CUSTOMER, approvalId: f.work.job.approvalId, caseSignature: f.work.job.caseSignature, payload: {type: 'text', text: 'Example ineligible item'}});
+    item.state = state; item.failure = 'DELIVERY_PAUSED';
+  }
+  const before = Object.fromEntries(Object.values(f.service.data().outbox).map(item => [item.id, item.state]));
+  assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: true, ownerTemplateApproved: true}).requeued, 0);
+  assert.deepEqual(Object.fromEntries(Object.values(f.service.data().outbox).map(item => [item.id, item.state])), before);
+});
+
+test('owner-action-required response without an accepted notice ID remains uncertain', async () => {
+  const f = await ownerNoticeFixture({send: async (_recipient, _payload, guard, meta) => { guard(); return meta.kind === 'owner_otp_request' ? {paused: true, reason: 'owner_action_required'} : {messageId: 'accepted-payment'}; }});
+  assert.equal(f.original().state, 'uncertain'); assert.equal(f.original().noticeMessageId, undefined); assert.equal(f.original().ownerActionRequired, undefined); assert.equal(f.challenge().messageId, undefined); assert.equal(f.challenge().noticeMessageId, undefined);
+  assert.equal(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).requeued, 0);
+});
+
+test('cancelled lease prevents actual OTP prompt after an otherwise valid owner action', async () => {
+  const f = await ownerNoticeFixture();
+  assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId}).requeued, 1);
+  let providerCalls = 0;
+  f.service.send = async (_recipient, _payload, guard) => { guard(); providerCalls++; return {messageId: 'must-not-be-sent'}; };
+  f.service.data().lease.cancelled = true;
+  const result = await f.service.dispatchMessage(f.request.messageId);
+  assert.equal(result.state, 'cancelled'); assert.equal(result.failure, 'MESSAGE_SUPERSEDED'); assert.equal(providerCalls, 0); assert.equal(f.challenge().messageId, undefined);
+});
+
+test('actual OTP prompt final queue guard checks captured lease before provider dispatch', async () => {
+  const f = await ownerNoticeFixture(); f.service.openOwnerAction({sender: OWNER, challengeId: f.request.challengeId, contextId: f.notice.noticeMessageId});
+  let providerCalls = 0;
+  f.service.send = async (_recipient, _payload, guard) => { f.service.data().lease.cancelled = true; guard(); providerCalls++; return {messageId: 'must-not-be-sent'}; };
+  const result = await f.service.dispatchMessage(f.request.messageId);
+  assert.equal(result.state, 'cancelled'); assert.equal(providerCalls, 0); assert.equal(f.challenge().messageId, undefined);
+});
+
+test('notice acceptance followed by persistence failure cannot resend the utility notice', async () => {
+  let failSave = false;
+  const f = fixture({send: async (_recipient, _payload, guard, meta) => { guard(); if (meta.kind !== 'owner_otp_request') return {messageId: 'accepted-payment'}; failSave = true; return {paused: true, reason: 'owner_action_required', noticeMessageId: 'notice-accepted-before-disk-error'}; }});
+  const save = f.store.save; f.store.save = () => { if (failSave) { failSave = false; throw Error('EXAMPLE_NOTICE_SAVE_FAILURE'); } save(); };
+  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'notice-save-worker'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'notice-save-challenge', contextId: 'notice-save-context'});
+  const result = await f.service.dispatchMessage(request.messageId);
+  assert.equal(result.state, 'uncertain'); assert.equal(result.noticeMessageId, undefined); assert.equal(f.service.data().challenges[request.challengeId].messageId, undefined);
+  assert.equal(f.service.requeuePausedMessages(OWNER).requeued, 0); assert.equal(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).requeued, 0);
+  assert.equal((await f.service.dispatchMessage(request.messageId)).state, 'uncertain');
+});
+
+test('template approval cannot revive notification after material case changes', async () => {
+  const f = fixture({send: async () => ({paused: true, reason: 'template_pending'})}), approval = f.approve(); f.claim(false);
+  await f.service.dispatchMessage(approval.jobs[0].paymentNoticeId); f.c.quote.total = 280;
+  assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: true, ownerTemplateApproved: true}).requeued, 0);
+  assert.equal(f.service.data().outbox[approval.jobs[0].paymentNoticeId].state, 'cancelled');
+});

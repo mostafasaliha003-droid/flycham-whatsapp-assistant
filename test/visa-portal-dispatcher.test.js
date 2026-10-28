@@ -81,6 +81,29 @@ test('paused payment acknowledgement prevents both questions and portal launch',
   assert.equal(f.calls.length, 0); assert.equal(f.fulfilment.job(result.jobs[0].id).state, 'queued'); assert.equal(f.fulfilment.data().outbox[result.jobs[0].paymentNoticeId].state, 'cancelled');
 });
 
+test('actual template approval resumes only a known paused payment acknowledgement without another inbound', async () => {
+  const f = fixture({send: async () => ({paused: true})}), approval = f.approve();
+  const noticeId = approval.jobs[0].paymentNoticeId;
+  await f.fulfilment.dispatchMessage(noticeId);
+  let approved = false, reads = 0, sends = 0;
+  f.dispatcher.notificationReadiness = async () => { reads++; return {paymentTemplateApproved: approved, ownerTemplateApproved: false}; };
+  f.fulfilment.send = async () => { sends++; return {messages: [{id: 'accepted-after-real-template-approval'}]}; };
+  await f.dispatcher.flushMessages(); assert.equal(sends, 0); assert.equal(f.fulfilment.data().outbox[noticeId].state, 'cancelled');
+  approved = true;
+  await f.dispatcher.flushMessages(); assert.equal(sends, 1); assert.equal(f.fulfilment.data().outbox[noticeId].state, 'accepted');
+  const checked = reads; await f.dispatcher.flushMessages(); assert.equal(sends, 1); assert.equal(reads, checked);
+  assert.equal(f.calls.length, 0, 'approval recovery does not perform native portal work');
+});
+
+test('uncertain sends never trigger template readiness checks or approval-based replay', async () => {
+  const f = fixture({send: async () => { throw Error('synthetic unknown send outcome'); }}), approval = f.approve();
+  await f.fulfilment.dispatchMessage(approval.jobs[0].paymentNoticeId);
+  assert.equal(f.fulfilment.data().outbox[approval.jobs[0].paymentNoticeId].state, 'uncertain');
+  f.dispatcher.notificationReadiness = async () => assert.fail('uncertain outcomes cannot authorize replay');
+  await f.dispatcher.flushMessages();
+  assert.equal(f.fulfilment.data().outbox[approval.jobs[0].paymentNoticeId].state, 'uncertain');
+});
+
 test('explicit client consent and complete answers are required before portal POST', async () => {
   const f = fixture(), result = f.approve(); await f.fulfilment.dispatchMessage(result.jobs[0].paymentNoticeId);
   await f.dispatcher.launch(f.fulfilment.job(result.jobs[0].id));

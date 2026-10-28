@@ -6,7 +6,7 @@ const {QUESTION_CATALOG, validateAnswer} = require('./visa-client-questions');
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const OPTION = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
-const OTP_TEMPLATE_BODY = 'رعد يحتاج رمز التحقق لمتابعة طلب التأشيرة. مرجع المهمة: {{1}}. مرجع التحقق: {{2}}. رد على هذه الرسالة برمز التحقق فقط. لا تشارك الرمز مع أي جهة أخرى.';
+const OTP_TEMPLATE_BODY = 'تحديث مهمة متابعة طلب تأشيرة لدى شركة الرمال. مرجع المهمة: {{1}}. مرجع الإجراء: {{2}}. تحتاج المهمة إلى إجراء من مسؤول المكتب لاستكمال المعالجة. اختر «متابعة المهمة» لعرض الإجراء المطلوب.';
 const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
 const TEMPLATE_REJECTION_CODES = new Set(['ABUSIVE_CONTENT', 'PROMOTIONAL', 'SCAM', 'INCORRECT_CATEGORY', 'TAG_CONTENT_MISMATCH', 'INVALID_FORMAT', 'CATEGORY_NOT_AVAILABLE', 'NONE']);
 const FIELD_LABELS = Object.freeze({
@@ -42,7 +42,7 @@ function visaTemplateConfig(env = process.env) {
 }
 function visaTemplateRequest({name, language = 'ar'} = {}) {
   if (typeof name !== 'string' || !/^[a-z0-9_]{1,100}$/.test(name) || typeof language !== 'string' || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language)) throw failure('VISA_WHATSAPP_TEMPLATE_CONFIG_INVALID');
-  return {name, language, category: 'UTILITY', components: [{type: 'BODY', text: OTP_TEMPLATE_BODY, example: {body_text: [['12345678-1234-4321-abcd-123456789abc', '12345678-1234-4321-abcd-123456789abd']]}}]};
+  return {name, language, category: 'UTILITY', components: [{type: 'BODY', text: OTP_TEMPLATE_BODY, example: {body_text: [['12345678-1234-4321-abcd-123456789abc', '12345678-1234-4321-abcd-123456789abd']]}}, {type: 'BUTTONS', buttons: [{type: 'QUICK_REPLY', text: 'متابعة المهمة'}]}]};
 }
 function visaPaymentTemplateConfig(env = process.env) {
   return {name: env.RAAD_VISA_PAYMENT_TEMPLATE || '', language: env.RAAD_VISA_PAYMENT_TEMPLATE_LANGUAGE || 'ar', wabaId: env.SAUDI_VISA_WABA_ID || '', version: env.WHATSAPP_GRAPH_API_VERSION || 'v23.0'};
@@ -55,11 +55,23 @@ function visaPaymentTemplateRequest({name, language = 'ar'} = {}) {
 
 // Reading the actual Meta approval is required. A configured name alone never
 // authorizes delivery outside the recipient's customer service window.
-function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => fetch(...args), now = Date.now} = {}, configFor, requestFor, bodyText) {
+function utilityTemplateSchemaMatches(actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  return expected.every(component => {
+    const matching = actual.filter(item => item?.type === component.type);
+    if (matching.length !== 1) return false;
+    const item = matching[0];
+    if (component.type === 'BODY') return item.text === component.text;
+    if (component.type === 'BUTTONS') return Array.isArray(item.buttons) && item.buttons.length === 1 && item.buttons[0]?.type === 'QUICK_REPLY' && item.buttons[0].text === component.buttons[0].text;
+    return false;
+  });
+}
+function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => fetch(...args), now = Date.now} = {}, configFor, requestFor) {
   let until = 0, approved = false, state = 'not_configured', pending = null, cachedConfig = null, rejectedReason = null;
   const check = async (config, accessToken) => {
     rejectedReason = null;
-    try { requestFor(config); } catch { state = 'not_configured'; return false; }
+    let expected;
+    try { expected = requestFor(config); } catch { state = 'not_configured'; return false; }
     if (!/^\d{5,30}$/.test(config.wabaId) || !/^v\d{1,3}\.\d{1,2}$/.test(config.version) || !accessToken) { state = 'not_configured'; return false; }
     try {
       const response = await fetchImpl(`https://graph.facebook.com/${config.version}/${config.wabaId}/message_templates?name=${encodeURIComponent(config.name)}&fields=name,status,language,category,components,rejected_reason`, {headers: {Authorization: 'Bearer ' + accessToken}, signal: AbortSignal.timeout(10000)});
@@ -73,7 +85,7 @@ function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => 
         if (state === 'rejected') rejectedReason = typeof template.rejected_reason === 'string' && template.rejected_reason.length <= 80 && TEMPLATE_REJECTION_CODES.has(template.rejected_reason) ? template.rejected_reason : template.rejected_reason == null ? 'UNAVAILABLE' : 'UNRECOGNIZED_REJECTION_REASON';
         return false;
       }
-      if (template.category !== 'UTILITY' || !Array.isArray(template.components) || template.components.length !== 1 || template.components[0]?.type !== 'BODY' || template.components[0].text !== bodyText) { state = 'schema_mismatch'; return false; }
+      if (template.category !== 'UTILITY' || !utilityTemplateSchemaMatches(template.components, expected.components)) { state = 'schema_mismatch'; return false; }
       state = 'approved'; return true;
     } catch { state = 'unverified'; return false; }
   };
@@ -88,8 +100,8 @@ function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => 
   gate.status = () => ({state, approved, checked: until > 0, ...(state === 'rejected' ? {rejectedReason: rejectedReason || 'UNAVAILABLE'} : {})});
   return gate;
 }
-function createVisaTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY); }
-function createVisaPaymentTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY); }
+function createVisaTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaTemplateConfig, visaTemplateRequest); }
+function createVisaPaymentTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaPaymentTemplateConfig, visaPaymentTemplateRequest); }
 
 function interactive(text, token, options, summary = false) {
   const rows = options.map(option => ({id: `${summary ? 'visa_confirm' : 'visa_answer'}:${token}:${option.id}`, title: option.label}));
@@ -203,14 +215,18 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     if (input.recipient !== undefined && recipientNumber(input.recipient) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
     await guardNow(guard);
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return {dryRun: true};
+    if (windowOpen(recipient)) return dispatch(recipient, {type: 'text', text: {preview_url: false, body}}, guard, credentials(env), true);
+    if (metadata.noticeMessageId !== undefined) return {...paused('owner_action_required'), noticeMessageId: string(metadata.noticeMessageId, 500, {multiline: false})};
     const config = credentials(env);
-    if (windowOpen(recipient)) return dispatch(recipient, {type: 'text', text: {preview_url: false, body}}, guard, config, true);
     let approved = false;
     try { approved = await gate() === true; } catch {}
     if (!approved) return paused('approved_utility_template_required');
     await guardNow(guard);
     const template = visaTemplateConfig(env); visaTemplateRequest(template);
-    return dispatch(recipient, {type: 'template', template: {name: template.name, language: {code: template.language}, components: [{type: 'body', parameters: [{type: 'text', text: jobId}, {type: 'text', text: challengeId}]}]}}, guard, config, false);
+    const notice = await dispatch(recipient, {type: 'template', template: {name: template.name, language: {code: template.language}, components: [{type: 'body', parameters: [{type: 'text', text: jobId}, {type: 'text', text: challengeId}]}, {type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{type: 'payload', payload: 'visa_owner_action:' + challengeId}]}]}}, guard, config, false);
+    // This acceptance belongs to the operational notice only. The actual
+    // prompt is sent after the owner's reply reopens the service window.
+    return {...paused('owner_action_required'), noticeMessageId: notice.messages[0].id};
   }
   async function send(to, payload, guard, metadata = {}) {
     const recipient = recipientNumber(to), rendered = renderPayload(payload);
@@ -256,7 +272,20 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     }
     return result;
   }
-  return {send, sendOperatorOtp, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
+  async function notificationReadiness() {
+    if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return {paymentTemplateApproved: false, ownerTemplateApproved: false};
+    const ready = async (configFor, requestFor, check) => {
+      try {
+        credentials(env);
+        const config = configFor(env); requestFor(config);
+        if (!/^\d{5,30}$/.test(config.wabaId)) return false;
+        return await check() === true;
+      } catch { return false; }
+    };
+    const [paymentTemplateApproved, ownerTemplateApproved] = await Promise.all([ready(visaPaymentTemplateConfig, visaPaymentTemplateRequest, paymentGate), ready(visaTemplateConfig, visaTemplateRequest, gate)]);
+    return {paymentTemplateApproved, ownerTemplateApproved};
+  }
+  return {send, sendOperatorOtp, notificationReadiness, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
 }
 
 module.exports = {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY, createVisaPaymentTemplateGate, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY};

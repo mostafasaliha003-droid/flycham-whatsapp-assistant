@@ -147,13 +147,32 @@ test('OTP notification can only target the explicit normalized owner and uses jo
   await assert.rejects(f.adapter.sendOperatorOtp({text: 'رمز التحقق مطلوب.', challengeId: TOKEN}, ok), /VISA_WHATSAPP_PAYLOAD_INVALID/);
 });
 
-test('out-of-window owner requires verified utility template and never falls back to ordinary text', async () => {
+test('out-of-window owner receives only the approved operational action notice while the actual prompt stays paused', async () => {
   const blocked = fixture({windows: [], templateGate: async () => false});
   assert.deepEqual(await blocked.adapter.sendOperatorOtp({jobId: JOB, challengeId: TOKEN, text: 'رمز التحقق مطلوب.'}, ok), {paused: true, reason: 'approved_utility_template_required'}); assert.equal(blocked.calls.length, 0);
   const f = fixture({windows: [], env: {RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_otp_request'}, templateGate: async () => true});
-  await f.adapter.sendOperatorOtp({jobId: JOB, challengeId: TOKEN, text: 'لا يرسل هذا النص خارج النافذة.'}, ok);
+  const result = await f.adapter.sendOperatorOtp({jobId: JOB, challengeId: TOKEN, text: 'لا يرسل هذا النص خارج النافذة.'}, ok);
+  assert.deepEqual(result, {paused: true, reason: 'owner_action_required', noticeMessageId: 'wamid.synthetic.1'}); assert.equal(result.messages, undefined);
   const message = JSON.parse(f.calls[0].request.body); assert.equal(message.to, OWNER); assert.equal(message.type, 'template');
-  assert.deepEqual(message.template, {name: 'synthetic_otp_request', language: {code: 'ar'}, components: [{type: 'body', parameters: [{type: 'text', text: JOB}, {type: 'text', text: TOKEN}]}]});
+  assert.deepEqual(message.template, {name: 'synthetic_otp_request', language: {code: 'ar'}, components: [{type: 'body', parameters: [{type: 'text', text: JOB}, {type: 'text', text: TOKEN}]}, {type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{type: 'payload', payload: 'visa_owner_action:' + TOKEN}]}]});
+  assert.equal(message.text, undefined);
+});
+
+test('persisted owner notice acceptance prevents repeats and a reopened window permits only the original guarded prompt', async () => {
+  let checks = 0;
+  const f = fixture({windows: [], env: {RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_action_required'}, templateGate: async () => { checks++; return true; }});
+  const payload = {type: 'text', text: 'يرجى الرد على هذه الرسالة برمز التحقق الحالي.'}, context = {customer: CUSTOMER, kind: 'owner_otp_request', jobId: JOB, challengeId: TOKEN};
+  const notice = await f.adapter.send(OWNER, payload, ok, context);
+  assert.equal(notice.noticeMessageId, 'wamid.synthetic.1');
+  assert.deepEqual(await f.adapter.send(OWNER, payload, ok, {...context, noticeMessageId: notice.noticeMessageId}), notice);
+  assert.equal(f.calls.length, 1); assert.equal(checks, 1);
+  f.windows.add(OWNER);
+  assert.deepEqual(await f.adapter.send(OWNER, payload, ok, {...context, noticeMessageId: notice.noticeMessageId}), {messages: [{id: 'wamid.synthetic.2'}]});
+  const message = JSON.parse(f.calls[1].request.body); assert.equal(message.to, OWNER); assert.equal(message.type, 'text'); assert.equal(message.text.body, payload.text); assert.equal(checks, 1);
+  const stale = fixture({windows: [], env: {RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_action_required'}, templateGate: async () => true}); let guards = 0;
+  await assert.rejects(stale.adapter.send(OWNER, payload, () => { if (++guards === 2) throw Error('EXPIRED_CHALLENGE'); }, context), /VISA_WHATSAPP_MESSAGE_SUPERSEDED/); assert.equal(stale.calls.length, 0);
+  f.windows.delete(OWNER);
+  await assert.rejects(f.adapter.send(OWNER, payload, () => { throw Error('EXPIRED_CHALLENGE'); }, {...context, noticeMessageId: notice.noticeMessageId}), /VISA_WHATSAPP_MESSAGE_SUPERSEDED/); assert.equal(f.calls.length, 2);
 });
 
 test('approved payment utility template acknowledges only its exact customer and actual case reference outside the window', async () => {
@@ -226,14 +245,35 @@ test('template rejection diagnostics request the provider reason but expose only
 test('template helper proposes utility approval request; gate requires exact approved category, language and schema', async () => {
   const configEnv = {...env, SAUDI_VISA_WABA_ID: '100000000002', RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_otp_request'}, requested = visaTemplateRequest(visaTemplateConfig(configEnv));
   assert.equal(requested.category, 'UTILITY'); assert.equal(requested.components[0].text, OTP_TEMPLATE_BODY);
+  assert.doesNotMatch(OTP_TEMPLATE_BODY, /رمز|تحقق|مصادق|\botp\b|\bcode\b|authentication/i);
+  assert.deepEqual(requested.components[0].text.match(/\{\{\d+\}\}/g), ['{{1}}', '{{2}}']);
+  assert.deepEqual(requested.components[1], {type: 'BUTTONS', buttons: [{type: 'QUICK_REPLY', text: 'متابعة المهمة'}]});
   const approved = {...requested, status: 'APPROVED'};
-  for (const template of [{...approved, status: 'PENDING'}, {...approved, category: 'AUTHENTICATION'}, {...approved, language: 'en'}, {...approved, components: [{type: 'BODY', text: 'Something {{1}} else {{2}}'}]}, {...approved, components: [...approved.components, {type: 'BUTTONS', buttons: []}]}]) {
+  for (const template of [{...approved, status: 'PENDING'}, {...approved, category: 'AUTHENTICATION'}, {...approved, language: 'en'}, {...approved, components: [{type: 'BODY', text: 'Something {{1}} else {{2}}'}]}, {...approved, components: [approved.components[0]]}, {...approved, components: [...approved.components, {type: 'BUTTONS', buttons: []}]}, ...[
+    [], [{type: 'QUICK_REPLY', text: 'طلب مختلف'}], [{type: 'URL', text: 'متابعة المهمة', url: 'https://example.test'}], [{type: 'QUICK_REPLY', text: 'متابعة المهمة'}, {type: 'QUICK_REPLY', text: 'إجراء آخر'}]
+  ].map(buttons => ({...approved, components: [approved.components[0], {type: 'BUTTONS', buttons}]}))]) {
     const gate = createVisaTemplateGate({env: configEnv, fetchImpl: async () => ({ok: true, json: async () => ({data: [template]})})}); assert.equal(await gate(), false); assert.equal(gate.status().approved, false);
   }
   let at = 1000, calls = 0, status = 'PENDING';
   const gate = createVisaTemplateGate({env: configEnv, now: () => at, fetchImpl: async (url, options) => { calls++; assert.equal(options.method, undefined); assert.match(url, /message_templates\?name=synthetic_otp_request/); return {ok: true, json: async () => ({data: [{...approved, status}]})}; }});
   assert.equal(await gate(), false); status = 'APPROVED'; assert.equal(await gate(), false); at += 60001; assert.equal(await gate(), true); assert.equal(calls, 2); assert.equal(gate.status().state, 'approved');
   assert.equal(await createVisaTemplateGate({env: {}})(), false);
+});
+
+test('notification readiness only reads cached approval gates and is false without live valid configuration', async () => {
+  const configEnv = {...env, SAUDI_VISA_WABA_ID: '100000000002', RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_action_required', RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'};
+  const templates = [visaTemplateRequest(visaTemplateConfig(configEnv)), visaPaymentTemplateRequest(visaPaymentTemplateConfig(configEnv))].map(template => ({...template, status: 'APPROVED'}));
+  const calls = [];
+  const adapter = createVisaWhatsAppAdapter({env: configEnv, fetchImpl: async (url, options) => { calls.push(url); assert.equal(options.method, undefined); assert.equal(options.body, undefined); assert.ok(new URL(url).pathname.endsWith('/message_templates')); return {ok: true, json: async () => ({data: templates})}; }});
+  assert.deepEqual(await adapter.notificationReadiness(), {paymentTemplateApproved: true, ownerTemplateApproved: true}); assert.equal(calls.length, 2);
+  assert.deepEqual(await adapter.notificationReadiness(), {paymentTemplateApproved: true, ownerTemplateApproved: true}); assert.equal(calls.length, 2);
+  configEnv.RAAD_VISA_PAYMENT_TEMPLATE = 'INVALID NAME';
+  assert.deepEqual(await adapter.notificationReadiness(), {paymentTemplateApproved: false, ownerTemplateApproved: true}); assert.equal(calls.length, 2);
+  const noCheck = async () => assert.fail('invalid/dry-run configuration cannot read approval gates');
+  for (const invalid of [{...configEnv, DRY_RUN: 'true'}, {...configEnv, WHATSAPP_PHONE_NUMBER_ID: 'invalid'}, {DRY_RUN: 'false'}]) {
+    const inactive = createVisaWhatsAppAdapter({env: invalid, templateGate: noCheck, paymentTemplateGate: noCheck, fetchImpl: noCheck});
+    assert.deepEqual(await inactive.notificationReadiness(), {paymentTemplateApproved: false, ownerTemplateApproved: false});
+  }
 });
 
 test('invalid payload bounds and recipient binding never reach Meta', async () => {
@@ -253,6 +293,17 @@ test('provider and network failures are sanitized, bounded numeric and never ret
 
 const webhook = messages => ({entry: [{changes: [{field: 'messages', value: {contacts: [{wa_id: CUSTOMER, profile: {name: 'Synthetic Customer'}}], messages}}]}]});
 const incoming = (kind, id, extra = {}) => ({id: 'inbound-message', from: CUSTOMER, timestamp: '1792886400', context: {id: 'bound-message'}, type: 'interactive', interactive: {type: kind, [kind]: {id, title: 'UNTRUSTED INSTRUCTIONS', description: 'UNTRUSTED DESCRIPTION'}}, ...extra});
+test('owner task quick replies parse only the exact bound payload in template-button and interactive-button events', () => {
+  const template = {id: 'owner-reply', from: OWNER, timestamp: '1792886400', context: {id: 'bound-notice'}, type: 'button', button: {payload: 'visa_owner_action:' + TOKEN, text: 'UNTRUSTED BUTTON TEXT'}};
+  const [button, interactive] = extractIncomingMessages(webhook([template, incoming('button_reply', 'visa_owner_action:' + TOKEN, {from: OWNER})]));
+  assert.deepEqual(button, {id: 'owner-reply', contextId: 'bound-notice', from: OWNER, name: null, text: '[متابعة إجراء التأشيرة]', visaOwnerAction: {challengeId: TOKEN}, timestamp: '1792886400'});
+  assert.deepEqual(interactive.visaOwnerAction, {challengeId: TOKEN}); assert.equal(interactive.text, '[متابعة إجراء التأشيرة]'); assert.equal(interactive.contextId, 'bound-message'); assert.equal(interactive.from, OWNER);
+  assert.doesNotMatch(JSON.stringify([button, interactive]), /UNTRUSTED/);
+  for (const payload of ['visa_owner_action:' + TOKEN + ':extra', 'visa_owner_action:' + TOKEN.toUpperCase(), 'visa_owner_action:' + 'a'.repeat(36), 'visa_answer:' + TOKEN + ':yes', 'arbitrary_button', 123, null]) assert.deepEqual(extractIncomingMessages(webhook([{...template, button: {payload, text: 'UNTRUSTED'}}])), []);
+  assert.deepEqual(extractIncomingMessages(webhook([incoming('list_reply', 'visa_owner_action:' + TOKEN)])), []);
+  const [ordinary] = extractIncomingMessages(webhook([{id: 'ordinary-text', from: OWNER, type: 'text', text: {body: 'متابعة المهمة'}, visaOwnerAction: {challengeId: TOKEN}}]));
+  assert.equal(ordinary.visaOwnerAction, undefined); assert.equal(ordinary.text, 'متابعة المهمة');
+});
 test('parser extracts typed visa buttons/list answers and confirmations while preserving provenance', () => {
   const [answer, list, confirmation, correction] = extractIncomingMessages(webhook([
     incoming('button_reply', 'visa_answer:' + TOKEN + ':yes'), incoming('list_reply', 'visa_answer:' + TOKEN + ':married'), incoming('button_reply', 'visa_confirm:' + TOKEN + ':confirm'), incoming('button_reply', 'visa_confirm:' + TOKEN + ':correct')
