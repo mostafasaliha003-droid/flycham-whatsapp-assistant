@@ -1,0 +1,42 @@
+'use strict';
+const ORIGIN='https://visa.mofa.gov.sa',PATH='/SmartForm/TraditionalApp',contexts=new WeakMap();
+const CODES=new Set(['PORTAL_CONFIRM_INPUT_INVALID','PORTAL_CONFIRM_UNAVAILABLE','PORTAL_CONFIRM_CHANGED','PORTAL_CONFIRM_FORBIDDEN','PORTAL_CONFIRM_ALREADY_ATTEMPTED','PORTAL_CONFIRM_READBACK_MISMATCH','PORTAL_CONFIRM_ACTIVATION_UNCONFIRMED']);
+const fail=code=>Object.assign(new Error(CODES.has(code)?code:'PORTAL_CONFIRM_UNAVAILABLE'),{code:CODES.has(code)?code:'PORTAL_CONFIRM_UNAVAILABLE'});
+async function inspectConfirmationDom(args={}){
+ const error=code=>({error:code});
+ try{
+  if(location.origin!=='https://visa.mofa.gov.sa'||location.pathname!=='/SmartForm/TraditionalApp'||window.top!==window.self)return error('PORTAL_CONFIRM_UNAVAILABLE');
+  const normalized=text=>String(text||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/\s+/g,' ').trim();
+  const safe=text=>normalized(text).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/[0-9\u0660-\u0669\u06f0-\u06f9]{6,}/g,'[number]').replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[id]').replace(/[A-Za-z0-9_-]{40,}/g,'[id]').replace(/[<>]/g,' ');
+  const visible=el=>{if(!el.isConnected||el.hidden||el.getAttribute('aria-hidden')==='true'||el.closest('[hidden],[aria-hidden="true"]'))return false;const s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&s.visibility!=='collapse'&&s.opacity!=='0'&&el.getClientRects().length>0;};
+  const roots=[...new Set(document.querySelectorAll('.modal.in,.modal.show,[role="dialog"],dialog[open],.swal-modal,.sweet-alert,.swal2-popup'))].filter(visible);
+  const outer=roots.filter(el=>!roots.some(parent=>parent!==el&&parent.contains(el)));if(outer.length!==1)return error('PORTAL_CONFIRM_UNAVAILABLE');const modal=outer[0];if(args.modal&&modal!==args.modal)return error('PORTAL_CONFIRM_CHANGED');
+  const textOf=(root,excludeButtons=false)=>{let visited=0,length=0;const walk=node=>{if(++visited>10000)throw Error('TEXT_LIMIT');if(node.nodeType===3){const value=String(node.nodeValue||'');length+=value.length;if(length>20000)throw Error('TEXT_LIMIT');return value;}if(node.nodeType!==1||['INPUT','TEXTAREA','SELECT','SCRIPT','STYLE','NOSCRIPT'].includes(node.tagName)||excludeButtons&&node.tagName==='BUTTON'||!visible(node))return '';if(node.tagName==='BR')return ' ';return Array.from(node.childNodes||[],walk).join(' ');};return normalized(walk(root));};
+  const raw=textOf(modal);if(!raw)return error('PORTAL_CONFIRM_UNAVAILABLE');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));const confirmationHash=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+  const buttons=Array.from(modal.querySelectorAll('button')).filter(visible).slice(0,20).map(el=>({label:safe(textOf(el)).slice(0,120),type:el.type==='button'?'button':'other',enabled:!el.disabled&&el.getAttribute('aria-disabled')!=='true',hasForm:!!el.form}));
+  const publicText=safe(raw);if(!args.label)return {text:publicText.slice(0,6000),truncated:publicText.length>6000,confirmationHash,buttons};
+  if(publicText.length>6000)return error('PORTAL_CONFIRM_UNAVAILABLE');
+  if(confirmationHash!==args.confirmationHash)return error('PORTAL_CONFIRM_CHANGED');
+  const bodyText=textOf(modal,true);
+  if(/confirm\s*(?:payment|pay)|(?:charge|debit)\s*(?:card|account)|pay\s*now|card\s*(?:number|details)|(?:enter|provide|input).{0,30}(?:credit\s*card|debit\s*card)|delete\s*(?:application|request)|حذف\s*(?:الطلب|المعاملة)|بيانات\s*البطاقة|رقم\s*البطاقة|خصم\s*(?:المبلغ|رسوم|من)|دفع\s*الآن|سداد\s*الآن|تأكيد\s*الدفع/i.test(bodyText))return error('PORTAL_CONFIRM_FORBIDDEN');
+  const candidates=Array.from(modal.querySelectorAll('button')).filter(el=>visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'&&el.type==='button'&&!el.form&&safe(textOf(el)).slice(0,120)===args.label);
+  if(candidates.length!==1)return error('PORTAL_CONFIRM_UNAVAILABLE');const button=candidates[0];if(args.button&&button!==args.button)return error('PORTAL_CONFIRM_CHANGED');
+  for(const field of args.expectedFields||[]){const matches=Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===field.id);if(matches.length!==1)return error('PORTAL_CONFIRM_READBACK_MISMATCH');const el=matches[0];if(!el.isConnected||el.ownerDocument!==document)return error('PORTAL_CONFIRM_READBACK_MISMATCH');if(field.kind==='check'?el.tagName!=='INPUT'||!['checkbox','radio'].includes(el.type)||el.checked!==field.expectedValue:field.kind==='select'?el.tagName!=='SELECT'||el.value!==field.expectedValue:!['INPUT','TEXTAREA'].includes(el.tagName)||['password','hidden','file'].includes(el.type)||el.value!==field.expectedValue)return error('PORTAL_CONFIRM_READBACK_MISMATCH');}
+  if(!args.attempts||args.attempts.has(button))return error('PORTAL_CONFIRM_ALREADY_ATTEMPTED');
+  if(args.mark){args.attempts.add(button);return {ok:true};}return {button,modal};
+ }catch{return error('PORTAL_CONFIRM_UNAVAILABLE');}
+}
+async function guarded(page){const url=new URL(page.url()),main=page.mainFrame();if(url.origin!==ORIGIN||url.pathname!==PATH||url.username||url.password||!main||main.url()!==page.url())throw fail('PORTAL_CONFIRM_UNAVAILABLE');}
+async function inspectPortalConfirmation(page){try{await guarded(page);const data=await page.evaluate(inspectConfirmationDom);await guarded(page);if(!data||data.error)throw fail(data?.error);return data;}catch(error){throw fail(error?.code);}}
+async function attemptSet(page){const doc=await page.evaluateHandle(()=>document),old=contexts.get(page);if(old){let same=false;try{same=await doc.evaluate((current,previous)=>current===previous,old.doc);}catch{}if(same){await doc.dispose();return old.attempts;}await old.doc.dispose().catch(()=>{});await old.attempts.dispose().catch(()=>{});}const attempts=await page.evaluateHandle(()=>new WeakSet());contexts.set(page,{doc,attempts});return attempts;}
+async function activatePortalConfirmation(page,{label,confirmationHash,expectedFields=[]}={}){
+ if(label!=='استمرار'||typeof confirmationHash!=='string'||!/^[a-f0-9]{64}$/.test(confirmationHash)||!Array.isArray(expectedFields)||expectedFields.length>40)throw fail('PORTAL_CONFIRM_INPUT_INVALID');const ids=new Set();for(const f of expectedFields){if(!f||typeof f!=='object'||Object.keys(f).sort().join(',')!=='expectedValue,id,kind'||typeof f.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(f.id)||ids.has(f.id)||!['text','select','check'].includes(f.kind)||(f.kind==='check'?typeof f.expectedValue!=='boolean':typeof f.expectedValue!=='string'||f.expectedValue.length>4096))throw fail('PORTAL_CONFIRM_INPUT_INVALID');ids.add(f.id);}
+ let raw,button,modal,started=false;
+ try{await guarded(page);const attempts=await attemptSet(page);raw=await page.evaluateHandle(inspectConfirmationDom,{label,confirmationHash,expectedFields,attempts});const error=await raw.evaluate(out=>out.error||null);if(error)throw fail(error);button=(await raw.getProperty('button')).asElement();modal=await raw.getProperty('modal');if(!button)throw fail('PORTAL_CONFIRM_UNAVAILABLE');
+  await button.focus();const focused=await button.evaluate(el=>el.isConnected&&!el.disabled&&document.activeElement===el);if(!focused)throw fail('PORTAL_CONFIRM_UNAVAILABLE');
+  await guarded(page);const checked=await page.evaluate(inspectConfirmationDom,{label,confirmationHash,expectedFields,attempts,button,modal,mark:true});if(checked.error)throw fail(checked.error);if(!checked.ok)throw fail('PORTAL_CONFIRM_UNAVAILABLE');
+  started=true;await button.press('Enter',{noWaitAfter:true,timeout:10000});const after=new URL(page.url()),main=page.mainFrame();if(after.origin!==ORIGIN||after.username||after.password||!main||main.url()!==page.url())throw fail('PORTAL_CONFIRM_UNAVAILABLE');return {activationDispatched:true};
+ }catch(error){if(started)throw fail('PORTAL_CONFIRM_ACTIVATION_UNCONFIRMED');throw fail(error?.code);}finally{if(modal)await modal.dispose().catch(()=>{});if(button)await button.dispose().catch(()=>{});if(raw)await raw.dispose().catch(()=>{});}
+}
+module.exports={inspectPortalConfirmation,activatePortalConfirmation};

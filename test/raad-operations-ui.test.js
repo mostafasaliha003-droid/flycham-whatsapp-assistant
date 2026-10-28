@@ -39,6 +39,8 @@ function setup({owned=true,fields={passportNumber:'A1234567'},documents={passpor
   }
   return{ok:true,status:200,json:async()=>data};
  }};
+ // The separately loaded journey module owns the integrated discard dialog.
+ context.window.RemalVisaJourney={create:()=>({confirm:async()=>true,reset(){}})};
  vm.runInNewContext(fs.readFileSync(root+'/src/operations.js','utf8'),context,{filename:'operations.js'});
  const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
  const panel=()=>nodes.get('raad-details');
@@ -166,3 +168,4 @@ test('optional Arabic father and grandfather names round-trip with the saved dra
 test('mapping preview shows Arabic option names and falls back to raw passport and date values',async()=>{
  const ui=setup();await ui.login();await ui.invoke(ui.action('preview_mapping'));const preview=ui.role('mapping_preview'),valueFor=label=>preview.children.find(row=>row.children?.[0]?.textContent===label)?.children?.[1]?.textContent;assert.equal(valueFor('نوع التأشيرة'),'زيارة سياحية');assert.equal(valueFor('أقرب ممثلية سعودية'),'أبوظبي');assert.equal(valueFor('رقم جواز السفر في البوابة'),'A1234567');assert.equal(valueFor('تاريخ الميلاد في البوابة'),'1990-02-03');assert.doesNotMatch(preview.textContent,/\b(?:19|214)\b|VisaKind|EmbassyCode|ContentPlaceHolder1_|عرض غير صالح/);
 });
+

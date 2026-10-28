@@ -62,6 +62,18 @@ class VisaMediaStore{
   fs.writeFileSync(target,Buffer.concat([iv,cipher.getAuthTag(),encrypted]),{mode:0o600,flag:'wx',flush:true});this.records[id]=record;
   try{this.store.save();}catch{delete this.records[id];try{fs.unlinkSync(target);}catch{}throw Error('MEDIA_STORAGE_UNAVAILABLE');}return this.public(record);
  }
+ storeApplicationPdf(customer,{bytes,applicationReference,jobId}={}){
+  if(!validCustomer(customer)||!this.durable)throw Error('MEDIA_STORAGE_UNAVAILABLE');
+  if(!/^[A-Z]{0,3}[0-9]{3,20}$/.test(applicationReference||'')||!/^[-a-f0-9]{36}$/i.test(jobId||''))throw Error('MEDIA_INVALID');
+  validateBytes(bytes,'application/pdf');
+  const checksum=crypto.createHash('sha256').update(bytes).digest('hex');
+  const duplicate=Object.values(this.records).find(r=>r.customer===customer&&r.purpose==='raad_application_copy'&&r.jobId===jobId&&r.checksum===checksum&&r.expiresAt>this.now());if(duplicate)return this.public(duplicate);
+  if(this.list(customer).length>=50||Object.keys(this.records).length>=500)throw Error('MEDIA_CAPACITY_REACHED');
+  const id=crypto.randomUUID(),receivedAt=this.now(),record={id,customer,type:'document',mimeType:'application/pdf',filename:'saudi-application-'+applicationReference+'.pdf',size:bytes.length,checksum,status:'application_copy',purpose:'raad_application_copy',applicationReference,jobId,receivedAt,expiresAt:receivedAt+RETENTION_MS};
+  fs.mkdirSync(this.directory,{recursive:true,mode:0o700});const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',this.key,iv);cipher.setAAD(Buffer.from(id+':'+customer));const encrypted=Buffer.concat([cipher.update(bytes),cipher.final()]),target=path.join(this.directory,id+'.enc');
+  fs.writeFileSync(target,Buffer.concat([iv,cipher.getAuthTag(),encrypted]),{mode:0o600,flag:'wx',flush:true});this.records[id]=record;
+  try{this.store.save();}catch{delete this.records[id];try{fs.unlinkSync(target);}catch{}throw Error('MEDIA_STORAGE_UNAVAILABLE');}return this.public(record);
+ }
  storePdfPreview(customer,{sourceId,page,bytes,mimeType}={}){
   if(!validCustomer(customer)||!this.durable)throw Error('MEDIA_STORAGE_UNAVAILABLE');
   if(!Number.isInteger(page)||page<1||page>2)throw Error('MEDIA_INVALID');
@@ -127,3 +139,4 @@ async function handleVisaMediaRequest(request,response,url,mediaStore){
  catch{response.writeHead(404,{...headers,'Content-Type':'application/json'}).end('{"error":"MEDIA_NOT_FOUND"}');}return true;
 }
 module.exports={VisaMediaStore,handleVisaMediaRequest,MAX_BYTES,mediaURL};
+

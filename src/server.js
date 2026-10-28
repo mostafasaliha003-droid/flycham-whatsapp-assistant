@@ -6,6 +6,11 @@ const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
 const {VisaPdfAutoPreparer}=require('./visa-pdf-auto');
 const {RaadVisaWorkflow}=require('./raad-visa-workflow');
 const {handleRaadRequest}=require('./raad-http');
+const {VisaFulfilment}=require('./visa-fulfilment');
+const {VisaPortalDispatcher}=require('./visa-portal-dispatcher');
+const {createVisaFulfilmentHttp}=require('./visa-fulfilment-http');
+const {createVisaWhatsAppAdapter}=require('./visa-whatsapp');
+const {createVisaSetup}=require('./visa-setup-http');
 const {RaadTinyFishProfile}=require('./raad-tinyfish-profile');
 const {ComplaintHandoff}=require('./complaint-handoff');
 const {createComplaintTemplateGate}=require('./complaint-template');
@@ -75,6 +80,15 @@ async function sendRequestChoiceMessage(to,text,choiceId){
  return result;
 }
 const deliveries=new Map();
+const visaWhatsApp=createVisaWhatsAppAdapter({env:process.env,mediaStore:visaMedia,journal});
+let visaDispatcher;
+const visaFulfilment=new VisaFulfilment({store:assistant.store,inbox,journal,mediaStore:visaMedia,raad,env:process.env,canAutomate:id=>!inbox.isHumanOwned(id),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata);const messageId=result?.messages?.[0]?.id;if(messageId&&journal.hasCustomer(to))journal.recordOutbound(to,{id:messageId,text:payload.type==='document'?'[نسخة طلب تأشيرة PDF]':payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),resumeOtp:input=>visaDispatcher.resumeOtp(input)});
+visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store});
+inbox.accountantWorkflowRequired=true;
+const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
+const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured()});
+const handleVisaWorkflow=createVisaFulfilmentHttp({fulfilment:visaFulfilment,inbox,journal,mediaStore:visaMedia,store:assistant.store,wake:wakeVisa});
+
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
 
 const outbox=new DeliveryOutbox({store:assistant.store,send:sendTextMessage,report:code=>console.log(code),
@@ -269,10 +283,21 @@ async function handleWebhookPost(request, response) {
 
   response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ received: true }));
   recordDeliveryStatuses(payload,assistant.store);
-  for(const e of payload.entry||[])for(const c of e.changes||[])for(const receipt of c.value?.statuses||[]){journal.applyReceipt(receipt);complaints.handleReceipt(receipt);}
+  for(const e of payload.entry||[])for(const c of e.changes||[])for(const receipt of c.value?.statuses||[]){journal.applyReceipt(receipt);complaints.handleReceipt(receipt);visaFulfilment.recordDelivery(receipt.id,receipt.status);}
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
+    if(visaFulfilment.isOtpMessage({sender:message.from,contextId:message.contextId,text:message.text})){
+      journal.recordInbound(message.from,{id:message.id,text:'[رمز تحقق محجوب]',timestamp:message.timestamp,name:message.name});
+      const result=await visaFulfilment.consumeOtp({sender:message.from,contextId:message.contextId,text:message.text});message.text='';
+      if(result.handled){await rawSendTextMessage(message.from,result.ok?'وصل الرمز إلى رعد وجارٍ استكمال التحقق من الطلب.':'تعذر ربط الرمز بطلب تحقق نشط. انتظر رسالة طلب الرمز الحالية ورد عليها مباشرة.').catch(()=>{});wakeVisa();continue;}
+    }
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
+    visaFulfilment.requeuePausedMessages(message.from);
+    if(!inbox.isHumanOwned(message.from)){
+      const answered=visaFulfilment.handleCustomerMessage(message.from,message);
+      if(answered.handled){if(answered.reply&&(!answered.ok||/اعتمادها/.test(answered.reply)))await sendTextMessage(message.from,answered.reply);wakeVisa();continue;}
+    }
+
     quoteJobs.save();
     noteIncoming(assistant.store,message.from);
     if(visaEnabled()&&isComplaint(message.text)&&!inbox.isBlocked(message.from)&&!inbox.isOperatorOwned(message.from)){
@@ -362,13 +387,24 @@ function createServer() {
       }catch{if(!response.headersSent)response.writeHead(400).end();}
       return;
     }
-    if(request.method==='GET'&&['/operations','/operations.js','/operations.css','/operations-logo.jpg'].includes(url.pathname)){
+    if(request.method==='GET'&&['/operations','/operations.js','/operations.css','/operations-logo.jpg','/visa-journey-ui.js','/visa-journey-ui.css'].includes(url.pathname)){
       const logo=url.pathname.endsWith('.jpg'),asset=url.pathname==='/operations'?'operations.html':url.pathname.slice(1);
       const body=logo?Buffer.from(require('./remal-logo').split(',')[1],'base64'):readFileSync(join(__dirname,asset));
       response.writeHead(200,{'Content-Type':logo?'image/jpeg':asset.endsWith('.js')?'text/javascript; charset=utf-8':asset.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"}).end(body);return;
     }
+    if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template'].includes(url.pathname)){
+      if(!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
+      if(await handleVisaSetup(request,response,url))return;
+    }
+    const visaLease=url.pathname.match(/^\/internal\/assistant\/visa-portal\/jobs\/([a-f0-9-]{36})\/lease$/);
+    if(visaLease){
+      if(request.method!=='GET'||!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
+      let current=false;try{const id=visaLease[1];visaFulfilment.guardLease(id,request.headers['x-raad-lease-token']);const job=visaFulfilment.job(id),run=assistant.store.data.visaPortalRuns[id],draft=raad.get(job.customer,{applicantIndex:job.applicantIndex});const original=assistant.store.data.raadApplications?.[job.customer]?.applicants?.[job.applicantIndex];current=Boolean(run&&draft.review?.complete&&run.draftFingerprint===original?.review?.fingerprint);}catch{}
+      response.writeHead(current?200:409,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({current}));return;
+    }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
+      if(await handleVisaWorkflow(request,response,url,readBody))return;
       if(await handleRaadRequest(request,response,url,{readBody,workflow:raad,inbox,mediaStore:visaMedia,provider:raadProvider}))return;
       if(await handleVisaMediaRequest(request,response,url,visaMedia))return;
       if(await handleInboxRequest(request,response,url,readBody,inbox))return;
@@ -431,4 +467,5 @@ if (require.main === module) {
 }
 
 module.exports = { createServer, handleWebhookPost };
+
 

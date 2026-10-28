@@ -1,0 +1,49 @@
+'use strict';
+const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path');
+const {validQueueKey}=require('./quote-jobs');
+const {createMofaOtpBridge}=require('./mofa-otp-bridge');
+const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
+const CALLBACK='https://flycham-whatsapp-assistant.onrender.com/admin/gmail/callback';
+const hash=x=>crypto.createHash('sha256').update(x).digest('base64url');
+function extractCode(message,{requestedAt,now=Date.now()}={}){
+ const at=Number(message.internalDate);if(!Number.isFinite(at)||at<requestedAt-30000||at>now+5000||now-at>9*60000)return null;
+ const headers=message.payload?.headers||[],h=n=>headers.filter(x=>x.name.toLowerCase()===n).map(x=>x.value).join(' ');
+ // Gmail's trusted receiving headers must authenticate the supplier domain.
+ const sender=h('from').match(/(?:<|^|\s)([A-Z0-9._%+-]+@(?:[A-Z0-9-]+\.)*airarabia\.com)>?\s*$/i);
+ const auth=headers.filter(x=>x.name.toLowerCase()==='authentication-results').map(x=>x.value).find(x=>/^mx\.google\.com;/i.test(x));
+ if(!sender||!auth||!/(?:dkim=pass[^;]*header\.(?:i|d)=(?:@)?(?:[a-z0-9-]+\.)*airarabia\.com\b|dmarc=pass[^;]*header\.from=(?:[a-z0-9-]+\.)*airarabia\.com\b)/i.test(auth))return null;
+ function body(p){return (['text/plain','text/html'].includes(p.mimeType)&&p.body?.data?Buffer.from(p.body.data,'base64url').toString('utf8'):'')+' '+(p.parts||[]).map(body).join(' ');}
+ const text=body(message.payload).replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ');
+ if(!/unregistered device/i.test(text)||!/(?:one time password|one[- ]time password)/i.test(text)||!/(?:REMAL\s+TOURISM)/i.test(text))return null;
+ const codes=[...new Set([...text.matchAll(/\b\d{6}\b/g)].map(x=>x[0]))];return codes.length===1?codes[0]:null;
+}
+class GmailOTP{
+ constructor({env=process.env,fetchImpl=fetch,now=Date.now,file=env.GMAIL_OTP_TOKEN_PATH||'/var/data/gmail-otp.enc'}={}){this.env=env;this.fetch=fetchImpl;this.now=now;this.file=file;this.states=new Map();this.lock=Promise.resolve();this.access=null;}
+ configured(){return Boolean(this.env.GMAIL_OAUTH_CLIENT_ID&&this.env.GMAIL_OAUTH_CLIENT_SECRET&&/^[a-f0-9]{64}$/i.test(this.env.GMAIL_OTP_ENCRYPTION_KEY||'')&&this.env.GMAIL_OAUTH_REDIRECT_URI===CALLBACK&&this.env.GMAIL_OTP_ACCOUNT);}
+ key(){return Buffer.from(this.env.GMAIL_OTP_ENCRYPTION_KEY,'hex');}
+ read(){if(!this.configured())throw Error('GMAIL_NOT_CONFIGURED');try{const b=fs.readFileSync(this.file),d=crypto.createDecipheriv('aes-256-gcm',this.key(),b.subarray(0,12));d.setAuthTag(b.subarray(-16));return JSON.parse(Buffer.concat([d.update(b.subarray(12,-16)),d.final()]).toString());}catch(e){if(e.code==='ENOENT')return {};throw Error('GMAIL_STORAGE_UNAVAILABLE');}}
+ write(data){const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',this.key(),iv),b=Buffer.concat([iv,c.update(JSON.stringify(data)),c.final(),c.getAuthTag()]);fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});fs.writeFileSync(this.file+'.tmp',b,{mode:0o600});fs.renameSync(this.file+'.tmp',this.file);}
+ async json(url,options={}){const r=await this.fetch(url,{...options,signal:AbortSignal.timeout(15000),redirect:'error'});if(!r.ok)throw Error('GMAIL_REQUEST_FAILED');return r.json();}
+ async token(fields){return this.json('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:this.env.GMAIL_OAUTH_CLIENT_ID,client_secret:this.env.GMAIL_OAUTH_CLIENT_SECRET,...fields})});}
+ start(){if(!this.configured())throw Error('GMAIL_NOT_CONFIGURED');for(const [k,v]of this.states)if(v.expires<this.now())this.states.delete(k);if(this.states.size>=10)throw Error('GMAIL_BUSY');const state=crypto.randomBytes(32).toString('base64url'),cookie=crypto.randomBytes(32).toString('base64url'),verifier=crypto.randomBytes(32).toString('base64url');this.states.set(state,{cookie:hash(cookie),verifier,expires:this.now()+10*60000});const q=new URLSearchParams({client_id:this.env.GMAIL_OAUTH_CLIENT_ID,redirect_uri:CALLBACK,response_type:'code',scope:SCOPE,access_type:'offline',prompt:'consent',state,code_challenge:hash(verifier),code_challenge_method:'S256',login_hint:this.env.GMAIL_OTP_ACCOUNT});return {url:'https://accounts.google.com/o/oauth2/v2/auth?'+q,cookie};}
+ async callback(url,cookie){const state=url.searchParams.get('state'),s=this.states.get(state);this.states.delete(state);if(!s||s.expires<this.now()||s.cookie!==hash(cookie||'')||url.searchParams.has('error')||!url.searchParams.get('code'))throw Error('GMAIL_INVALID_CALLBACK');const t=await this.token({grant_type:'authorization_code',code:url.searchParams.get('code'),redirect_uri:CALLBACK,code_verifier:s.verifier});if(!t.access_token||!t.refresh_token||!String(t.scope||'').split(' ').includes(SCOPE))throw Error('GMAIL_PERMISSION_REQUIRED');const profile=await this.json('https://gmail.googleapis.com/gmail/v1/users/me/profile',{headers:{Authorization:'Bearer '+t.access_token}});if(profile.emailAddress?.toLowerCase()!==this.env.GMAIL_OTP_ACCOUNT.toLowerCase())throw Error('GMAIL_ACCOUNT_MISMATCH');this.write({refreshToken:t.refresh_token,account:profile.emailAddress,used:[]});this.access=null;}
+ async accessToken(){if(this.access?.until>this.now())return this.access.token;const s=this.read();if(!s.refreshToken)throw Error('GMAIL_PERMISSION_REQUIRED');const t=await this.token({grant_type:'refresh_token',refresh_token:s.refreshToken});if(!t.access_token)throw Error('GMAIL_PERMISSION_REQUIRED');this.access={token:t.access_token,until:this.now()+Math.max(0,(Number(t.expires_in)||300)-60)*1000};return t.access_token;}
+ async poll({requestedAt,challengeId}){const task=this.lock.catch(()=>{}).then(async()=>{if(!Number.isFinite(requestedAt)||requestedAt>this.now()+5000||this.now()-requestedAt>9*60000||!/^[a-f0-9-]{36}$/.test(challengeId||''))throw Error('GMAIL_INVALID_CHALLENGE');const state=this.read();if(!state.refreshToken)throw Error('GMAIL_PERMISSION_REQUIRED');const headers={Authorization:'Bearer '+await this.accessToken()},q='from:(airarabia.com) after:'+Math.floor((requestedAt-30000)/1000);const list=await this.json('https://gmail.googleapis.com/gmail/v1/users/me/messages?'+new URLSearchParams({q,maxResults:'10'}),{headers});for(const item of list.messages||[]){if(state.used?.includes(item.id))continue;const msg=await this.json('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(item.id)+'?format=full',{headers});const code=extractCode(msg,{requestedAt,now:this.now()});if(code){state.used=[...(state.used||[]),item.id].slice(-100);this.write(state);return code;}}return null;});this.lock=task.then(()=>{},()=>{});return task;}
+}
+function send(res,status,body,type='application/json; charset=utf-8',extra={}){res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff',...extra});res.end(typeof body==='string'?body:JSON.stringify(body));}
+const PAGE=`<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>ربط بريد رموز العربية</title><h1>ربط بريد رموز العربية</h1><p>للموظفين المخولين. صلاحية Google للقراءة تشمل البريد؛ التطبيق يقرأ رسائل رموز العربية فقط. لن تُرسل الرسائل أو الرموز للذكاء الاصطناعي.</p><label>مفتاح الإدارة <input id="key" type="password" autocomplete="off"></label><button id="connect">ربط حساب Google</button><p id="status"></p><script src="/admin/gmail/connect.js"></script></html>`;
+const SCRIPT=`document.getElementById('connect').onclick=async()=>{const k=document.getElementById('key');try{const r=await fetch('/admin/gmail/start',{method:'POST',headers:{Authorization:'Bearer '+k.value}});k.value='';const d=await r.json();if(!r.ok)throw Error();location.assign(d.url);}catch{document.getElementById('status').textContent='تعذر بدء الربط. تحقق من مفتاح الإدارة وإعداد الخدمة.';}};`;
+function gmailHandler(gmail){const mofa=createMofaOtpBridge({gmail,env:gmail.env||process.env});return async(req,res,url,{readBody,env=process.env})=>{
+ if(await mofa.handler(req,res,url,{readBody}))return true;
+ if(!url.pathname.startsWith('/admin/gmail')&&url.pathname!=='/internal/gmail/otp')return false;
+ try{
+ if(req.method==='GET'&&url.pathname==='/admin/gmail'){send(res,200,PAGE,'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'none'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"});return true;}
+ if(req.method==='GET'&&url.pathname==='/admin/gmail/connect.js'){send(res,200,SCRIPT,'text/javascript; charset=utf-8');return true;}
+ if(req.method==='GET'&&url.pathname==='/admin/gmail/callback'){const cookie=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('gmail_oauth='))?.slice(12);await gmail.callback(url,cookie);send(res,200,'تم تفويض البريد وحفظ الاتصال. يمكنك إغلاق هذه الصفحة.','text/plain; charset=utf-8',{'Set-Cookie':'gmail_oauth=; Max-Age=0; Path=/admin/gmail; Secure; HttpOnly; SameSite=Lax'});return true;}
+ if(req.method==='POST'&&url.pathname==='/admin/gmail/start'){if(!validQueueKey(req.headers.authorization,env.ASSISTANT_ADMIN_KEY)){send(res,401,{error:'UNAUTHORIZED'});return true;}const s=gmail.start();send(res,200,{url:s.url},undefined,{'Set-Cookie':`gmail_oauth=${s.cookie}; Max-Age=600; Path=/admin/gmail; Secure; HttpOnly; SameSite=Lax`});return true;}
+ if(req.method==='POST'&&url.pathname==='/internal/gmail/otp'){if(env.GMAIL_OTP_ENABLED!=='true'||!validQueueKey(req.headers.authorization,env.AIR_ARABIA_QUOTE_QUEUE_KEY)){send(res,401,{error:'UNAUTHORIZED'});return true;}const data=JSON.parse((await readBody(req)).toString());const code=await gmail.poll(data);send(res,200,{code});return true;}
+ send(res,404,{error:'NOT_FOUND'});
+ }catch{send(res,503,{error:'GMAIL_CONNECTION_UNAVAILABLE'});}return true;
+};}
+module.exports={GmailOTP,extractCode,gmailHandler};
+

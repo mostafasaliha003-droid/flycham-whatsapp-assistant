@@ -102,8 +102,10 @@ async function handleInboxRequest(request,response,url,readBody,inbox){
   if(!match[2]||request.method!=='POST'){reply(405,{error:'METHOD_NOT_ALLOWED'});return true;}
   let data={};try{const bytes=await readBody(request);if(bytes.length)data=JSON.parse(bytes.toString('utf8'));}catch{reply(400,{error:'INVALID_BODY'});return true;}
   if(!data||Array.isArray(data)||typeof data!=='object'){reply(400,{error:'INVALID_BODY'});return true;}
+  if(match[2]==='visa'&&data.action==='confirm_payment'&&inbox.accountantWorkflowRequired===true){reply(403,{ok:false,error:'ACCOUNTANT_WORKFLOW_REQUIRED'});return true;}
   const action=match[2],result=action==='claim'?await inbox.claim(id):action==='release'?inbox.release(id):action==='notes'?inbox.note(id,data.text):action==='read'?inbox.read(id):action==='block'?await inbox.block(id,data):action==='unblock'?await inbox.unblock(id,data):action==='visa'?inbox.updateVisa(id,data):action==='notification-retry'?inbox.retryComplaintNotification(id,data):await inbox.sendMessage(id,data);
   reply(result.ok===false?(ERROR_STATUS[result.error]||409):200,result);return true;
  }catch(error){const status=ERROR_STATUS[error?.message]||500;reply(status,{ok:false,error:status===500?'INBOX_UNAVAILABLE':error.message});return true;}
 }
 module.exports={InboxService,handleInboxRequest};
+

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#102b35"><title>مركز محادثات الرمال | أحمد وإسماعيل</title>
-<link rel="stylesheet" href="/operations.css"><script src="/operations.js" defer></script>
+<link rel="stylesheet" href="/operations.css"><link rel="stylesheet" href="/visa-journey-ui.css"><script src="/visa-journey-ui.js" defer></script><script src="/operations.js" defer></script>
 </head>
 <body>
 <section id="login" class="login-screen" aria-labelledby="login-title">
@@ -21,6 +21,7 @@
   <div class="rail-brand"><img class="original-logo" src="/operations-logo.jpg" alt="الرمال"><span>REMAL</span></div>
   <nav id="navigation">
    <button class="nav-item active" data-view="inbox" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span><span>المحادثات</span></button>
+   <button class="nav-item" data-view="visas"><span class="nav-icon" aria-hidden="true">▣</span><span>التأشيرات</span></button>
    <button class="nav-item" data-view="portals"><span class="nav-icon" aria-hidden="true">✈</span><span>البوابات</span></button>
    <button class="nav-item" data-view="handoffs"><span class="nav-icon" aria-hidden="true">▤</span><span>التثبيت</span></button>
    <button class="nav-item" data-view="metrics"><span class="nav-icon" aria-hidden="true">▥</span><span>المؤشرات</span></button>
@@ -40,7 +41,9 @@
   <section id="view-portals" class="view page-view" aria-labelledby="portals-title" hidden><div class="section-intro"><div><p class="eyebrow">متابعة البحث</p><h2 id="portals-title">رحلة الطلب داخل البوابات</h2><p>حالة الاتصال وخطوات البحث الفعلية لكل شركة، مع وقت آخر تحديث.</p></div><span class="pill neutral">مشاهدة فقط</span></div><div id="portal-cards" class="portal-grid"></div><div class="panel explanation"><strong>المتابعة مرتبطة بأحداث فعلية</strong><p>ظهور البوابة متصلة لا يعني تأكيد سعر. يظهر العرض للعميل بعد التحقق من تفاصيل الرحلة والسعر فقط.</p></div></section>
   <section id="view-handoffs" class="view page-view" hidden><div class="section-intro"><div><p class="eyebrow">من الاستعلام إلى الإصدار</p><h2>طلبات التثبيت</h2><p>استلم الطلب، تابع العميل، وسجّل الإصدار بعد إتمامه فعليًا.</p></div></div><div id="jobs" class="handoff-grid"></div></section>
   <section id="view-metrics" class="view page-view" hidden><div class="section-intro"><div><p class="eyebrow">صورة التشغيل</p><h2>أداء أحمد ومتابعة المبيعات</h2><p id="metrics-period">المؤشرات حسب السجل المتاح.</p></div></div><div id="metrics-cards" class="metrics-grid"></div><div id="status" class="status-panels"></div></section>
+  <section id="view-visas" class="view page-view visa-workspace" aria-label="رحلة التأشيرات" hidden><div id="visa-workspace-root"></div></section>
  </main>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
 </body></html>
+
