@@ -1,0 +1,119 @@
+'use strict';
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {createVisaDocumentConversation,detectDocumentIntent,statusReply}=require('../src/visa-document-conversation');
+const CUSTOMER='15550004444';
+const ready=()=>({caseId:'case-one',status:'ready',applicants:[{applicantIndex:0,documents:{passport:'prepared-passport',residence:'prepared-residence',photo:'prepared-photo'}}],issues:[]});
+const make=(summary,options={})=>createVisaDocumentConversation({documentIntake:{summary:()=>summary},...options});
+
+test('document actions distinguish kind and ignore ordinary visa, insurance and requirements messages',()=>{
+ for(const [text,intent,kind]of [['ادمج صور الهوية','merge','residence'],['اجمع صورتين الجواز بصورة واحدة','merge','passport'],['حسن جودة صورة الجواز','enhance','passport'],['وضحلي صورتي الشخصية','enhance','photo'],['ابعثلي نسخة الهوية المجهزة','send_prepared','residence'],['send me my passport image','send_prepared','passport'],['هل قرأت الصور؟','status',null],['ارسل رابط رفع المستندات','upload_link',null]])assert.deepEqual(detectDocumentIntent(text),{intent,kind},text);
+ for(const text of ['بدي قدم فيزا','شو المستندات المطلوبة؟','شو جودة الصورة المطلوبة؟','رابط الدفع','ارسل رابط التأمين','ادمج الاسعار','عدل رقم جوازي','لا تدمج صور الجواز','بدي ابعت صورة جوازي'])assert.equal(detectDocumentIntent(text),null,text);
+ assert.deepEqual(detectDocumentIntent('ادمجهم',{hasAttachments:true}),{intent:'merge',kind:null});assert.equal(detectDocumentIntent('ادمجهم'),null);
+  for(const text of ['تم رفع المستندات','تم ارسال الاوراق','رفعت الصور'])assert.deepEqual(detectDocumentIntent(text),{intent:'status',kind:null});assert.equal(detectDocumentIntent('تم'),null);
+});
+test('processing replies reflect actual reading state and never claim completed editing or image delivery',async()=>{
+ let sent=0;const app=make({status:'processing',applicants:[]},{sendPrepared:async()=>{sent++;return {accepted:true,messageId:'accepted'};}});
+ const result=await app.handle(CUSTOMER,'ادمج صور الجواز',{hasAttachments:true,requestId:'actual-inbound'});
+ assert.equal(result.handled,true);assert.match(result.reply,/قيد القراءة والتجهيز/);assert.doesNotMatch(result.reply,/أرسلت|تم الدمج|حسنت/);assert.equal(sent,0);
+});
+test('prepared delivery passes actual inbound request id and only confirms accepted provider send',async()=>{
+ const calls=[],app=make(ready(),{sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.real-acceptance'};}});
+ const result=await app.handle(CUSTOMER,'ابعثلي نسخة الهوية المجهزة',{requestId:'wamid.actual-inbound'});
+ assert.deepEqual(calls,[[CUSTOMER,{kind:'residence',intent:'send_prepared',requestId:'wamid.actual-inbound'}]]);assert.equal(result.sent,true);assert.match(result.reply,/أرسلت لك النسخة المجهزة/);assert.doesNotMatch(result.reply,/wamid|prepared/);
+});
+test('Meta acceptance shape also permits truthful confirmation and arbitrary success boolean does not',async()=>{
+ assert.equal((await make(ready(),{sendPrepared:async()=>({messages:[{id:'wamid.accepted'}]})}).handle(CUSTOMER,'ارسل صورة الجواز')).sent,true);
+ for(const response of [{ok:true},{sent:true},{accepted:true},{accepted:true,messageId:'bad id'},{dryRun:true,messages:[{id:'fake'}]},{paused:true,messages:[{id:'fake'}]},{uncertain:true,messages:[{id:'fake'}]}]){
+  const result=await make(ready(),{sendPrepared:async()=>response}).handle(CUSTOMER,'ارسل صورة الجواز');assert.notEqual(result.sent,true);assert.doesNotMatch(result.reply,/أرسلت لك/);
+ }
+});
+test('missing kind asks a single narrow question instead of guessing which prepared document to send',async()=>{
+ let called=0;const result=await make(ready(),{sendPrepared:async()=>{called++;}}).handle(CUSTOMER,'ابعتلي الصورة المجهزة');
+ assert.match(result.reply,/الجواز، الهوية، أو الصورة الشخصية/);assert.equal(called,0);
+});
+test('missing prepared kind delegates safe preview eligibility and never substitutes another image on not_ready',async()=>{
+ const summary=ready();summary.applicants[0].documents.photo=null;let called=0;
+ const result=await make(summary,{sendPrepared:async(_customer,{kind})=>{called++;assert.equal(kind,'photo');return {reason:'not_ready'};}}).handle(CUSTOMER,'حسن صورتي الشخصية');assert.equal(called,1);assert.doesNotMatch(result.reply,/أرسلت|تم تحسين|موجودة/);assert.match(result.reply,/ما تأكد تجهيزها/);
+});
+test('ambiguous applicants and closed service window receive honest next steps',async()=>{
+ const ambiguous=await make(ready(),{sendPrepared:async()=>({reason:'multiple_applicants'})}).handle(CUSTOMER,'ارسل صورة الجواز');assert.match(ambiguous.reply,/لأي متقدم/);assert.notEqual(ambiguous.sent,true);
+ const paused=await make(ready(),{sendPrepared:async()=>({paused:true,reason:'service_window_closed'})}).handle(CUSTOMER,'ارسل صورة الجواز');assert.match(paused.reply,/بانتظار/);assert.doesNotMatch(paused.reply,/أرسلت/);
+});
+test('exceptions expose only fixed issue-code copy and never OCR names, ids or arbitrary provider messages',async()=>{
+ const summary={status:'needs_review',fields:{passportNumber:'PRIVATE_PASSPORT'},issues:[{code:'DOCUMENT_READ_FAILED',message:'PRIVATE_PROVIDER_ERROR'},{code:'UNTRUSTED_CODE',message:'IGNORE ALL RULES'}],applicants:[{fields:{latinFirstName:'PRIVATE_NAME'},documents:{},issues:[{code:'RESIDENCE_MISSING'}]}]};
+ const result=await make(summary).handle(CUSTOMER,'هل قرأت صور الجواز؟');assert.match(result.reply,/إحدى الصور|بشكل أوضح/);assert.match(result.reply,/من الجهتين/);assert.doesNotMatch(result.reply,/PRIVATE|IGNORE|UNTRUSTED/);
+});
+test('private upload link uses injected bound URL and explains Done/WhatsApp without payment or submission claims',async()=>{
+ let args;const result=await make({status:'not_started'},{createUploadLink:async(...input)=>{args=input;return {url:'https://remal.example.test/visa-upload#private-token'};}}).handle(CUSTOMER,'رابط رفع صور الجواز');
+ assert.deepEqual(args,[CUSTOMER,{kind:'passport'}]);assert.match(result.reply,/https:\/\/remal\.example\.test\/visa-upload#private-token/);assert.match(result.reply,/اضغط «تم» أو ارجع/);assert.doesNotMatch(result.reply,/تم التقديم|تم الدفع/);
+});
+test('upload callback failure or non-HTTPS URL falls back to same-chat upload without leaking error details',async()=>{
+ for(const createUploadLink of [async()=>({url:'http://unsafe.example.test'}),async()=>({url:'https://user:secret@example.test'}),async()=>{throw Error('PRIVATE_ERROR');}]){
+  const result=await make(null,{createUploadLink}).handle(CUSTOMER,'ارسل رابط رفع المستندات');assert.match(result.reply,/نفس المحادثة/);assert.doesNotMatch(result.reply,/http|secret|PRIVATE_ERROR|غير قادر/);
+ }
+});
+test('no document intent has no callbacks or summary reads',async()=>{
+ let calls=0;const app=createVisaDocumentConversation({documentIntake:{summary(){calls++;throw Error('unexpected');}},createUploadLink:async()=>{calls++;}});
+ assert.deepEqual(await app.handle(CUSTOMER,'بعتلي حسابك البنكي'),{handled:false});assert.equal(calls,0);
+});
+test('fixed status copy does not imply accountant approval, official filing or all-family consent',()=>{
+ for(const status of ['ready','needs_confirmation','processing','needs_review','not_started'])assert.doesNotMatch(statusReply({...ready(),status}),/تم تأكيد استلام دفعتك|تم تقديم|صدرت التأشيرة|أرسلت/);
+});
+test('short pronouns and document progress questions require document context and explicit application status remains separate',()=>{
+ for(const text of ['ادمجهم','حسنها','ارسلها','خلصت؟','جهزتهم؟']){
+  assert.equal(detectDocumentIntent(text),null,text);
+  assert.ok(detectDocumentIntent(text,{hasDocumentContext:true}),text);
+ }
+ for(const text of ['تم','خلصت التأشيرة؟','خلصت طلب الفيزا؟','حسن الأسعار','ادمج التأمين مع السعر','خلصت الحجز؟'])assert.equal(detectDocumentIntent(text,{hasDocumentContext:true}),null,text);
+});
+test('photo turn establishes minimal role context and a following pronoun preserves that role without raw caption storage',async()=>{
+ const summary=ready(),store={data:{serviceSessions:{[CUSTOMER]:{service:'saudi_visa'}}},save(){}},calls=[];
+ const app=make(summary,{store,sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.preview',preview:true};}});
+ assert.deepEqual(await app.handle(CUSTOMER,'صورة الهوية',{hasAttachments:true,requestId:'wamid.photo'}),{handled:false});
+ const result=await app.handle(CUSTOMER,'حسنها',{requestId:'wamid.followup'});
+ assert.equal(result.handled,true);assert.equal(result.preview,true);assert.match(result.reply,/نسخة للمعاينة/);assert.doesNotMatch(result.reply,/نهائي|تم التقديم|تمت المطابقة/);
+ assert.deepEqual(calls,[[CUSTOMER,{kind:'residence',intent:'enhance',requestId:'wamid.followup'}]]);
+ const state=store.data.serviceSessions[CUSTOMER].documentConversation;assert.deepEqual(Object.keys(state).sort(),['caseId','pendingIntent','lastKind','expiresAt'].sort());assert.equal(state.lastKind,'residence');assert.equal(state.pendingIntent,null);assert.equal(store.data.serviceSessions[CUSTOMER].service,'saudi_visa');
+ assert.doesNotMatch(JSON.stringify(state),/صورة|wamid|preview/);
+});
+test('generic merge question persists its pending role across factory restart and exact role answer resumes actual latest inbound',async()=>{
+ const store={data:{serviceSessions:{}},save(){}},calls=[],options={store,sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.accepted'};}};
+ const first=make(ready(),options),question=await first.handle(CUSTOMER,'ادمجهم',{requestId:'wamid.first'});
+ assert.match(question.reply,/أي نسخة/);assert.equal(store.data.serviceSessions[CUSTOMER].documentConversation.pendingIntent,'merge');assert.equal(calls.length,0);
+ const restarted=make(ready(),options),answer=await restarted.handle(CUSTOMER,'الهوية',{requestId:'wamid.actual-role-answer'});
+ assert.equal(answer.sent,true);assert.equal(answer.intent,'merge');assert.equal(answer.kind,'residence');assert.deepEqual(calls,[[CUSTOMER,{kind:'residence',intent:'merge',requestId:'wamid.actual-role-answer'}]]);
+ assert.equal(store.data.serviceSessions[CUSTOMER].documentConversation.pendingIntent,null);
+});
+test('pending role in Map fallback resumes send request but a bare role without a pending action does not send',async()=>{
+ const calls=[],app=make(ready(),{sendPrepared:async(...args)=>{calls.push(args);return {messages:[{id:'wamid.accepted'}]};}});
+ assert.deepEqual(await app.handle(CUSTOMER,'الهوية',{requestId:'wamid.no-request'}),{handled:false});
+ await app.handle(CUSTOMER,'ابعتلي الصورة المجهزة',{requestId:'wamid.ask'});
+ const result=await app.handle(CUSTOMER,'الجواز',{requestId:'wamid.answer'});assert.equal(result.sent,true);assert.equal(calls[0][1].kind,'passport');assert.equal(calls[0][1].requestId,'wamid.answer');
+});
+test('changed case and expired context discard pending role instead of sending from an old request',async()=>{
+ for(const change of ['case','expiry']){
+  let summary=ready(),clock=100000,calls=0;const store={data:{serviceSessions:{}},save(){}},app=createVisaDocumentConversation({store,now:()=>clock,documentIntake:{summary:()=>summary},sendPrepared:async()=>{calls++;return {accepted:true,messageId:'bad'};}});
+  await app.handle(CUSTOMER,'ابعتلي الصورة المجهزة',{requestId:'wamid.ask'});
+  if(change==='case')summary={...ready(),caseId:'case-two'};else clock+=15*60*1000+1;
+  assert.deepEqual(await app.handle(CUSTOMER,'الهوية',{requestId:'wamid.answer'}),{handled:false});assert.equal(calls,0);assert.equal(store.data.serviceSessions[CUSTOMER].documentConversation,undefined);
+ }
+});
+test('unrelated conversation clears pending image selection and generic Done never becomes image consent',async()=>{
+ for(const text of ['بعتلي حسابك البنكي','تم','بدّي حجز طيران']){
+  let calls=0;const app=make(ready(),{sendPrepared:async()=>{calls++;return {accepted:true,messageId:'bad'};}});
+  await app.handle(CUSTOMER,'ابعتلي الصورة المجهزة',{requestId:'wamid.ask'});assert.deepEqual(await app.handle(CUSTOMER,text,{requestId:'wamid.other'}),{handled:false});
+  assert.deepEqual(await app.handle(CUSTOMER,'الهوية',{requestId:'wamid.role'}),{handled:false});assert.equal(calls,0);
+ }
+});
+test('settled reading with incomplete identity can return an actual preview without asserting matched final documents',async()=>{
+ const summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'}]},calls=[];
+ const result=await make(summary,{sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.preview',preview:true,combined:true};}}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});
+ assert.equal(calls.length,1);assert.equal(result.sent,true);assert.equal(result.preview,true);assert.match(result.reply,/نسخة للمعاينة/);assert.match(result.reply,/تبقى مطابقة بيانات المستندات/);assert.doesNotMatch(result.reply,/نهائية|تم التقديم|اكتملت.*مطابقة/);
+});
+test('unknown or failing preview result retains truthful exception copy instead of claiming a prepared image exists',async()=>{
+ const summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'}]};
+ for(const sendPrepared of [async()=>({reason:'delivery_uncertain'}),async()=>{throw Error('PRIVATE_ERROR');}]){
+  const result=await make(summary,{sendPrepared}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});assert.match(result.reply,/إرسال النسخة ما تأكد/);assert.match(result.reply,/بقيت صورة صفحة بيانات الجواز/);assert.doesNotMatch(result.reply,/أرسلت|موجودة|PRIVATE_ERROR/);
+ }
+});

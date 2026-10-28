@@ -32,3 +32,14 @@ test('visa-only and complete erasure remove pending extraction and feedback with
   assert.ok(store.data.visaDocumentIntake.cases.other);assert.ok(store.data.visaDocumentNotifications.items.other);if(!complete)assert.equal(store.get('customer').status,'flight_context');
  }
 });
+
+test('upload capabilities and prepared-delivery records expire and erase with their customer case',()=>{
+ const now=Date.parse('2026-10-28T00:00:00Z'),store=new AssistantState({file:null,now:()=>now});store.data.visaCases={current:{id:'case'},other:{id:'other-case'}};
+ store.data.visaUpload={sessions:{valid:{customer:'current',caseId:'case',expiresAt:now+1000},expired:{customer:'current',caseId:'case',expiresAt:now-1},stale:{customer:'current',caseId:'old',expiresAt:now+1000},other:{customer:'other',caseId:'other-case',expiresAt:now+1000}}};
+ store.data.visaPreparedDeliveries={items:{valid:{customer:'current',binding:{caseId:'case'},expiresAt:now+1000},expired:{customer:'current',binding:{caseId:'case'},expiresAt:now-1},other:{customer:'other',binding:{caseId:'other-case'},expiresAt:now+1000}}};
+ store.prune();assert.equal(Object.keys(store.data.visaUpload.sessions).length,2);assert.equal(Object.keys(store.data.visaPreparedDeliveries.items).length,2);store.delete('current');assert.equal(store.data.visaUpload.sessions.valid,undefined);assert.equal(store.data.visaPreparedDeliveries.items.valid,undefined);assert.ok(store.data.visaUpload.sessions.other);assert.ok(store.data.visaPreparedDeliveries.items.other);
+});
+
+test('visa erasure removes image previews and pending document topic while preserving unrelated flight service',()=>{
+ const store=new AssistantState({file:null}),visa=new SaudiVisaEngine({store,privateConfig:{},env:{}});store.data.visaCases={customer:{id:'case'},other:{id:'other'}};store.data.serviceSessions={customer:{service:'flight',documentConversation:{caseId:'case',pendingIntent:'merge',expiresAt:Date.now()+100000}}};store.data.visaDocumentPreviews={items:{a:{customer:'customer',binding:{caseId:'case'},expiresAt:Date.now()+100000},b:{customer:'other',binding:{caseId:'other'},expiresAt:Date.now()+100000}}};visa.delete('customer');assert.equal(store.data.visaDocumentPreviews.items.a,undefined);assert.ok(store.data.visaDocumentPreviews.items.b);assert.equal(store.data.serviceSessions.customer.documentConversation,undefined);assert.equal(store.data.serviceSessions.customer.service,'flight');
+});

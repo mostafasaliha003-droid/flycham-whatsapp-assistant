@@ -3,7 +3,7 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const sharp = require('sharp');
-const {createDocumentVision, validateDocumentExtraction, DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, POLICY_FINGERPRINT, RETRYABLE_CODES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES} = require('../src/visa-document-vision');
+const {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, ABSTENTION_POLICY, WIRE_PROJECTION_POLICY, POLICY_FINGERPRINT, COMPATIBLE_PREVIOUS_POLICIES, RETRYABLE_CODES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES} = require('../src/visa-document-vision');
 
 const env = () => ({RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: 'synthetic-private-document-key'});
 const field = (value, confidence = 0.99) => ({value, confidence, visible: true});
@@ -40,7 +40,11 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v3');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v6');
+  assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
+  assert.equal(WIRE_PROJECTION_POLICY, 'discard-only-known-bare-field-slash-date-or-outside-portrait-v2');
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c']);
+  assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
 
@@ -132,10 +136,136 @@ test('literal dates, document types, sex and country identifiers are validated w
   for (const fields of [
     {birthDate: field('90-02-03')}, {birthDate: field('1990-02-30')}, {issueDate: field('2023-02-29')},
     {nationalityCode: field('Egypt')}, {issuingCountryCode: field('egy')}, {sex: field('male')},
-    {passportType: field('P')}, {passportNumber: field('AB<123')}, {emiratesId: field('784-1990-123')}
+    {passportType: field('p')}, {passportNumber: field('AB<123')}, {emiratesId: field('784-1990-123')}
   ]) assert.throws(() => validateDocumentExtraction(page({fields})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   for (const type of ['ordinary', 'diplomatic', 'service', 'special']) assert.equal(validateDocumentExtraction(page({fields: {passportType: field(type)}})).fields.passportType.value, type);
   assert.equal(validateDocumentExtraction(page({fields: {birthDate: field('2000-02-29'), emiratesId: field('784-1990-1234567-1')}})).fields.birthDate.value, '2000-02-29');
+});
+
+test('the ambiguous P passport marker is discarded to unknown while valid visible facts retain their original evidence', () => {
+  const value = page(); value.fields.passportType = field('P', 1);
+  const before = structuredClone(value), result = validateDocumentExtraction(value);
+  assert.deepEqual(value, before, 'parser does not mutate the provider object');
+  assert.deepEqual(result.fields.passportType, {value: null, confidence: 0, visible: false});
+  for (const [name, evidence] of Object.entries(before.fields)) if (name !== 'passportType') assert.deepEqual(result.fields[name], evidence);
+  assert.equal(Object.values(result.fields).some(evidence => evidence.value === 'ordinary'), false);
+  const {reconcileDocumentEvidence} = require('../src/visa-document-matching');
+  const matched = reconcileDocumentEvidence({documents: [{mediaId: '12345678-1234-4321-abcd-123456789abc', page: 1, sha256: 'a'.repeat(64), extraction: result}], applicants: [{}], referenceDate: '2026-10-28'});
+  assert.equal(matched.applicants[0].fields.passportType, undefined);
+  assert.equal(matched.applicants[0].issues.some(issue => issue.code === 'DOCUMENT_FIELD_REQUIRED' && issue.field === 'passportType'), true);
+  for (const malformed of ['P', {value: 'P'}, {value: 'P', confidence: 1}, {value: 'P', confidence: 1, visible: 'true'}, field('P', 99)]) assert.throws(() => validateDocumentExtraction(page({fields: {passportType: malformed}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+});
+
+test('instructions contain complete valid wrapped examples and distinct readable semantics for portraits and partial pages', async () => {
+  const f = await setup(); await f.extract();
+  const prompt = JSON.parse(f.calls[0].options.body).systemInstruction.parts[0].text;
+  assert.match(prompt, /at least one allowed field/); assert.match(prompt, /partial supported page is not other/);
+  assert.match(prompt, /For a standalone portrait, readable is true when the photo itself is visibly usable/);
+  assert.match(prompt, /A bare string or number is invalid/); assert.match(prompt, /never map P to ordinary/);
+  const examples = prompt.split('Example for ').slice(1).map(part => JSON.parse(part.slice(part.indexOf(': ') + 2).trim()));
+  assert.equal(examples.length, 3);
+  for (const example of examples) assert.deepEqual(validateDocumentExtraction(example), example);
+  const id = examples.find(example => example.kind === 'uae_id_back');
+  assert.deepEqual(Object.keys(id.fields.emiratesId).sort(), ['confidence', 'value', 'visible']);
+  const passport = examples.find(example => example.kind === 'passport');
+  assert.equal(Object.hasOwn(passport.fields, 'passportType'), false); assert.deepEqual(passport.mrzLines, []); assert.equal(passport.readable, true);
+  const portrait = examples.find(example => example.kind === 'portrait');
+  assert.deepEqual(portrait.fields, {}); assert.equal(portrait.readable, true);
+  assert.throws(() => validateDocumentExtraction({...id, fields: {emiratesId: id.fields.emiratesId.value}}), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', fieldName: 'emiratesId', schemaIssue: 'field_shape'});
+});
+
+function wireMatchingFixture() {
+  const passport = page();
+  Object.assign(passport.fields, {passportNumber: field('ZT1234567'), passportType: field('ordinary'), birthPlace: field('Example City')});
+  const check = text => String([...text].reduce((sum, c, index) => sum + (c === '<' ? 0 : /\d/.test(c) ? Number(c) : c.charCodeAt(0) - 55) * [7, 3, 1][index % 3], 0) % 10);
+  const first = 'P<EGYEXAMPLE<<ARI'.padEnd(44, '<'), number = 'ZT1234567', birth = '900203', expiry = '300102', optional = '<'.repeat(14);
+  const second = number + check(number) + 'EGY' + birth + check(birth) + 'M' + expiry + check(expiry) + optional + check(optional);
+  passport.mrzLines = [first, second + check(second.slice(0, 10) + second.slice(13, 20) + second.slice(21, 43))];
+  const identity = {version: 1, kind: 'uae_id_front', readable: true, rotation: 0, fields: {latinFullName: field('ARI EXAMPLE'), birthDate: field('1990-02-03'), emiratesId: field('784199000000001'), residenceExpiry: field('2030-01-02')}, mrzLines: [], portraitBox: null};
+  const match = (p = passport, i = identity) => require('../src/visa-document-matching').reconcileDocumentEvidence({documents: [p, i].map((extraction, index) => ({mediaId: '12345678-1234-4321-abcd-12345678900' + index, page: 1, sha256: String(index).repeat(64), extraction})), applicants: [{}], referenceDate: '2026-10-28'});
+  return {passport, identity, match};
+}
+
+test('wire-only known bare field projections discard values without manufacturing evidence; critical omissions still block matching', () => {
+  const f = wireMatchingFixture(); assert.equal(f.match().complete, true);
+  for (const name of ['nationalityCode', 'emiratesId', 'birthDate']) {
+    const passport = structuredClone(f.passport), identity = structuredClone(f.identity), source = name === 'emiratesId' ? identity : passport;
+    source.fields[name] = source.fields[name].value;
+    assert.throws(() => validateDocumentExtraction(source), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'field_shape'});
+    const result = parseDocumentOutput(JSON.stringify(source));
+    assert.deepEqual(result.fields[name], {value: null, confidence: 0, visible: false});
+    assert.equal(result.kind, source.kind); assert.equal(result.readable, source.readable);
+    for (const [other, evidence] of Object.entries(source.fields)) if (other !== name) assert.deepEqual(result.fields[other], evidence);
+    assert.deepEqual(validateDocumentExtraction(result), result, 'projection produces only the existing strict internal schema');
+    const matched = name === 'emiratesId' ? f.match(passport, result) : f.match(result, identity);
+    assert.equal(matched.complete, false); assert.equal(matched.applicants[0].identityReady, false);
+    assert.equal(matched.applicants[0].fields[name], undefined);
+    assert.equal(matched.applicants[0].issues.some(issue => issue.code === 'DOCUMENT_FIELD_REQUIRED' && issue.field === name), true);
+  }
+  for (const name of DOCUMENT_FIELD_NAMES) {
+    const wire = page({fields: {[name]: 'SYNTHETIC_BARE_VALUE'}});
+    const result = parseDocumentOutput(JSON.stringify(wire));
+    assert.deepEqual(result.fields[name], {value: null, confidence: 0, visible: false});
+    assert.equal(JSON.stringify(result).includes('SYNTHETIC_BARE_VALUE'), false, 'discarded transcription is never retained');
+  }
+});
+
+test('discarding an unwrapped known fact preserves a separately classified usable portrait without asserting identity', () => {
+  const wire = {version: 1, kind: 'portrait', readable: true, rotation: 0, fields: {birthDate: '1990-02-03'}, mrzLines: [], portraitBox: null};
+  assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'field_shape'});
+  const portrait = parseDocumentOutput(JSON.stringify(wire));
+  assert.deepEqual(portrait, {...wire, fields: {}});
+  const f = wireMatchingFixture(), documents = [f.passport, f.identity, portrait].map((extraction, index) => ({mediaId: '12345678-1234-4321-abcd-12345678900' + index, page: 1, sha256: String(index).repeat(64), extraction}));
+  const matched = require('../src/visa-document-matching').reconcileDocumentEvidence({documents, applicants: [{}], referenceDate: '2026-10-28'});
+  assert.equal(matched.complete, true);
+  assert.deepEqual(matched.applicants[0].documents.photo, {mediaId: documents[2].mediaId, page: 1, sha256: documents[2].sha256});
+  assert.equal(matched.applicants[0].evidence.authenticityVerified, false);
+});
+
+test('wire-only slash dates become unknown without interpreting day and month; issue date becomes an explicit client gap', () => {
+  const f = wireMatchingFixture();
+  for (const [name, source] of [['issueDate', f.passport], ['expiryDate', f.passport], ['residenceExpiry', f.identity]]) {
+    const wire = structuredClone(source); wire.fields[name] = field('02/01/2030');
+    assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'value_format'});
+    const result = parseDocumentOutput(JSON.stringify(wire));
+    assert.deepEqual(result.fields[name], {value: null, confidence: 0, visible: false});
+    for (const [key, evidence] of Object.entries(source.fields)) if (key !== name) assert.deepEqual(result.fields[key], evidence);
+    const matched = name === 'residenceExpiry' ? f.match(f.passport, result) : f.match(result, f.identity);
+    assert.equal(matched.applicants[0].fields[name], undefined);
+    if (name === 'issueDate') {
+      assert.equal(matched.applicants[0].status, 'needs_confirmation');
+      assert.deepEqual(matched.applicants[0].clientFieldsRequired, ['issueDate']);
+    } else assert.equal(matched.applicants[0].identityReady, false);
+  }
+});
+
+test('finite out-of-bounds wire crop is discarded; valid document facts survive and a full passport never becomes the portrait', async () => {
+  const f = wireMatchingFixture(), wire = structuredClone(f.passport);
+  wire.portraitBox = {x: 0.9, y: 0.1, width: 0.4, height: 0.5, confidence: 1};
+  assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'portraitBox'});
+  const result = parseDocumentOutput(JSON.stringify(wire));
+  assert.equal(result.portraitBox, null); assert.deepEqual(result.fields, f.passport.fields);
+  const matched = f.match(result); assert.equal(matched.complete, true); assert.equal(matched.applicants[0].documents.photo, null);
+  const {VisaDocumentIntake} = require('../src/visa-document-intake');
+  await assert.rejects(VisaDocumentIntake.prototype.portraitCrop.call({}, {bytes: await image(), extraction: result}), {code: 'DOCUMENT_PORTRAIT_REQUIRED'});
+});
+
+test('wire projection never suppresses unknown keys, wrong metadata, other date forms or malformed root and crop shapes', () => {
+  for (const fields of [
+    {PRIVATE_UNKNOWN_FIELD: 'PRIVATE_VALUE'}, {nationalityCode: {value: 'EGY', confidence: 1}},
+    {emiratesId: {value: '784199000000001', confidence: '1', visible: true}},
+    {issueDate: {value: '02/01/2030', confidence: '1', visible: true}},
+    {expiryDate: {...field('02/01/2030'), PRIVATE_KEY: 'PRIVATE_VALUE'}},
+    {birthDate: field('02/01/1990')}, {issueDate: field('2030/01/02')}, {nationalityCode: ' EGY '}
+  ]) assert.throws(() => parseDocumentOutput(JSON.stringify(page({fields}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  for (const portraitBox of [
+    {x: 0.9, y: 0, width: 0.5, height: 0.5, confidence: 2},
+    {x: '0.9', y: 0, width: 0.5, height: 0.5, confidence: 1},
+    {x: 0.9, y: 0, width: 0.5, height: 0.5, confidence: 1, PRIVATE_KEY: 'PRIVATE_VALUE'},
+    {x: 0.9, y: 0, width: 0.5, height: 0.5}
+  ]) assert.throws(() => parseDocumentOutput(JSON.stringify(page({portraitBox}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.throws(() => parseDocumentOutput(JSON.stringify(page({PRIVATE_KEY: 'PRIVATE_VALUE'}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.throws(() => parseDocumentOutput(JSON.stringify({...page(), fields: ['EGY']})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
 });
 
 test('MRZ and portrait rectangles are bounded evidence, never repaired or treated as a face assessment', () => {

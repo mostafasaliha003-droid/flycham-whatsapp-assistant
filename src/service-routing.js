@@ -15,7 +15,12 @@ function routeService(store,id,text,{env=process.env,media=false,hasFlight=false
  if(s?.awaitingService&&/^(?:1|الاول|الخيار الاول|الاول طيران)$/.test(t)){setService(store,id,'flight');return{service:'flight',selectedText:'طيران إلى سوريا'};}
  if(s?.awaitingService&&/^(?:2|الثاني|التاني|الخيار الثاني|الخيار التاني)$/.test(t)){setService(store,id,'saudi_visa');return{service:'saudi_visa',selectedText:'فيزا السعودية'};}
  const generic=/^(?:(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير|لو سمحت|ممكن|عندي استفسار|ممكن استفسار|بدي استفسر|شو عندكن|شو عندكم|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاحه|القائمه|الخدمات)[،,!؟?. 🌷]*)+$/i.test(t);
- if(/^(?:القائمه|الخدمات|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاحه)$/.test(t)||generic&&!hasActiveRequest)return serviceMenu(store,id);
+ const explicitMenu=/^(?:القائم[هة]|الخدمات|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاح[هة])$/.test(t);
+ if(explicitMenu)return serviceMenu(store,id);
+ // A greeting within a visa conversation belongs to that same conversation.
+ // The customer can still open the menu or explicitly choose another service.
+ if(generic&&s?.service==='saudi_visa')return{service:'saudi_visa'};
+ if(generic&&!hasActiveRequest)return serviceMenu(store,id);
  const visa=/فيزا|فيزه|تاشير|عمره|عمرة|نسك|اسماعيل|ismail|saudi visa|umrah/i.test(t);
  const flight=/(?:من|مغادر).{0,30}(?:دبي|الشارق[هة]|ابوظبي|ابو ظبي|دمشق|الشام|حلب|سوريا).{0,15}(?:الي|الى|لل|لدمشق|للشام|لحلب|للشارق|لدبي)|ذهاب (?:بس|فقط)|ذهاب وعود|فلاي شام|flycham|airarabia/i.test(t)||/طيران|طياره|تذكره|تيكت|رحلات|حجز.*رحله|flight|ticket|احمد/i.test(t);
  if(visa&&flight&&!s?.service)return serviceMenu(store,id,'فينا نساعدك بالتأشيرة والطيران. بأي خدمة بتحب نبدأ؟');

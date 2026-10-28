@@ -86,7 +86,7 @@ function extractionKey(extraction) {
     const value = extraction.fields[field];
     fields[field] = plain(value) ? {value:value.value, confidence:value.confidence, visible:value.visible} : null;
   }
-  return JSON.stringify({version:extraction.version, kind:extraction.kind, readable:extraction.readable, rotation:extraction.rotation, fields, mrzLines:extraction.mrzLines});
+  return JSON.stringify({version:extraction.version, kind:extraction.kind, readable:extraction.readable, rotation:extraction.rotation, fields, mrzLines:extraction.mrzLines, portraitBox:extraction.portraitBox});
 }
 function validateReference(document) {
   return plain(document) && typeof document.mediaId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(document.mediaId) && Number.isInteger(document.page) && document.page >= 1 && document.page <= 10 && typeof document.sha256 === 'string' && /^[a-f0-9]{64}$/.test(document.sha256);
@@ -109,6 +109,7 @@ function readDocument(document) {
     if (value === null) { parsed.invalidFields.push(field); continue; }
     parsed.fields[field] = value;
   }
+  if (typeof document.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(document.sourceSha256)) parsed.sourceSha256 = document.sourceSha256;
   return parsed;
 }
 function validationIssues(fields, referenceDate, entryDate, allowed) {
@@ -118,7 +119,7 @@ function validationIssues(fields, referenceDate, entryDate, allowed) {
 function inspectPassport(document, referenceDate) {
   const fields = document.fields, issues = [...document.issues];
   const mrzLines = document.extraction?.mrzLines;
-  let mrzChecked = false;
+  let mrzChecked = false, mrzIdentity = null;
   if (!Array.isArray(mrzLines) || mrzLines.length !== 2) issues.push(issue('PASSPORT_MRZ_REQUIRED', 'mrz'));
   else {
     const parsed = parseTD3MRZ(mrzLines, {referenceDate, ...(fields.birthDate ? {confirmedBirthDate: fields.birthDate} : {}), ...(fields.expiryDate ? {confirmedExpiryDate: fields.expiryDate} : {})});
@@ -138,10 +139,13 @@ function inspectPassport(document, referenceDate) {
     const mrzFull = normalizedName([parsed.fields?.latinNames?.givenNames,parsed.fields?.latinNames?.family].filter(Boolean).join(' '));
     if (fields.latinFullName && normalizedName(fields.latinFullName) !== mrzFull) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', 'latinFullName')); }
     mrzChecked = parsed.ok && !mismatch;
-    if (mrzChecked) document.identityName = mrzFull;
+    if (mrzChecked) {
+      document.identityName = mrzFull;
+      mrzIdentity = {...Object.fromEntries(MRZ_FIELDS.map(field => [field, parsed.fields[field]])), latinFullName:mrzFull};
+    }
   }
   for (const field of document.invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
-  return {...document, issues, mrzChecked};
+  return {...document, issues, mrzChecked, mrzIdentity};
 }
 function conflictsWithCase(document, known) {
   const issues = [];
@@ -165,6 +169,60 @@ function addSources(result, document, acceptedFields, method) {
   }
 }
 
+// Exact duplicate uploads carry no extra page evidence. A raw-file digest must
+// include the PDF page number; pages from one PDF are distinct documents.
+function compareReference(first, second) {
+  return first.mediaId.localeCompare(second.mediaId) || first.page - second.page || first.sha256.localeCompare(second.sha256);
+}
+function deduplicateDocuments(documents) {
+  const pixels = new Set(), originals = new Set(), result = [];
+  for (const document of [...documents].sort(compareReference)) {
+    const extraction = extractionKey(document.extraction);
+    const pixelKey = document.sha256 + ':' + extraction;
+    const originalKey = document.sourceSha256 ? document.sourceSha256 + ':' + document.page + ':' + extraction : null;
+    if (pixels.has(pixelKey) || originalKey && originals.has(originalKey)) continue;
+    pixels.add(pixelKey); if (originalKey) originals.add(originalKey); result.push(document);
+  }
+  return result;
+}
+function passportGroups(documents, referenceDate) {
+  // Strong identity edges may reveal a contradiction; keep that contradiction
+  // in the group and block it instead of silently selecting the latest page.
+  const remaining = new Set(documents), groups = [];
+  while (remaining.size) {
+    const parts = [remaining.values().next().value]; remaining.delete(parts[0]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const document of remaining) if (parts.some(other => matchesIdentity(identityFields(other), identityFields(document)))) {
+        parts.push(document); remaining.delete(document); changed = true;
+      }
+    }
+    parts.sort((a,b) => Number(b.extraction.mrzLines.length === 2) - Number(a.extraction.mrzLines.length === 2) || compareReference(a,b));
+    const fields = {}, issues = [], invalidFields = [];
+    for (const part of parts) {
+      issues.push(...part.issues); invalidFields.push(...part.invalidFields);
+      for (const field of [...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName']) if (Object.hasOwn(part.fields, field)) {
+        if (Object.hasOwn(fields, field) && !equivalent(field, fields[field], part.fields[field])) issues.push(issue('MULTIPLE_PASSPORTS', field));
+        else fields[field] = part.fields[field];
+      }
+    }
+    // Full visual dates may be on a strongly linked supplementary page. Only
+    // printed, confident values resolve MRZ centuries; MRZ-only fields are never
+    // filled into the applicant, nor are name components inferred.
+    const mrzParts = parts.filter(part => part.extraction.mrzLines.length > 0);
+    const checked = (mrzParts.length ? mrzParts : [parts[0]]).map(part => inspectPassport({...part, fields, invalidFields:[]}, referenceDate));
+    for (const document of checked) issues.push(...document.issues);
+    for (const field of invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
+    const primary = checked.find(part => part.mrzChecked) || checked[0];
+    if (checked.some(part => part.mrzIdentity && primary.mrzIdentity && [...MRZ_FIELDS, 'latinFullName'].some(field => part.mrzIdentity[field] && primary.mrzIdentity[field] && !equivalent(field, part.mrzIdentity[field], primary.mrzIdentity[field])))) issues.push(issue('MULTIPLE_PASSPORTS', 'mrz'));
+    if (parts.length > 2) issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));
+    const ordered = [parts.find(part => part.mediaId === primary.mediaId && part.page === primary.page), ...parts.filter(part => part.mediaId !== primary.mediaId || part.page !== primary.page)];
+    groups.push({...primary, fields, parts:ordered, issues:uniqueIssues(issues), mrzChecked:checked.length > 0 && checked.every(part => part.mrzChecked)});
+  }
+  return groups;
+}
+
 function reconcileDocumentEvidence({documents, applicants, referenceDate = new Date().toISOString().slice(0, 10)} = {}) {
   if (!Array.isArray(documents) || documents.length > 100 || !Array.isArray(applicants) || applicants.length > 30 || !applicants.every(plain) || !realDate(referenceDate)) throw Object.assign(Error('DOCUMENT_MATCH_INPUT_INVALID'), {code:'DOCUMENT_MATCH_INPUT_INVALID'});
   const output = {version: 1, complete: false, applicants: applicants.map((person, applicantIndex) => ({applicantIndex, status:'needs_review', identityReady:false, clientFieldsRequired:[], fields:{}, documents:{passport:null, residence:[], photo:null}, issues:[], evidence:{passportMrzChecked:false, matchedResidence:false, authenticityVerified:false, fieldSources:{}}})), unassigned:[], issues:[]};
@@ -183,25 +241,28 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (document.issues.length || document.kind === 'other') { output.issues.push(...document.issues, ...(document.kind === 'other' && !document.issues.length ? [issue('DOCUMENT_UNASSIGNED')] : [])); unassign(document, document.issues[0]?.code || 'DOCUMENT_UNASSIGNED'); continue; }
     parsed.push(document.kind === 'passport' ? inspectPassport(document, referenceDate) : document);
   }
-  const passports = parsed.filter(document => document.kind === 'passport'), known = applicants.map(knownFields), assignments = new Map(), passportFor = new Map();
+  const distinct = deduplicateDocuments(parsed);
+  // Strip the provisional per-page MRZ issues before group inspection. A page
+  // with no MRZ can supplement a proven passport, but any supplied bad MRZ must
+  // still fail the final group inspection.
+  const passports = passportGroups(distinct.filter(document => document.kind === 'passport').map(document => ({...document, issues:document.issues.filter(item => !['PASSPORT_MRZ_REQUIRED','PASSPORT_MRZ_INVALID','PASSPORT_MRZ_DATE_AMBIGUOUS','PASSPORT_VIZ_MRZ_MISMATCH','DOCUMENT_FIELD_INVALID'].includes(item.code))})), referenceDate);
+  const known = applicants.map(knownFields), assignments = new Map(), passportFor = new Map();
   for (const document of passports) {
     let candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.passportNumber && document.fields.passportNumber && fields.passportNumber === document.fields.passportNumber).map(item => item.index);
     if (!candidates.length) candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.birthDate && document.fields.birthDate && fields.birthDate === document.fields.birthDate && fullName(fields) && fullName(fields) === fullName(identityFields(document))).map(item => item.index);
-    if (!candidates.length && applicants.length === 1 && passports.every(other => other === document || matchesIdentity(identityFields(document), identityFields(other)))) candidates = [0];
-    if (candidates.length !== 1) { unassign(document); continue; }
-    const index = candidates[0], result = output.applicants[index]; assignments.set(document, index);
+    if (!candidates.length && applicants.length === 1 && passports.length === 1) candidates = [0];
+    if (candidates.length !== 1) { document.parts.forEach(part => unassign(part)); continue; }
+    const index = candidates[0], result = output.applicants[index];
     result.issues.push(...document.issues, ...conflictsWithCase(document, known[index]));
-    const prior = passportFor.get(index);
-    if (prior) {
-      const conflicts = [...PASSPORT_FIELDS, 'latinFullName'].some(field => prior.fields[field] && document.fields[field] && !equivalent(field, prior.fields[field], document.fields[field]));
-      if (conflicts || !matchesIdentity(identityFields(prior), identityFields(document))) result.issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));
-      continue;
-    }
-    passportFor.set(index, document); result.documents.passport = ref(document); result.evidence.passportMrzChecked = document.mrzChecked;
+    if (passportFor.has(index)) { result.issues.push(issue('MULTIPLE_PASSPORTS', 'passport')); document.parts.forEach(part => unassign(part, 'MULTIPLE_PASSPORTS')); continue; }
+    passportFor.set(index, document); document.parts.forEach(part => assignments.set(part, index));
+    result.documents.passport = ref(document); result.evidence.passportMrzChecked = document.mrzChecked;
+    if (document.parts.length > 1) result.documents.passportParts = document.parts.slice(0,2).map(ref);
+    for (const part of document.parts.slice(2)) unassign(part, 'MULTIPLE_PASSPORTS');
     for (const field of PASSPORT_FIELDS) if (Object.hasOwn(document.fields, field)) result.fields[field] = document.fields[field];
-    addSources(result, document, PASSPORT_FIELDS, document.mrzChecked ? 'visible_and_mrz_checked' : 'visible_unconfirmed');
+    for (const part of document.parts) addSources(result, part, PASSPORT_FIELDS, document.mrzChecked ? 'visible_and_mrz_checked' : 'visible_unconfirmed');
   }
-  const identities = parsed.filter(document => document.kind === 'uae_id_front' || document.kind === 'uae_id_back');
+  const identities = distinct.filter(document => document.kind === 'uae_id_front' || document.kind === 'uae_id_back').sort((a,b) => Number(a.kind === 'uae_id_back') - Number(b.kind === 'uae_id_back') || compareReference(a,b));
   const pending = new Set(identities);
   let changed = true;
   while (changed) {
@@ -227,7 +288,7 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (possible.length === 1) output.applicants[possible[0]].issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', 'residence'));
     unassign(document);
   }
-  const portraits = parsed.filter(document => document.kind === 'portrait');
+  const portraits = distinct.filter(document => document.kind === 'portrait');
   for (const document of portraits) {
     if (applicants.length === 1 && portraits.length === 1) { output.applicants[0].documents.photo = ref(document); assignments.set(document, 0); }
     else unassign(document);
@@ -235,6 +296,8 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   for (const result of output.applicants) {
     if (!result.documents.passport) result.issues.push(issue('PASSPORT_MISSING', 'passport'));
     if (!result.documents.residence.length) result.issues.push(issue('RESIDENCE_MISSING', 'residence'));
+    if (result.documents.residence.length > 2) result.issues.push(issue('RESIDENCE_CONFLICT', 'residence'));
+    result.documents.residence.sort((a,b) => identities.findIndex(document => document.mediaId === a.mediaId && document.page === a.page) - identities.findIndex(document => document.mediaId === b.mediaId && document.page === b.page));
     result.evidence.matchedResidence = result.documents.residence.length > 0 && !result.issues.some(item => ['DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT'].includes(item.code));
     result.issues.push(...validationIssues(result.fields, referenceDate, applicants[result.applicantIndex].entryDate, DOCUMENT_FIELDS));
     result.issues = uniqueIssues(result.issues);

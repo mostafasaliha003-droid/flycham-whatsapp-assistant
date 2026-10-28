@@ -371,10 +371,25 @@ test('image preparation rechecks staff ownership after conversion before saving'
   assert.equal((await f.call({body: {action: 'prepare_image', confirm: true, kind: 'photo', sourceIds: ['missing']}})).body.error, 'MEDIA_NOT_FOUND');
 });
 
-test('neutral auto previews cannot be wrapped as portal upload derivatives',async()=>{
- const f=fixture();f.mediaStore.read=()=>({bytes:Buffer.from('preview'),metadata:{mimeType:'image/png',purpose:'raad_pdf_preview'}});
- const result=await f.call({body:{action:'prepare_image',confirm:true,kind:'passport',sourceIds:['neutral-preview']}});
- assert.equal(result.status,422);assert.equal(result.body.error,'RAAD_DOCUMENT_PREVIEW_ONLY');assert.equal(f.calls.storeDerived.length,0);
+test('manual image conversion cannot launder previews or staged/withdrawn files into portal images',async()=>{
+ for(const purpose of ['raad_pdf_preview','visa_client_preview','visa_upload_staged','visa_upload_withdrawn'])for(const source of ['metadata','raw_records','workflow_store']){
+  const f=fixture(),raw={customer,purpose};
+  if(source==='raw_records')f.mediaStore.records={'neutral-preview':raw};
+  if(source==='workflow_store')f.workflow.store={data:{visaMedia:{'neutral-preview':raw}}};
+  f.mediaStore.read=()=>({bytes:Buffer.from('preview'),metadata:{mimeType:'image/png',...(source==='metadata'?{purpose}:{})}});
+  const result=await f.call({body:{action:'prepare_image',confirm:true,kind:'passport',sourceIds:['neutral-preview']}});
+  assert.equal(result.status,422,purpose+'/'+source);assert.equal(result.body.error,'RAAD_DOCUMENT_PREVIEW_ONLY');assert.equal(f.calls.storeDerived.length,0);
+ }
+});
+
+test('source reclassified during image preparation is rejected before a portal derivative is saved',async()=>{
+ const sharp=require('sharp'),bytes=await sharp({create:{width:1000,height:650,channels:3,background:'#557799'}}).png().toBuffer();
+ for(const purpose of ['visa_client_preview','visa_upload_staged','visa_upload_withdrawn']){
+  const f=fixture(),raw={customer};f.mediaStore.records={'owned-source':raw};
+  f.mediaStore.read=()=>{const metadata={};Object.defineProperty(metadata,'mimeType',{get(){raw.purpose=purpose;return'image/png';}});return{bytes,metadata};};
+  const result=await f.call({body:{action:'prepare_image',confirm:true,kind:'passport',sourceIds:['owned-source']}});
+  assert.equal(result.status,422);assert.equal(result.body.error,'RAAD_DOCUMENT_PREVIEW_ONLY');assert.equal(f.calls.storeDerived.length,0);
+ }
 });
 
 test('owned image conversion saves only a review-required derivative with this customer and source', async () => {

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#143f3c">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>مستندات التأشيرة | مجموعة الرمال</title>
+  <link rel="stylesheet" href="/visa-upload-ui.css">
+  <script src="/visa-upload-ui.js" defer></script>
+</head>
+<body>
+  <header class="site-header wrap">
+    <div class="brand"><img src="/operations-logo.jpg" alt="مجموعة الرمال" width="58" height="58"><div><strong>مجموعة الرمال</strong><span>REMAL GROUP</span></div></div>
+    <span class="private-badge"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg>رابط خاص بطلبك</span>
+  </header>
+
+  <main class="wrap" id="main">
+    <section id="loading" class="state-card loading-card" aria-live="polite" aria-busy="true"><span class="spinner" aria-hidden="true"></span><h1>نفتح ملف مستنداتك…</h1><p>لحظات، ونتابع من حيث توقّفنا على واتساب.</p></section>
+    <section id="link-error" class="state-card" hidden aria-labelledby="error-heading"><span class="state-symbol error-symbol" aria-hidden="true">!</span><p class="eyebrow">إسماعيل · فيزا السعودية</p><h1 id="error-heading" tabindex="-1">نحتاج رابطًا جديدًا</h1><p id="link-error-copy">افتح الرابط الذي أرسله إسماعيل في محادثة واتساب.</p><button id="retry-session" class="primary-button" type="button" hidden>إعادة المحاولة</button><p class="muted">ما أرسلته مسبقًا على واتساب يبقى في ملفك.</p></section>
+
+    <div id="upload-view" hidden>
+      <section class="intro" aria-labelledby="upload-title">
+        <p class="eyebrow"><span class="small-dot"></span>إسماعيل · فيزا السعودية</p>
+        <h1 id="upload-title">مستنداتك،<br><span>بخطوات بسيطة.</span></h1>
+        <p class="intro-copy">أرفق الصور هنا، ونحن نرتّبها ونجهّزها لطلبك.<br class="desktop-break"> كل شيء يبقى مرتبطًا بمحادثتك على واتساب.</p>
+        <ol class="steps" aria-label="خطوات إرسال المستندات"><li aria-current="step"><span>١</span>أرفق المستندات</li><li><span>٢</span>اضغط «تم»</li><li><span>٣</span>نكمل على واتساب</li></ol>
+      </section>
+
+      <div class="workspace">
+        <form id="upload-form" class="document-form" novalidate>
+          <div class="section-heading"><h2>أضف مستنداتك</h2><span>صور أو PDF · حتى 10 ميغابايت للملف</span></div>
+          <p class="received-note" id="existing-note" hidden>المرفقات الموجودة في هذه الصفحة محفوظة. يمكنك إضافة الباقي ثم الضغط على «تم».</p>
+
+          <section class="document-card" data-role="passport" aria-labelledby="passport-title">
+            <div class="card-heading"><span class="document-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="7" y="3" width="19" height="26" rx="3"/><path d="M7 6H5v21a2 2 0 0 0 2 2m7-6h5"/><circle cx="16.5" cy="13.5" r="5"/><path d="M12 13.5h9m-4.5-5c-2 2-2 8 0 10m0-10c2 2 2 8 0 10"/></svg></span><div><h3 id="passport-title">جواز السفر</h3><p>صفحة البيانات كاملة، وصفحة إضافية إن وجدت.</p></div><span class="limit-tag">حتى صورتين</span></div>
+            <p class="merge-note"><span aria-hidden="true">↔</span> إذا كان الجواز بصورتين، نربط صفحتيه ونجمعهما بعد مطابقة البيانات.</p>
+            <div class="file-list" id="passport-files" aria-live="polite"></div>
+            <label class="drop-zone" for="passport-input"><span class="add-icon" aria-hidden="true">+</span><span><strong>أضف صور الجواز أو ملف PDF</strong><small>اضغط للاختيار أو اسحب الملفات إلى هنا</small></span><input id="passport-input" class="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple aria-describedby="passport-error"></label>
+            <p class="role-error" id="passport-error" role="alert"></p>
+          </section>
+
+          <section class="document-card" data-role="residence" aria-labelledby="residence-title">
+            <div class="card-heading"><span class="document-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="3" y="7" width="26" height="19" rx="3"/><circle cx="11" cy="14" r="3"/><path d="M6 22c0-5 10-5 10 0m4-9h5m-5 5h5m-5 5h3M9 4h15"/></svg></span><div><h3 id="residence-title">الهوية الإماراتية</h3><p>الوجه الأمامي والخلفي، كل جهة بصورة واضحة.</p></div><span class="limit-tag">حتى صورتين</span></div>
+            <p class="merge-note"><span aria-hidden="true">↔</span> نرتّب الوجهين ونجمعهما تلقائيًا في صورة واحدة.</p>
+            <div class="file-list" id="residence-files" aria-live="polite"></div>
+            <label class="drop-zone" for="residence-input"><span class="add-icon" aria-hidden="true">+</span><span><strong>أضف وجهي الهوية أو ملف PDF</strong><small>يمكنك اختيار الصورتين معًا</small></span><input id="residence-input" class="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple aria-describedby="residence-error"></label>
+            <p class="role-error" id="residence-error" role="alert"></p>
+          </section>
+
+          <section class="document-card" data-role="photo" aria-labelledby="photo-title">
+            <div class="card-heading"><span class="document-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="6" y="3" width="20" height="26" rx="3"/><circle cx="16" cy="12" r="4"/><path d="M9 25v-2a7 7 0 0 1 14 0v2"/></svg></span><div><h3 id="photo-title">الصورة الشخصية</h3><p>صورة حديثة، بوجه ظاهر وخلفية فاتحة.</p></div><span class="limit-tag">صورة واحدة</span></div>
+            <div class="file-list" id="photo-files" aria-live="polite"></div>
+            <label class="drop-zone" for="photo-input"><span class="add-icon" aria-hidden="true">+</span><span><strong>أضف الصورة الشخصية</strong><small>صورة أو PDF؛ نجهّز صفحته كصورة</small></span><input id="photo-input" class="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" aria-describedby="photo-error"></label>
+            <p class="role-error" id="photo-error" role="alert"></p>
+          </section>
+
+          <div class="submit-panel"><div class="submit-copy"><strong id="upload-count">لم تُضف مستندات بعد</strong><span id="upload-hint">أضف ما تبقّى من مستنداتك. ما أرسلته على واتساب يبقى في ملفك.</span></div><button id="complete-button" class="primary-button" type="submit" disabled><span id="complete-label">تم وإرسال المستندات</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6M8 12h12"/></svg></button><p id="complete-error" role="alert" hidden></p><p class="submit-note">هذا الزر يرسل المستندات لفريق الرمال فقط، ولا يؤكّد الدفع أو تقديم التأشيرة.</p></div>
+        </form>
+
+        <aside class="help-column" aria-label="إرشادات تجهيز المستندات">
+          <section class="help-card journey-card"><span class="help-eyebrow">من هنا نكمل</span><h2>أنت ترسل.<br>ونحن نجهّز.</h2><ol class="journey"><li><span class="journey-marker">١</span><div><strong>نستلم المستندات</strong><p>في ملفك نفسه، مع محادثتك على واتساب.</p></div></li><li><span class="journey-marker">٢</span><div><strong>نقرأ ونرتّب الصور</strong><p>نصحّح الاتجاه ونضبط الوضوح ونجمع صفحات المستند بعد مطابقتها.</p></div></li><li><span class="journey-marker">٣</span><div><strong>نتابع معك</strong><p>إسماعيل يوضح أي نقص ويؤكّد البيانات معك قبل المتابعة.</p></div></li></ol></section>
+          <section class="help-card photo-help"><span class="help-eyebrow">صورة أوضح، متابعة أسرع</span><h2>ثلاث لمسات تكفي</h2><ul><li><span aria-hidden="true">↗</span>أظهر زوايا المستند الأربع.</li><li><span aria-hidden="true">☼</span>اختر إضاءة جيدة دون انعكاس.</li><li><span aria-hidden="true">▤</span>صوّر كل صفحة بصورة مستقلة.</li></ul><p>نحافظ على بيانات المستند الأصلية. إذا كانت الكتابة غير مقروءة، نطلب صورة أوضح.</p></section>
+          <div class="privacy-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg><p><strong>مستنداتك ضمن طلبك فقط</strong><span>هذا الرابط خاص. لا تشاركه مع الآخرين.</span><small id="expiry-label"></small></p></div>
+        </aside>
+      </div>
+    </div>
+
+    <section id="success-view" class="state-card success-card" hidden aria-labelledby="success-heading"><span class="state-symbol success-symbol" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="m8 16 5 5L25 9"/></svg></span><p class="eyebrow">وصلت إلى ملفك</p><h1 id="success-heading" tabindex="-1">مستنداتك معنا.</h1><p>تم استلام المرفقات. سيكمل إسماعيل المتابعة معك<br class="desktop-break"> في محادثتك على واتساب.</p><div id="success-files" class="success-files"></div><a id="whatsapp-link" class="primary-button return-button" hidden rel="noreferrer noopener">العودة إلى واتساب <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6M8 12h12"/></svg></a><p id="return-copy" class="return-copy">يمكنك الآن العودة إلى محادثة إسماعيل على واتساب.</p><p class="success-footnote">استلام المستندات لا يعني تأكيد الدفع أو تقديم الطلب أو صدور التأشيرة.</p></section>
+  </main>
+  <footer class="site-footer wrap"><span>REMAL GROUP</span><p>كل رحلة تبدأ باهتمام.</p><span>خدمة المسافرين · دبي</span></footer>
+  <noscript><p class="noscript-note">لتتمكن من رفع المستندات، فعّل JavaScript أو أرسل الصور مباشرة في محادثة واتساب.</p></noscript>
+</body>
+</html>

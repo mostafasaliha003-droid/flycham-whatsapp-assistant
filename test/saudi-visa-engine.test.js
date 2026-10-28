@@ -136,3 +136,57 @@ test('amendments after verified payment preserve original paid case and record a
  const e=make();await e.handle('a','سوري جواز عادي لحالي');const c=e.getCase('a');c.paymentStatus='verified';c.stage='payment_verified';c.staffVerification={payment:{amount:700,reference:'confirmed',caseSignature:visaCaseSignature(c)}};
  const r=await e.handle('a','صاروا 3 اشخاص');assert.match(r.reply,/حفظنا التعديل للمراجعة/);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,700);assert.equal(e.getCase('a').paymentStatus,'verified');assert.equal(e.getCase('a').pendingAmendment.facts.applicantCount,3);
 });
+test('attachment captions reach understanding as redacted text and remain in conversation history',async()=>{
+ const calls=[],e=make({understand:async(text,context)=>{calls.push({text,context});return null;}});
+ await e.handle('a','سوري جواز عادي لحالي');calls.length=0;
+ await e.handle('a','هاي صورتين للهوية، ادمجهم. رقم الجواز N016671869 وهويتي 784-1990-4260790-5',{messages:[{media:{id:'1'}}]});
+ assert.equal(calls.length,1);assert.match(calls[0].text,/صورتين للهوية، ادمجهم/);assert.doesNotMatch(calls[0].text,/N016671869|784-1990/);
+ const user=e.getCase('a').history.at(-2).text;assert.match(user,/\[attachment received\].*ادمجهم/);assert.doesNotMatch(user,/N016671869|784-1990/);
+ await e.handle('a','هل قرأت الصور؟');assert.match(calls.at(-1).context.history.at(-2).text,/ادمجهم/);
+});
+test('bare document identifiers and attachment placeholders never enter semantic understanding',async()=>{
+ let calls=0;const e=make({understand:async()=>{calls++;return null;}});
+ for(const text of ['N016671869','784-1990-4260790-5','P<SYR<<SYNTHETIC_PERSON','data:image/png;base64,SYNTHETIC_BYTES','[صورة مرفقة تحتاج مراجعة]'])await e.handle('a',text,{messages:[{media:{id:'1'}}]});
+ assert.equal(calls,0);assert.doesNotMatch(JSON.stringify(e.getCase('a').history),/N016671869|784-1990|SYNTHETIC_PERSON|SYNTHETIC_BYTES/);
+});
+test('friend nationality fragments and questions preserve the primary applicant and give the relevant conditional route',async()=>{
+ const e=make();await e.handle('a','سوري جواز عادي لحالي');const original=structuredClone(e.getCase('a').applicants),signature=visaCaseSignature(e.getCase('a'));
+ assert.match((await e.handle('a','وعندي صديقي')).reply,/شو جنسيته/);
+ const egyptian=await e.handle('a','مصري');assert.match(egyptian.reply,/جواز مصري عادي.*سفرة واحدة/);assert.match(egyptian.reply,/جواز سفر عادي أو وثيقة سفر/);
+ assert.match((await e.handle('a','وعندي صديق تاني فلسطيني')).reply,/الفلسطينية.*العمرة/);
+ assert.match((await e.handle('a','كمان بدن يقدمو')).reply,/نفس المجموعة.*ملف مستقل/);
+ const details=await e.handle('a','شو التفاصيل بعد اذنك');assert.match(details.reply,/الفلسطينية.*العمرة/);assert.doesNotMatch(details.reply,/700|إجمالي رسوم/);
+ const question=await e.handle('a','حتى الفلسطيني بتطلع لو؟');assert.match(question.reply,/العمرة/);assert.match(question.reply,/ما في ضمان للموافقة/);assert.doesNotMatch(question.reply,/إجمالي رسوم|700|أكيد بتطلع/);
+ assert.deepEqual(e.getCase('a').applicants,original);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,700);assert.equal(visaCaseSignature(e.getCase('a')),signature);
+});
+test('a friend is added only by explicit same-group instruction after own document answer',async()=>{
+ const e=make();await e.handle('a','سوري جواز عادي لحالي');await e.handle('a','عندي صديق مصري');await e.handle('a','جواز عادي');
+ assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').pendingRelative.facts.documentType,'passport');
+ await e.handle('a','ضيفه معنا');assert.equal(e.getCase('a').applicantCount,2);assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(e.getCase('a').applicants[1].nationality,'مصر');
+});
+test('a model self-correction guess cannot reassign a short answer about a pending friend',async()=>{
+ let scripted=null;const e=make({understand:async()=>scripted});await e.handle('a','سوري جواز عادي لحالي');await e.handle('a','عندي صديقي');
+ scripted={intent:'apply',target:'self',correction:true,fields:{nationality:'مصر'}};
+ const r=await e.handle('a','مصري');assert.match(r.reply,/جواز مصري عادي/);assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(e.getCase('a').pendingRelative.facts.nationality,'مصر');
+ await e.handle('a','انا مصري');assert.equal(e.getCase('a').applicants[0].nationality,'مصر');
+});
+test('an attachment plus bank request answers bank details without repeating the quote',async()=>{
+ const e=make();await e.handle('a','سوري جواز عادي لحالي');await e.handle('a','عندي صديق فلسطيني');
+ const r=await e.handle('a','تمام بدي قدم، ابعتلك الاوراق، وبعتلي حسابك البنكي',{messages:[{media:{id:'1'}}]});
+ assert.match(r.reply,/التفاصيل البنكية المعتمدة/);assert.match(r.reply,/AE000000000000000000000/);assert.doesNotMatch(r.reply,/إجمالي رسوم|وصلتنا رسالتك المتعلقة بالمستندات/);
+ assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(e.getCase('a').paymentStatus,'unverified');
+});
+test('returning visa greetings keep the current question without repeating a price or checklist',async()=>{
+ const e=make();await e.handle('a','سوري جواز عادي');assert.equal(e.getCase('a').lastQuestion,'applicantCount');
+ const r=await e.handle('a','مرحبا');assert.match(r.reply,/نفس طلب التأشيرة/);assert.doesNotMatch(r.reply,/700|نسخة جواز|إجمالي رسوم/);assert.equal(e.getCase('a').lastQuestion,'applicantCount');
+});
+test('visa erasure clears upload capabilities and prepared-delivery records for this customer only',async()=>{
+ const e=make({store:{data:{},save(){}}});await e.handle('a','سوري جواز عادي لحالي');e.store.data.visaUpload={sessions:{one:{customer:'a'},two:{customer:'b'}}};e.store.data.visaPreparedDeliveries={items:{one:{customer:'a'},two:{customer:'b'}}};
+ e.delete('a');assert.deepEqual(e.store.data.visaUpload.sessions,{two:{customer:'b'}});assert.deepEqual(e.store.data.visaPreparedDeliveries.items,{two:{customer:'b'}});
+});
+
+test('document utility turns record the actual answer without replacing the subject, quote or document stage',async()=>{
+ const engine=make();await engine.handle('document-customer','انا سوري ومعي جواز عادي شخص واحد');const c=engine.getCase('document-customer');c.stage='documents_pending_review';const before=structuredClone(c),reply='عم جهّز صور الهوية ضمن نفس ملفك.';
+ const r=engine.recordDocumentTurn('document-customer','ادمجهم',reply,{caseId:c.id,expectedRevision:c.revision});assert.equal(r.reply,reply);const after=engine.getCase('document-customer');assert.equal(after.stage,before.stage);assert.equal(visaCaseSignature(after),visaCaseSignature(before));assert.equal(after.history.at(-1).text,reply);assert.equal(after.history.at(-2).text,'ادمجهم');assert.equal(after.revision,before.revision+1);
+ assert.equal(engine.recordDocumentTurn('document-customer','الهوية','answer',{caseId:c.id,expectedRevision:before.revision}).superseded,true);
+});

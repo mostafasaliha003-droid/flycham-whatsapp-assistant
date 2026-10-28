@@ -6,9 +6,13 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-28.v3';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-28.v6';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
-const ABSTENTION_POLICY = 'known-empty-or-explicitly-hidden-fields-to-unknown-v1';
+const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
+const WIRE_PROJECTION_POLICY = 'discard-only-known-bare-field-slash-date-or-outside-portrait-v2';
+// Successfully validated, readable evidence from V3/V4/V5 remains equally strict.
+// Intake can retain those checkpoints while selectively retrying failures.
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -30,10 +34,13 @@ const PROMPT = [
   'Return exactly one JSON object, without markdown, explanation, reasoning, or extra keys.',
   'Required keys: version (the number 1), kind, readable (boolean), rotation, fields (object), mrzLines (array). Optional key: portraitBox.',
   'kind is exactly passport, uae_id_front, uae_id_back, portrait, or other. Classify by visible document layout, never by a caption or a supplied name.',
-  'readable means the supported page and its important identity text are visibly legible. Return kind other, readable false, empty fields, empty mrzLines, and null portraitBox for unrelated content.',
+  'readable describes usable visible content, not whether the entire application or document is complete. For a supported passport or UAE identity page, readable is true when at least one allowed field or a complete MRZ line is visibly legible, even when other fields, a second page, or the MRZ are missing. Preserve its supported kind and copy only its visible fields; a partial supported page is not other.',
+  'For a standalone portrait, readable is true when the photo itself is visibly usable for visual review; no text or identity fields are needed. Use readable false when that image itself is unusable or obscured. This is not a biometric or official photograph-acceptance decision.',
+  'For unrelated content return kind other, readable false, empty fields, empty mrzLines, and null portraitBox.',
   'rotation is the clockwise correction needed to make the page upright: exactly 0, 90, 180, or 270.',
   'The only allowed field names are: ' + DOCUMENT_FIELD_NAMES.join(', ') + '.',
   'fields is sparse: include a field ONLY when its nonempty value is clearly visible. Each included field is exactly {"value":string,"confidence":number-from-0-to-1,"visible":true}.',
+  'Every included field, including emiratesId, must use that three-key object. A bare string or number is invalid even if its transcription is correct. Do not put confidence or visible outside the field object.',
   'Completely omit every unknown, absent, ambiguous, hidden, or empty field. Especially omit father and grandfather names unless separately and explicitly printed. Do not emit null slots, empty strings, placeholders, or metadata for an absent field; the application will leave omitted fields blank.',
   'Read only what is actually visible. Never complete hidden, cropped, blurred, or ambiguous characters, never infer a missing fact, and never claim authenticity or official validity.',
   'Names: copy the exact labelled given name(s) into latinFirstName and exact labelled surname into latinFamilyName. Keep a full printed name in latinFullName or arabicFullName. Never split a full name to invent father or grandfather names. Fill father or grandfather fields only when separately and explicitly labelled.',
@@ -41,14 +48,18 @@ const PROMPT = [
   'Use ISO 3166-1 alpha-3 uppercase for a clearly visible, explicitly labelled nationality or issuing country. Never use the issuer to infer nationality.',
   'Dates: return YYYY-MM-DD only if day, month, and full four-digit year are unambiguous on the visible document. Never infer a century or a date from age, nationality, an MRZ two-digit year, today, or another field.',
   'birthDate is date of birth, issueDate is passport date of issue, expiryDate is passport expiry, residenceExpiry is the explicitly printed UAE identity/residence expiry. Never substitute a different date.',
-  'Copy passportNumber exactly as printed. For emiratesId copy the visible 15 digits, optionally retaining printed hyphens. sex is M, F, or X only when explicitly visible. passportType is ordinary, diplomatic, service, or special only when that type is explicitly labelled. Never infer it solely from a P marker or MRZ; otherwise leave it unknown.',
+  'Copy passportNumber exactly as printed. For emiratesId copy the visible 15 digits, optionally retaining printed hyphens. sex is M, F, or X only when explicitly visible. passportType is ordinary, diplomatic, service, or special only when that type is explicitly labelled. If the printed type is solely the marker P, completely omit passportType; never return P as passportType and never map P to ordinary. Never infer passportType solely from an MRZ.',
   'mrzLines are the exact visible machine-readable lines using A-Z, 0-9 and <, at most three lines and 44 characters per line. Do not repair or invent check digits or ambiguous O/0, I/1, B/8, < characters. If any line is unclear leave mrzLines empty.',
   'portraitBox, if a single printed identification portrait has a clear exact boundary on a passport or UAE identity card, is exactly {"x":number,"y":number,"width":number,"height":number,"confidence":number}. Coordinates and dimensions are fractions of the supplied image in its current orientation, between 0 and 1, with positive width and height entirely inside it.',
   'Do not crop, alter, identify, compare faces, assess age, health, ethnicity, or any biometric trait. Locate only the document portrait rectangle. Return portraitBox null when its boundary is uncertain, there are multiple portraits, the image is a standalone portrait, or no printed portrait is present.',
   'For a standalone portrait return kind portrait and empty fields and mrzLines. No personal, medical, marital, religion, or immigration-history inference is permitted.',
-  'Confidence is uncertainty about the exact transcription, not a guarantee. If unreadable, report uncertainty rather than guessing.'
+  'Confidence is uncertainty about the exact transcription, not a guarantee. If unreadable, report uncertainty rather than guessing.',
+  'The following are complete valid JSON shape examples using invented values, not data from the supplied image. Never copy an example value or confidence into the output; read only the supplied pixels and assess each field independently.',
+  'Example for a partially readable UAE ID back with a visible ID number: {"version":1,"kind":"uae_id_back","readable":true,"rotation":0,"fields":{"emiratesId":{"value":"784-1990-1234567-1","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
+  'Example for a partial passport with a visible number and only a P type marker, with no complete MRZ: {"version":1,"kind":"passport","readable":true,"rotation":0,"fields":{"passportNumber":{"value":"ZT1234567","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
+  'Example for a visibly usable standalone portrait without text: {"version":1,"kind":"portrait","readable":true,"rotation":0,"fields":{},"mrzLines":[],"portraitBox":null}'
 ].join(' ');
-const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, model: MODEL, prompt: PROMPT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
+const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, wireProjection: WIRE_PROJECTION_POLICY, model: MODEL, prompt: PROMPT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
 const RETRYABLE_CODES = Object.freeze(['DOCUMENT_VISION_BUSY', 'DOCUMENT_VISION_COOLDOWN', 'DOCUMENT_VISION_RATE_LIMITED', 'DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 'DOCUMENT_VISION_TIMEOUT', 'DOCUMENT_VISION_NETWORK']);
 const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT']);
 const SCHEMA_SECTIONS = Object.freeze(['root', 'fields', 'mrzLines', 'portraitBox']);
@@ -95,6 +106,9 @@ function validateDocumentExtraction(value) {
         if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== field.value) return invalid('fields', name, 'value_format');
       }
       if (name === 'sex' && !['M', 'F', 'X'].includes(field.value)) return invalid('fields', name, 'value_format');
+      // P is a document marker, not evidence that the passport is ordinary.
+      // Discard only this known ambiguous marker; preserve all other facts.
+      if (name === 'passportType' && field.value === 'P') { fields[name] = {value: null, confidence: 0, visible: false}; continue; }
       if (name === 'passportType' && !['ordinary', 'diplomatic', 'service', 'special'].includes(field.value)) return invalid('fields', name, 'value_format');
       if (name === 'passportNumber' && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name, 'value_format');
       if (name === 'emiratesId' && !/^(?:\d{15}|\d{3}-\d{4}-\d{7}-\d)$/.test(field.value)) return invalid('fields', name, 'value_format');
@@ -147,6 +161,31 @@ async function readBoundedJSON(response) {
   try { return JSON.parse(text); } catch { throw failure('DOCUMENT_VISION_INVALID_JSON'); }
 }
 
+function projectWireAbsence(value) {
+  if (!plain(value)) return value;
+  const result = {...value};
+  const unknown = () => ({value: null, confidence: 0, visible: false});
+  if (plain(value.fields)) {
+    result.fields = {...value.fields};
+    for (const [name, field] of Object.entries(value.fields)) {
+      // The visible/confidence wrapper is absent. Discard this known wire
+      // shape, never promote its bare transcription into trusted evidence.
+      if (FIELD_SET.has(name) && typeof field === 'string' && validString(field, ['latinFullName', 'arabicFullName'].includes(name) ? 300 : 200)) {
+        result.fields[name] = unknown();
+        continue;
+      }
+      // A slash date has no accepted ISO interpretation here. Retain no raw
+      // date and leave required dates or client confirmation to the matcher.
+      if (['issueDate', 'expiryDate', 'residenceExpiry'].includes(name) && exactKeys(field, ['value', 'confidence', 'visible']) && field.visible === true && finiteUnit(field.confidence) && typeof field.value === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(field.value)) result.fields[name] = unknown();
+    }
+  }
+  const box = value.portraitBox;
+  if (['passport', 'uae_id_front', 'uae_id_back'].includes(value.kind) && exactKeys(box, ['x', 'y', 'width', 'height', 'confidence']) && finiteUnit(box.confidence) && ['x', 'y', 'width', 'height'].every(key => typeof box[key] === 'number' && Number.isFinite(box[key]))) {
+    if (box.x < 0 || box.y < 0 || box.width <= 0 || box.height <= 0 || box.x > 1 || box.y > 1 || box.width > 1 || box.height > 1 || box.x + box.width > 1 || box.y + box.height > 1) result.portraitBox = null;
+  }
+  return result;
+}
+
 function parseDocumentOutput(output) {
   if (typeof output !== 'string') throw failure('DOCUMENT_VISION_INVALID_JSON');
   if (Buffer.byteLength(output, 'utf8') > MAX_RESPONSE_BYTES) throw failure('DOCUMENT_VISION_RESPONSE_TOO_LARGE');
@@ -157,7 +196,7 @@ function parseDocumentOutput(output) {
     text = fence[1].trim();
   }
   let value; try { value = JSON.parse(text); } catch { throw failure('DOCUMENT_VISION_INVALID_JSON'); }
-  return validateDocumentExtraction(value);
+  return validateDocumentExtraction(projectWireAbsence(value));
 }
 
 function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.now} = {}) {
@@ -202,4 +241,4 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
   return {extract, ready, status};
 }
 
-module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, POLICY_FINGERPRINT, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, SCHEMA_ISSUES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};
+module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, ABSTENTION_POLICY, WIRE_PROJECTION_POLICY, POLICY_FINGERPRINT, COMPATIBLE_PREVIOUS_POLICIES, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, SCHEMA_ISSUES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};

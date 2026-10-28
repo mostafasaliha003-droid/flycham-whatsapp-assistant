@@ -27,6 +27,7 @@ const BOOLEAN_FIELDS = new Set(['previousNationality', 'travelledLastFiveYears',
 const HEALTH_FIELDS = Object.freeze(['hospitalizedOrEmergency', 'accidentDisability', 'congenitalCondition']);
 const GUARDIAN_FIELDS = Object.freeze(['relationship', 'visaReference', 'status']);
 const DOCUMENT_KINDS = Object.freeze(['passport', 'residence', 'photo']);
+const NON_APPLICATION_PURPOSES = new Set(['raad_pdf_preview', 'visa_client_preview', 'visa_upload_staged', 'visa_upload_withdrawn']);
 const DOCUMENT_FACT_FIELDS = Object.freeze([
   'nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode',
   'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex',
@@ -189,7 +190,7 @@ function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expe
     for (const manifest of applicant.sourceManifest) {
       if (!isObject(manifest) || !UUID.test(manifest.mediaId || '') || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '') || sources.has(manifest.mediaId)) return notReady('RAAD_MACHINE_SOURCE_INVALID');
       const observed = read(manifest.mediaId);
-      if (observed.sha256 !== manifest.sha256 || ['raad_pdf_preview', 'raad_portal_upload', 'raad_application_copy'].includes(observed.raw.purpose)) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+      if (observed.sha256 !== manifest.sha256 || observed.raw.purpose) return notReady('RAAD_MACHINE_SOURCE_INVALID');
       sources.set(manifest.mediaId, observed);
       sourceSnapshots.push({mediaId: manifest.mediaId, sha256: observed.sha256, expiresAt: observed.metadata.expiresAt ?? null});
     }
@@ -206,12 +207,13 @@ function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expe
     if (hash(documentFields(applicant.fields)) !== hash(fields) || hash(applicant.evidence) !== hash(matched.evidence)) return notReady('RAAD_MACHINE_MATCH_CHANGED');
     const extractionDigest = hash({documents: record.documents, applicantIndex, fields: matched.fields, matchedDocuments: matched.documents, evidence: matched.evidence});
     if (applicant.extractionDigest !== extractionDigest) return notReady('RAAD_MACHINE_EXTRACTION_CHANGED');
-    const matchedRefs = [matched.documents.passport, ...matched.documents.residence, ...(matched.documents.photo ? [matched.documents.photo] : [])];
+    const passportRefs = matched.documents.passportParts || [matched.documents.passport];
+    const matchedRefs = [...passportRefs, ...matched.documents.residence, ...(matched.documents.photo ? [matched.documents.photo] : [])];
     if (matchedRefs.some(ref => !sources.has(ref.mediaId) || !record.documents.some(document => document.mediaId === ref.mediaId && document.page === ref.page && document.sha256 === ref.sha256))) return notReady('RAAD_MACHINE_SOURCE_INVALID');
     const byRef = ref => record.documents.find(document => document.mediaId === ref.mediaId && document.page === ref.page && document.sha256 === ref.sha256);
-    const cropRefs = [matched.documents.passport, ...matched.documents.residence].filter(ref => validPortraitBox(byRef(ref)?.extraction?.portraitBox));
+    const cropRefs = [...passportRefs, ...matched.documents.residence].filter(ref => validPortraitBox(byRef(ref)?.extraction?.portraitBox));
     const roleSources = {
-      passport: new Set([matched.documents.passport.mediaId]),
+      passport: new Set(passportRefs.map(ref => ref.mediaId)),
       residence: new Set(matched.documents.residence.map(ref => ref.mediaId)),
       photo: new Set((matched.documents.photo ? [matched.documents.photo] : cropRefs).map(ref => ref.mediaId))
     };
@@ -297,7 +299,14 @@ class RaadVisaWorkflow {
       const snapshot = {mediaId: id, mimeType: metadata.mimeType, size: metadata.size, status: metadata.status || null, receivedAt: metadata.receivedAt ?? null, expiresAt: metadata.expiresAt ?? null};
       const details = {};
       for (const name of ['purpose', 'sourceIds', 'needsVisualReview', 'width', 'height']) if (metadata[name] !== undefined || record?.[name] !== undefined) details[name] = metadata[name] ?? record[name];
-      if (details.purpose === 'raad_pdf_preview') snapshot.purpose = 'raad_pdf_preview';
+      // Raw protected classification is authoritative when public metadata omits
+      // staging details. Bind every safe purpose so a later reclassification
+      // invalidates an existing staff review.
+      if (record?.customer === context.customer && Object.hasOwn(record, 'purpose')) details.purpose = record.purpose;
+      if (details.purpose !== undefined) {
+        if (typeof details.purpose !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(details.purpose)) return null;
+        snapshot.purpose = details.purpose;
+      }
       return {...snapshot, fingerprint: hash({...snapshot, digest, details})};
     } catch { return null; }
   }
@@ -310,7 +319,7 @@ class RaadVisaWorkflow {
       const metadata = this.observeDocument(saved.mediaId, context);
       if (!metadata || metadata.expiresAt !== null && metadata.expiresAt <= this.now()) { issues.push(issue(field, 'DOCUMENT_UNAVAILABLE', 'The selected document is unavailable.')); continue; }
       current[kind] = metadata;
-      if (metadata.purpose === 'raad_pdf_preview') issues.push(issue(field, 'DOCUMENT_PREVIEW_ONLY', 'A neutral preview cannot be used as an application document. Prepare and review the appropriate document first.'));
+      if (NON_APPLICATION_PURPOSES.has(metadata.purpose)) issues.push(issue(field, 'DOCUMENT_PREVIEW_ONLY', 'A neutral preview cannot be used as an application document. Prepare and review the appropriate document first.'));
       if (ids.has(metadata.mediaId)) issues.push(issue(field, 'DOCUMENT_REUSED', 'Select a separate document for each document type.'));
       ids.add(metadata.mediaId);
       if (!['image/jpeg', 'image/png'].includes(metadata.mimeType)) issues.push(issue(field, 'DOCUMENT_FORMAT_INVALID', 'Portal preparation accepts JPEG or PNG documents.'));
@@ -506,7 +515,7 @@ class RaadVisaWorkflow {
       if (typeof id !== 'string' || !UUID.test(id)) fail('RAAD_DOCUMENTS_INVALID');
       const metadata = this.observeDocument(id, context);
       if (!metadata) fail('RAAD_DOCUMENT_UNAVAILABLE', 404);
-      if (metadata.purpose === 'raad_pdf_preview') fail('RAAD_DOCUMENT_PREVIEW_ONLY', 422);
+      if (NON_APPLICATION_PURPOSES.has(metadata.purpose)) fail('RAAD_DOCUMENT_PREVIEW_ONLY', 422);
       nextDocuments[kind] = metadata;
     }
     // Re-observe existing attachments, including their content digest, on rebase.

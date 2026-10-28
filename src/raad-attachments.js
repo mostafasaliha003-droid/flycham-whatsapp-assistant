@@ -95,7 +95,41 @@ async function inspect(bytes, mimeType, kind) {
 }
 function normalise(source) {
   // Sharp strips EXIF, ICC, XMP and other metadata unless explicitly retained.
-  return sharp(source.bytes, READ_OPTIONS).rotate().flatten({ background: WHITE }).toColourspace('srgb');
+  let pipeline = sharp(source.bytes, READ_OPTIONS).rotate().flatten({ background: WHITE }).toColourspace('srgb');
+  if (source.enhancement) {
+    const { gain, offset } = source.enhancement;
+    pipeline = pipeline.linear(gain, offset).sharpen({ sigma: 0.5, m1: 0.25, m2: 0.5, x1: 2, y2: 1, y3: 1 });
+  }
+  return pipeline;
+}
+// Improve only measured low-contrast or underexposed document pixels. These
+// bounded, conventional filters cannot reconstruct missing text or pixels.
+// Full-image extrema constrain the linear step so no channel is clipped; the
+// sharpening adds at most one L-channel unit in either direction. Portraits
+// never enter this step, and an already clear or flat image stays unchanged.
+async function measureDocumentEnhancement(source, enabled) {
+  if (typeof enabled !== 'boolean') fail('INVALID_IMAGE_OPTIONS');
+  if (!enabled) return;
+  // Stats describe original channel values. Rotation leaves them unchanged;
+  // transparent, profile-converted and other colour spaces are deliberately
+  // left alone rather than estimating their flattened/converted extrema.
+  if (source.metadata.hasAlpha || source.metadata.icc || source.metadata.depth !== 'uchar' || !['srgb', 'b-w'].includes(source.metadata.space)) return;
+  let stats;
+  try { stats = await sharp(source.bytes, READ_OPTIONS).stats(); } catch (error) { rethrowDecode(error); }
+  const channels = stats.channels.slice(0, 3);
+  const minimum = Math.min(...channels.map(channel => channel.min));
+  const maximum = Math.max(...channels.map(channel => channel.max));
+  const span = maximum - minimum;
+  const mean = channels.reduce((sum, channel) => sum + channel.mean, 0) / channels.length;
+  const deviation = channels.reduce((sum, channel) => sum + channel.stdev, 0) / channels.length;
+  if (span < 24 || deviation < 3) return;
+  const gain = span <= 160 && minimum >= 8 && maximum <= 247 ? 1.08 : 1;
+  const lift = mean < 110 && maximum <= 239 ? Math.min(6, (110 - mean) * 0.12) : 0;
+  if (gain === 1 && lift === 0) return;
+  // Leave one value of headroom for sharpening. The original pixels, their
+  // edges and dimensions are retained; no automatic crop, fill or upscale.
+  const offset = Math.round(Math.max(1 - gain * minimum, Math.min(254 - gain * maximum, (1 - gain) * mean + lift)) * 1000000) / 1000000;
+  source.enhancement = { gain, offset };
 }
 async function encode(makePipeline, dimensions, format, quality) {
   try {
@@ -162,13 +196,19 @@ function sourceTransformations(source) {
   const steps = ['strip_metadata', 'convert_to_srgb'];
   if (source.metadata.orientation >= 2 && source.metadata.orientation <= 8) steps.unshift('apply_exif_orientation');
   if (source.metadata.hasAlpha) steps.push('flatten_alpha_on_white');
+  if (source.enhancement) {
+    steps.push(`measured_tonal_adjustment:gain=${source.enhancement.gain},offset=${source.enhancement.offset}`);
+    steps.push('mild_sharpen:sigma=0.5,max_luminance_delta=1');
+  }
   return steps;
 }
 
-async function preparePortalImage(bytes, { mimeType, maxBytes = MAX_OUTPUT_BYTES, kind = 'document' } = {}) {
+async function preparePortalImage(bytes, { mimeType, maxBytes = MAX_OUTPUT_BYTES, kind = 'document', enhance = true } = {}) {
   maxBytes = maxBytesOption(maxBytes);
   if (!['document', 'portrait'].includes(kind)) fail('INVALID_IMAGE_KIND');
+  if (typeof enhance !== 'boolean') fail('INVALID_IMAGE_OPTIONS');
   const source = await inspect(bytes, mimeType, kind);
+  if (kind === 'document') await measureDocumentEnhancement(source, enhance);
   const isLegible = kind === 'portrait'
     ? dimensions => dimensions.width >= PORTRAIT_MIN_EDGE && dimensions.height >= PORTRAIT_MIN_EDGE
     : dimensions => Math.max(dimensions.width, dimensions.height) >= DOCUMENT_LONG_EDGE;
@@ -184,18 +224,24 @@ function residenceLayout(dimensions) {
   const gap = Math.max(16, Math.round(width * 0.02));
   return { width, height: dimensions.reduce((sum, part) => sum + part.height, 0) + gap, gap };
 }
-async function prepareResidenceImage(parts, { maxBytes = MAX_OUTPUT_BYTES } = {}) {
+async function prepareDocumentImage(parts, { kind = 'passport', maxBytes = MAX_OUTPUT_BYTES, enhance = true } = {}) {
   maxBytes = maxBytesOption(maxBytes);
-  if (!Array.isArray(parts) || parts.length < 1 || parts.length > 2) fail('INVALID_RESIDENCE_PARTS');
+  if (!['passport', 'residence'].includes(kind)) fail('INVALID_IMAGE_KIND');
+  if (typeof enhance !== 'boolean') fail('INVALID_IMAGE_OPTIONS');
+  if (!Array.isArray(parts) || parts.length < 1 || parts.length > 2) fail(kind === 'residence' ? 'INVALID_RESIDENCE_PARTS' : 'INVALID_DOCUMENT_PARTS');
   const inputs = parts.map(part => Buffer.isBuffer(part) ? { bytes: part } : part);
   if (inputs.some(part => !part || typeof part !== 'object' || !Buffer.isBuffer(part.bytes))) fail('INVALID_IMAGE');
   if (inputs.length === 1) {
-    const result = await preparePortalImage(inputs[0].bytes, { mimeType: inputs[0].mimeType, maxBytes, kind: 'document' });
-    result.transformations.push('residence_single_part');
+    const result = await preparePortalImage(inputs[0].bytes, { mimeType: inputs[0].mimeType, maxBytes, kind: 'document', enhance });
+    result.transformations.push(`${kind}_single_part`);
     return result;
   }
   const sources = [];
-  for (const input of inputs) sources.push(await inspect(input.bytes, input.mimeType, 'document'));
+  for (const input of inputs) {
+    const source = await inspect(input.bytes, input.mimeType, 'document');
+    await measureDocumentEnhancement(source, enhance);
+    sources.push(source);
+  }
   let initialScale = 1;
   let dimensions = sources.map(source => dimensionsAt(source.width, source.height, initialScale));
   let layout = residenceLayout(dimensions);
@@ -232,9 +278,16 @@ async function prepareResidenceImage(parts, { maxBytes = MAX_OUTPUT_BYTES } = {}
   ) >= DOCUMENT_LONG_EDGE);
   const encoded = await fitImage({ makePipeline, width: layout.width, height: layout.height, minimumScale, isLegible, maxBytes });
   const transformations = ['apply_exif_orientation_per_part', 'strip_metadata', 'convert_to_srgb', 'combine_full_parts_on_white_with_gap'];
+  sources.forEach((source, index) => {
+    if (source.enhancement) transformations.push(...sourceTransformations(source).filter(step => /^(measured_tonal_adjustment|mild_sharpen):/.test(step)).map(step => `part_${index + 1}:${step}`));
+  });
   if (sources.some(source => source.metadata.hasAlpha)) transformations.push('flatten_alpha_on_white');
   if (initialScale < 1) transformations.push('resize_parts_to_pixel_guard');
   return finish(encoded, sources, transformations, layout);
 }
 
-module.exports = { preparePortalImage, prepareResidenceImage };
+async function prepareResidenceImage(parts, options = {}) {
+  return prepareDocumentImage(parts, { ...options, kind: 'residence' });
+}
+
+module.exports = { preparePortalImage, prepareDocumentImage, prepareResidenceImage };

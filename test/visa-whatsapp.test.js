@@ -353,3 +353,52 @@ test('malformed/arbitrary interactive replies are not forwarded and normal text 
   const [text] = extractIncomingMessages(webhook([{id: 'text-message', from: CUSTOMER, type: 'text', text: {body: '  نعم  '}, visaAnswer: {token: TOKEN, option: 'yes'}}]));
   assert.equal(text.text, 'نعم'); assert.equal(text.visaAnswer, undefined);
 });
+
+test('prepared customer-owned image is decoded, uploaded privately and sent by media ID', async () => {
+  const sharp = require('sharp'), crypto = require('node:crypto');
+  const originalId = '12345678-1234-4321-abcd-123456789abf';
+  const bytes = await sharp({create: {width: 1100, height: 700, channels: 3, background: '#e0e0e0'}}).png().toBuffer();
+  const original = {id: originalId, customer: CUSTOMER, expiresAt: 9000000000000};
+  const raw = {id: MEDIA, customer: CUSTOMER, purpose: 'raad_portal_upload', kind: 'residence', mimeType: 'image/png', sourceIds: [originalId], checksum: crypto.createHash('sha256').update(bytes).digest('hex'), expiresAt: 9000000000000};
+  const mediaStore = {records: {[MEDIA]: raw}, get(id, binding) { assert.equal(binding.customer, CUSTOMER); assert.equal(id, originalId); return original; }, read(id, binding) { assert.equal(id, MEDIA); assert.equal(binding.customer, CUSTOMER); return {metadata: {...raw}, bytes: Buffer.from(bytes)}; }};
+  const f = fixture({mediaStore}), payload = {type: 'image', mediaId: MEDIA, mimeType: 'image/png', kind: 'residence', caption: 'الهوية المجهزة من مرفقاتك.'};
+  await f.adapter.send(CUSTOMER, payload, ok, metadata);
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[0].request.body.get('file').type, 'image/png');
+  assert.equal(f.calls[0].request.body.get('file').name, 'raad-residence.png');
+  assert.deepEqual(JSON.parse(f.calls[1].request.body).image, {id: '100001', caption: payload.caption});
+  assert.equal(JSON.parse(f.calls[1].request.body).to, CUSTOMER);
+  for (const change of [() => { raw.customer = OTHER; }, () => { raw.purpose = undefined; }, () => { raw.kind = 'passport'; }, () => { raw.checksum = '0'.repeat(64); }, () => { original.expiresAt = 0; }]) {
+    Object.assign(raw, {customer: CUSTOMER, purpose: 'raad_portal_upload', kind: 'residence', checksum: crypto.createHash('sha256').update(bytes).digest('hex')}); original.expiresAt = 9000000000000;
+    change(); const bad = fixture({mediaStore});
+    await assert.rejects(bad.adapter.send(CUSTOMER, payload, ok, metadata), /VISA_WHATSAPP_IMAGE_INVALID/); assert.equal(bad.calls.length, 0);
+  }
+});
+
+test('prepared image guard and source expiry are rechecked after upload, and dry run or closed window never reads', async () => {
+  const sharp = require('sharp'), crypto = require('node:crypto');
+  const sourceId = '12345678-1234-4321-abcd-123456789abf', bytes = await sharp({create: {width: 1000, height: 600, channels: 3, background: 'white'}}).jpeg().toBuffer();
+  const payload = {type: 'image', mediaId: MEDIA, mimeType: 'image/jpeg', kind: 'passport', caption: 'نسختك المجهزة.'};
+  let reads = 0, expiresAt = 9000000000000;
+  const mediaStore = {records: {[MEDIA]: {customer: CUSTOMER, purpose: 'raad_portal_upload', kind: 'passport', mimeType: 'image/jpeg', sourceIds: [sourceId], checksum: crypto.createHash('sha256').update(bytes).digest('hex'), expiresAt: 9000000000000}}, get: id => ({id, customer: CUSTOMER, expiresAt}), read: () => { reads++; return {metadata: {id: MEDIA, customer: CUSTOMER, mimeType: 'image/jpeg'}, bytes: Buffer.from(bytes)}; }};
+  for (const options of [{env: {DRY_RUN: 'true'}}, {windows: []}]) { const f = fixture({...options, mediaStore}); await f.adapter.send(CUSTOMER, payload, ok, metadata); assert.equal(f.calls.length, 0); }
+  assert.equal(reads, 0);
+  const calls = [], f = fixture({mediaStore, fetchImpl: async (url, request) => { calls.push({url, request}); expiresAt = 0; return {ok: true, json: async () => ({id: '100001'})}; }});
+  await assert.rejects(f.adapter.send(CUSTOMER, payload, ok, metadata), /VISA_WHATSAPP_MESSAGE_SUPERSEDED/); assert.equal(calls.length, 1);
+  expiresAt = 9000000000000;
+  const invalid = fixture({mediaStore: {...mediaStore, read: () => ({metadata: {id: MEDIA, customer: CUSTOMER, mimeType: 'image/jpeg'}, bytes: Buffer.from('not an image')})}});
+  await assert.rejects(invalid.adapter.send(CUSTOMER, payload, ok, metadata), /VISA_WHATSAPP_IMAGE_INVALID/); assert.equal(invalid.calls.length, 0);
+});
+
+test('client preview purpose must be explicit and never masquerades as a government-upload image', async () => {
+  const sharp = require('sharp'), crypto = require('node:crypto');
+  const sourceId = '12345678-1234-4321-abcd-123456789abf', bytes = await sharp({create: {width: 1000, height: 600, channels: 3, background: '#cccccc'}}).png().toBuffer();
+  const raw = {id: MEDIA, customer: CUSTOMER, purpose: 'visa_client_preview', kind: 'passport', mimeType: 'image/png', sourceIds: [sourceId], checksum: crypto.createHash('sha256').update(bytes).digest('hex'), expiresAt: 9000000000000};
+  const mediaStore = {records: {[MEDIA]: raw}, get: id => ({id, customer: CUSTOMER, expiresAt: raw.expiresAt}), read: () => ({metadata: {...raw}, bytes: Buffer.from(bytes)})};
+  const payload = {type: 'image', kind: 'passport', mediaId: MEDIA, mimeType: 'image/png', caption: 'معاينة فقط'};
+  const f = fixture({mediaStore});
+  await assert.rejects(f.adapter.send(CUSTOMER, payload, ok, metadata), /VISA_WHATSAPP_IMAGE_INVALID/); assert.equal(f.calls.length, 0);
+  await f.adapter.send(CUSTOMER, {...payload, purpose: 'visa_client_preview'}, ok, metadata); assert.equal(f.calls.length, 2);
+  assert.equal(JSON.parse(f.calls[1].request.body).image.caption, 'معاينة فقط');
+  await assert.rejects(f.adapter.send(CUSTOMER, {...payload, purpose: 'arbitrary'}, ok, metadata), /VISA_WHATSAPP_PAYLOAD_INVALID/);
+});

@@ -3,13 +3,16 @@ const {createHash,randomUUID}=require('node:crypto');
 const sharp=require('sharp');
 const {validCustomer}=require('./conversation-journal');
 const {visaCaseSignature,currentVisaEvidence}=require('./visa-case-signature');
-const {preparePortalImage,prepareResidenceImage}=require('./raad-attachments');
+const {preparePortalImage,prepareResidenceImage,prepareDocumentImage}=require('./raad-attachments');
 const {rasterizePdf}=require('./raad-pdf');
 const {reconcileDocumentEvidence}=require('./visa-document-matching');
-const {validateDocumentExtraction,POLICY_FINGERPRINT}=require('./visa-document-vision');
+const {validateDocumentExtraction,POLICY_FINGERPRINT,COMPATIBLE_PREVIOUS_POLICIES}=require('./visa-document-vision');
 const sharedLock=require('./raad-preparation-lock');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
+// Changing matching/preparation reuses the existing OCR page checkpoints.
+// It must not silently send all existing originals to the provider again.
+const PREPARATION_POLICY='raad-document-preparation-2026-10-28.v2';
 const clone=value=>structuredClone(value);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value===undefined?null:value;}
@@ -21,9 +24,9 @@ const originals=record=>record&&!record.purpose&&(['image/jpeg','image/png','ima
 function dubaiDate(at){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(at));return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');}
 const activeStatus=status=>['queued','running','retry','waiting_case'].includes(status);
 class VisaDocumentIntake{
- constructor({store,mediaStore,vision,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
+ constructor({store,mediaStore,vision,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,prepareDocument=prepareDocumentImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
   if(!store?.data||typeof store.save!=='function'||!mediaStore?.read||!vision?.extract)throw finite('DOCUMENT_INTAKE_CONFIGURATION_REQUIRED');
-  Object.assign(this,{store,mediaStore,vision,raad,fulfilment,inbox,env,now,onUpdate,lock,rasterize,prepare,prepareResidence,reconcile,policyFingerprint});
+  Object.assign(this,{store,mediaStore,vision,raad,fulfilment,inbox,env,now,onUpdate,lock,rasterize,prepare,prepareResidence,prepareDocument,reconcile,policyFingerprint});
   if(!store.data.visaDocumentIntake)store.data.visaDocumentIntake={version:1,cases:{},jobs:{}};
   if(store.data.visaDocumentIntake.version!==1)throw finite('DOCUMENT_INTAKE_STATE_UNSUPPORTED');
   this.started=false;this.stopped=false;this.busy=false;this.epoch=0;this.timer=null;this.scheduled=false;this.unsubscribe=null;
@@ -37,6 +40,13 @@ class VisaDocumentIntake{
  notify(customer){try{this.onUpdate(customer,this.summary(customer));}catch{}}
  retirePolicies(){
   const affected=new Set();let changed=false;
+  // This compatible prompt update changes formatting/readability instructions,
+  // not the allowed facts. Reuse completed legible pages after strict validation;
+  // only failed or unreadable supported pages need another bounded reading.
+  if(this.policyFingerprint===POLICY_FINGERPRINT)for(const job of Object.values(this.data().jobs)){
+   if(!COMPATIBLE_PREVIOUS_POLICIES.includes(job.policy)||job.status!=='ready'||!Object.keys(job.pages||{}).length)continue;
+   try{const source=this.rawSource(job.customer,job.mediaId);if(!source||source.checksum!==job.sourceSha256)continue;const pages=Object.values(job.pages);if(pages.some(page=>{const valid=validateDocumentExtraction(page.extraction);return valid.readable!==true&&valid.kind!=='other';}))continue;job.policy=this.policyFingerprint;changed=true;}catch{}
+  }
   for(const [customer,state]of Object.entries(this.data().cases))if(state.policy!==this.policyFingerprint)affected.add(customer);
   for(const job of Object.values(this.data().jobs)){
    if(job.policy===this.policyFingerprint)continue;
@@ -137,15 +147,18 @@ class VisaDocumentIntake{
   const saved=this.mediaStore.storeDerived(customer,{sourceIds:[...new Set(sourceIds)],bytes:prepared.bytes,mimeType:prepared.mimeType,kind});guard();if(!UUID.test(saved?.id||''))throw finite('DOCUMENT_IMAGE_UNSUITABLE');const file=this.mediaStore.read(saved.id,{customer});try{const raw=this.mediaStore.records?.[saved.id]||this.store.data.visaMedia?.[saved.id],sha256=hash(file.bytes);if(file.bytes.length>1000000||raw?.purpose!=='raad_portal_upload'||raw.kind!==kind||raw.customer!==customer||raw.checksum!==sha256||sha256!==hash(prepared.bytes))throw finite('DOCUMENT_IMAGE_UNSUITABLE');return {kind,mediaId:saved.id,sha256};}finally{file.bytes.fill(0);}
  }
  async prepareDossier(customer,matched,guard){
-  const preparedManifest=[],documents={passport:null,residence:null,photo:null};let passport,residence=[],photo,rotated,result;
+  const preparedManifest=[],documents={passport:null,residence:null,photo:null};let passport,passportParts=[],residence=[],photo,rotated,result;
   try{
    if(!matched.documents.passport||!Array.isArray(matched.documents.residence)||!matched.documents.residence.length||matched.documents.residence.length>2)throw finite('DOCUMENT_SOURCE_UNAVAILABLE');
-   passport=await this.loadReference(customer,matched.documents.passport,guard);guard();rotated=await this.rotateImage(passport);guard();result=await this.prepare(rotated.bytes,{mimeType:rotated.mimeType,kind:'document'});guard();let prepared=this.storedPrepared(customer,'passport',result,[passport.sourceId],guard);preparedManifest.push(prepared);documents.passport=prepared.mediaId;if(result.bytes!==rotated.bytes)result.bytes.fill(0);result=null;if(rotated.bytes!==passport.bytes)rotated.bytes.fill(0);rotated=null;
+   const passportRefs=matched.documents.passportParts||[matched.documents.passport];
+   if(!Array.isArray(passportRefs)||passportRefs.length<1||passportRefs.length>2||!passportRefs.some(ref=>ref.mediaId===matched.documents.passport.mediaId&&ref.page===matched.documents.passport.page&&ref.sha256===matched.documents.passport.sha256))throw finite('DOCUMENT_SOURCE_UNAVAILABLE');
+   for(const ref of passportRefs){const image=await this.loadReference(customer,ref,guard);guard();const corrected=await this.rotateImage(image);guard();passportParts.push({image,corrected});if(ref.mediaId===matched.documents.passport.mediaId&&ref.page===matched.documents.passport.page)passport=image;}
+   result=passportParts.length===1?await this.prepare(passportParts[0].corrected.bytes,{mimeType:passportParts[0].corrected.mimeType,kind:'document'}):await this.prepareDocument(passportParts.map(item=>({bytes:item.corrected.bytes,mimeType:item.corrected.mimeType})),{kind:'passport'});guard();let prepared=this.storedPrepared(customer,'passport',result,passportParts.map(part=>part.image.sourceId),guard);preparedManifest.push(prepared);documents.passport=prepared.mediaId;result.bytes.fill(0);result=null;
    for(const ref of matched.documents.residence){const image=await this.loadReference(customer,ref,guard);guard();const corrected=await this.rotateImage(image);guard();residence.push({image,corrected});}
    result=await this.prepareResidence(residence.map(item=>({bytes:item.corrected.bytes,mimeType:item.corrected.mimeType})));guard();prepared=this.storedPrepared(customer,'residence',result,residence.map(item=>item.image.sourceId),guard);preparedManifest.push(prepared);documents.residence=prepared.mediaId;result.bytes.fill(0);result=null;
-   if(matched.documents.photo){photo=await this.loadReference(customer,matched.documents.photo,guard);guard();rotated=await this.rotateImage(photo);}else{photo=passport;rotated=await this.portraitCrop(passport);}guard();
+   if(matched.documents.photo){photo=await this.loadReference(customer,matched.documents.photo,guard);guard();rotated=await this.rotateImage(photo);}else{photo=[...passportParts,...residence].map(part=>part.image).find(image=>image.extraction?.portraitBox?.confidence>=0.98)||passport;rotated=await this.portraitCrop(photo);}guard();
    result=await this.prepare(rotated.bytes,{mimeType:rotated.mimeType,kind:'portrait'});guard();prepared=this.storedPrepared(customer,'photo',result,[photo.sourceId],guard);preparedManifest.push(prepared);documents.photo=prepared.mediaId;return {documents,preparedManifest};
-  }finally{if(result?.bytes)result.bytes.fill(0);if(rotated?.bytes&&rotated.bytes!==photo?.bytes&&rotated.bytes!==passport?.bytes)rotated.bytes.fill(0);if(photo&&photo!==passport)photo.bytes.fill(0);passport?.bytes?.fill(0);for(const part of residence){if(part.corrected.bytes!==part.image.bytes)part.corrected.bytes.fill(0);part.image.bytes.fill(0);}}
+  }finally{if(result?.bytes)result.bytes.fill(0);if(rotated?.bytes&&rotated.bytes!==photo?.bytes)rotated.bytes.fill(0);if(photo&&![...passportParts,...residence].some(part=>part.image===photo))photo.bytes.fill(0);for(const part of [...passportParts,...residence]){if(part.corrected.bytes!==part.image.bytes)part.corrected.bytes.fill(0);part.image.bytes.fill(0);}}
  }
  currentCaseGuard(customer,caseId,signature,generation,epoch){
   if(this.stopped||this.epoch!==epoch||!this.enabled())throw finite('DOCUMENT_INTAKE_STALE');const c=this.caseFor(customer),state=this.data().cases[customer];if(!c||!state||state.policy!==this.policyFingerprint||c.id!==caseId||visaCaseSignature(c)!==signature||state.caseSignature!==signature||state.generation!==generation)throw finite('DOCUMENT_INTAKE_STALE');
@@ -159,7 +172,7 @@ class VisaDocumentIntake{
   const jobs=Object.values(this.data().jobs).filter(job=>job.customer===customer&&job.caseId===c.id&&job.caseSignature===signature&&job.generation===generation&&job.policy===this.policyFingerprint&&job.status!=='stale').sort((a,b)=>a.receivedAt-b.receivedAt||a.mediaId.localeCompare(b.mediaId));
   const documents=jobs.flatMap(job=>Object.values(job.pages||{})).sort((a,b)=>jobs.findIndex(job=>job.mediaId===a.mediaId)-jobs.findIndex(job=>job.mediaId===b.mediaId)||a.page-b.page),pending=jobs.some(job=>activeStatus(job.status)),sourceIssues=jobs.flatMap(job=>job.status==='failed'?job.issues||[reason('DOCUMENT_READ_FAILED')]:[]);
   const blocked=this.blockReason(customer);
-  const fingerprint=digest({signature,generation,documents,sourceIssues,pending,limit:state.limitExceeded===true});if(!force&&state.inputFingerprint===fingerprint)return false;
+  const fingerprint=digest({signature,generation,preparationPolicy:PREPARATION_POLICY,documents,sourceIssues,pending,limit:state.limitExceeded===true});if(!force&&state.inputFingerprint===fingerprint)return false;
   const people=Number.isInteger(c.applicantCount)&&c.applicantCount>0&&c.applicantCount<=30?Array.from({length:c.applicantCount},(_,index)=>c.applicants?.[index]||{}):[];
   const matched=this.reconcile({documents,applicants:people,referenceDate:dubaiDate(this.now())}),previous=state.applicants||[];
   this.commit(()=>{guard();state=this.data().cases[customer];state.documents=clone(documents);state.inputFingerprint=fingerprint;state.status=pending?'processing':'needs_review';state.updatedAt=this.now();state.issues=clone([...(matched.issues||[]),...sourceIssues,...(state.limitExceeded?[reason('DOCUMENT_SOURCE_LIMIT')]:[])]);});

@@ -2,10 +2,13 @@
 
 const {safeGraphFailure} = require('./graph-api');
 const {QUESTION_CATALOG, validateAnswer} = require('./visa-client-questions');
+const {createHash} = require('node:crypto');
+const sharp = require('sharp');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const OPTION = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 1000000;
 const OTP_TEMPLATE_BODY = 'تحديث مهمة متابعة طلب تأشيرة لدى شركة الرمال. مرجع المهمة: {{1}}. مرجع الإجراء: {{2}}. تحتاج المهمة إلى إجراء من مسؤول المكتب لاستكمال المعالجة. اختر «متابعة المهمة» لعرض الإجراء المطلوب.';
 const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
 const TEMPLATE_REJECTION_CODES = new Set(['ABUSIVE_CONTENT', 'PROMOTIONAL', 'SCAM', 'INCORRECT_CATEGORY', 'TAG_CONTENT_MISMATCH', 'INVALID_FORMAT', 'CATEGORY_NOT_AVAILABLE', 'NONE']);
@@ -177,6 +180,13 @@ function renderPayload(payload) {
     string(payload.caption, 1024);
     return null;
   }
+  if (payload.type === 'image') {
+    identifier(payload.mediaId);
+    if (!['passport', 'residence', 'photo'].includes(payload.kind) || !['image/jpeg', 'image/png'].includes(payload.mimeType)) throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
+    if (payload.purpose !== undefined && !['raad_portal_upload', 'visa_client_preview'].includes(payload.purpose)) throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
+    string(payload.caption, 1024);
+    return null;
+  }
   throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
 }
 
@@ -249,6 +259,39 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
       return dispatch(recipient, {type: 'template', template: {name: template.name, language: {code: template.language}, components: [{type: 'body', parameters: [{type: 'text', text: caseId}]}]}}, guard, credentials(env), false);
     }
     const config = credentials(env);
+    if (payload.type === 'image') {
+      if (typeof mediaStore?.read !== 'function' || typeof mediaStore?.get !== 'function') throw failure('VISA_WHATSAPP_IMAGE_UNAVAILABLE');
+      let file, expected;
+      const purpose = payload.purpose || 'raad_portal_upload';
+      const current = () => {
+        const raw = mediaStore.records?.[payload.mediaId];
+        if (!raw || raw.customer !== metadata.customer || raw.purpose !== purpose || raw.kind !== payload.kind || raw.mimeType !== payload.mimeType || !Number.isFinite(raw.expiresAt) || raw.expiresAt <= now() || !Array.isArray(raw.sourceIds) || raw.sourceIds.length < 1 || raw.sourceIds.length > 2 || new Set(raw.sourceIds).size !== raw.sourceIds.length || expected && raw.checksum !== expected) throw failure('VISA_WHATSAPP_IMAGE_INVALID');
+        for (const id of raw.sourceIds) {
+          if (typeof id !== 'string' || !UUID.test(id)) throw failure('VISA_WHATSAPP_IMAGE_INVALID');
+          let source; try { source = mediaStore.get(id, {customer: metadata.customer}); } catch { throw failure('VISA_WHATSAPP_IMAGE_INVALID'); }
+          if (!source || source.customer !== metadata.customer || source.id !== id || !Number.isFinite(source.expiresAt) || source.expiresAt <= now() || source.purpose) throw failure('VISA_WHATSAPP_IMAGE_INVALID');
+        }
+        return raw;
+      };
+      try {
+        current();
+        try { file = await mediaStore.read(payload.mediaId, {customer: metadata.customer}); } catch { throw failure('VISA_WHATSAPP_IMAGE_UNAVAILABLE'); }
+        if (file?.metadata?.customer !== metadata.customer || file.metadata.id !== payload.mediaId || file.metadata.mimeType !== payload.mimeType || !Buffer.isBuffer(file.bytes) || !file.bytes.length || file.bytes.length > MAX_IMAGE_BYTES) throw failure('VISA_WHATSAPP_IMAGE_INVALID');
+        expected = createHash('sha256').update(file.bytes).digest('hex');
+        if (current().checksum !== expected) throw failure('VISA_WHATSAPP_IMAGE_INVALID');
+        try {
+          const image = sharp(file.bytes, {failOn: 'warning', limitInputPixels: 20000000, sequentialRead: true}), info = await image.metadata();
+          if (!['jpeg', 'png'].includes(info.format) || 'image/' + (info.format === 'jpeg' ? 'jpeg' : 'png') !== payload.mimeType || (info.pages || 1) !== 1 || !info.width || !info.height || info.width * info.height > 20000000) throw Error('invalid');
+          const decoded = await image.raw().toBuffer(); decoded.fill(0);
+        } catch { throw failure('VISA_WHATSAPP_IMAGE_INVALID'); }
+        await guardNow(guard); current();
+        if (!windowOpen(recipient)) return paused('service_window_closed');
+        const form = new FormData(); form.set('messaging_product', 'whatsapp'); form.set('type', payload.mimeType); form.set('file', new Blob([file.bytes], {type: payload.mimeType}), `raad-${payload.kind}.${payload.mimeType === 'image/png' ? 'png' : 'jpg'}`);
+        const uploaded = await request(config.base + '/media', {method: 'POST', headers: {Authorization: 'Bearer ' + config.token}, body: form});
+        if (typeof uploaded?.id !== 'string' || !/^\d{1,100}$/.test(uploaded.id)) throw failure('VISA_WHATSAPP_OUTCOME_UNCERTAIN', false);
+        return dispatch(recipient, {type: 'image', image: {id: uploaded.id, caption: payload.caption.trim()}}, async () => { await guardNow(guard); current(); }, config, true);
+      } finally { file?.bytes?.fill?.(0); }
+    }
     if (payload.type === 'document') {
       if (typeof mediaStore?.read !== 'function') throw failure('VISA_WHATSAPP_DOCUMENT_UNAVAILABLE');
       let file;

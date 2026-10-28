@@ -66,21 +66,35 @@ function review(f, summary) {
   return f.workflow.review(CUSTOMER, {applicantIndex: summary.applicantIndex, expectedRevision: summary.revision, confirmedFields: summary.reviewRequiredFields, confirm: true});
 }
 
-test('neutral PDF page previews cannot be bound as any applicant document', () => {
-  for (const kind of ['passport', 'residence', 'photo']) {
-    const f=fixture();f.records[IDS.derived].purpose='raad_pdf_preview';
+test('client-only previews and uncommitted uploads cannot be bound as any applicant document, including hidden raw purposes', () => {
+  for (const purpose of ['raad_pdf_preview','visa_client_preview','visa_upload_staged','visa_upload_withdrawn']) for (const kind of ['passport','residence','photo']) {
+    const f=fixture();f.records[IDS.derived].purpose=purpose;
+    const publicGet=f.config.mediaStore.get.bind(f.config.mediaStore);f.config.mediaStore.get=(...args)=>{const metadata=publicGet(...args);delete metadata.purpose;return metadata;};
     const documents={passport:IDS.passport,residence:IDS.residence,photo:IDS.photo,[kind]:IDS.derived};
-    assert.throws(()=>prepare(f,{documents}),{code:'RAAD_DOCUMENT_PREVIEW_ONLY',statusCode:422});
+    assert.throws(()=>prepare(f,{documents}),{code:'RAAD_DOCUMENT_PREVIEW_ONLY',statusCode:422},purpose+'/'+kind);
     assert.equal(f.store.data.raadApplications,undefined);
   }
 });
 
-test('a previously saved source becoming a neutral preview cannot remain portal ready', () => {
-  const f=fixture();const saved=prepare(f);f.records[IDS.passport].purpose='raad_pdf_preview';
-  const current=f.workflow.get(CUSTOMER);
-  assert.ok(current.issues.some(item=>item.code==='DOCUMENT_PREVIEW_ONLY'));
-  assert.notEqual(current.state,'ready_for_portal_review');
-  assert.throws(()=>review(f,saved),{code:'RAAD_APPLICATION_STALE'});
+test('a saved document reclassified as a client preview or staged upload invalidates its staff review', () => {
+  for (const purpose of ['raad_pdf_preview','visa_client_preview','visa_upload_staged','visa_upload_withdrawn']) {
+    const f=fixture(),saved=prepare(f);f.records[IDS.passport].purpose=purpose;
+    const current=f.workflow.get(CUSTOMER);
+    assert.ok(current.issues.some(item=>item.code==='DOCUMENT_PREVIEW_ONLY'),purpose);
+    assert.notEqual(current.state,'ready_for_portal_review');
+    assert.throws(()=>review(f,saved),{code:'RAAD_APPLICATION_STALE'});
+  }
+});
+
+test('safe source purpose is part of the protected snapshot, and ordinary originals or portal derivatives remain reviewable', () => {
+  for (const purpose of [undefined,'raad_portal_upload','staff_uploaded_original']) {
+    const f=fixture();if(purpose!==undefined)f.records[IDS.passport].purpose=purpose;
+    const saved=prepare(f);assert.equal(saved.documents.passport.purpose,purpose);
+    assert.equal(saved.issues.some(item=>item.code==='DOCUMENT_PREVIEW_ONLY'),false);
+    f.records[IDS.passport].purpose=purpose==='raad_portal_upload'?'staff_uploaded_original':'raad_portal_upload';
+    assert.notEqual(f.workflow.observeDocument(IDS.passport,f.workflow.context(CUSTOMER,0)).fingerprint,saved.documents.passport.fingerprint);
+    assert.throws(()=>review(f,saved),{code:'RAAD_APPLICATION_STALE'});
+  }
 });
 
 test('get is read only and proposals do not invent applicant facts or actual travel', () => {

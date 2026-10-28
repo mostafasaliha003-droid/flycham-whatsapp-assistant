@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const sharp = require('sharp');
-const { preparePortalImage, prepareResidenceImage } = require('../src/raad-attachments');
+const { preparePortalImage, prepareDocumentImage, prepareResidenceImage } = require('../src/raad-attachments');
 
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const image = (width, height, background = '#2378ae', format = 'png') =>
@@ -177,4 +177,84 @@ test('the same synthetic source and options yield deterministic bytes and hashes
   assert.deepEqual(first.bytes, second.bytes);
   assert.equal(first.sha256, second.sha256);
   assert.deepEqual(first.transformations, second.transformations);
+});
+
+async function greyDocument({ paper = 180, ink = 120 } = {}) {
+  const raw = Buffer.alloc(1200 * 800 * 3, paper);
+  // A synthetic label plus four border markers make edge preservation visible.
+  for (const [left, top, width, height] of [[0, 0, 12, 12], [1188, 0, 12, 12], [0, 788, 12, 12], [1188, 788, 12, 12], [120, 200, 960, 30]]) {
+    for (let y = top; y < top + height; y++) for (let x = left; x < left + width; x++) raw.fill(ink, (y * 1200 + x) * 3, (y * 1200 + x + 1) * 3);
+  }
+  return sharp(raw, { raw: { width: 1200, height: 800, channels: 3 } }).png().toBuffer();
+}
+async function pixel(bytes, x, y) {
+  return [...await sharp(bytes).extract({ left: x, top: y, width: 1, height: 1 }).removeAlpha().raw().toBuffer()];
+}
+
+test('measured enhancement improves low document contrast without cropping, enlarging or clipping its complete contents', async () => {
+  const bytes = await greyDocument();
+  const original = Buffer.from(bytes);
+  const plain = await preparePortalImage(bytes, { enhance: false });
+  const enhanced = await preparePortalImage(bytes);
+  await assertSafeResult(enhanced, [bytes]);
+  assert.deepEqual(bytes, original, 'original source bytes are never mutated');
+  assert.equal(enhanced.width, 1200); assert.equal(enhanced.height, 800);
+  assert.ok(enhanced.transformations.some(step => step.startsWith('measured_tonal_adjustment:')));
+  assert.ok(enhanced.transformations.some(step => step.startsWith('mild_sharpen:')));
+  const oldContrast = (await pixel(plain.bytes, 600, 100))[0] - (await pixel(plain.bytes, 600, 215))[0];
+  const newContrast = (await pixel(enhanced.bytes, 600, 100))[0] - (await pixel(enhanced.bytes, 600, 215))[0];
+  assert.ok(newContrast > oldContrast);
+  for (const [x, y] of [[5, 5], [1194, 5], [5, 794], [1194, 794]]) assert.ok((await pixel(enhanced.bytes, x, y))[0] < (await pixel(enhanced.bytes, 600, 100))[0], 'all four original corner markers remain');
+  const stats = await sharp(enhanced.bytes).stats();
+  assert.ok(stats.channels.every(channel => channel.min > 0 && channel.max < 255), 'enhancement does not erase values into clipped endpoints');
+  const again = await preparePortalImage(bytes);
+  assert.deepEqual(again.bytes, enhanced.bytes); assert.equal(again.sha256, enhanced.sha256);
+});
+
+test('underexposed document lift is small and measured; clear, flat, transparent and portrait inputs are left tonally unchanged', async () => {
+  const dark = await greyDocument({ paper: 80, ink: 20 });
+  const improved = await preparePortalImage(dark);
+  const originalMean = (await sharp(dark).stats()).channels[0].mean;
+  const newMean = (await sharp(improved.bytes).stats()).channels[0].mean;
+  assert.ok(newMean > originalMean && newMean - originalMean <= 7);
+  assert.ok(improved.transformations.some(step => step.startsWith('measured_tonal_adjustment:')));
+  const transparent = await sharp(await greyDocument()).ensureAlpha(0.8).png().toBuffer();
+  for (const [bytes, options] of [[await greyDocument({ paper: 255, ink: 0 }), {}], [await image(1200, 800, '#505050'), {}], [transparent, {}], [await greyDocument(), { kind: 'portrait' }]]) {
+    const enhanced = await preparePortalImage(bytes, { ...options, enhance: true });
+    const plain = await preparePortalImage(bytes, { ...options, enhance: false });
+    assert.deepEqual(enhanced.bytes, plain.bytes);
+    assert.ok(!enhanced.transformations.some(step => /tonal_adjustment|sharpen/.test(step)));
+  }
+});
+
+test('two-page passport composer retains complete unequal pages in supplied order without stretching either', async () => {
+  const first = await image(1200, 700, '#ff0000');
+  const second = await image(1000, 1200, '#0000ff');
+  const result = await prepareDocumentImage([{ bytes: first, mimeType: 'image/png' }, { bytes: second, mimeType: 'image/png' }], { kind: 'passport' });
+  await assertSafeResult(result, [first, second]);
+  assert.equal(result.width, 1200); assert.equal(result.height, 1924);
+  for (const [x, y] of [[0, 0], [1199, 0], [0, 699], [1199, 699]]) assert.deepEqual(await pixel(result.bytes, x, y), [255, 0, 0]);
+  for (const [x, y] of [[100, 724], [1099, 724], [100, 1923], [1099, 1923]]) assert.deepEqual(await pixel(result.bytes, x, y), [0, 0, 255]);
+  for (const [x, y] of [[600, 712], [0, 1200], [1199, 1200]]) assert.deepEqual(await pixel(result.bytes, x, y), [255, 255, 255]);
+  const reversed = await prepareDocumentImage([second, first], { kind: 'passport' });
+  assert.deepEqual(await pixel(reversed.bytes, 600, 0), [0, 0, 255]);
+  assert.deepEqual(await pixel(reversed.bytes, 600, 1923), [255, 0, 0]);
+});
+
+test('general document composer preserves residence compatibility, records per-page enhancement and validates bounded options', async () => {
+  const lowContrast = await greyDocument();
+  const clear = await image(1200, 800, '#ffffff');
+  const combined = await prepareDocumentImage([lowContrast, clear], { kind: 'passport' });
+  assert.ok(combined.transformations.some(step => step.startsWith('part_1:measured_tonal_adjustment:')));
+  assert.ok(!combined.transformations.some(step => step.startsWith('part_2:measured_tonal_adjustment:')));
+  const residence = await prepareResidenceImage([lowContrast, clear]);
+  const genericResidence = await prepareDocumentImage([lowContrast, clear], { kind: 'residence' });
+  assert.deepEqual(residence.bytes, genericResidence.bytes);
+  assert.deepEqual(residence.transformations, genericResidence.transformations);
+  assert.ok((await prepareDocumentImage([clear], { kind: 'passport' })).transformations.includes('passport_single_part'));
+  for (const invalid of [[], [clear, clear, clear], 'https://example.invalid/passport.jpg']) await assert.rejects(prepareDocumentImage(invalid));
+  await assert.rejects(prepareDocumentImage([clear], { kind: 'portrait' }), { code: 'INVALID_IMAGE_KIND' });
+  await assert.rejects(prepareDocumentImage([clear], { enhance: 'true' }), { code: 'INVALID_IMAGE_OPTIONS' });
+  await assert.rejects(preparePortalImage(clear, { enhance: 1 }), { code: 'INVALID_IMAGE_OPTIONS' });
+  await assert.rejects(prepareDocumentImage([clear], { maxBytes: 1000001 }), { code: 'INVALID_MAX_BYTES' });
 });

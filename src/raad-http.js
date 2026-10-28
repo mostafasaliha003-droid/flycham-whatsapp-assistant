@@ -5,6 +5,7 @@ const {buildMofaPreview}=require('./raad-mofa-preview');
 const {preparePortalImage,prepareResidenceImage}=require('./raad-attachments');
 const {rasterizePdf}=require('./raad-pdf');
 const preparationLock=require('./raad-preparation-lock');
+const NON_APPLICATION_PURPOSES=new Set(['raad_pdf_preview','visa_client_preview','visa_upload_staged','visa_upload_withdrawn']);
 const ERROR_STATUS={INVALID_CUSTOMER:400,CONVERSATION_NOT_FOUND:404,INVALID_RAAD_ACTION:400,INVALID_RAAD_BODY:400,INVALID_APPLICANT_INDEX:400,CLAIM_REQUIRED:409,VISA_CASE_NOT_FOUND:404,MEDIA_NOT_FOUND:404,MEDIA_CAPACITY_REACHED:409,MEDIA_STORAGE_UNAVAILABLE:503,MEDIA_INVALID:400,MEDIA_CONTENT_INVALID:400,PDF_NEEDS_RASTER_CONVERSION:422,PDF_INVALID:422,PDF_UNREADABLE:422,PDF_PAGE_COUNT_UNSUPPORTED:422,PDF_PAGE_SELECTION_REQUIRED:422,PDF_RENDER_FAILED:422,INVALID_IMAGE:422,INVALID_IMAGE_KIND:422,IMAGE_TOO_LARGE:422,IMAGE_TOO_SMALL:422,SIZE_LIMIT_UNACHIEVABLE:422,RAAD_PREPARATION_BUSY:409};
 async function handleRaadRequest(request,response,url,{readBody,workflow,inbox,mediaStore,provider}={}){
  const providerStatus=url.pathname==='/internal/assistant/raad-provider',providerCheck=url.pathname==='/internal/assistant/raad-provider/check';
@@ -34,12 +35,15 @@ async function handleRaadRequest(request,response,url,{readBody,workflow,inbox,m
   }
   if(body.action==='prepare_image'){
    if(preparationLock.isBusy())throw Error('RAAD_PREPARATION_BUSY');if(body.confirm!==true||!['passport','residence','photo'].includes(body.kind)||!Array.isArray(body.sourceIds)||body.sourceIds.length<1||body.sourceIds.length>2||new Set(body.sourceIds).size!==body.sourceIds.length||body.kind!=='residence'&&body.sourceIds.length!==1)throw Error('INVALID_RAAD_BODY');
-   if(!preparationLock.tryAcquire())throw Error('RAAD_PREPARATION_BUSY');try{const parts=body.sourceIds.map(id=>{const {metadata,bytes}=mediaStore.read(id,{customer});if(metadata.purpose==='raad_pdf_preview')throw Object.assign(Error('RAAD_DOCUMENT_PREVIEW_ONLY'),{code:'RAAD_DOCUMENT_PREVIEW_ONLY',statusCode:422});return{bytes,mimeType:metadata.mimeType};});
+   if(!preparationLock.tryAcquire())throw Error('RAAD_PREPARATION_BUSY');try{
+    const assertApplicationSource=(id,metadata)=>{const raw=mediaStore.records?.[id]||workflow?.store?.data?.visaMedia?.[id];if(NON_APPLICATION_PURPOSES.has(metadata?.purpose)||raw?.customer===customer&&NON_APPLICATION_PURPOSES.has(raw.purpose))throw Object.assign(Error('RAAD_DOCUMENT_PREVIEW_ONLY'),{code:'RAAD_DOCUMENT_PREVIEW_ONLY',statusCode:422});};
+    const parts=body.sourceIds.map(id=>{const {metadata,bytes}=mediaStore.read(id,{customer});assertApplicationSource(id,metadata);return{id,metadata,bytes,mimeType:metadata.mimeType};});
     const images=[];for(const part of parts){if(part.mimeType==='application/pdf'||part.bytes.subarray(0,1024).toString('latin1').trimStart().startsWith('%PDF-'))images.push(...await rasterizePdf(part.bytes,{kind:body.kind,page:body.pdfPage,rotation:body.pdfRotation??0}));else images.push(part);}
     if(images.length>2||body.kind!=='residence'&&images.length!==1)throw Object.assign(Error('RAAD_PDF_PAGE_SELECTION_REQUIRED'),{code:'RAAD_PDF_PAGE_SELECTION_REQUIRED',statusCode:422});
     const prepared=body.kind==='residence'?await prepareResidenceImage(images):await preparePortalImage(images[0].bytes,{mimeType:images[0].mimeType,kind:body.kind==='photo'?'portrait':'document'});
     // Ownership may have changed while Sharp decoded/resized the input.
     if(!inbox.isOperatorOwned(customer))throw Error('CLAIM_REQUIRED');
+    for(const part of parts)assertApplicationSource(part.id,typeof mediaStore.get==='function'?mediaStore.get(part.id,{customer}):part.metadata);
     const media=mediaStore.storeDerived(customer,{sourceIds:body.sourceIds,bytes:prepared.bytes,mimeType:prepared.mimeType,kind:body.kind});reply(200,{ok:true,media,needsVisualReview:true,transformations:prepared.transformations});return true;
    }finally{preparationLock.release();}
   }

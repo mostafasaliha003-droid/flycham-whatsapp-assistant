@@ -4,3 +4,10 @@ const make=()=>({data:{},save(){}});
 test('services retain isolated context and switch only on relevant explicit request',()=>{const s=make();assert.equal(routeService(s,'a','مرحبا').service,'choose');assert.equal(routeService(s,'a','بدي فيزا السعودية').service,'saudi_visa');assert.equal(routeService(s,'a','انا سوري').service,'saudi_visa');assert.equal(routeService(s,'a','بدي طيران للشام').service,'flight');assert.equal(activeService(s,'a'),'flight');assert.equal(routeService(s,'b','انا سوري').service,'choose');});
 test('ambiguous and existing flight requests preserve scope and ordered revisions',()=>{const s=make();assert.equal(routeService(s,'a','بدي السعودية').service,'choose');assert.equal(routeService(s,'b','مرحبا',{hasFlight:true,hasActiveRequest:true}).service,'flight');assert.equal(noteIncoming(s,'a'),1);assert.equal(noteIncoming(s,'a'),2);assert.equal(routeService(s,'a','بدي فيزا وطيران').service,'choose');});
 test('real complaints pause but quoting an accusation is not auto-blocking',()=>{assert.ok(isComplaint('انا قدمت عندكن وماطلعت الفيزا ومارجعتولي فلوسي'));assert.ok(isComplaint('انتو نصابين'));assert.equal(isComplaint('قالولي انكم نصابين صحيح؟'),false);assert.equal(isComplaint('متى تطلع الفيزا لو قدمت؟'),false);});
+test('a returning visa greeting preserves service and real menu or flight choice still works',()=>{
+ const s=make();routeService(s,'a','بدي فيزا السعودية');
+ for(const text of ['مرحبا','السلام عليكم','ممكن استفسار'])assert.equal(routeService(s,'a',text).service,'saudi_visa');
+ assert.equal(activeService(s,'a'),'saudi_visa');assert.equal(routeService(s,'a','القائمة').service,'choose');
+ assert.equal(routeService(s,'a','فيزا السعودية').service,'saudi_visa');
+ assert.equal(routeService(s,'a','بدي طيران للشام').service,'flight');
+});

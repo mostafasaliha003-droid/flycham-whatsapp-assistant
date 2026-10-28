@@ -233,3 +233,94 @@ test('no applicant is invented from an attachment and invalid root inputs fail w
   const result=run([passport(),front()],[]); assert.equal(result.complete,false); assert.equal(result.applicants.length,0); assert.ok(result.issues.some(item=>item.code==='APPLICANT_REQUIRED'));
   for(const input of [{documents:null,applicants:[]},{documents:[],applicants:[null]},{documents:[],applicants:[],referenceDate:'2026-02-30'}]) assert.throws(()=>reconcileDocumentEvidence(input),error=>error.code==='DOCUMENT_MATCH_INPUT_INVALID');
 });
+
+test('two strongly linked passport pages merge visible facts with one checked MRZ and preserve both page sources', () => {
+  const p=passport(); for (const key of ['issueDate','birthPlace','passportType']) delete p.extraction.fields[key];
+  const supplement=document(IDS.passport2,'passport',{passportNumber:'N12345678',issueDate:'2020-01-01',birthPlace:'Example City',passportType:'ordinary'}); supplement.sha256='b'.repeat(64);
+  const before=structuredClone([p,supplement,front()]);
+  const result=run(before),reverse=run([supplement,front(),p]);
+  assert.equal(result.complete,true); assert.deepEqual(reverse,result);
+  const person=result.applicants[0];
+  assert.deepEqual(person.documents.passportParts,[{mediaId:IDS.passport,page:1,sha256:'a'.repeat(64)},{mediaId:IDS.passport2,page:1,sha256:'b'.repeat(64)}]);
+  assert.deepEqual(person.documents.passport,person.documents.passportParts[0]);
+  assert.equal(person.fields.issueDate,'2020-01-01'); assert.equal(person.evidence.fieldSources.issueDate[0].mediaId,IDS.passport2);
+  assert.equal(person.evidence.passportMrzChecked,true); assert.deepEqual(before,[p,supplement,front()]);
+});
+
+test('printed full-name and birth-date can anchor a supplementary page without a passport number', () => {
+  const p=passport(); delete p.extraction.fields.birthPlace;
+  const supplement=document(IDS.passport2,'passport',{latinFullName:'SYNTHETIC PERSON EXAMPLE',birthDate:'1990-01-15',birthPlace:'Example City'}); supplement.sha256='b'.repeat(64);
+  const result=run([supplement,p,front()]); assert.equal(result.complete,true); assert.equal(result.applicants[0].documents.passportParts.length,2);
+  assert.equal(Object.hasOwn(result.applicants[0].fields,'latinFullName'),false);
+});
+
+test('a separately printed full visual date may resolve a checked MRZ century only after strong page linkage', () => {
+  const p=passport(); delete p.extraction.fields.birthDate; delete p.extraction.fields.expiryDate;
+  const supplement=document(IDS.passport2,'passport',{passportNumber:'N12345678',birthDate:'1990-01-15',expiryDate:'2031-01-01'}); supplement.sha256='b'.repeat(64);
+  const person=run([p,supplement,front()]).applicants[0];
+  assert.equal(person.status,'ready'); assert.equal(person.evidence.passportMrzChecked,true);
+  assert.equal(person.evidence.fieldSources.birthDate[0].mediaId,IDS.passport2);
+  const unanchored=structuredClone(supplement); delete unanchored.extraction.fields.passportNumber;
+  const result=run([p,unanchored,front()]); assert.equal(result.complete,false); assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+});
+
+test('a name without the matching birth date cannot attach a page or fill absent passport data', () => {
+  const p=passport(); delete p.extraction.fields.birthPlace;
+  const supplement=document(IDS.passport2,'passport',{latinFullName:'SYNTHETIC PERSON EXAMPLE',birthPlace:'Example City'}); supplement.sha256='b'.repeat(64);
+  const result=run([p,supplement,front()],[{passportNumber:'N12345678'}]);
+  assert.equal(result.complete,false); assert.equal(result.applicants[0].fields.birthPlace,undefined); assert.equal(result.applicants[0].documents.passportParts,undefined);
+  assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+});
+
+test('supplementary contradictions and a supplied invalid MRZ block a passport even when another page is valid', () => {
+  for (const fields of [{birthDate:'1991-01-15'},{expiryDate:'2032-01-01'},{issueDate:'2021-01-01'},{latinFullName:'DIFFERENT PERSON EXAMPLE'}]) {
+    const supplement=document(IDS.passport2,'passport',{passportNumber:'N12345678',...fields}); supplement.sha256='b'.repeat(64);
+    const result=run([passport(),supplement,front()]); assert.equal(result.complete,false); assert.ok(codes(result).some(code=>['MULTIPLE_PASSPORTS','PASSPORT_VIZ_MRZ_MISMATCH'].includes(code)));
+  }
+  const supplement=passport({},IDS.passport2); supplement.sha256='b'.repeat(64);
+  supplement.extraction.mrzLines[1]=supplement.extraction.mrzLines[1].slice(0,9)+'0'+supplement.extraction.mrzLines[1].slice(10);
+  const result=run([passport(),supplement,front()]); assert.equal(result.complete,false); assert.ok(codes(result).includes('PASSPORT_MRZ_INVALID'));
+});
+
+test('invalid critical metadata on a linked supplement is not erased by valid primary values', () => {
+  const supplement=document(IDS.passport2,'passport',{passportNumber:'N12345678',birthPlace:'Example City'}); supplement.sha256='b'.repeat(64);
+  supplement.extraction.fields.issueDate={value:'2020-01-01',confidence:Infinity,visible:true};
+  const result=run([passport(),supplement,front()]); assert.equal(result.complete,false); assert.ok(result.applicants[0].issues.some(item=>item.code==='DOCUMENT_FIELD_INVALID'&&item.field==='issueDate'));
+});
+
+test('more than two distinct linked passport pages require selection and never become an accepted two-page bundle', () => {
+  const second=document(IDS.passport2,'passport',{passportNumber:'N12345678',issueDate:'2020-01-01'}); second.sha256='b'.repeat(64);
+  const third=document(IDS.portrait,'passport',{passportNumber:'N12345678',birthPlace:'Example City'}); third.sha256='c'.repeat(64);
+  const result=run([passport(),second,third,front()]); assert.equal(result.complete,false); assert.equal(result.applicants[0].documents.passportParts.length,2);
+  assert.ok(codes(result).includes('MULTIPLE_PASSPORTS')); assert.equal(result.unassigned.length,1);
+});
+
+test('byte-identical reuploads deduplicate passport and identity pages while distinct page images remain linked', () => {
+  const p=passport(),p2=passport({},IDS.passport2),f=front(),f2=front({},IDS.front2);
+  const result=run([p2,f2,p,f]); assert.equal(result.complete,true); assert.equal(result.applicants[0].documents.passportParts,undefined);
+  assert.equal(result.applicants[0].documents.residence.length,1); assert.equal(result.applicants[0].documents.residence[0].mediaId,IDS.front);
+  assert.equal(result.applicants[0].evidence.fieldSources.passportNumber.length,1);
+  p2.sha256='b'.repeat(64); const distinct=run([p,p2,f]); assert.equal(distinct.complete,true); assert.equal(distinct.applicants[0].documents.passportParts.length,2);
+});
+
+test('reuploaded PDF digests deduplicate only matching pages, never every page in the original PDF', () => {
+  const p=passport(); p.sourceSha256='d'.repeat(64);
+  const copy=passport({},IDS.passport2); copy.sourceSha256=p.sourceSha256; copy.sha256='b'.repeat(64);
+  const duplicate=run([p,copy,front()]); assert.equal(duplicate.complete,true); assert.equal(duplicate.applicants[0].documents.passportParts,undefined);
+  const supplementary=document(IDS.passport,'passport',{passportNumber:'N12345678',issueDate:'2020-01-01'}); supplementary.page=2; supplementary.sha256='c'.repeat(64); supplementary.sourceSha256=p.sourceSha256;
+  const result=run([p,copy,supplementary,front()]); assert.equal(result.complete,true); assert.deepEqual(result.applicants[0].documents.passportParts.map(ref=>ref.page),[1,2]);
+});
+
+test('identity sides are always ordered front then back despite input order or ID lexical order', () => {
+  const f=front({},IDS.back); delete f.extraction.fields.residenceExpiry;
+  const back=document(IDS.front,'uae_id_back',{emiratesId:'784190012345673',residenceExpiry:'2027-04-30'}); back.sha256='b'.repeat(64);
+  const result=run([back,passport(),f]); assert.equal(result.complete,true); assert.deepEqual(result.applicants[0].documents.residence.map(ref=>ref.mediaId),[IDS.back,IDS.front]);
+  const copy=structuredClone(back); copy.mediaId=IDS.front2;
+  assert.equal(run([copy,back,passport(),f]).applicants[0].documents.residence.length,2);
+});
+
+test('different people cannot merge through arrival order and exact full name alone is insufficient', () => {
+  const p=passport(),supplement=document(IDS.passport2,'passport',{latinFullName:'SYNTHETIC PERSON EXAMPLE',birthDate:'1991-01-15',issueDate:'2020-01-01'}); supplement.sha256='b'.repeat(64);
+  const result=run([supplement,p,front()],[{passportNumber:'N12345678'}]); assert.equal(result.complete,false); assert.equal(result.applicants[0].documents.passportParts,undefined);
+  assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+});

@@ -97,3 +97,16 @@ test('failed derived index persistence rolls back its encrypted file and record 
  assert.throws(()=>media.storeDerived(customer,{sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'passport'}),{message:'MEDIA_STORAGE_UNAVAILABLE'});
  assert.deepEqual(store.data.visaMedia,before);assert.deepEqual(fs.readdirSync(path.join(dir,'visa-media')).sort(),files);assert.deepEqual(fs.readFileSync(path.join(dir,'visa-media',source.id+'.enc')),sourceFile);assert.deepEqual(media.read(source.id,{customer}).bytes,pdf);
 });
+
+test('client preview derivatives stay encrypted and distinct from government uploads for identical source pixels',async t=>{
+ const{media,store,dir}=setup(t),source=(await media.receive(customer,message)).media;
+ const options={sourceIds:[source.id],bytes:syntheticPNG,mimeType:'image/png',kind:'passport'},portal=media.storeDerived(customer,options),preview=media.storeDerived(customer,{...options,purpose:'visa_client_preview'});
+ assert.notEqual(preview.id,portal.id);assert.equal(preview.purpose,'visa_client_preview');assert.equal(preview.kind,'passport');assert.equal(preview.needsVisualReview,true);assert.equal(preview.filename,'remal-preview-passport.png');assert.equal(portal.purpose,'raad_portal_upload');assert.equal(portal.filename,'raad-passport.png');
+ assert.equal(store.data.visaMedia[preview.id].purpose,'visa_client_preview');assert.equal(store.data.visaMedia[portal.id].purpose,'raad_portal_upload');assert.equal(preview.expiresAt,source.expiresAt);assert.deepEqual(media.read(preview.id,{customer}).bytes,syntheticPNG);assert.throws(()=>media.read(preview.id,{customer:other}),/MEDIA_NOT_FOUND/);
+ const ciphertext=fs.readFileSync(path.join(dir,'visa-media',preview.id+'.enc'));assert.equal(ciphertext.includes(syntheticPNG),false);assert.equal(fs.statSync(path.join(dir,'visa-media',preview.id+'.enc')).mode&0o777,0o600);
+ const saves=store.saves;assert.deepEqual(media.storeDerived(customer,{...options,purpose:'visa_client_preview'}),preview);assert.deepEqual(media.storeDerived(customer,{...options,purpose:'raad_portal_upload'}),portal);assert.equal(store.saves,saves);
+ assert.equal(store.data.visaDocumentIntake,undefined);assert.equal(store.data.raadApplications,undefined);assert.equal(store.data.visaCases,undefined);assert.equal(Object.hasOwn(preview,'sourceIds'),false);assert.equal(Object.hasOwn(preview,'checksum'),false);
+ for(const purpose of ['original','raad_pdf_preview','visa_upload_staged',null,{},''])assert.throws(()=>media.storeDerived(customer,{...options,purpose}),/MEDIA_INVALID/);
+ const foreign=(await media.receive(other,message)).media;assert.throws(()=>media.storeDerived(customer,{...options,purpose:'visa_client_preview',sourceIds:[foreign.id]}),/MEDIA_NOT_FOUND/);
+ const tooBig=Buffer.alloc(1000001);syntheticPNG.copy(tooBig);assert.throws(()=>media.storeDerived(customer,{...options,purpose:'visa_client_preview',bytes:tooBig}),/MEDIA_CONTENT_INVALID/);
+});
