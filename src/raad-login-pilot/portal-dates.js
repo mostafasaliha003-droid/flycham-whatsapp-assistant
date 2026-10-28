@@ -1,11 +1,11 @@
 'use strict';
 const ORIGIN='https://visa.mofa.gov.sa',PATH='/SmartForm/TraditionalApp';
-const IDS=new Set(['PASSPORT_ISSUE_DATE','PASSPORT_EXPIRY_DATe','BIRTH_DATE','ExpectedEntryDate']);
+const IDS=new Set(['PASSPORT_ISSUE_DATE','PASSPORT_EXPIRY_DATe','BIRTH_DATE','ExpectedEntryDate','TourismEVisaIqamaOrVisaExpiryDate']);
 const CODES=new Set(['PORTAL_DATES_INPUT_INVALID','PORTAL_DATES_UNTRUSTED_PAGE','PORTAL_DATES_FIELD_UNAVAILABLE','PORTAL_DATES_FORM_UNAVAILABLE','PORTAL_DATES_WIDGET_UNAVAILABLE','PORTAL_DATES_WIDGET_CHANGED','PORTAL_DATES_CALENDAR_UNSUPPORTED','PORTAL_DATES_FORMAT_UNAVAILABLE','PORTAL_DATES_DATE_UNCONFIRMED','PORTAL_DATES_BUSY']);
 const workingPages=new WeakSet();
 function failure(code,filledCount=0){const error=new Error(CODES.has(code)?code:'PORTAL_DATES_DATE_UNCONFIRMED');error.code=error.message;error.filledCount=filledCount;return error;}
 function validateDates(dates){
- if(!Array.isArray(dates)||dates.length<1||dates.length>4)throw failure('PORTAL_DATES_INPUT_INVALID');
+ if(!Array.isArray(dates)||dates.length<1||dates.length>5)throw failure('PORTAL_DATES_INPUT_INVALID');
  const seen=new Set();
  return dates.map(date=>{
   if(!date||typeof date!=='object'||Array.isArray(date)||Object.keys(date).some(key=>!['id','isoDate'].includes(key))||!IDS.has(date.id)||seen.has(date.id)||typeof date.isoDate!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date.isoDate))throw failure('PORTAL_DATES_INPUT_INVALID');
