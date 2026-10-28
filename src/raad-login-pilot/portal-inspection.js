@@ -35,7 +35,7 @@ async function inspectPortalPage(page){
   for(const el of Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).slice(0,100)){if(headings.length>=16)break;if(visible(el)){const value=text(caption(el));if(value)headings.push(value);}}
   for(const el of Array.from(document.querySelectorAll('.validation-summary-errors,.field-validation-error,.alert-danger,[role="alert"]')).slice(0,100)){if(alerts.length>=12)break;if(visible(el)){const value=text(caption(el));if(value)alerts.push(value);}}
   const result={path:safePath(location.href),headings,alerts,links,buttons,controls};
-  if(location.pathname==='/SmartForm/Agreement'){
+  if(['/SmartForm/Agreement','/SmartForm/ElectronicAgreement'].includes(location.pathname)){
    const root=document.querySelector('main')||document.body,parts=[];let visited=0,characters=0;
    const excluded=new Set(['HEADER','NAV','FOOTER','INPUT','SELECT','TEXTAREA','BUTTON','SCRIPT','STYLE','NOSCRIPT']);
    const blocks=new Set(['P','DIV','LI','UL','OL','SECTION','ARTICLE','H1','H2','H3','H4','H5','H6','BR']);

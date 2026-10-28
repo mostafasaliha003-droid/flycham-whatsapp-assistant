@@ -86,7 +86,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
       const verification=await findVerificationControls(j.page),diagnostics=await getVerificationDiagnostics(j.page);const codePresent=Boolean(verification)||(Array.isArray(diagnostics.fields)&&diagnostics.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete)));
       const signals=await getAccountSignals(j.page,codePresent);if(signals.loginControlsVisible||signals.otpPresent||signals.loginRoute)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
       if(!j.portalNavigations)j.portalNavigations=0;if(j.portalNavigations>=12)throw Error('NAVIGATION_LIMIT');j.portalNavigations++;
-      const navigation=await navigateObservedLink(j.page,{path:data.path,label:data.label});await guard(j);j.stage=await classify(j);reply(res,200,{stage:j.stage,navigation,inspection:await inspectPortalPage(j.page)});
+      const navigation=await navigateObservedLink(j.page,{path:data.path,label:data.label,acceptAgreement:data.acceptAgreement===true});await guard(j);j.stage=await classify(j);reply(res,200,{stage:j.stage,navigation,inspection:await inspectPortalPage(j.page)});
      }
      else if(url.pathname==='/api/inspect-account-menu'){
       if(j.verificationStatus!=='submitted')throw Error('LOGIN_NOT_SUBMITTED');
