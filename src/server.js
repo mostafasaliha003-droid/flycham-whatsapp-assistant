@@ -286,6 +286,7 @@ async function handleWebhookPost(request, response) {
   for(const e of payload.entry||[])for(const c of e.changes||[])for(const receipt of c.value?.statuses||[]){journal.applyReceipt(receipt);complaints.handleReceipt(receipt);visaFulfilment.recordDelivery(receipt.id,receipt.status);}
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
+    quoteJobs.save();noteIncoming(assistant.store,message.from);
     if(visaFulfilment.isOtpMessage({sender:message.from,contextId:message.contextId,text:message.text})){
       journal.recordInbound(message.from,{id:message.id,text:'[رمز تحقق محجوب]',timestamp:message.timestamp,name:message.name});
       const result=await visaFulfilment.consumeOtp({sender:message.from,contextId:message.contextId,text:message.text});message.text='';
@@ -298,8 +299,6 @@ async function handleWebhookPost(request, response) {
       if(answered.handled){if(answered.reply&&(!answered.ok||/اعتمادها/.test(answered.reply)))await sendTextMessage(message.from,answered.reply);wakeVisa();continue;}
     }
 
-    quoteJobs.save();
-    noteIncoming(assistant.store,message.from);
     if(visaEnabled()&&isComplaint(message.text)&&!inbox.isBlocked(message.from)&&!inbox.isOperatorOwned(message.from)){
       const record=complaints.create(message.from,{caseId:visa.getCase(message.from)?.id});quoteJobs.cancel(message.from);
       sendComplaintAcknowledgment(message.from).catch(()=>console.log('VISA_COMPLAINT_ACK_FAILED'));

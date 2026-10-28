@@ -1,0 +1,21 @@
+# Accountant-approved Saudi visa fulfilment
+
+The `/operations` visa workspace separates customer transfer verification from government fees. A receipt never verifies money automatically. Approval requires the existing operations credential plus the independent `RAAD_ACCOUNTANT_KEY`, the selected customer-bound receipt, actual received amount matching the current quote, bank reference, explicit confirmation and case-version checks. Approval safely returns the conversation to the automation when no complaint or block is active.
+
+Ismail's acknowledgement must be accepted before an applicant job starts. Questions are sent one at a time and bind replies to the applicant, current question and sender. Personal and medical answers have no negative defaults. The client confirms a complete summary and delegates submission. Office data review is preserved separately; a current reviewed Raad draft and prepared passport, residence and portrait images are required. Existing PDF reception creates protected page previews automatically; ambiguous pages, unreadable facts and document conflicts require review in the existing Raad editor.
+
+The worker currently supports the observed adult tourist route for UAE GCC residents. Unsupported nationalities/options, minors, prior nationality/travel details requiring unmapped controls, positive GCC restrictions, and missing mandatory facts stop for review. This is not a claim of automated support for every Saudi visa product.
+
+The browser queue is serial. Every mutating operation checks the main service's current lease. Saved references are retained even when a later step fails; uncertain submissions are never recreated blindly. The owner mobile-code request targets `RAAD_OTP_OWNER_WHATSAPP`. Codes are intercepted before ordinary journaling/model processing, used transiently for one exact challenge, and never persisted. Outside the WhatsApp service window an actually approved utility template is required. Known undispatched messages may resume after a new inbound message; uncertain sends are never replayed automatically.
+
+Insurance offers must be stable and comparable before selecting the lowest amount. The worker follows the observed Return link from the payment summary and confirms the saved application by its own passport row. No government payment operation is enabled. A PDF is captured from the observed official print link or the exact saved application view, privately verified against the passport/reference, marked as a saved unpaid request and encrypted before sending to the original customer. Provider acceptance and actual delivery remain separate states; no saved request is represented as an issued visa.
+
+## Runtime configuration
+
+Main service: `RAAD_VISA_AUTOMATION_ENABLED`, `RAAD_ACCOUNTANT_KEY`, `RAAD_JOB_BRIDGE_KEY`, `RAAD_BROWSER_WORKER_URL`, `RAAD_OTP_OWNER_WHATSAPP`, `RAAD_OTP_REQUEST_TEMPLATE`, `RAAD_OTP_REQUEST_TEMPLATE_LANGUAGE`. Existing WhatsApp credentials, `SAUDI_VISA_WABA_ID`, encrypted persistent state/media storage, and office contact defaults remain required.
+
+Browser service: the same dedicated `RAAD_JOB_BRIDGE_KEY`, `RAAD_MAIN_URL`, and its existing MOFA account, email-code and Gemma configuration. No credentials or real applicant data belong in source. Environment updates merge only these keys and do not change other supplier workers or infrastructure plans.
+
+Authenticated setup health checks report worker configuration, accountant capability, PDF utilities and actual template approval. Template provisioning requires both bridge and accountant capabilities and never sends a message. The legacy generic payment-verification HTTP action is disabled in the production server; it cannot bypass the accountant workflow.
+
+Tests use fictitious applicants and mocked messaging/government operations. A live deployment or green unit suite alone does not prove customer delivery or a new government application. The existing live pilot submission remains separate evidence from the newly integrated workflow.
