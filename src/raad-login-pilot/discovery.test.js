@@ -121,11 +121,21 @@ test('observed six-digit verification field and native btnSubmit need no caption
  const f=fixture({inputs:[{id:'emailActivation',name:'emailActivation',attrs:{'aria-label':'رمز التفعيل'},maxLength:6}],buttons:[{tagName:'INPUT',id:'btnSubmit',type:'submit',attrs:{value:'تفعيل الحساب'}}]});
  assert.deepEqual(f.run(),{inputSelector:'#emailActivation',buttonSelector:'#btnSubmit',maxLength:6});
 });
-test('observed fallback rejects hidden, disabled, wrong-form, resend or non-six-digit controls',()=>{
+test('observed fallback rejects hidden, wrong-form, resend or non-six-digit controls',()=>{
  const base={tagName:'INPUT',id:'btnSubmit',type:'submit',attrs:{value:'تفعيل الحساب'}};
- for(const overrides of [{visible:false},{disabled:true},{attrs:{value:'تفعيل الحساب',title:'إعادة إرسال'}},{id:'differentSubmit'}]){
+ for(const overrides of [{visible:false},{attrs:{value:'تفعيل الحساب',title:'إعادة إرسال'}},{id:'differentSubmit'}]){
   assert.equal(fixture({buttons:[{...base,...overrides}]}).run(),null);
  }
  const wrong=fixture({buttons:[base]});wrong.controls[0].form={};assert.equal(wrong.run(),null);
  assert.equal(fixture({inputs:[{id:'otp',maxLength:8}],buttons:[base]}).run(),null);
+});
+
+test('visible OTP submit may await code entry before enabling',()=>{const f=fixture({buttons:[{tagName:'INPUT',id:'btnSubmit',type:'submit',disabled:true,attrs:{value:'تفعيل الحساب'}}]});assert.equal(f.run().buttonSelector,'#btnSubmit');});
+
+
+test('hidden duplicate IDs do not veto unique visible verification controls',async()=>{
+ const {findVerificationControls}=require('./verification-controls');
+ const page={evaluate:async()=>({inputSelector:'#Code',buttonSelector:'#btnSubmit',maxLength:6}),locator:selector=>({count:async()=>selector.endsWith(':visible')?1:2,isVisible:async()=>true,isEnabled:async()=>selector.startsWith('#Code')})};
+ const out=await findVerificationControls(page);assert.equal(out.inputSelector,'#Code:visible');assert.equal(out.buttonSelector,'#btnSubmit:visible');
+ const ambiguous={...page,locator:()=>({count:async()=>2,isVisible:async()=>true,isEnabled:async()=>true})};assert.equal(await findVerificationControls(ambiguous),null);
 });
