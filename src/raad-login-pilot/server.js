@@ -73,8 +73,10 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
        j.verificationCheck.phase='typing_code';await input.fill('');await input.type(data.code,{delay:80});data.code='';await guard(j);
        j.verificationCheck.buttonAttached=await button.evaluate(el=>el.isConnected);if(!j.verificationCheck.buttonAttached)throw Error('PAGE_CHANGED');
        j.verificationCheck.enabledAfterTyping=await button.isEnabled();j.verificationCheck.phase='waiting_for_original_submit';
-       await button.click({timeout:10000});j.verificationCheck.phase='submit_click_completed';j.verificationStatus='submitted';j.stage='verification_submitted';reply(res,200,{stage:j.stage,submitted:true,canVerify:false,authenticated:false});
-      }catch{data.code='';j.verificationStatus='unconfirmed';j.stage='verification_unconfirmed';throw Error('VERIFICATION_UNCONFIRMED');}
+       await button.waitForElementState('enabled',{timeout:10000});await guard(j);j.verificationCheck.phase='focusing_original_submit';await button.focus();
+       j.verificationCheck.originalButtonFocused=await button.evaluate(el=>el.isConnected&&!el.disabled&&document.activeElement===el);if(!j.verificationCheck.originalButtonFocused)throw Error('FOCUS_UNCONFIRMED');
+       j.verificationCheck.phase='activating_original_submit';await button.press('Enter',{noWaitAfter:true,timeout:10000});j.verificationCheck.phase='submit_activation_dispatched';j.verificationStatus='submitted';j.stage='verification_submitted';reply(res,200,{stage:j.stage,submitted:true,canVerify:false,authenticated:false});
+      }catch(error){data.code='';if(j.verificationCheck)j.verificationCheck.failure=error?.name==='TimeoutError'?'timeout':'interaction_failed';j.verificationStatus='unconfirmed';j.stage='verification_unconfirmed';throw Error('VERIFICATION_UNCONFIRMED');}
      }
      else if(url.pathname==='/api/submit'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
