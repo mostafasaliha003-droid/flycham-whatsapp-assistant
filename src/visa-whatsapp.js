@@ -8,6 +8,7 @@ const OPTION = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const OTP_TEMPLATE_BODY = 'رعد يحتاج رمز التحقق لمتابعة طلب التأشيرة. مرجع المهمة: {{1}}. مرجع التحقق: {{2}}. رد على هذه الرسالة برمز التحقق فقط. لا تشارك الرمز مع أي جهة أخرى.';
 const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
+const TEMPLATE_REJECTION_CODES = new Set(['ABUSIVE_CONTENT', 'PROMOTIONAL', 'SCAM', 'INCORRECT_CATEGORY', 'TAG_CONTENT_MISMATCH', 'INVALID_FORMAT', 'CATEGORY_NOT_AVAILABLE', 'NONE']);
 const FIELD_LABELS = Object.freeze({
   maritalStatus: 'الحالة الاجتماعية', previousNationality: 'جنسية سابقة', previousNationalityDetails: 'تفاصيل الجنسية السابقة',
   travelledLastFiveYears: 'سفر خلال خمس سنوات', travelHistory: 'تفاصيل السفر', performUmrah: 'نية أداء العمرة', gccResident: 'إقامة خليجية سارية',
@@ -55,16 +56,23 @@ function visaPaymentTemplateRequest({name, language = 'ar'} = {}) {
 // Reading the actual Meta approval is required. A configured name alone never
 // authorizes delivery outside the recipient's customer service window.
 function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => fetch(...args), now = Date.now} = {}, configFor, requestFor, bodyText) {
-  let until = 0, approved = false, state = 'not_configured', pending = null, cachedConfig = null;
+  let until = 0, approved = false, state = 'not_configured', pending = null, cachedConfig = null, rejectedReason = null;
   const check = async (config, accessToken) => {
+    rejectedReason = null;
     try { requestFor(config); } catch { state = 'not_configured'; return false; }
     if (!/^\d{5,30}$/.test(config.wabaId) || !/^v\d{1,3}\.\d{1,2}$/.test(config.version) || !accessToken) { state = 'not_configured'; return false; }
     try {
-      const response = await fetchImpl(`https://graph.facebook.com/${config.version}/${config.wabaId}/message_templates?name=${encodeURIComponent(config.name)}&fields=name,status,language,category,components`, {headers: {Authorization: 'Bearer ' + accessToken}, signal: AbortSignal.timeout(10000)});
+      const response = await fetchImpl(`https://graph.facebook.com/${config.version}/${config.wabaId}/message_templates?name=${encodeURIComponent(config.name)}&fields=name,status,language,category,components,rejected_reason`, {headers: {Authorization: 'Bearer ' + accessToken}, signal: AbortSignal.timeout(10000)});
       if (!response.ok) { state = 'unverified'; return false; }
       const data = await response.json(), template = Array.isArray(data?.data) ? data.data.find(item => item?.name === config.name && item.language === config.language) : null;
       if (!template) { state = 'missing'; return false; }
-      if (template.status !== 'APPROVED') { state = ['PENDING', 'REJECTED', 'PAUSED', 'DISABLED'].includes(template.status) ? template.status.toLowerCase() : 'unverified'; return false; }
+      if (template.status !== 'APPROVED') {
+        state = ['PENDING', 'REJECTED', 'PAUSED', 'DISABLED'].includes(template.status) ? template.status.toLowerCase() : 'unverified';
+        // This field is a diagnostic code, never a raw provider explanation.
+        // Unknown values may contain arbitrary template/private data.
+        if (state === 'rejected') rejectedReason = typeof template.rejected_reason === 'string' && template.rejected_reason.length <= 80 && TEMPLATE_REJECTION_CODES.has(template.rejected_reason) ? template.rejected_reason : template.rejected_reason == null ? 'UNAVAILABLE' : 'UNRECOGNIZED_REJECTION_REASON';
+        return false;
+      }
       if (template.category !== 'UTILITY' || !Array.isArray(template.components) || template.components.length !== 1 || template.components[0]?.type !== 'BODY' || template.components[0].text !== bodyText) { state = 'schema_mismatch'; return false; }
       state = 'approved'; return true;
     } catch { state = 'unverified'; return false; }
@@ -77,7 +85,7 @@ function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => 
     const work = check(config, env.WHATSAPP_ACCESS_TOKEN).then(result => { if (fingerprint !== cachedConfig) return false; approved = result; until = now() + 60000; return result; }).finally(() => { if (pending === work) pending = null; });
     pending = work; return work;
   };
-  gate.status = () => ({state, approved, checked: until > 0});
+  gate.status = () => ({state, approved, checked: until > 0, ...(state === 'rejected' ? {rejectedReason: rejectedReason || 'UNAVAILABLE'} : {})});
   return gate;
 }
 function createVisaTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY); }

@@ -198,6 +198,31 @@ test('payment template gate requires external approval, exact fixed utility body
   paymentEnv.RAAD_VISA_PAYMENT_TEMPLATE = 'unapproved_changed_name'; assert.equal(await gate(), false); assert.equal(calls, 3);
 });
 
+test('template rejection diagnostics request the provider reason but expose only bounded recognized codes without approving sends', async () => {
+  for (const {factory, request, settings} of [
+    {factory: createVisaTemplateGate, request: visaTemplateRequest, settings: {RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_otp_request'}},
+    {factory: createVisaPaymentTemplateGate, request: visaPaymentTemplateRequest, settings: {RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'}}
+  ]) {
+    const name = Object.values(settings)[0], configEnv = {...env, SAUDI_VISA_WABA_ID: '100000000002', ...settings};
+    const body = request({name}), template = {...body, status: 'REJECTED', rejected_reason: 'INCORRECT_CATEGORY'};
+    let at = 1000;
+    const gate = factory({env: configEnv, now: () => at, fetchImpl: async (url, options) => {
+      assert.equal(options.method, undefined); assert.ok(new URL(url).searchParams.get('fields').split(',').includes('rejected_reason'));
+      return {ok: true, json: async () => ({data: [template]})};
+    }});
+    assert.equal(await gate(), false); assert.deepEqual(gate.status(), {state: 'rejected', approved: false, checked: true, rejectedReason: 'INCORRECT_CATEGORY'});
+    template.rejected_reason = 'INVALID_FORMAT'; at += 60001; assert.equal(await gate(), false); assert.equal(gate.status().rejectedReason, 'INVALID_FORMAT');
+    for (const value of ['PRIVATE_PROVIDER_TEXT_' + env.WHATSAPP_ACCESS_TOKEN, 'X'.repeat(500), {private: 'SYNTHETIC_SECRET'}, 123]) {
+      template.rejected_reason = value; at += 60001; assert.equal(await gate(), false); assert.equal(gate.status().rejectedReason, 'UNRECOGNIZED_REJECTION_REASON');
+      assert.doesNotMatch(JSON.stringify(gate.status()), /PRIVATE|SYNTHETIC_SECRET|synthetic-private-token/);
+    }
+    delete template.rejected_reason; at += 60001; assert.equal(await gate(), false); assert.equal(gate.status().rejectedReason, 'UNAVAILABLE');
+    template.status = 'PENDING'; template.rejected_reason = 'SCAM'; at += 60001; assert.equal(await gate(), false); assert.equal(gate.status().rejectedReason, undefined);
+    template.status = 'APPROVED'; template.components = []; at += 60001; assert.equal(await gate(), false); assert.equal(gate.status().state, 'schema_mismatch'); assert.equal(gate.status().rejectedReason, undefined);
+    template.components = body.components; at += 60001; assert.equal(await gate(), true); assert.equal(gate.status().state, 'approved'); assert.equal(gate.status().rejectedReason, undefined);
+  }
+});
+
 test('template helper proposes utility approval request; gate requires exact approved category, language and schema', async () => {
   const configEnv = {...env, SAUDI_VISA_WABA_ID: '100000000002', RAAD_OTP_REQUEST_TEMPLATE: 'synthetic_otp_request'}, requested = visaTemplateRequest(visaTemplateConfig(configEnv));
   assert.equal(requested.category, 'UTILITY'); assert.equal(requested.components[0].text, OTP_TEMPLATE_BODY);

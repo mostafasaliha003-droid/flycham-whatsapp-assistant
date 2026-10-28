@@ -237,3 +237,69 @@ test('unavailable readiness GET remains retryable without quarantining an uncert
   cold = false; await f.dispatcher.launch(job);
   assert.equal(f.calls.filter(call => call.path === '/internal/raad/jobs').length, 1); assert.equal(f.store.data.visaPortalRuns[job.id].phase, 'running');
 });
+
+test('lost remote job 404 requires confirmed cleanup then stops locally without automatic recreation', async () => {
+  const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job);
+  const run = f.store.data.visaPortalRuns[job.id], requests = [];
+  f.dispatcher.recovered = true;
+  f.dispatcher.fetchImpl = async (url, options) => {
+    const path = new URL(url).pathname; requests.push({path, method: options.method});
+    if (path === '/internal/raad/jobs/' + job.id && options.method === 'GET') return jsonResponse({}, 404);
+    if (path.endsWith('/cancel')) {
+      assert.equal(f.fulfilment.data().lease.token, run.leaseToken);
+      assert.equal(run.phase, 'running'); assert.equal(job.state, 'running');
+      return jsonResponse({stage: 'cancelled', ownedBrowserClosed: true});
+    }
+    throw Error('UNEXPECTED_NATIVE_RECREATION');
+  };
+  await f.dispatcher.poll(job, run);
+  assert.deepEqual(requests.map(request => [request.method, request.path]), [['GET', '/internal/raad/jobs/' + job.id], ['POST', '/internal/raad/jobs/' + job.id + '/cancel']]);
+  assert.equal(run.phase, 'interrupted'); assert.equal(job.state, 'portal_review_required'); assert.equal(job.blockedReason, 'BROWSER_JOB_LOST'); assert.equal(f.fulfilment.data().lease, null);
+  const persisted = structuredClone(f.store.data);
+  assert.equal(persisted.visaPortalRuns[job.id].phase, 'interrupted'); assert.equal(persisted.visaFulfilment.jobs[job.id].blockedReason, 'BROWSER_JOB_LOST');
+  await f.dispatcher.tick(); await f.dispatcher.tick();
+  assert.equal(requests.length, 2); assert.equal(f.calls.filter(call => call.path === '/internal/raad/jobs' && call.method === 'POST').length, 1);
+});
+
+test('lost remote job keeps its lease when cleanup response does not prove owned browser closed', async () => {
+  for (const response of [{stage: 'cancelled', ownedBrowserClosed: false}, {stage: 'cancelling', ownedBrowserClosed: true}, {stage: 'cancelled'}]) {
+    const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job);
+    const run = f.store.data.visaPortalRuns[job.id], leaseToken = run.leaseToken;
+    f.dispatcher.fetchImpl = async (url, options) => new URL(url).pathname.endsWith('/cancel') ? jsonResponse(response) : jsonResponse({}, 404);
+    await assert.rejects(f.dispatcher.poll(job, run), /RAAD_CANCEL_UNCONFIRMED/);
+    assert.equal(f.fulfilment.data().lease.token, leaseToken); assert.equal(run.phase, 'running'); assert.equal(job.state, 'running'); assert.notEqual(job.blockedReason, 'BROWSER_JOB_LOST');
+  }
+});
+
+test('lost remote job keeps its lease if cancellation transport or server request fails', async () => {
+  for (const cancelFailure of ['transport', 'server']) {
+    const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job);
+    const run = f.store.data.visaPortalRuns[job.id], leaseToken = run.leaseToken;
+    f.dispatcher.fetchImpl = async url => {
+      if (!new URL(url).pathname.endsWith('/cancel')) return jsonResponse({}, 404);
+      if (cancelFailure === 'transport') throw Error('EXAMPLE_CANCEL_TIMEOUT');
+      return jsonResponse({}, 503);
+    };
+    await assert.rejects(f.dispatcher.poll(job, run), /EXAMPLE_CANCEL_TIMEOUT|RAAD_BRIDGE_HTTP_503/);
+    assert.equal(f.fulfilment.data().lease.token, leaseToken); assert.equal(run.phase, 'running'); assert.equal(job.state, 'running');
+  }
+});
+
+test('non404 job GET errors retain current run and lease for safe later polling', async () => {
+  for (const failure of [500, 503, 'transport', '404-message-only']) {
+    const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job);
+    const run = f.store.data.visaPortalRuns[job.id], leaseToken = run.leaseToken, requests = [];
+    f.dispatcher.fetchImpl = async (url, options) => {
+      requests.push({path: new URL(url).pathname, method: options.method});
+      if (failure === 'transport') throw Error('EXAMPLE_STATUS_TIMEOUT');
+      if (failure === '404-message-only') throw Error('RAAD_BRIDGE_HTTP_404');
+      return jsonResponse({}, failure);
+    };
+    await assert.rejects(f.dispatcher.poll(job, run), /RAAD_BRIDGE_HTTP_500|RAAD_BRIDGE_HTTP_503|EXAMPLE_STATUS_TIMEOUT|RAAD_BRIDGE_HTTP_404/);
+    assert.deepEqual(requests, [{path: '/internal/raad/jobs/' + job.id, method: 'GET'}]);
+    assert.equal(f.fulfilment.data().lease.token, leaseToken); assert.equal(run.phase, 'running'); assert.equal(job.state, 'running'); assert.notEqual(job.blockedReason, 'BROWSER_JOB_LOST');
+    f.dispatcher.fetchImpl = async () => jsonResponse({stage: 'running', phase: 'after_transient_error'});
+    await f.dispatcher.poll(job, run);
+    assert.equal(run.lastStage, 'after_transient_error'); assert.equal(f.fulfilment.data().lease.token, leaseToken);
+  }
+});
