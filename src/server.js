@@ -14,6 +14,8 @@ const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const PRIVATE_VISA_CONFIG=loadVisaPrivateConfig();
 const COMPLAINT_RECIPIENT=process.env.SAUDI_VISA_COMPLAINT_RECIPIENT||PRIVATE_VISA_CONFIG.complaintRecipient||'';
 const {visaEnabled,activeService,incomingRevision,noteIncoming,routeService,isComplaint}=require('./service-routing');
+const {createMofaCaptchaBridge}=require('./mofa-captcha-bridge');
+const handleMofaCaptcha=createMofaCaptchaBridge().handler;
 const {GmailOTP,gmailHandler}=require('./gmail-otp');
 const handleGmail=gmailHandler(new GmailOTP());
 
@@ -291,6 +293,7 @@ function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(pro
 function createServer() {
   const server=http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if(await handleMofaCaptcha(request,response,url,{readBody}))return;
     if(await handleGmail(request,response,url,{readBody}))return;
     if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
     if(url.pathname.startsWith('/internal/quotes/')){
