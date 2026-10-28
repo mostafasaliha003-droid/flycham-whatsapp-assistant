@@ -37,9 +37,9 @@ function inspectPortalFields({fields,originals,bind=false,includeOptions=false})
   }else if(['select','select-label'].includes(field.kind)){
    if(el.tagName!=='SELECT'||el.multiple)fail('PORTAL_FILL_KIND_MISMATCH');
    if(field.kind==='select-label'&&field.id!=='MobileInfo_MobilePrefix')fail('PORTAL_FILL_INPUT_INVALID');
-   const options=Array.from(el.options||[]).filter(option=>field.kind==='select-label'?String(option.textContent||'').replace(/\s+/g,' ').trim()===field.value:option.value===field.value);
+   const options=Array.from(el.options||[]).filter(option=>field.kind==='select-label'?String(option.textContent||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g,' ').replace(/\s+/g,' ').trim()===field.value:option.value===field.value);
    if(options.length!==1)fail('PORTAL_FILL_OPTION_INVALID');
-   const option=options[0],caption=String(option.textContent||'').replace(/^[\s\-–—_*()[\]<>]+|[\s\-–—_*()[\]<>]+$/g,'').replace(/[أإآ]/g,'ا');
+   const option=options[0],publicCaption=field.kind==='select-label'?String(option.textContent||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g,' ').replace(/\s+/g,' ').trim():String(option.textContent||''),caption=publicCaption.replace(/^[\s\-–—_*()[\]<>]+|[\s\-–—_*()[\]<>]+$/g,'').replace(/[أإآ]/g,'ا');
    if(field.kind==='select-label'){if(typeof option.value!=='string'||!option.value.trim())fail('PORTAL_FILL_OPTION_INVALID');labelIndex=Array.from(el.options||[]).indexOf(option);}
    if(!field.value.trim()||!caption||option.disabled||option.hidden||option.parentElement?.disabled||option.hasAttribute('placeholder')||option.hasAttribute('data-placeholder')||/^(?:(?:please\s+)?(?:select|choose)(?:\s|[:.…]|$)|(?:الرجاء\s+|يرجى\s+)?(?:اختر|اختار|حدد)(?:\s|$))/i.test(caption))fail('PORTAL_FILL_OPTION_INVALID');
   }else if(field.kind==='radio'){
@@ -56,7 +56,7 @@ function validateInput(fields){
  const ids=new Map(),radioNames=new Set();
  return fields.map(field=>{
   if(!field||typeof field!=='object'||Array.isArray(field)||typeof field.id!=='string'||!field.id.trim()||field.id.length>200||/[\u0000-\u001f\u007f]/.test(field.id)||!['text','select','select-label','check','radio'].includes(field.kind))throw failure('PORTAL_FILL_INPUT_INVALID');
-  if(field.kind==='select-label'&&(field.id!=='MobileInfo_MobilePrefix'||typeof field.value!=='string'||field.value.replace(/\s+/g,' ').trim()!==field.value))throw failure('PORTAL_FILL_INPUT_INVALID');
+  if(field.kind==='select-label'&&(field.id!=='MobileInfo_MobilePrefix'||typeof field.value!=='string'||field.value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g,' ').replace(/\s+/g,' ').trim()!==field.value))throw failure('PORTAL_FILL_INPUT_INVALID');
   const radio=field.kind==='radio',allowed=radio?['id','value','kind','name','optionValue']:['id','value','kind'];
   if(Object.keys(field).some(key=>!allowed.includes(key))||ids.has(field.id)&&(!radio||ids.get(field.id)!=='radio'))throw failure('PORTAL_FILL_INPUT_INVALID');
   if(radio){
@@ -69,7 +69,7 @@ function validateInput(fields){
 async function assertOfficial(page){let trusted=false;try{trusted=new URL(page.url()).origin===ORIGIN&&await page.evaluate(checkPortalDocument)===true;}catch{}if(!trusted)throw failure('PORTAL_FILL_UNTRUSTED_PAGE');}
 function verifyFilledField(el,field){
  if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self||el.ownerDocument!==document||!el.isConnected)return false;
- if(field.kind==='select-label'){const selected=Array.from(el.selectedOptions||[]);return selected.length===1&&String(selected[0].textContent||'').replace(/\s+/g,' ').trim()===field.value;}
+ if(field.kind==='select-label'){const selected=Array.from(el.selectedOptions||[]);return selected.length===1&&String(selected[0].textContent||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g,' ').replace(/\s+/g,' ').trim()===field.value;}
  if(field.kind==='radio')return el.name===field.name&&el.getAttribute('value')===field.optionValue&&el.checked===true;
  return field.kind==='check'?el.checked===field.value:el.value===field.value;
 }

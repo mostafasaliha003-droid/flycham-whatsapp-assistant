@@ -25,7 +25,7 @@ function inspectPortalButton(args){
    else if(field.kind==='select'){if(el.tagName!=='SELECT'||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
    else if(!((el.tagName==='INPUT'&&['text','email','tel','number','date','datetime-local','month','week','time','url'].includes(el.type))||el.tagName==='TEXTAREA')||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
   }
-  if(args.mode==='submit'&&(typeof form.checkValidity!=='function'||!form.checkValidity()))return {error:'PORTAL_BUTTON_VALIDATION_FAILED'};
+  if(args.mode==='submit'&&button.type==='submit'&&(typeof form.checkValidity!=='function'||!form.checkValidity()))return {error:'PORTAL_BUTTON_VALIDATION_FAILED'};
   if(!args.attempts||typeof args.attempts.has!=='function')return {error:'PORTAL_BUTTON_UNAVAILABLE'};if(args.attempts.has(button))return {error:'PORTAL_BUTTON_ALREADY_ATTEMPTED'};
   if(args.mark){args.attempts.add(button);return {ok:true};}return {button,form};
  }catch{return {error:'PORTAL_BUTTON_UNAVAILABLE'};}
