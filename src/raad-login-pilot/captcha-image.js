@@ -1,5 +1,5 @@
 'use strict';
-// Transfer the already loaded bitmap, never OCR/read/solve it or refetch it.
+// Transfer only the already loaded challenge bitmap without refetching it.
 async function readLoadedBitmap(el){
  const u=new URL(el.currentSrc||el.src,location.href);
  if(u.origin!=='https://visa.mofa.gov.sa'||u.pathname!=='/Base/GetRandomCaptchaImage')throw Error('UNTRUSTED_IMAGE');

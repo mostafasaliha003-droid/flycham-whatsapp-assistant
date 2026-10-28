@@ -16,7 +16,9 @@ async function setup(){
  return {pilot,call,launches:()=>launches,closes:()=>closes};
 }
 function assertPublicState(data){
- const serialized=JSON.stringify(data);
+ const {captchaAutomationAvailable,...state}=data;
+ if(captchaAutomationAvailable!==undefined)assert.equal(typeof captchaAutomationAvailable,'boolean');
+ const serialized=JSON.stringify(state);
  for(const secret of [key,'password','captcha','fake-challenge','Bearer','UserName'])assert.equal(serialized.includes(secret),false,`state exposed ${secret}`);
 }
 test('current state is admin and origin protected without creating a browser',async()=>{

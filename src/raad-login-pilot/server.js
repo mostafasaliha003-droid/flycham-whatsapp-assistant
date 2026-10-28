@@ -9,13 +9,16 @@ const {getAccountSignals}=require('./account-signals');
 const {openAccountMenu}=require('./account-menu');
 const {credentialConfig,getCredentials}=require('./env-credentials');
 const {otpConfig,validAccount,waitForMofaCode,mofaOtpHealth}=require('./mofa-otp-provider');
+const {captchaConfig,captchaHealth,readCaptcha}=require('./captcha-provider');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
-function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
+function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captchaFetch=fetch}={}) {
  const key=env.RAAD_PILOT_KEY||'',origin=env.RAAD_PILOT_ORIGIN||'';
  if(key.length<43||!/^https:\/\/[^/]+$/.test(origin))throw Error('PILOT_CONFIGURATION_REQUIRED');
  let job=null,busy=false,shutting=false,starts=[],lastOutcome=null;
+ const captchaAutomationAvailable=()=>credentialConfig(env).configured&&captchaConfig(env).enabled&&captchaConfig(env).configured;
+ const automaticCaptcha=j=>captchaAutomationAvailable()&&!j?.automaticCaptchaAttempted;
  const automaticOtp=j=>credentialConfig(env).configured&&validAccount(env.RAAD_MOFA_USERNAME)&&otpConfig(env).enabled&&otpConfig(env).configured&&!j?.automaticOtpAttempted;
  const equal=value=>{const b=Buffer.from(value||''),a=Buffer.from('Bearer '+key);return a.length===b.length&&crypto.timingSafeEqual(a,b);};
  const headers={'Cache-Control':'no-store, private','Pragma':'no-cache','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"};
@@ -27,13 +30,13 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
  async function body(req){if(req.headers['content-type']!=='application/json')throw Error('INPUT_INVALID');let size=0,parts=[];for await(const p of req){size+=p.length;if(size>2048)throw Error('INPUT_INVALID');parts.push(p);}const value=JSON.parse(Buffer.concat(parts).toString('utf8'));parts=[];return value;}
  async function start(){if(job)throw Error('SESSION_EXISTS');starts=starts.filter(t=>t>now()-600000);if(starts.length>=3)throw Error('START_LIMIT');starts.push(now());
   const browser=await launch({headless:true,args:['--no-sandbox']});
-  const j={id:crypto.randomBytes(24).toString('hex'),browser,page:null,controller:new AbortController(),stage:'starting',expires:now()+TTL};job=j;
+  const j={id:crypto.randomBytes(24).toString('hex'),browser,page:null,controller:new AbortController(),captchaImages:new Set(),stage:'starting',expires:now()+TTL};job=j;
   j.timer=setTimeout(()=>{void close();},TTL);j.timer.unref?.();
   try{const context=await browser.newContext();
    await context.route('**/*',route=>{const request=route.request(),u=new URL(request.url());if((request.isNavigationRequest()||!['GET','HEAD'].includes(request.method()))&&u.origin!=='https://visa.mofa.gov.sa')return route.abort();return route.continue();});
    j.page=await context.newPage();await j.page.goto(LOGIN,{waitUntil:'domcontentloaded',timeout:45000});await guard(j);
    for(const selector of Object.values(SEL)){const l=j.page.locator(selector);if(await l.count()!==1||!await l.isVisible())throw Error('FORM_UNAVAILABLE');}
-   j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(j)};
+   j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(j),automaticCaptcha:automaticCaptcha(j),captchaAutomationAvailable:captchaAutomationAvailable()};
   }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
  const staticAssets=Object.create(null);for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
@@ -43,7 +46,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(req.method==='GET'&&url.pathname==='/health'){reply(res,200,{ready:!shutting});return;}
   if(req.method==='GET'&&staticAssets[url.pathname]){const [content,type]=staticAssets[url.pathname];reply(res,200,content,type);return;}
-  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/auto-verify','/api/refresh-captcha','/api/inspect-account-menu','/api/otp-health'];
+  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/auto-verify','/api/refresh-captcha','/api/inspect-account-menu','/api/otp-health','/api/captcha-health','/api/auto-login'];
   if(!allowed.includes(url.pathname)){reply(res,404,{error:'NOT_FOUND'});return;}
   if(!equal(req.headers.authorization)){reply(res,401,{error:'UNAUTHORIZED'});return;}
   if(env.RAAD_DIRECT_LOGIN_ENABLED!=='true'||shutting){reply(res,503,{error:'DISABLED'});return;}
@@ -52,9 +55,10 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
   if(url.pathname==='/api/close'){try{const data=await body(req);requireJob(data.sessionId);reply(res,200,{closed:await close()});}catch{reply(res,503,{error:'PILOT_UNAVAILABLE'});}return;}
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
-   if(url.pathname==='/api/otp-health'){const credentials=credentialConfig(env);reply(res,200,{credentialsConfigured:credentials.configured,credentialsIncomplete:credentials.incomplete,...await mofaOtpHealth({env,fetchImpl:otpFetch})});}
+   if(url.pathname==='/api/captcha-health'){reply(res,200,{credentialsConfigured:credentialConfig(env).configured,...await captchaHealth({env,fetchImpl:captchaFetch})});}
+   else if(url.pathname==='/api/otp-health'){const credentials=credentialConfig(env);reply(res,200,{credentialsConfigured:credentials.configured,credentialsIncomplete:credentials.incomplete,...await mofaOtpHealth({env,fetchImpl:otpFetch})});}
    else if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
-   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(job),canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(job),automaticCaptcha:automaticCaptcha(job),captchaAutomationAvailable:captchaAutomationAvailable(),canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
@@ -75,7 +79,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
       const refresh=j.page.locator('#myform #btnRefreshCaptcha');if(await refresh.count()!==1||!await refresh.isVisible())throw Error('REFRESH_UNAVAILABLE');
       await refresh.click({timeout:10000});
       await j.page.waitForFunction(previous=>{const img=document.querySelector('#myform #imgCaptcha');return img&&img.complete&&img.naturalWidth>0&&(img.currentSrc||img.src)!==previous;},previous,{timeout:15000});
-      reply(res,200,await captureCaptcha(j.page),'image/png');
+      j.automaticCaptchaAttempted=false;reply(res,200,await captureCaptcha(j.page),'image/png');
      }
      else if(['/api/verify','/api/auto-verify'].includes(url.pathname)){
       if(j.verificationAttempted||!['submitted_unverified','verification_required','result_unverified'].includes(j.stage))throw Error('INVALID_STAGE');
@@ -96,13 +100,28 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch}={}) {
        j.verificationCheck.phase='activating_original_submit';await button.press('Enter',{noWaitAfter:true,timeout:10000});j.verificationCheck.phase='submit_activation_dispatched';j.verificationStatus='submitted';j.stage='verification_submitted';reply(res,200,{stage:j.stage,submitted:true,canVerify:false,authenticated:false});
       }catch(error){data.code='';if(j.verificationCheck)j.verificationCheck.failure=error?.name==='TimeoutError'?'timeout':'interaction_failed';j.verificationStatus='unconfirmed';j.stage='verification_unconfirmed';throw Error('VERIFICATION_UNCONFIRMED');}
      }
-     else if(url.pathname==='/api/submit'){
+     else if(['/api/submit','/api/auto-login'].includes(url.pathname)){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
+      const automatic=url.pathname==='/api/auto-login';let imageId=null,captchaSignal=null;
+      const checkCaptcha=async()=>{await guard(j);if(captchaSignal?.aborted)throw Error('CAPTCHA_CANCELLED');};
+      const sameImage=async()=>{await checkCaptcha();const bytes=await captureCaptcha(j.page);const id=crypto.createHash('sha256').update(bytes).digest('hex');await checkCaptcha();if(id!==imageId)throw Error('CAPTCHA_IMAGE_CHANGED');};
+      const captchaFailure=error=>{const reason=String(error?.message||'').replace(/^CAPTCHA_/,'');return new Set(['DISABLED','READ_ALREADY_ATTEMPTED','IMAGE_CHANGED','CANCELLED','UNREADABLE','BRIDGE_UNAVAILABLE','PROVIDER_UNAVAILABLE','TIMEOUT','INVALID_PROVIDER_REPLY','RATE_LIMITED','BUSY','IMAGE_LIMIT']).has(reason)?reason:'UNAVAILABLE';};
+      if(automatic){
+       data.captcha='';
+       try{
+        if(!captchaAutomationAvailable())throw Error('CAPTCHA_DISABLED');if(j.automaticCaptchaAttempted)throw Error('CAPTCHA_READ_ALREADY_ATTEMPTED');j.automaticCaptchaAttempted=true;
+        captchaSignal=AbortSignal.any([j.controller.signal,AbortSignal.timeout(45000)]);await checkCaptcha();
+        const bytes=await captureCaptcha(j.page);imageId=crypto.createHash('sha256').update(bytes).digest('hex');await checkCaptcha();
+        if(j.captchaImages.has(imageId))throw Error('CAPTCHA_READ_ALREADY_ATTEMPTED');if(j.captchaImages.size>=3)throw Error('CAPTCHA_IMAGE_LIMIT');j.captchaImages.add(imageId);
+        data.captcha=await readCaptcha({env,image:bytes,imageId,signal:captchaSignal,fetchImpl:captchaFetch});await sameImage();
+       }catch(error){data.captcha='';reply(res,200,{stage:j.stage,submitted:false,captcha:{reason:captchaFailure(error)}});return;}
+      }
       const credentials=getCredentials(env,data);data.username=credentials.username;data.password=credentials.password;
       if(typeof data.username!=='string'||!data.username.trim()||data.username.length>254||typeof data.password!=='string'||!data.password||data.password.length>256||typeof data.captcha!=='string'||!data.captcha.trim()||data.captcha.length>32)throw Error('INPUT_INVALID');
       j.otpAccount=credentialConfig(env).configured?data.username.trim().toLowerCase():null;
-      j.stage='submitting';
-      try{await j.page.locator(SEL.username).fill(data.username);await j.page.locator(SEL.password).fill(data.password);await j.page.locator(SEL.captcha).fill(data.captcha);data.username=data.password=data.captcha='';await guard(j);j.otpRequestedAt=now();j.otpChallengeId=crypto.randomUUID();await j.page.locator(SEL.submit).click({timeout:10000});j.stage='submitted_unverified';reply(res,200,{stage:j.stage,submitted:true,authenticated:false});}
+      try{await j.page.locator(SEL.username).fill(data.username,{timeout:5000});await j.page.locator(SEL.password).fill(data.password,{timeout:5000});await j.page.locator(SEL.captcha).fill(data.captcha,{timeout:5000});data.username=data.password=data.captcha='';
+       if(automatic){try{await sameImage();}catch(error){await j.page.locator(SEL.captcha).fill('',{timeout:1000}).catch(()=>{});reply(res,200,{stage:j.stage,submitted:false,captcha:{reason:captchaFailure(error)}});return;}}
+       await guard(j);j.stage='submitting';j.otpRequestedAt=now();j.otpChallengeId=crypto.randomUUID();await j.page.locator(SEL.submit).click({timeout:10000});j.stage='submitted_unverified';reply(res,200,{stage:j.stage,submitted:true,authenticated:false});}
       catch{await close();throw Error('SUBMIT_UNAVAILABLE');}
      }
     }
