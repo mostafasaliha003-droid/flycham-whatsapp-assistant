@@ -1,6 +1,7 @@
 'use strict';
 const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path');
 const {validQueueKey}=require('./quote-jobs');
+const {createMofaOtpBridge}=require('./mofa-otp-bridge');
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
 const CALLBACK='https://flycham-whatsapp-assistant.onrender.com/admin/gmail/callback';
 const hash=x=>crypto.createHash('sha256').update(x).digest('base64url');
@@ -30,9 +31,10 @@ class GmailOTP{
  async poll({requestedAt,challengeId}){const task=this.lock.catch(()=>{}).then(async()=>{if(!Number.isFinite(requestedAt)||requestedAt>this.now()+5000||this.now()-requestedAt>9*60000||!/^[a-f0-9-]{36}$/.test(challengeId||''))throw Error('GMAIL_INVALID_CHALLENGE');const state=this.read();if(!state.refreshToken)throw Error('GMAIL_PERMISSION_REQUIRED');const headers={Authorization:'Bearer '+await this.accessToken()},q='from:(airarabia.com) after:'+Math.floor((requestedAt-30000)/1000);const list=await this.json('https://gmail.googleapis.com/gmail/v1/users/me/messages?'+new URLSearchParams({q,maxResults:'10'}),{headers});for(const item of list.messages||[]){if(state.used?.includes(item.id))continue;const msg=await this.json('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(item.id)+'?format=full',{headers});const code=extractCode(msg,{requestedAt,now:this.now()});if(code){state.used=[...(state.used||[]),item.id].slice(-100);this.write(state);return code;}}return null;});this.lock=task.then(()=>{},()=>{});return task;}
 }
 function send(res,status,body,type='application/json; charset=utf-8',extra={}){res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff',...extra});res.end(typeof body==='string'?body:JSON.stringify(body));}
-const PAGE=`<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>ربط بريد رموز العربية</title><h1>ربط بريد رموز العربية</h1><p>للموظفين المخولين. صلاحية Google للقراءة تشمل البريد؛ التطبيق يقرأ رسائل رموز العربية فقط. لن تُرسل الرسائل أو الرموز للذكاء الاصطناعي.</p><label>مفتاح الإدارة <input id="key" type="password" autocomplete="off"></label><button id="connect">ربط حساب Google</button><p id="status"></p><script src="/admin/gmail/connect.js"></script></html>`;
+const PAGE=`<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>ربط بريد رموز الدخول</title><h1>ربط بريد رموز الدخول</h1><p>للموظفين المخولين. صلاحية Google للقراءة تشمل البريد؛ التطبيق يقرأ رسائل رموز العربية، ورسائل رموز وزارة الخارجية السعودية عند تفعيلها بشكل منفصل. لن تُرسل الرسائل أو الرموز للذكاء الاصطناعي.</p><label>مفتاح الإدارة <input id="key" type="password" autocomplete="off"></label><button id="connect">ربط حساب Google</button><p id="status"></p><script src="/admin/gmail/connect.js"></script></html>`;
 const SCRIPT=`document.getElementById('connect').onclick=async()=>{const k=document.getElementById('key');try{const r=await fetch('/admin/gmail/start',{method:'POST',headers:{Authorization:'Bearer '+k.value}});k.value='';const d=await r.json();if(!r.ok)throw Error();location.assign(d.url);}catch{document.getElementById('status').textContent='تعذر بدء الربط. تحقق من مفتاح الإدارة وإعداد الخدمة.';}};`;
-function gmailHandler(gmail){return async(req,res,url,{readBody,env=process.env})=>{
+function gmailHandler(gmail){const mofa=createMofaOtpBridge({gmail,env:gmail.env||process.env});return async(req,res,url,{readBody,env=process.env})=>{
+ if(await mofa.handler(req,res,url,{readBody}))return true;
  if(!url.pathname.startsWith('/admin/gmail')&&url.pathname!=='/internal/gmail/otp')return false;
  try{
  if(req.method==='GET'&&url.pathname==='/admin/gmail'){send(res,200,PAGE,'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'none'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"});return true;}
