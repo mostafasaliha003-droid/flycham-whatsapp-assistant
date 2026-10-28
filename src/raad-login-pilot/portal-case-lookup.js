@@ -11,6 +11,25 @@ function inspectCases({passportNumber}){
  const header=text=>String(text||'').normalize('NFKC').replace(bidi,'').replace(/[\u064b-\u065f\u0670\u0640]/g,'').replace(/[أإآ]/g,'ا').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
  const passportHeader=text=>/^(?:(?:رقم (?:الجواز|جواز السفر|جواز))|(?:passport (?:number|no)))(?: (?:(?:رقم (?:الجواز|جواز السفر|جواز))|(?:passport (?:number|no))))?$/.test(header(text));
  const referenceHeader=text=>/^(?:(?:رقم الطلب)|(?:application (?:number|no)))(?: (?:(?:رقم الطلب)|(?:application (?:number|no))))?$/.test(header(text));
+ const continuationCaptions=new Set(['continue','continue application','continue request','resume','resume application','edit','edit application','editapplication','view','view application','complete','complete application','health insurance','health insurance info','health insurance information','healthinsuranceinfo','insurance','insurance info','insurance information','payment details','fee details','بيانات الدفع','تفاصيل الدفع','استكمال','استكمال الطلب','استكمال طلب','استكمال طلب التاشيرة','استكمال بيانات الطلب','استكمال بيانات التامين','استكمال بيانات التامين الصحي','اكمال الطلب','اكمال طلب التاشيرة','متابعة','متابعة الطلب','تعديل','تعديل الطلب','تعديل طلب','تعديل طلب التاشيرة','عرض','عرض الطلب','استعراض','استعراض الطلب','تفاصيل','التفاصيل','بيانات الطلب','التامين الصحي','بيانات التامين الصحي','معلومات التامين الصحي']);
+ const continuationsFor=(row,table)=>{
+  if(typeof row.querySelectorAll!=='function')return [];
+  const anchors=Array.from(row.querySelectorAll('a[href]'));if(anchors.length>40)return [];
+  const found=[],seen=new Set();
+  for(const anchor of anchors){
+   if(anchor.tagName!=='A'||anchor.namespaceURI!=='http://www.w3.org/1999/xhtml'||!visible(anchor)||anchor.closest('tr')!==row||anchor.closest('table')!==table||['action','data-action','formaction','onclick','download'].some(name=>anchor.hasAttribute(name)))continue;
+   const raw=anchor.getAttribute('href');if(typeof raw!=='string'||!raw.trim()||raw.length>2048||/[?#]/.test(raw))continue;
+   let target;try{target=new URL(raw,document.baseURI||location.href);}catch{continue;}
+   if(target.origin!==location.origin||target.username||target.password||target.search||target.hash||!/^\/SmartForm\/(?:HealthInsuranceInfo|EditApplication|PayFee)\/[0-9]{1,20}$/.test(target.pathname))continue;
+   const captions=[anchor.getAttribute('aria-label'),anchor.getAttribute('title'),anchor.textContent].map(value=>String(value||'').replace(bidi,'').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim());
+   const caption=captions.find(value=>value.length<=80&&continuationCaptions.has(header(value)));
+   if(caption===undefined&&captions.some(Boolean))continue;
+   const payment=target.pathname.startsWith('/SmartForm/PayFee/');
+   if(payment&&!['بيانات الدفع','تفاصيل الدفع','payment details','fee details'].includes(header(caption||'')))continue;
+   if(seen.has(target.pathname))continue;seen.add(target.pathname);found.push({label:caption||'',path:target.pathname,...(payment?{kind:'payment_details'}:{})});if(found.length>8)return [];
+  }
+  return found;
+ };
  const tables=Array.from(document.querySelectorAll('table')).filter(visible);
  if(tables.length>10)return empty();
  const candidates=[],labels=[];
@@ -42,7 +61,7 @@ function inspectCases({passportNumber}){
   if(passport(passportCell.textContent)!==passportNumber)continue;
   matchCount++;
   const reference=String(referenceCell.textContent||'').replace(bidi,'').trim();
-  if(/^[A-Z]{0,3}[0-9]{3,20}$/.test(reference))matches.push({applicationReference:reference});else invalidReference=true;
+  if(/^[A-Z]{0,3}[0-9]{3,20}$/.test(reference)){const continuations=continuationsFor(row,table);matches.push({applicationReference:reference,...(continuations.length?{continuations}:{})});}else invalidReference=true;
   if(matchCount===2)break;
  }
  return {lookupSupported:!invalidReference,matchCount,matches};

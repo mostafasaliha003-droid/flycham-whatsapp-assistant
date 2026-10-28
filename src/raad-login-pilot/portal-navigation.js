@@ -2,7 +2,7 @@
 const ORIGIN='https://visa.mofa.gov.sa';
 // Keep this sanitizer aligned with the read-only inspection representation.
 function safeObservedLabel(text){return String(text||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/[0-9\u0660-\u0669\u06f0-\u06f9]{6,}/g,'[number]').replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[id]').replace(/[A-Za-z0-9_-]{40,}/g,'[id]').replace(/[<>]/g,' ').replace(/\s+/g,' ').trim().slice(0,120);}
-function inspectObservedNavigation({path,label,acceptAgreement=false}){
+function inspectObservedNavigation({path,label,acceptAgreement=false,viewPaymentDetails=false}){
  try{
   if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self)return null;
   const safe=text=>String(text||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/[0-9\u0660-\u0669\u06f0-\u06f9]{6,}/g,'[number]').replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[id]').replace(/[A-Za-z0-9_-]{40,}/g,'[id]').replace(/[<>]/g,' ').replace(/\s+/g,' ').trim().slice(0,120);
@@ -20,17 +20,18 @@ function inspectObservedNavigation({path,label,acceptAgreement=false}){
    const unsafeQuery=Array.from(u.searchParams.keys()).some(key=>/^(?:action|operation|command|delete|pay|cancel|logout|submit|save)$/i.test(key))||Array.from(u.searchParams.values()).some(value=>/delete|logout|logoff|signout|payment|pay|cancel|remove|submit|save|confirm|accept|approve|حذف|خروج|إلغاء|الغاء|دفع|سداد|تسديد|حفظ|إرسال|ارسال|تأكيد|تاكيد/i.test(value));
    const relevant=(u.pathname+' '+caption).normalize('NFKC');
    const agreementConsent=acceptAgreement===true&&['/SmartForm/Agreement','/SmartForm/ElectronicAgreement'].includes(location.pathname)&&u.pathname.startsWith('/SmartForm/')&&/^(?:موافق|أوافق|اوافق|Agree|I Agree)$/i.test(caption.normalize('NFKC'));
-   if(unsafeQuery||blocked.test(relevant)||actionPath.test(u.pathname)||(!agreementConsent&&actionLabel.test(caption.normalize('NFKC')))||(!agreementConsent&&!service.test(relevant)))continue;
+   const paymentDetails=viewPaymentDetails===true&&/^\/SmartForm\/PayFee\/[0-9]{1,20}$/.test(u.pathname)&&caption==='بيانات الدفع'&&!u.search&&!u.hash;
+   if(unsafeQuery||!paymentDetails&&(blocked.test(relevant)||actionPath.test(u.pathname))||(!agreementConsent&&actionLabel.test(caption.normalize('NFKC')))||(!agreementConsent&&!paymentDetails&&!service.test(relevant)))continue;
    matches.push(u.href);
   }
   const targets=[...new Set(matches)];return targets.length===1?{href:targets[0]}:null;
  }catch{return null;}
 }
-async function navigateObservedLink(page,{path,label,acceptAgreement=false}={}){
+async function navigateObservedLink(page,{path,label,acceptAgreement=false,viewPaymentDetails=false}={}){
  if(typeof path!=='string'||path.length<2||path.length>240||!/^\/[A-Za-z0-9/_-]+$/.test(path)||path.startsWith('//')||typeof label!=='string'||!label||label.length>120||safeObservedLabel(label)!==label)throw Error('NAVIGATION_INPUT_INVALID');
  try{
   const main=page.mainFrame(),before=new URL(page.url());if(!main||main.url()!==page.url()||before.origin!==ORIGIN||before.username||before.password)throw Error('UNTRUSTED_PAGE');
-  const selected=await page.evaluate(inspectObservedNavigation,{path,label,acceptAgreement});
+  const selected=await page.evaluate(inspectObservedNavigation,{path,label,acceptAgreement,viewPaymentDetails});
   if(!selected||typeof selected.href!=='string'||selected.href.length>8192)throw Error('LINK_UNAVAILABLE');
   const target=new URL(selected.href);if(target.origin!==ORIGIN||target.pathname!==path||target.username||target.password)throw Error('LINK_UNAVAILABLE');
   await page.goto(selected.href,{waitUntil:'domcontentloaded',timeout:30000});

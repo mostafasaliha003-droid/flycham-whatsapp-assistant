@@ -14,7 +14,7 @@ function inspectPortalFields({fields,originals,bind=false,includeOptions=false})
  const visible=el=>{const box=el.getBoundingClientRect(),style=getComputedStyle(el);return box.width>0&&box.height>0&&style.display!=='none'&&!['hidden','collapse'].includes(style.visibility)&&style.opacity!=='0'&&!el.closest('[hidden],[inert],[aria-hidden="true"]');};
  const elements=[],select2Flags=[],labelIndices=[];
  for(let index=0;index<fields.length;index++){
-  const field=fields[index];let matches=Array.from(document.querySelectorAll('#'+CSS.escape(field.id)));
+  const field=fields[index];let matches=Array.from(document.querySelectorAll(field.kind==='radio'&&!field.id?'input[type="radio"]':'#'+CSS.escape(field.id)));
   if(field.kind==='radio')matches=matches.filter(el=>el.tagName==='INPUT'&&String(el.type).toLowerCase()==='radio'&&el.name===field.name&&el.getAttribute('value')===field.optionValue);
   if(matches.length!==1)fail('PORTAL_FILL_FIELD_UNAVAILABLE');
   const el=originals?originals[index]:matches[0];
@@ -55,15 +55,18 @@ function validateInput(fields){
  if(!Array.isArray(fields)||fields.length<1||fields.length>40)throw failure('PORTAL_FILL_INPUT_INVALID');
  const ids=new Map(),radioNames=new Set();
  return fields.map(field=>{
-  if(!field||typeof field!=='object'||Array.isArray(field)||typeof field.id!=='string'||!field.id.trim()||field.id.length>200||/[\u0000-\u001f\u007f]/.test(field.id)||!['text','select','select-label','check','radio'].includes(field.kind))throw failure('PORTAL_FILL_INPUT_INVALID');
+  if(!field||typeof field!=='object'||Array.isArray(field)||!['text','select','select-label','check','radio'].includes(field.kind))throw failure('PORTAL_FILL_INPUT_INVALID');
+  const radio=field.kind==='radio',hasId=field.id!==undefined&&field.id!=='';
+  if((!radio||hasId)&&(typeof field.id!=='string'||!field.id.trim()||field.id.length>200||/[\u0000-\u001f\u007f]/.test(field.id)))throw failure('PORTAL_FILL_INPUT_INVALID');
   if(field.kind==='select-label'&&(field.id!=='MobileInfo_MobilePrefix'||typeof field.value!=='string'||field.value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g,' ').replace(/\s+/g,' ').trim()!==field.value))throw failure('PORTAL_FILL_INPUT_INVALID');
-  const radio=field.kind==='radio',allowed=radio?['id','value','kind','name','optionValue']:['id','value','kind'];
-  if(Object.keys(field).some(key=>!allowed.includes(key))||ids.has(field.id)&&(!radio||ids.get(field.id)!=='radio'))throw failure('PORTAL_FILL_INPUT_INVALID');
+  const allowed=radio?['id','value','kind','name','optionValue']:['id','value','kind'];
+  if(Object.keys(field).some(key=>!allowed.includes(key))||hasId&&ids.has(field.id)&&(!radio||ids.get(field.id)!=='radio'))throw failure('PORTAL_FILL_INPUT_INVALID');
   if(radio){
    if(field.value!==true||typeof field.name!=='string'||!field.name.trim()||field.name.length>200||/[\u0000-\u001f\u007f]/.test(field.name)||typeof field.optionValue!=='string'||field.optionValue.length>300||field.optionValue.includes('\u0000')||radioNames.has(field.name))throw failure('PORTAL_FILL_INPUT_INVALID');
+   if(!hasId&&(!/^[A-Za-z_][A-Za-z0-9_.\[\]-]{0,199}$/.test(field.name)||!/^(?:true|false|yes|no|[0-9]{1,3}|M|F)$/i.test(field.optionValue)))throw failure('PORTAL_FILL_INPUT_INVALID');
    radioNames.add(field.name);
   }else if(field.kind==='check'?typeof field.value!=='boolean':typeof field.value!=='string'||field.value.length>300||field.value.includes('\u0000'))throw failure('PORTAL_FILL_INPUT_INVALID');
-  ids.set(field.id,field.kind);return {id:field.id,kind:field.kind,value:field.value,...(radio?{name:field.name,optionValue:field.optionValue}:{})};
+  if(hasId)ids.set(field.id,field.kind);return {...(hasId?{id:field.id}:{}),kind:field.kind,value:field.value,...(radio?{name:field.name,optionValue:field.optionValue}:{})};
  });
 }
 async function assertOfficial(page){let trusted=false;try{trusted=new URL(page.url()).origin===ORIGIN&&await page.evaluate(checkPortalDocument)===true;}catch{}if(!trusted)throw failure('PORTAL_FILL_UNTRUSTED_PAGE');}
@@ -109,7 +112,7 @@ async function fillPortalFields(page,input={}){
    filledCount++;
   }
   await assertOfficial(page);
-  return {filledCount,ids:batch.map(field=>field.id)};
+  return {filledCount,ids:batch.map(field=>field.id).filter(id=>typeof id==='string'&&id.length>0)};
  }catch(error){const code=Array.from(ERROR_CODES).find(item=>String(error?.message||'').includes(item))||'PORTAL_FILL_UNCONFIRMED';throw failure(code,filledCount);}
  finally{workingPages.delete(page);await Promise.all(Array.from(disposables,handle=>Promise.resolve().then(()=>handle.dispose()).catch(()=>{})));}
 }

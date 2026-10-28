@@ -20,8 +20,9 @@ function inspectPortalButton(args){
   for(const [key,value]of target.searchParams)if(/logout|logoff|signout|delete|cancel|payment|card|pay|خروج|حذف|الغاء|إلغاء|دفع|سداد/i.test(key+' '+value))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   if(agreement?!/^(?:أوافق|موافق|التالي|agree|i agree)$/i.test(caption):args.mode==='next'?!/^(?:next|continue|التالي|متابعة)$/i.test(caption):!/^(?:save|submit|حفظ|إرسال|ارسال|تقديم|حفظ الطلب|تقديم الطلب)$/i.test(caption))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   for(const field of args.expectedFields){
-   const matches=Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===field.id);if(matches.length!==1)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};const el=matches[0];if(!el.isConnected||(el.form||null)!==form||!form&&el.ownerDocument!==document)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
-   if(field.kind==='check'){if(el.tagName!=='INPUT'||!['checkbox','radio'].includes(el.type)||el.checked!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
+   const matches=field.kind==='radio'?Array.from(document.querySelectorAll('input[type="radio"]')).filter(el=>el.tagName==='INPUT'&&el.type==='radio'&&el.name===field.name&&el.getAttribute('value')===field.optionValue):Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===field.id);if(matches.length!==1)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};const el=matches[0];if(!el.isConnected||(el.form||null)!==form||!form&&el.ownerDocument!==document)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
+   if(field.kind==='radio'){if(field.id&&el.id!==field.id||el.ownerDocument!==document||!visible(el)||el.disabled||typeof el.matches==='function'&&el.matches(':disabled')||el.getAttribute('aria-disabled')==='true'||el.checked!==true)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
+   else if(field.kind==='check'){if(el.tagName!=='INPUT'||!['checkbox','radio'].includes(el.type)||el.checked!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
    else if(field.kind==='select'){if(el.tagName!=='SELECT'||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
    else if(!((el.tagName==='INPUT'&&['text','email','tel','number','date','datetime-local','month','week','time','url'].includes(el.type))||el.tagName==='TEXTAREA')||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
   }
@@ -37,7 +38,16 @@ async function attemptsFor(page){
 }
 async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
  if(id!==undefined&&id!==''&&(typeof id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(id))||typeof label!=='string'||!label||label.length>120||!['next','submit','agreement'].includes(mode)||!Array.isArray(expectedFields)||expectedFields.length>40||mode==='submit'&&!expectedFields.length)throw finite('PORTAL_BUTTON_INPUT_INVALID');
- const seen=new Set();for(const field of expectedFields){if(!field||typeof field!=='object'||Array.isArray(field)||Object.keys(field).sort().join(',')!=='expectedValue,id,kind'||typeof field.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(field.id)||seen.has(field.id)||!['text','select','check'].includes(field.kind)||mode==='agreement'&&field.kind!=='check'||(field.kind==='check'?typeof field.expectedValue!=='boolean':typeof field.expectedValue!=='string'||field.expectedValue.length>4096))throw finite('PORTAL_BUTTON_INPUT_INVALID');seen.add(field.id);}
+ const seen=new Map(),radioNames=new Set();for(const field of expectedFields){
+  if(!field||typeof field!=='object'||Array.isArray(field))throw finite('PORTAL_BUTTON_INPUT_INVALID');
+  if(field.kind==='radio'){
+   const keys=Object.keys(field).sort().join(','),hasId=Object.prototype.hasOwnProperty.call(field,'id');
+   if(!['expectedValue,kind,name,optionValue','expectedValue,id,kind,name,optionValue'].includes(keys)||field.expectedValue!==true||typeof field.name!=='string'||!field.name.trim()||field.name.length>200||/[\u0000-\u001f\u007f]/.test(field.name)||radioNames.has(field.name)||typeof field.optionValue!=='string'||!/^(?:true|false|yes|no|[0-9]{1,3}|M|F)$/i.test(field.optionValue)||hasId&&(typeof field.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(field.id)||seen.has(field.id)&&seen.get(field.id)!=='radio')||mode==='agreement')throw finite('PORTAL_BUTTON_INPUT_INVALID');
+   radioNames.add(field.name);if(hasId)seen.set(field.id,'radio');
+  }else{
+   if(Object.keys(field).sort().join(',')!=='expectedValue,id,kind'||typeof field.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(field.id)||seen.has(field.id)||!['text','select','check'].includes(field.kind)||mode==='agreement'&&field.kind!=='check'||(field.kind==='check'?typeof field.expectedValue!=='boolean':typeof field.expectedValue!=='string'||field.expectedValue.length>4096))throw finite('PORTAL_BUTTON_INPUT_INVALID');seen.set(field.id,field.kind);
+  }
+ }
  let raw,button,form,started=false;
  const guard=()=>{const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.username||u.password||!main||main.url()!==page.url())throw finite('PORTAL_BUTTON_UNAVAILABLE');};
  try{

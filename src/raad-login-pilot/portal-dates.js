@@ -1,5 +1,6 @@
 'use strict';
 const ORIGIN='https://visa.mofa.gov.sa',PATH='/SmartForm/TraditionalApp';
+const isDatePath=path=>path===PATH||/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(path);
 const IDS=new Set(['PASSPORT_ISSUE_DATE','PASSPORT_EXPIRY_DATe','BIRTH_DATE','ExpectedEntryDate','TourismEVisaIqamaOrVisaExpiryDate']);
 const CODES=new Set(['PORTAL_DATES_INPUT_INVALID','PORTAL_DATES_UNTRUSTED_PAGE','PORTAL_DATES_FIELD_UNAVAILABLE','PORTAL_DATES_FORM_UNAVAILABLE','PORTAL_DATES_WIDGET_UNAVAILABLE','PORTAL_DATES_WIDGET_CHANGED','PORTAL_DATES_CALENDAR_UNSUPPORTED','PORTAL_DATES_FORMAT_UNAVAILABLE','PORTAL_DATES_DATE_UNCONFIRMED','PORTAL_DATES_BUSY']);
 const workingPages=new WeakSet();
@@ -14,15 +15,17 @@ function validateDates(dates){
   seen.add(date.id);return {id:date.id,year,month,day};
  });
 }
-function checkDateDocument(){return location.origin==='https://visa.mofa.gov.sa'&&location.pathname==='/SmartForm/TraditionalApp'&&window.top===window.self;}
+function checkDateDocument(){return location.origin==='https://visa.mofa.gov.sa'&&(location.pathname==='/SmartForm/TraditionalApp'||/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(location.pathname))&&window.top===window.self;}
 // Browser-side validation and registered-widget APIs only. Retained records hold
 // the original input, form and widget references; no selector is used to mutate.
 function inspectDateWidgets({dates,records,mode='check',only}){
  const fail=code=>{throw Error(code);};
- if(location.origin!=='https://visa.mofa.gov.sa'||location.pathname!=='/SmartForm/TraditionalApp'||window.top!==window.self)fail('PORTAL_DATES_UNTRUSTED_PAGE');
+ const traditional=location.pathname==='/SmartForm/TraditionalApp',health=/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(location.pathname);
+ if(location.origin!=='https://visa.mofa.gov.sa'||!traditional&&!health||window.top!==window.self)fail('PORTAL_DATES_UNTRUSTED_PAGE');
+ if(health&&dates.some(date=>date.id!=='ExpectedEntryDate'))fail('PORTAL_DATES_INPUT_INVALID');
  const $=window.jQuery;if(typeof $!=='function'||!$.fn)fail('PORTAL_DATES_WIDGET_UNAVAILABLE');
  const visible=el=>{const rect=el.getBoundingClientRect(),style=getComputedStyle(el);return rect.width>0&&rect.height>0&&style.display!=='none'&&!['hidden','collapse'].includes(style.visibility)&&style.opacity!=='0'&&!el.closest('[hidden],[inert],[aria-hidden="true"]');};
- const actionOf=form=>{try{const raw=form.getAttribute('action'),u=new URL(raw||location.href,document.baseURI||location.href);return u.origin==='https://visa.mofa.gov.sa'&&u.pathname==='/SmartForm/TraditionalApp'&&!u.search&&!u.hash&&!u.username&&!u.password?u.href:null;}catch{return null;}};
+ const actionOf=form=>{try{const raw=form.getAttribute('action'),u=new URL(raw||location.href,document.baseURI||location.href);return u.origin==='https://visa.mofa.gov.sa'&&u.pathname===location.pathname&&!u.search&&!u.hash&&!u.username&&!u.password?u.href:null;}catch{return null;}};
  const formatterFor=(kind,wrapped,calendar)=>{
   const api=kind==='jquery-ui'?'datepicker':'calendarsPicker';
   let format=wrapped[api]('option','dateFormat');
@@ -94,7 +97,7 @@ function inspectDateWidgets({dates,records,mode='check',only}){
  }
  return true;
 }
-async function assertOfficial(page){let trusted=false;try{const u=new URL(page.url());trusted=u.origin===ORIGIN&&u.pathname===PATH&&await page.evaluate(checkDateDocument)===true;}catch{}if(!trusted)throw failure('PORTAL_DATES_UNTRUSTED_PAGE');}
+async function assertOfficial(page){let trusted=false;try{const u=new URL(page.url());trusted=u.origin===ORIGIN&&isDatePath(u.pathname)&&await page.evaluate(checkDateDocument)===true;}catch{}if(!trusted)throw failure('PORTAL_DATES_UNTRUSTED_PAGE');}
 async function operateDates(page,input,write){
  let dates;try{dates=validateDates(input?.dates);}catch{throw failure('PORTAL_DATES_INPUT_INVALID');}
  if(!page||typeof page.evaluate!=='function'||typeof page.evaluateHandle!=='function')throw failure('PORTAL_DATES_UNTRUSTED_PAGE');

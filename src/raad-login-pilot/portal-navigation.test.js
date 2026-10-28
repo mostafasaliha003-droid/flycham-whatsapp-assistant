@@ -22,6 +22,17 @@ test('aria-hidden link or ancestor never navigates',async()=>{for(const a of [an
 test('destructive query values rejected while public visa query retained internally',async()=>{for(const value of ['delete','PayFees','cancel','حذف','submit']){const f=pageFor([anchor({href:PATH+'?mode='+encodeURIComponent(value)})]);await assert.rejects(navigateObservedLink(f.page,{path:PATH,label:LABEL}));assert.equal(f.goto.length,0);}const f=pageFor([anchor({href:PATH+'?service_type=1'})]);assert.equal((await navigateObservedLink(f.page,{path:PATH,label:LABEL})).opened,true);});
 
 test('identical observed href targets coalesce desktop/mobile duplicate captions',async()=>{const href=PATH+'?service_type=1',f=pageFor([anchor({href}),anchor({href})]);assert.deepEqual(await navigateObservedLink(f.page,{path:PATH,label:LABEL}),{opened:true,path:PATH});assert.equal(f.goto.length,1);assert.equal(f.goto[0].href,ORIGIN+href);});
+test('explicit payment details view follows only an original numeric PayFee anchor without submitting a form',async()=>{
+ const path='/SmartForm/PayFee/123456',label='بيانات الدفع';
+ const f=pageFor([anchor({href:path,label})]);
+ await assert.rejects(navigateObservedLink(f.page,{path,label}));assert.equal(f.goto.length,0);
+ assert.deepEqual(await navigateObservedLink(f.page,{path,label,viewPaymentDetails:true}),{opened:true,path});assert.equal(f.goto.length,1);
+});
+test('payment details flag never permits payment actions, query operations or other endpoints',async()=>{
+ for(const [href,label]of [['/SmartForm/PayFee/123456?confirm=true','بيانات الدفع'],['/SmartForm/PayFee/123456#pay','بيانات الدفع'],['/SmartForm/PayFee/123456','دفع'],['/SmartForm/Pay/123456','بيانات الدفع'],['/SmartForm/PayFee/123456789012345678901','بيانات الدفع']]){
+  const path=new URL(href,ORIGIN).pathname,f=pageFor([anchor({href,label})]);await assert.rejects(navigateObservedLink(f.page,{path,label,viewPaymentDetails:true}));assert.equal(f.goto.length,0);
+ }
+});
 test('same path and caption with different observed query targets stay ambiguous',async()=>{const f=pageFor([anchor({href:PATH+'?service_type=1'}),anchor({href:PATH+'?service_type=2'})]);await assert.rejects(navigateObservedLink(f.page,{path:PATH,label:LABEL}),/PORTAL_NAVIGATION_UNAVAILABLE/);assert.equal(f.goto.length,0);});
 
 test('Arabic presentation forms keep exact observed label but normalize service semantics',async()=>{const path='/Account/Loginindividuals',label='ﺗﻘﺪﻳﻢ',f=pageFor([anchor({href:path,label})]);assert.equal((await navigateObservedLink(f.page,{path,label})).opened,true);const bad=pageFor([anchor({label:'ﺣﻔﻆ'})]);await assert.rejects(navigateObservedLink(bad.page,{path:PATH,label:'ﺣﻔﻆ'}));assert.equal(bad.goto.length,0);});
