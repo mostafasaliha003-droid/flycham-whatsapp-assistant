@@ -293,12 +293,13 @@ async function handleWebhookPost(request, response) {
       if(result.handled){await rawSendTextMessage(message.from,result.ok?'وصل الرمز إلى رعد وجارٍ استكمال التحقق من الطلب.':'تعذر ربط الرمز بطلب تحقق نشط. انتظر رسالة طلب الرمز الحالية ورد عليها مباشرة.').catch(()=>{});wakeVisa();continue;}
     }
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
-    visaFulfilment.requeuePausedMessages(message.from);
+    const reopenedVisa=visaFulfilment.requeuePausedMessages(message.from);
     if(!inbox.isHumanOwned(message.from)){
       const answered=visaFulfilment.handleCustomerMessage(message.from,message);
       if(answered.handled){if(answered.reply&&(!answered.ok||/اعتمادها/.test(answered.reply)))await sendTextMessage(message.from,answered.reply);wakeVisa();continue;}
     }
 
+    if(reopenedVisa.requeued>0&&!message.media&&!isComplaint(message.text)&&!inbox.isHumanOwned(message.from)){wakeVisa();continue;}
     if(visaEnabled()&&isComplaint(message.text)&&!inbox.isBlocked(message.from)&&!inbox.isOperatorOwned(message.from)){
       const record=complaints.create(message.from,{caseId:visa.getCase(message.from)?.id});quoteJobs.cancel(message.from);
       sendComplaintAcknowledgment(message.from).catch(()=>console.log('VISA_COMPLAINT_ACK_FAILED'));
@@ -391,7 +392,7 @@ function createServer() {
       const body=logo?Buffer.from(require('./remal-logo').split(',')[1],'base64'):readFileSync(join(__dirname,asset));
       response.writeHead(200,{'Content-Type':logo?'image/jpeg':asset.endsWith('.js')?'text/javascript; charset=utf-8':asset.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"}).end(body);return;
     }
-    if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template'].includes(url.pathname)){
+    if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template','/internal/assistant/visa-portal/payment-template'].includes(url.pathname)){
       if(!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
       if(await handleVisaSetup(request,response,url))return;
     }

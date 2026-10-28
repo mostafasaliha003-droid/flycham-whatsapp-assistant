@@ -1,6 +1,6 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
-const {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY} = require('../src/visa-whatsapp');
+const {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY, createVisaPaymentTemplateGate, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY} = require('../src/visa-whatsapp');
 const {extractIncomingMessages} = require('../src/whatsapp');
 const {questionFor} = require('../src/visa-client-questions');
 const {VisaFulfilment} = require('../src/visa-fulfilment');
@@ -16,7 +16,7 @@ function fixture(options = {}) {
   const calls = [], reads = [], windows = new Set(options.windows ?? [CUSTOMER, OWNER]);
   const fetchImpl = options.fetchImpl || (async (url, request) => { calls.push({url, request}); return url.endsWith('/media') ? {ok: true, json: async () => ({id: '100001'})} : accepted('wamid.synthetic.' + calls.length); });
   const mediaStore = options.mediaStore || {read: async (id, binding) => { reads.push({id, binding}); return {metadata: {id, customer: binding.customer, mimeType: 'application/pdf', expiresAt: 9000000000000}, bytes: Buffer.from('%PDF-1.7\nSYNTHETIC')}; }};
-  return {calls, reads, windows, adapter: createVisaWhatsAppAdapter({env: {...env, ...options.env}, journal: {summary: id => ({serviceWindowOpen: windows.has(id)})}, fetchImpl, mediaStore, templateGate: options.templateGate, now: options.now})};
+  return {calls, reads, windows, adapter: createVisaWhatsAppAdapter({env: {...env, ...options.env}, journal: {summary: id => ({serviceWindowOpen: windows.has(id)})}, fetchImpl, mediaStore, templateGate: options.templateGate, paymentTemplateGate: options.paymentTemplateGate, now: options.now})};
 }
 function question(field = 'priorGccDeportation') { const definition = questionFor(field, {applicantIndex: 0}); return {type: 'question', text: definition.prompt, token: TOKEN, field, applicantIndex: 0, options: definition.options || []}; }
 const document = {type: 'document', mediaId: MEDIA, mimeType: 'application/pdf', filename: 'saudi-application-1.pdf', caption: 'نسخة طلب محفوظة وليست تأشيرة صادرة.'};
@@ -44,8 +44,8 @@ test('complete summary translates actual choices and binds confirm/correct to it
   assert.deepEqual(message.interactive.action.buttons.map(button => button.reply.id), ['visa_confirm:' + TOKEN + ':confirm', 'visa_confirm:' + TOKEN + ':correct']);
 });
 
-test('core-generated negative nationality/travel answers send a summary with catalog-bound inapplicable details', async () => {
-  const f = fixture(); let claimed = true;
+test('core accepts out-of-window payment template, pauses questions until reply, then sends valid inapplicable-detail summary', async () => {
+  const f = fixture({windows: [], env: {RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'}, paymentTemplateGate: async () => true}); let claimed = true;
   const c = {id: 'synthetic-case', revision: 1, policyVersion: 'synthetic', applicantCount: 1, applicants: [{nationality: 'مصر', latinFirstName: 'Synthetic', latinFamilyName: 'Example'}], quote: {total: 240, currency: 'AED'}, documents: [], paymentStatus: 'awaiting_verification', submissionStatus: 'not_submitted'};
   const receipt = {id: MEDIA, customer: CUSTOMER, mimeType: 'image/png', size: 120, checksum: 'a'.repeat(64), expiresAt: 9000000000000};
   const store = {data: {visaCases: {[CUSTOMER]: c}, visaMedia: {[MEDIA]: receipt}, conversationJournal: {customers: {[CUSTOMER]: {}}}, complaints: []}, save() {}};
@@ -56,8 +56,13 @@ test('core-generated negative nationality/travel answers send a summary with cat
   const approved = service.confirmPayment(CUSTOMER, {receiptId: MEDIA, amount: 240, reference: 'SYNTHETIC-BANK-REFERENCE', actor: {id: 'synthetic-accountant', role: 'accountant'}, actualReceived: true, confirm: true, expectedCaseSignature: visaCaseSignature(c), idempotencyKey: 'synthetic-summary-key'});
   claimed = false;
   assert.equal((await service.dispatchMessage(approved.jobs[0].paymentNoticeId)).state, 'accepted');
+  const paymentNotice = JSON.parse(f.calls[0].request.body); assert.equal(paymentNotice.type, 'template'); assert.equal(paymentNotice.template.components[0].parameters[0].text, c.id);
   const requested = service.askQuestions(approved.jobs[0].id, {fields: ['previousNationality', 'travelledLastFiveYears', 'health.hospitalizedOrEmergency']});
-  for (const item of service.pendingMessages()) await service.dispatchMessage(item.id);
+  for (const item of service.pendingMessages()) { const result = await service.dispatchMessage(item.id); assert.equal(result.state, 'cancelled'); assert.equal(result.failure, 'DELIVERY_PAUSED'); }
+  assert.equal(f.calls.length, 1);
+  f.windows.add(CUSTOMER); // A real customer reply reopens the journal window.
+  assert.equal(service.requeuePausedMessages(CUSTOMER).requeued, 3);
+  for (const item of service.pendingMessages()) assert.equal((await service.dispatchMessage(item.id)).state, 'accepted');
   for (const item of requested.questions) service.answerQuestion({sender: CUSTOMER, token: item.token, option: 'no'});
   const outgoing = service.pendingMessages().find(item => item.kind === 'applicant_answer_summary');
   assert.ok(outgoing); assert.deepEqual(outgoing.payload.entries.filter(item => item.value === null).map(item => item.field).sort(), ['previousNationalityDetails', 'travelHistory']);
@@ -149,6 +154,48 @@ test('out-of-window owner requires verified utility template and never falls bac
   await f.adapter.sendOperatorOtp({jobId: JOB, challengeId: TOKEN, text: 'لا يرسل هذا النص خارج النافذة.'}, ok);
   const message = JSON.parse(f.calls[0].request.body); assert.equal(message.to, OWNER); assert.equal(message.type, 'template');
   assert.deepEqual(message.template, {name: 'synthetic_otp_request', language: {code: 'ar'}, components: [{type: 'body', parameters: [{type: 'text', text: JOB}, {type: 'text', text: TOKEN}]}]});
+});
+
+test('approved payment utility template acknowledges only its exact customer and actual case reference outside the window', async () => {
+  const f = fixture({windows: [], env: {RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'}, paymentTemplateGate: async () => true});
+  const result = await f.adapter.send(CUSTOMER, {type: 'text', text: 'النص العادي لا يُرسل خارج النافذة.'}, ok, {customer: CUSTOMER, kind: 'payment_confirmation', caseId: 'case-synthetic-example'});
+  assert.deepEqual(result, {messages: [{id: 'wamid.synthetic.1'}]});
+  const message = JSON.parse(f.calls[0].request.body);
+  assert.equal(message.to, CUSTOMER); assert.equal(message.type, 'template');
+  assert.deepEqual(message.template, {name: 'synthetic_payment_notice', language: {code: 'ar'}, components: [{type: 'body', parameters: [{type: 'text', text: 'case-synthetic-example'}]}]});
+  assert.equal(message.text, undefined);
+  for (const payload of [question(), document, {type: 'text', text: 'تحديث آخر'}]) assert.deepEqual(await f.adapter.send(CUSTOMER, payload, ok, {customer: CUSTOMER, kind: 'application_request_copy', caseId: 'case-synthetic-example'}), {paused: true, reason: 'service_window_closed'});
+  assert.deepEqual(await f.adapter.send(CUSTOMER, document, ok, {customer: CUSTOMER, kind: 'payment_confirmation', caseId: 'case-synthetic-example'}), {paused: true, reason: 'service_window_closed'});
+  assert.equal(f.calls.length, 1); assert.equal(f.reads.length, 0);
+});
+
+test('payment keeps original text inside the window and pauses without approved template or usable case reference outside it', async () => {
+  const payment = {type: 'text', text: 'أكد المحاسب وصول دفعتك.'}, context = {customer: CUSTOMER, kind: 'payment_confirmation', caseId: 'case-synthetic-example'};
+  const inside = fixture({paymentTemplateGate: async () => assert.fail('no template lookup within window')});
+  await inside.adapter.send(CUSTOMER, payment, ok, context); assert.equal(JSON.parse(inside.calls[0].request.body).text.body, payment.text);
+  const missing = fixture({windows: [], paymentTemplateGate: async () => false});
+  assert.deepEqual(await missing.adapter.send(CUSTOMER, payment, ok, context), {paused: true, reason: 'approved_utility_template_required'});
+  for (const caseId of [undefined, CUSTOMER, '../foreign', 'A'.repeat(101)]) assert.deepEqual(await missing.adapter.send(CUSTOMER, payment, ok, {...context, caseId}), {paused: true, reason: 'payment_case_reference_required'});
+  await assert.rejects(missing.adapter.send(OTHER, payment, ok, context), /VISA_WHATSAPP_RECIPIENT_MISMATCH/);
+  assert.equal(missing.calls.length, 0);
+  const dry = fixture({windows: [], env: {DRY_RUN: 'true'}, paymentTemplateGate: async () => assert.fail('dry run cannot query templates')});
+  assert.deepEqual(await dry.adapter.send(CUSTOMER, payment, ok, context), {dryRun: true}); assert.equal(dry.calls.length, 0);
+  const stale = fixture({windows: [], env: {RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'}, paymentTemplateGate: async () => true}); let guards = 0;
+  await assert.rejects(stale.adapter.send(CUSTOMER, payment, () => { if (++guards === 2) throw Error('STALE'); }, context), /VISA_WHATSAPP_MESSAGE_SUPERSEDED/); assert.equal(stale.calls.length, 0);
+});
+
+test('payment template gate requires external approval, exact fixed utility body and bounded cached configuration', async () => {
+  const paymentEnv = {...env, SAUDI_VISA_WABA_ID: '100000000002', RAAD_VISA_PAYMENT_TEMPLATE: 'synthetic_payment_notice'};
+  const requested = visaPaymentTemplateRequest(visaPaymentTemplateConfig(paymentEnv)), approved = {...requested, status: 'APPROVED'};
+  assert.equal(requested.category, 'UTILITY'); assert.equal(requested.components[0].text, PAYMENT_TEMPLATE_BODY); assert.match(PAYMENT_TEMPLATE_BODY, /إسماعيل/); assert.match(PAYMENT_TEMPLATE_BODY, /الرد على هذه الرسالة/);
+  assert.deepEqual(requested.components[0].text.match(/\{\{\d+\}\}/g), ['{{1}}']); assert.equal(requested.components[0].example.body_text[0].length, 1);
+  for (const template of [{...approved, status: 'PENDING'}, {...approved, category: 'MARKETING'}, {...approved, language: 'en'}, {...approved, components: [{type: 'BODY', text: OTP_TEMPLATE_BODY}]}, {...approved, components: [...approved.components, {type: 'HEADER', format: 'DOCUMENT'}]}]) {
+    const gate = createVisaPaymentTemplateGate({env: paymentEnv, fetchImpl: async () => ({ok: true, json: async () => ({data: [template]})})}); assert.equal(await gate(), false);
+  }
+  let at = 1000, calls = 0;
+  const gate = createVisaPaymentTemplateGate({env: paymentEnv, now: () => at, fetchImpl: async (url, request) => { calls++; assert.equal(request.method, undefined); assert.match(url, /name=synthetic_payment_notice/); return {ok: true, json: async () => ({data: [approved]})}; }});
+  assert.equal(await gate(), true); assert.equal(await gate(), true); assert.equal(calls, 1); at += 60001; assert.equal(await gate(), true); assert.equal(calls, 2);
+  paymentEnv.RAAD_VISA_PAYMENT_TEMPLATE = 'unapproved_changed_name'; assert.equal(await gate(), false); assert.equal(calls, 3);
 });
 
 test('template helper proposes utility approval request; gate requires exact approved category, language and schema', async () => {

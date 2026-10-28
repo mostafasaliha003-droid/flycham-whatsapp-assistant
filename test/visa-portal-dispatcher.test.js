@@ -19,7 +19,7 @@ function applicant() {
 }
 function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const calls = [], storedCopies = [], sent = [], reads = [];
-  let claimed = true, state = {stage: 'running', phase: 'personal_info'}, saves = 0;
+  let claimed = true, state = {stage: 'running', phase: 'personal_info'}, saves = 0, ready = true;
   const c = {id: 'example-case', revision: 2, policyVersion: 'example-policy', applicantCount: count, applicants: Array.from({length: count}, () => ({nationality: 'مصر', latinFirstName: 'Ari', latinFamilyName: 'Example'})), quote: {total: count * 240}, documents: [], paymentStatus: 'awaiting_verification', submissionStatus: 'not_submitted'};
   const records = {};
   for (const [kind, id] of Object.entries(IDS)) {
@@ -36,6 +36,7 @@ function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const fulfilment = new VisaFulfilment({store, inbox, mediaStore, raad, env, send: send || (async (to, payload, guard) => { guard(); sent.push({to, payload}); return {messageId: 'accepted-' + sent.length}; })});
   const fetcher = async (url, options) => {
     const path = new URL(url).pathname, request = {url, path, ...options, body: options.body ? JSON.parse(options.body) : undefined}; calls.push(request);
+    if (path === '/health') return jsonResponse({ready});
     if (fetchImpl) return await fetchImpl(request);
     if (path.endsWith('/artifact')) return pdfResponse();
     if (path.endsWith('/cancel')) return jsonResponse({ownedBrowserClosed: true, stage: 'cancelled'});
@@ -55,7 +56,7 @@ function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
     fulfilment.confirmAnswers({sender: CUSTOMER, token: fulfilment.job(jobId).summary.token, confirm: true, messageId: 'inbound-consent-' + jobId});
   };
   const activate = async () => { const result = approve(); await fulfilment.dispatchMessage(result.jobs[0].paymentNoticeId); for (const job of result.jobs) confirm(job.id); return result.jobs.map(job => fulfilment.job(job.id)); };
-  return {store, records, c, drafts, raad, mediaStore, fulfilment, dispatcher, env, calls, storedCopies, sent, reads, approve, activate, confirm, setState: next => { state = next; }, claim: value => { claimed = value; }, saves: () => saves};
+  return {store, records, c, drafts, raad, mediaStore, fulfilment, dispatcher, env, calls, storedCopies, sent, reads, approve, activate, confirm, setState: next => { state = next; }, setReady: value => { ready = value; }, claim: value => { claimed = value; }, saves: () => saves};
 }
 
 test('bridge requires fixed HTTPS root and a configured long key', () => {
@@ -122,7 +123,7 @@ test('restart cancels old remote browser work before any new applicant starts', 
   const f = fixture({count: 2}), jobs = await f.activate(); await f.dispatcher.launch(jobs[0]);
   const restartedCore = new VisaFulfilment({store: f.store, inbox: {isOperatorOwned: () => false}, mediaStore: f.mediaStore, raad: f.raad, env: f.env, send: async () => ({messageId: 'after-restart'})});
   const requests = [];
-  const restarted = new VisaPortalDispatcher({fulfilment: restartedCore, raad: f.raad, mediaStore: f.mediaStore, store: f.store, env: f.env, fetchImpl: async (url, options) => { requests.push({path: new URL(url).pathname, method: options.method}); return jsonResponse({ownedBrowserClosed: true, stage: 'cancelled'}); }});
+  const restarted = new VisaPortalDispatcher({fulfilment: restartedCore, raad: f.raad, mediaStore: f.mediaStore, store: f.store, env: f.env, fetchImpl: async (url, options) => { const path = new URL(url).pathname; requests.push({path, method: options.method}); return jsonResponse(path === '/health' ? {ready: true} : {ownedBrowserClosed: true, stage: 'cancelled'}); }});
   await restarted.tick();
   assert.equal(requests[0].path, '/internal/raad/jobs/' + jobs[0].id + '/cancel');
   const startIndex = requests.findIndex(request => request.path === '/internal/raad/jobs'); assert.ok(startIndex > 0);
@@ -214,4 +215,25 @@ test('terminal worker failure closes its owned browser before releasing the shar
   await f.dispatcher.poll(job, f.store.data.visaPortalRuns[job.id]);
   assert.equal(f.calls.some(call => call.path === '/internal/raad/jobs/' + job.id + '/cancel'), true);
   assert.equal(f.fulfilment.data().lease, null); assert.equal(job.state, 'portal_review_required');
+});
+
+test('cold browser readiness uses safe GET retries before acquiring lease or starting native work', async () => {
+  const f = fixture(), [job] = await f.activate(); f.setReady(false);
+  await f.dispatcher.launch(job); await f.dispatcher.launch(job);
+  assert.equal(job.blockedReason, 'BROWSER_STARTING'); assert.equal(job.state, 'ready'); assert.equal(f.fulfilment.data().lease, null);
+  assert.deepEqual(f.calls.map(call => [call.method, call.path]), [['GET', '/health'], ['GET', '/health']]);
+  assert.equal(f.store.data.visaPortalRuns[job.id], undefined);
+  f.setReady(true); await f.dispatcher.launch(job);
+  assert.equal(f.calls.filter(call => call.path === '/internal/raad/jobs' && call.method === 'POST').length, 1);
+  assert.equal(f.store.data.visaPortalRuns[job.id].phase, 'running'); assert.ok(f.fulfilment.data().lease); assert.equal(job.blockedReason, undefined);
+});
+
+test('unavailable readiness GET remains retryable without quarantining an uncertain POST', async () => {
+  const f = fixture(), [job] = await f.activate(), fetcher = f.dispatcher.fetchImpl;
+  let cold = true;
+  f.dispatcher.fetchImpl = async (url, options) => { if (cold && new URL(url).pathname === '/health') throw Error('example cold-start timeout'); return fetcher(url, options); };
+  await f.dispatcher.launch(job);
+  assert.equal(job.blockedReason, 'BROWSER_STARTING'); assert.equal(f.fulfilment.data().lease, null); assert.equal(f.store.data.visaPortalRuns[job.id], undefined);
+  cold = false; await f.dispatcher.launch(job);
+  assert.equal(f.calls.filter(call => call.path === '/internal/raad/jobs').length, 1); assert.equal(f.store.data.visaPortalRuns[job.id].phase, 'running');
 });

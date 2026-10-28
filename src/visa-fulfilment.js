@@ -311,7 +311,7 @@ class VisaFulfilment {
     const guard = () => { if (!this.messageCurrent(this.data().outbox[id])) throw Object.assign(Error('MESSAGE_SUPERSEDED'), {notDispatched: true}); };
     try {
       guard();
-      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {})}));
+      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {})}));
       if (result?.dryRun === true || result?.paused === true || result?.notDispatched === true) throw Object.assign(Error('MESSAGE_NOT_DISPATCHED'), {notDispatched: true, reason: result?.paused === true ? 'DELIVERY_PAUSED' : 'DELIVERY_NOT_DISPATCHED'});
       const messageId = result?.messages?.[0]?.id || result?.messageId;
       if (typeof messageId !== 'string' || !messageId || messageId.length > 500) throw Error('DELIVERY_RESPONSE_INVALID');

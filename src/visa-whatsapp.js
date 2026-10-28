@@ -7,6 +7,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const OPTION = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const OTP_TEMPLATE_BODY = 'رعد يحتاج رمز التحقق لمتابعة طلب التأشيرة. مرجع المهمة: {{1}}. مرجع التحقق: {{2}}. رد على هذه الرسالة برمز التحقق فقط. لا تشارك الرمز مع أي جهة أخرى.';
+const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
 const FIELD_LABELS = Object.freeze({
   maritalStatus: 'الحالة الاجتماعية', previousNationality: 'جنسية سابقة', previousNationalityDetails: 'تفاصيل الجنسية السابقة',
   travelledLastFiveYears: 'سفر خلال خمس سنوات', travelHistory: 'تفاصيل السفر', performUmrah: 'نية أداء العمرة', gccResident: 'إقامة خليجية سارية',
@@ -42,13 +43,21 @@ function visaTemplateRequest({name, language = 'ar'} = {}) {
   if (typeof name !== 'string' || !/^[a-z0-9_]{1,100}$/.test(name) || typeof language !== 'string' || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language)) throw failure('VISA_WHATSAPP_TEMPLATE_CONFIG_INVALID');
   return {name, language, category: 'UTILITY', components: [{type: 'BODY', text: OTP_TEMPLATE_BODY, example: {body_text: [['12345678-1234-4321-abcd-123456789abc', '12345678-1234-4321-abcd-123456789abd']]}}]};
 }
+function visaPaymentTemplateConfig(env = process.env) {
+  return {name: env.RAAD_VISA_PAYMENT_TEMPLATE || '', language: env.RAAD_VISA_PAYMENT_TEMPLATE_LANGUAGE || 'ar', wabaId: env.SAUDI_VISA_WABA_ID || '', version: env.WHATSAPP_GRAPH_API_VERSION || 'v23.0'};
+}
+function visaPaymentTemplateRequest({name, language = 'ar'} = {}) {
+  // Keep the same bounded name/language validation as the OTP utility template.
+  visaTemplateRequest({name, language});
+  return {name, language, category: 'UTILITY', components: [{type: 'BODY', text: PAYMENT_TEMPLATE_BODY, example: {body_text: [['case-synthetic-example']]}}]};
+}
 
 // Reading the actual Meta approval is required. A configured name alone never
 // authorizes delivery outside the recipient's customer service window.
-function createVisaTemplateGate({env = process.env, fetchImpl = (...args) => fetch(...args), now = Date.now} = {}) {
+function createApprovedUtilityGate({env = process.env, fetchImpl = (...args) => fetch(...args), now = Date.now} = {}, configFor, requestFor, bodyText) {
   let until = 0, approved = false, state = 'not_configured', pending = null, cachedConfig = null;
   const check = async (config, accessToken) => {
-    try { visaTemplateRequest(config); } catch { state = 'not_configured'; return false; }
+    try { requestFor(config); } catch { state = 'not_configured'; return false; }
     if (!/^\d{5,30}$/.test(config.wabaId) || !/^v\d{1,3}\.\d{1,2}$/.test(config.version) || !accessToken) { state = 'not_configured'; return false; }
     try {
       const response = await fetchImpl(`https://graph.facebook.com/${config.version}/${config.wabaId}/message_templates?name=${encodeURIComponent(config.name)}&fields=name,status,language,category,components`, {headers: {Authorization: 'Bearer ' + accessToken}, signal: AbortSignal.timeout(10000)});
@@ -56,12 +65,12 @@ function createVisaTemplateGate({env = process.env, fetchImpl = (...args) => fet
       const data = await response.json(), template = Array.isArray(data?.data) ? data.data.find(item => item?.name === config.name && item.language === config.language) : null;
       if (!template) { state = 'missing'; return false; }
       if (template.status !== 'APPROVED') { state = ['PENDING', 'REJECTED', 'PAUSED', 'DISABLED'].includes(template.status) ? template.status.toLowerCase() : 'unverified'; return false; }
-      if (template.category !== 'UTILITY' || !Array.isArray(template.components) || template.components.length !== 1 || template.components[0]?.type !== 'BODY' || template.components[0].text !== OTP_TEMPLATE_BODY) { state = 'schema_mismatch'; return false; }
+      if (template.category !== 'UTILITY' || !Array.isArray(template.components) || template.components.length !== 1 || template.components[0]?.type !== 'BODY' || template.components[0].text !== bodyText) { state = 'schema_mismatch'; return false; }
       state = 'approved'; return true;
     } catch { state = 'unverified'; return false; }
   };
   const gate = async () => {
-    const config = visaTemplateConfig(env), fingerprint = JSON.stringify([config.name, config.language, config.wabaId, config.version, env.WHATSAPP_ACCESS_TOKEN]);
+    const config = configFor(env), fingerprint = JSON.stringify([config.name, config.language, config.wabaId, config.version, env.WHATSAPP_ACCESS_TOKEN]);
     if (fingerprint !== cachedConfig) { cachedConfig = fingerprint; until = 0; approved = false; pending = null; }
     if (now() < until) return approved;
     if (pending) return pending;
@@ -71,6 +80,8 @@ function createVisaTemplateGate({env = process.env, fetchImpl = (...args) => fet
   gate.status = () => ({state, approved, checked: until > 0});
   return gate;
 }
+function createVisaTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY); }
+function createVisaPaymentTemplateGate(options = {}) { return createApprovedUtilityGate(options, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY); }
 
 function interactive(text, token, options, summary = false) {
   const rows = options.map(option => ({id: `${summary ? 'visa_confirm' : 'visa_answer'}:${token}:${option.id}`, title: option.label}));
@@ -149,8 +160,9 @@ function renderPayload(payload) {
   throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
 }
 
-function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => fetch(...args), mediaStore, journal, templateGate, now = Date.now} = {}) {
+function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => fetch(...args), mediaStore, journal, templateGate, paymentTemplateGate, now = Date.now} = {}) {
   const gate = templateGate || createVisaTemplateGate({env, fetchImpl, now});
+  const paymentGate = paymentTemplateGate || createVisaPaymentTemplateGate({env, fetchImpl, now});
   const windowOpen = recipient => { try { return journal?.summary?.(recipient)?.serviceWindowOpen === true; } catch { return false; } };
   const paused = reason => ({paused: true, reason});
   async function guardNow(guard) {
@@ -201,7 +213,17 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     if (recipientNumber(metadata?.customer) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
     await guardNow(guard);
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return {dryRun: true};
-    if (!windowOpen(recipient)) return paused('service_window_closed');
+    if (!windowOpen(recipient)) {
+      if (metadata?.kind !== 'payment_confirmation' || payload.type !== 'text') return paused('service_window_closed');
+      const caseId = metadata.caseId;
+      if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(caseId) || /^\d{8,16}$/.test(caseId)) return paused('payment_case_reference_required');
+      let approved = false;
+      try { approved = await paymentGate() === true; } catch {}
+      if (!approved) return paused('approved_utility_template_required');
+      await guardNow(guard);
+      const template = visaPaymentTemplateConfig(env); visaPaymentTemplateRequest(template);
+      return dispatch(recipient, {type: 'template', template: {name: template.name, language: {code: template.language}, components: [{type: 'body', parameters: [{type: 'text', text: caseId}]}]}}, guard, credentials(env), false);
+    }
     const config = credentials(env);
     if (payload.type === 'document') {
       if (typeof mediaStore?.read !== 'function') throw failure('VISA_WHATSAPP_DOCUMENT_UNAVAILABLE');
@@ -226,7 +248,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     }
     return result;
   }
-  return {send, sendOperatorOtp, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}};
+  return {send, sendOperatorOtp, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
 }
 
-module.exports = {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY};
+module.exports = {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY, createVisaPaymentTemplateGate, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY};
