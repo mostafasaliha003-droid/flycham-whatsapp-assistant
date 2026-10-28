@@ -3,7 +3,7 @@ const http=require('node:http');
 const crypto=require('node:crypto');
 const fs=require('node:fs');
 const path=require('node:path');
-const {findVerificationControls}=require('./verification-controls');
+const {findVerificationControls,getVerificationDiagnostics}=require('./verification-controls');
 const {captureCaptcha}=require('./captcha-image');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
@@ -46,7 +46,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
    if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
-   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,expiresAt:job.expires});}else reply(res,200,{stage:'no_session',lastOutcome});}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,expiresAt:job.expires,...(job.stage==='result_unverified'?{diagnostics:await getVerificationDiagnostics(job.page)}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);

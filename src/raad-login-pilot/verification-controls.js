@@ -13,7 +13,7 @@ function inspectVerificationControls(){
   const form=el.closest('form');return /^(code|pin|token|validationcode|checkcode)$/i.test(el.id||el.name||'')&&form&&/رمز\s*(التحقق|التأكيد)|verification\s*code|one.time\s*(code|password)/i.test(form.textContent||'');
  });
  if(candidates.length!==1)return null;
- const input=candidates[0],form=input.closest('form');if(!form||!visible(form))return null;
+ const input=candidates[0],form=input.closest('form');if(!form)return null;
  const buttons=Array.from(form.querySelectorAll('button,input[type=submit],input[type=button],a[role=button]')).filter(el=>{
   if(!visible(el)||el.disabled)return false;
   // Button captions are public control labels, not editable values.
@@ -27,3 +27,20 @@ function inspectVerificationControls(){
 }
 async function findVerificationControls(page){try{if(typeof page.evaluate!=='function')return null;const out=await page.evaluate(inspectVerificationControls);if(!out||typeof out.inputSelector!=='string'||typeof out.buttonSelector!=='string'||!Number.isInteger(out.maxLength)||out.maxLength<4)return null;for(const selector of [out.inputSelector,out.buttonSelector]){const item=page.locator(selector);if(await item.count()!==1||!await item.isVisible()||!await item.isEnabled())return null;}return out;}catch{return null;}}
 module.exports={findVerificationControls,inspectVerificationControls};
+
+// Protected support metadata only. Never reads editable values or returns body
+// text, labels, links, image content, email addresses, cookies, or codes.
+function inspectVerificationStructure(){
+ const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+ const known=new Set(['username','password','captcha','code','otp','pin','verificationcode','verifycode','emailcode','confirmationcode','activationcode','onetimepassword','btnsubmit','btnverify','btnconfirm','verify','confirm','submit','login','btnresend','resendcode','text','tel','number','email','button']);
+ const safe=value=>typeof value==='string'&&known.has(value.toLowerCase())?value:null;
+ const fields=Array.from(document.querySelectorAll('input')).filter(visible).slice(0,16).map(el=>{
+  const description=[el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('placeholder'),...Array.from(el.labels||[],l=>l.textContent)].filter(Boolean).join(' ');
+  const form=el.closest('form');return {id:safe(el.id),name:safe(el.name),type:safe(el.type),hasForm:!!form,formHasBox:form?visible(form):false,maxLength:el.maxLength>0&&el.maxLength<=32?el.maxLength:null,otpAutocomplete:el.getAttribute('autocomplete')==='one-time-code',verificationLabel:/otp|verification|one.?time|رمز\s*(التحقق|التأكيد|التفعيل)|كود\s*(التحقق|التأكيد)/i.test(description),imageCodeLabel:/captcha|رمز\s*الصورة/i.test(description)};
+ });
+ const buttons=Array.from(document.querySelectorAll('button,input[type=submit],input[type=button],a[role=button]')).filter(visible).slice(0,16).map(el=>{const label=(el.tagName==='INPUT'?el.getAttribute('value'):el.textContent)||'';const identity=[label,el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('title')].filter(Boolean).join(' ');return {id:safe(el.id),name:safe(el.name),type:safe(el.getAttribute('type')),hasForm:!!el.closest('form'),kind:/resend|إعادة|اعادة/i.test(identity)?'resend':/verify|confirm|تحقق|تأكيد|تاكيد/i.test(label)?'verify':/login|دخول/i.test(label)?'login':/submit|إرسال|ارسال|متابعة|continue/i.test(label)?'submit':'other'};});
+ return {fields,buttons,frameCount:Math.min(document.querySelectorAll('iframe').length,16)};
+}
+async function getVerificationDiagnostics(page){try{return await page.evaluate(inspectVerificationStructure);}catch{return {unavailable:true};}}
+module.exports.getVerificationDiagnostics=getVerificationDiagnostics;
+module.exports.inspectVerificationStructure=inspectVerificationStructure;

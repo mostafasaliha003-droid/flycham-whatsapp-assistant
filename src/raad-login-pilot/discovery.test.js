@@ -2,7 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const {inspectVerificationControls}=require('./verification-controls');
+const {inspectVerificationControls,inspectVerificationStructure}=require('./verification-controls');
 
 function element({tagName='INPUT',id='',name='',type='text',textContent='',attrs={},visible=true,disabled=false,readOnly=false,maxLength=-1}={}){
  const el={nodeType:1,tagName,id,name,type,textContent,disabled,readOnly,maxLength,labels:[],parentElement:null,previousElementSibling:null,
@@ -65,4 +65,53 @@ test('hidden and disabled candidates are excluded',()=>{
 test('discovery refuses OTP input without an enclosing form',()=>{
  const f=fixture();f.fields[0].form=null;
  assert.equal(f.run(),null);
+});
+
+
+function diagnose(f,{frames=0}={}){
+ const result=vm.runInNewContext('('+inspectVerificationStructure.toString()+')()',{
+  document:{querySelectorAll(selector){
+   if(selector==='input')return f.fields;
+   if(selector==='iframe')return Array.from({length:frames},()=>({}));
+   if(selector==='button,input[type=submit],input[type=button],a[role=button]')return f.controls;
+   throw Error('Unexpected selector');
+  }},
+  getComputedStyle(){return {display:'block',visibility:'visible'};}
+ });
+ return JSON.parse(JSON.stringify(result));
+}
+test('zero-box form still permits visible same-form OTP and confirm controls',()=>{
+ const f=fixture();f.form.getBoundingClientRect=()=>({width:0,height:0});
+ assert.deepEqual(f.run(),{inputSelector:'#otp',buttonSelector:'#confirm',maxLength:6});
+ assert.equal(diagnose(f).fields[0].formHasBox,false);
+});
+test('diagnostics return only safe structure without editable values or source labels',()=>{
+ const privateEmail='private@example.test',privateCode='987654',privateLabel='رمز التفعيل '+privateEmail+' '+privateCode;
+ const f=fixture({inputs:[{id:privateEmail,name:privateEmail,attrs:{'aria-label':privateLabel,placeholder:privateLabel,autocomplete:'one-time-code'}}],buttons:[{id:'verify',textContent:'تأكيد '+privateEmail+' '+privateCode}]});
+ f.fields[0].labels=[{textContent:privateLabel}];
+ const out=diagnose(f),encoded=JSON.stringify(out);
+ assert.equal(out.fields[0].id,null);assert.equal(out.fields[0].name,null);
+ assert.equal(out.fields[0].verificationLabel,true);assert.equal(out.fields[0].otpAutocomplete,true);
+ assert.equal(out.buttons[0].kind,'verify');
+ for(const secret of [privateEmail,privateCode,privateLabel,'aria-label','placeholder','textContent','value'])assert.equal(encoded.includes(secret),false);
+ assert.deepEqual(Object.keys(out.fields[0]).sort(),['formHasBox','hasForm','id','imageCodeLabel','maxLength','name','otpAutocomplete','type','verificationLabel']);
+});
+test('diagnostics categorize captcha and OTP labels and buttons without captions',()=>{
+ const f=fixture({inputs:[{id:'Captcha',name:'Captcha',attrs:{'aria-label':'رمز الصورة'}},{id:'verificationCode',name:'code',attrs:{'aria-label':'رمز التأكيد'}}],buttons:[
+  {id:'resend',textContent:'إرسال',attrs:{title:'إعادة الإرسال'}},
+  {id:'confirm',textContent:'تأكيد'},
+  {id:'login',textContent:'تسجيل الدخول'},
+  {id:'continue',textContent:'متابعة'},
+  {id:'cancel',textContent:'إلغاء'}
+ ]});
+ const out=diagnose(f);
+ assert.equal(out.fields[0].imageCodeLabel,true);assert.equal(out.fields[1].verificationLabel,true);
+ assert.deepEqual(out.buttons.map(b=>b.kind),['resend','verify','login','submit','other']);
+});
+test('diagnostics cap output counts and omit hidden controls',()=>{
+ const f=fixture({inputs:[{id:'hidden',visible:false},...Array.from({length:24},(_,i)=>({id:'field'+i,name:'field'+i}))],buttons:[{id:'hiddenButton',visible:false},...Array.from({length:24},(_,i)=>({id:'button'+i,textContent:'تأكيد'}))]});
+ const out=diagnose(f,{frames:25});
+ assert.equal(out.fields.length,16);assert.equal(out.buttons.length,16);assert.equal(out.frameCount,16);
+ assert.equal(out.fields[0].id,null);assert.equal(out.buttons[0].id,null);
+ assert.equal(JSON.stringify(out).includes('hidden'),false);
 });
