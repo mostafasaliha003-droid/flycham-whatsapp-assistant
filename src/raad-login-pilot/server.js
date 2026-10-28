@@ -5,6 +5,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const {findVerificationControls,getVerificationDiagnostics}=require('./verification-controls');
 const {captureCaptcha}=require('./captcha-image');
+const {getAccountSignals}=require('./account-signals');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
@@ -32,7 +33,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
  const staticAssets=Object.create(null);for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
- async function classify(j){await guard(j);if(j.verificationStatus==='unconfirmed')return 'verification_unconfirmed';const verification=await findVerificationControls(j.page);j.canVerify=Boolean(verification)&&!j.verificationAttempted;if(verification)return j.verificationAttempted?'verification_submitted':'verification_required';const loginVisible=await j.page.locator(SEL.password).isVisible().catch(()=>false);if(loginVisible)return 'login_not_completed';return 'result_unverified';}
+ async function classify(j){await guard(j);j.accountSignals=null;if(j.verificationStatus==='unconfirmed')return 'verification_unconfirmed';const verification=await findVerificationControls(j.page);j.canVerify=Boolean(verification)&&!j.verificationAttempted;if(verification)return j.verificationAttempted?'verification_submitted':'verification_required';const loginVisible=await j.page.locator(SEL.password).isVisible().catch(()=>false);if(loginVisible)return 'login_not_completed';j.accountSignals=await getAccountSignals(j.page,false);if(j.accountSignals.accountUiVerified===true)return 'authenticated';return 'result_unverified';}
  const server=http.createServer(async(req,res)=>{
   let url;try{url=new URL(req.url,'https://pilot.invalid');}catch{reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
@@ -46,11 +47,11 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
    if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
-   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
-     if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:false,expiresAt:j.expires});}
+     if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:j.stage==='authenticated',expiresAt:j.expires});}
      else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await captureCaptcha(j.page),'image/png');}
      else if(url.pathname==='/api/refresh-captcha'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
