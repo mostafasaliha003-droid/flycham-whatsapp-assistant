@@ -3,6 +3,9 @@
 // A private, fixed synthetic diagnostic. No caller-supplied document, customer
 // record, passport copy, destination URL or prompt can enter this check.
 const sharp = require('sharp');
+const {RETRYABLE_CODES} = require('./visa-document-vision');
+const VISION_REASONS = new Set([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INVALID_OUTPUT', 'DOCUMENT_VISION_INCOMPLETE']);
+function safeVisionReason(failure) { try { const code = failure?.code; return typeof code === 'string' && code.length <= 80 && VISION_REASONS.has(code) ? code : undefined; } catch { return undefined; } }
 const EXPECTED = Object.freeze({passportNumber: 'ZT1234567', latinFirstName: 'EXAMPLE', latinFamilyName: 'TESTER', birthDate: '1990-04-03', expiryDate: '2035-11-30'});
 const lines = [
   'SYNTHETIC OCR DIAGNOSTIC — NOT A VALID DOCUMENT',
@@ -24,13 +27,16 @@ function createDocumentProbe({vision, now = Date.now} = {}) {
     if (busy) return {ok: false, error: 'DOCUMENT_PROBE_BUSY', status: 409};
     if (lastAt !== null && now() - lastAt < 60000) return {ok: false, error: 'DOCUMENT_PROBE_COOLDOWN', status: 429};
     busy = true; lastAt = now();
+    let stage = 'render';
     try {
       const bytes = await syntheticImage();
+      stage = 'infer';
       const result = await vision.extract({bytes, mimeType: 'image/png', guard: () => { const status = vision.status?.(); return status ? status.enabled === true && status.configured === true : true; }});
+      stage = 'verify';
       const fieldsRead = Object.entries(EXPECTED).filter(([field, value]) => result?.fields?.[field]?.visible === true && result.fields[field].value === value).length;
       const ok = result?.kind === 'passport' && result?.readable === true && fieldsRead === Object.keys(EXPECTED).length;
-      return {ok, synthetic: true, providerResponded: true, fieldsRead, expectedFields: Object.keys(EXPECTED).length, status: ok ? 200 : 422};
-    } catch { return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503}; }
+      return {ok, synthetic: true, providerResponded: true, fieldsRead, expectedFields: Object.keys(EXPECTED).length, status: ok ? 200 : 422, ...(!ok ? {stage} : {})};
+    } catch (failure) { const reason = safeVisionReason(failure); return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503, stage, ...(reason ? {reason} : {})}; }
     finally { busy = false; }
   };
 }

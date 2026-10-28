@@ -30,7 +30,34 @@ test('unavailable and concurrent probes cannot start additional provider calls o
 test('a readable but incorrectly extracted diagnostic is reported as failed rather than successful OCR', async () => {
  const value=extracted();value.fields.birthDate.value='1991-04-03';
  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>value}})();
- assert.equal(result.ok,false);assert.equal(result.providerResponded,true);assert.equal(result.fieldsRead,4);assert.equal(result.status,422);
+ assert.equal(result.ok,false);assert.equal(result.providerResponded,true);assert.equal(result.fieldsRead,4);assert.equal(result.status,422);assert.equal(result.stage,'verify');
+});
+
+test('probe exposes only known fixed vision reason codes and never raw provider explanations', async () => {
+ for(const code of ['DOCUMENT_VISION_TIMEOUT','DOCUMENT_VISION_RATE_LIMITED','DOCUMENT_VISION_STALE','DOCUMENT_VISION_INVALID_OUTPUT','DOCUMENT_VISION_INCOMPLETE']){
+  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw Object.assign(Error('PRIVATE_PROVIDER_EXPLANATION_AND_SECRET'),{code,cause:{secret:'PRIVATE_VALUE'}});}}})();
+  assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:code});
+  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+ }
+ for(const failure of [Error('DOCUMENT_VISION_TIMEOUT'),Object.assign(Error('PRIVATE_ERROR'),{code:'DOCUMENT_VISION_PRIVATE_SECRET'}),Object.assign(Error('PRIVATE_ERROR'),{code:{toString(){assert.fail('must not coerce provider values');}}}),{get code(){throw Error('PRIVATE_GETTER');}}]){
+  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw failure;}}})();
+  assert.equal(result.error,'DOCUMENT_PROBE_UNAVAILABLE');assert.equal(result.stage,'infer');assert.equal(Object.hasOwn(result,'reason'),false);assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+ }
+ let reads=0;
+ const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw {get code(){return ++reads===1?'DOCUMENT_VISION_TIMEOUT':'PRIVATE_CHANGED_GETTER';}};}}})();
+ assert.equal(result.reason,'DOCUMENT_VISION_TIMEOUT');assert.equal(reads,1);assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+});
+
+test('render and verification failures retain distinct fixed stages without private content', async () => {
+ const sharp=require('sharp'),png=sharp.prototype.png;
+ try{
+  sharp.prototype.png=function(){throw Error('PRIVATE_RENDERER_FAILURE');};
+  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>assert.fail('a rendering failure cannot disclose an image')}})();
+  assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'render'});
+ }finally{sharp.prototype.png=png;}
+ const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>({get fields(){throw Error('PRIVATE_VERIFY_FAILURE');}})}})();
+ assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'verify'});
+ assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
 
 test('setup probe requires accountant authority and never accepts a caller-provided document or prompt', async () => {
