@@ -3,9 +3,18 @@
 // A private, fixed synthetic diagnostic. No caller-supplied document, customer
 // record, passport copy, destination URL or prompt can enter this check.
 const sharp = require('sharp');
-const {RETRYABLE_CODES} = require('./visa-document-vision');
-const VISION_REASONS = new Set([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INVALID_OUTPUT', 'DOCUMENT_VISION_INCOMPLETE']);
+const {DOCUMENT_VISION_ERROR_CODES, DOCUMENT_FIELD_NAMES, SCHEMA_SECTIONS} = require('./visa-document-vision');
+const VISION_REASONS = new Set(DOCUMENT_VISION_ERROR_CODES);
 function safeVisionReason(failure) { try { const code = failure?.code; return typeof code === 'string' && code.length <= 80 && VISION_REASONS.has(code) ? code : undefined; } catch { return undefined; } }
+function safeSchemaDiagnostics(failure, reason) {
+  if (reason !== 'DOCUMENT_VISION_SCHEMA_INVALID') return {};
+  try {
+    const section = failure?.schemaSection;
+    if (!SCHEMA_SECTIONS.includes(section)) return {};
+    const fieldName = section === 'fields' ? failure?.fieldName : undefined;
+    return {schemaSection: section, ...(DOCUMENT_FIELD_NAMES.includes(fieldName) ? {fieldName} : {})};
+  } catch { return {}; }
+}
 const EXPECTED = Object.freeze({passportNumber: 'ZT1234567', latinFirstName: 'EXAMPLE', latinFamilyName: 'TESTER', birthDate: '1990-04-03', expiryDate: '2035-11-30'});
 const lines = [
   'SYNTHETIC OCR DIAGNOSTIC — NOT A VALID DOCUMENT',
@@ -36,7 +45,7 @@ function createDocumentProbe({vision, now = Date.now} = {}) {
       const fieldsRead = Object.entries(EXPECTED).filter(([field, value]) => result?.fields?.[field]?.visible === true && result.fields[field].value === value).length;
       const ok = result?.kind === 'passport' && result?.readable === true && fieldsRead === Object.keys(EXPECTED).length;
       return {ok, synthetic: true, providerResponded: true, fieldsRead, expectedFields: Object.keys(EXPECTED).length, status: ok ? 200 : 422, ...(!ok ? {stage} : {})};
-    } catch (failure) { const reason = safeVisionReason(failure); return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503, stage, ...(reason ? {reason} : {})}; }
+    } catch (failure) { const reason = safeVisionReason(failure); return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503, stage, ...(reason ? {reason, ...safeSchemaDiagnostics(failure, reason)} : {})}; }
     finally { busy = false; }
   };
 }

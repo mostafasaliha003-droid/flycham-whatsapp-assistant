@@ -34,7 +34,7 @@ test('a readable but incorrectly extracted diagnostic is reported as failed rath
 });
 
 test('probe exposes only known fixed vision reason codes and never raw provider explanations', async () => {
- for(const code of ['DOCUMENT_VISION_TIMEOUT','DOCUMENT_VISION_RATE_LIMITED','DOCUMENT_VISION_STALE','DOCUMENT_VISION_INVALID_OUTPUT','DOCUMENT_VISION_INCOMPLETE']){
+ for(const code of ['DOCUMENT_VISION_TIMEOUT','DOCUMENT_VISION_RATE_LIMITED','DOCUMENT_VISION_STALE','DOCUMENT_VISION_INVALID_OUTPUT','DOCUMENT_VISION_INCOMPLETE','DOCUMENT_VISION_INVALID_JSON','DOCUMENT_VISION_RESPONSE_TOO_LARGE','DOCUMENT_VISION_SCHEMA_INVALID']){
   const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw Object.assign(Error('PRIVATE_PROVIDER_EXPLANATION_AND_SECRET'),{code,cause:{secret:'PRIVATE_VALUE'}});}}})();
   assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:code});
   assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
@@ -46,6 +46,30 @@ test('probe exposes only known fixed vision reason codes and never raw provider 
  let reads=0;
  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw {get code(){return ++reads===1?'DOCUMENT_VISION_TIMEOUT':'PRIVATE_CHANGED_GETTER';}};}}})();
  assert.equal(result.reason,'DOCUMENT_VISION_TIMEOUT');assert.equal(reads,1);assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+});
+
+test('live-shaped strict schema rejection projects only its known section and field name', async () => {
+ const value=extracted();value.fields.birthDate.value='PRIVATE_INVALID_DATE';
+ const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:'```json\n'+JSON.stringify(value)+'\n```'}]}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
+ const result=await createDocumentProbe({vision})();
+ assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'birthDate'});
+ assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+});
+
+test('probe schema diagnostics discard unknown keys, values, sections and irrelevant fields', async () => {
+ for(const diagnostic of [
+  {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'PRIVATE_SECTION',fieldName:'PRIVATE_FIELD'},
+  {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'PRIVATE_FIELD'},
+  {code:'DOCUMENT_VISION_TIMEOUT',schemaSection:'fields',fieldName:'passportNumber'},
+  {code:'DOCUMENT_VISION_SCHEMA_INVALID',get schemaSection(){throw Error('PRIVATE_GETTER');}}
+ ]){
+  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw diagnostic;}}})();
+  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);assert.equal(Object.hasOwn(result,'fieldName'),false);
+  if(diagnostic.code==='DOCUMENT_VISION_TIMEOUT')assert.equal(Object.hasOwn(result,'schemaSection'),false);
+ }
+ let reads=0;
+ const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',get fieldName(){return ++reads===1?'passportNumber':'PRIVATE_CHANGED_FIELD';}};}}})();
+ assert.equal(result.fieldName,'passportNumber');assert.equal(reads,1);assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
 
 test('render and verification failures retain distinct fixed stages without private content', async () => {

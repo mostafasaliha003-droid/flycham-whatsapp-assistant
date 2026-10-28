@@ -39,8 +39,8 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v1');
-  assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_INVALID_OUTPUT'), false);
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v2');
+  assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
 
 test('image validation rejects PDF, MIME mismatch, truncated images, animation and oversized inputs before disclosure', async () => {
@@ -85,7 +85,7 @@ test('unknown fields, injected instructions, inherited properties and contradict
     page({fields: {latinFirstName: field('x'.repeat(201))}}), page({fields: JSON.parse('{"__proto__":{"value":"evil","confidence":1,"visible":true}}')}),
     page({fields: Object.create({latinFirstName: field('ARI')})}), page({version: '1'}), page({rotation: 45}), page({readable: 'true'}), page({kind: 'driver_license'})
   ];
-  for (const value of values) assert.throws(() => validateDocumentExtraction(value), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+  for (const value of values) assert.throws(() => validateDocumentExtraction(value), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
 });
 
 test('literal dates, document types, sex and country identifiers are validated without inference', () => {
@@ -93,7 +93,7 @@ test('literal dates, document types, sex and country identifiers are validated w
     {birthDate: field('90-02-03')}, {birthDate: field('1990-02-30')}, {issueDate: field('2023-02-29')},
     {nationalityCode: field('Egypt')}, {issuingCountryCode: field('egy')}, {sex: field('male')},
     {passportType: field('P')}, {passportNumber: field('AB<123')}, {emiratesId: field('784-1990-123')}
-  ]) assert.throws(() => validateDocumentExtraction(page({fields})), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+  ]) assert.throws(() => validateDocumentExtraction(page({fields})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   for (const type of ['ordinary', 'diplomatic', 'service', 'special']) assert.equal(validateDocumentExtraction(page({fields: {passportType: field(type)}})).fields.passportType.value, type);
   assert.equal(validateDocumentExtraction(page({fields: {birthDate: field('2000-02-29'), emiratesId: field('784-1990-1234567-1')}})).fields.birthDate.value, '2000-02-29');
 });
@@ -101,16 +101,16 @@ test('literal dates, document types, sex and country identifiers are validated w
 test('MRZ and portrait rectangles are bounded evidence, never repaired or treated as a face assessment', () => {
   const line = 'P<EGYEXAMPLE<<ARI<<<<<<<<<<<<<<<<<<<<<<<<<<<';
   assert.equal(validateDocumentExtraction(page({mrzLines: [line]})).mrzLines[0], line);
-  for (const mrzLines of [[line.repeat(2)], ['AB C'], ['١٢٣'], ['', 'ABC'], ['ABC', 'ABC', 'ABC', 'ABC'], 'ABC']) assert.throws(() => validateDocumentExtraction(page({mrzLines})), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+  for (const mrzLines of [[line.repeat(2)], ['AB C'], ['١٢٣'], ['', 'ABC'], ['ABC', 'ABC', 'ABC', 'ABC'], 'ABC']) assert.throws(() => validateDocumentExtraction(page({mrzLines})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   for (const portraitBox of [
     {x: 0, y: 0, width: 0, height: 0.2, confidence: 1},
     {x: 0.9, y: 0, width: 0.2, height: 0.2, confidence: 1},
     {x: 0, y: 0.9, width: 0.2, height: 0.2, confidence: 1},
     {x: 0, y: 0, width: 0.2, height: 0.2, confidence: Infinity},
     {x: 0, y: 0, width: 0.2, height: 0.2, confidence: 1, age: 30}
-  ]) assert.throws(() => validateDocumentExtraction(page({portraitBox})), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
-  assert.throws(() => validateDocumentExtraction(page({kind: 'portrait', fields: {}, portraitBox: {x: 0, y: 0, width: 1, height: 1, confidence: 1}})), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
-  assert.throws(() => validateDocumentExtraction(page({kind: 'portrait'})), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+  ]) assert.throws(() => validateDocumentExtraction(page({portraitBox})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.throws(() => validateDocumentExtraction(page({kind: 'portrait', fields: {}, portraitBox: {x: 0, y: 0, width: 1, height: 1, confidence: 1}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.throws(() => validateDocumentExtraction(page({kind: 'portrait'})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
 });
 
 test('thinking, function calls, blocked and truncated provider output never become document facts', async () => {
@@ -127,16 +127,42 @@ test('thinking, function calls, blocked and truncated provider output never beco
   ]) await assert.rejects((await setup({payload})).extract(), {code: 'DOCUMENT_VISION_INCOMPLETE'});
 });
 
-test('fenced JSON, trailing commentary and overlong streaming responses are rejected with bounded errors', async () => {
-  for (const output of ['```json\n' + JSON.stringify(page()) + '\n```', JSON.stringify(page()) + '\nPRIVATE COMMENT', '{"version":']) {
+test('one outer JSON fence or whitespace is accepted without changing any extracted facts', async () => {
+  const json = JSON.stringify(page());
+  for (const output of ['  \n' + json + '\n  ', '```json\n' + json + '\n```', '```\n' + json + '\n```', '\n```JSON\r\n' + json + '\r\n```\n']) {
     const payload = envelope(page()); payload.candidates[0].content.parts[0].text = output;
-    await assert.rejects((await setup({payload})).extract(), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+    assert.deepEqual(await (await setup({payload})).extract(), page());
   }
+});
+
+test('text outside JSON, multiple fences, unsupported fence labels and truncated JSON remain rejected', async () => {
+  const json = JSON.stringify(page());
+  for (const output of [json + '\nPRIVATE COMMENT', '{"version":', 'PRIVATE COMMENT\n```json\n' + json + '\n```', '```json\n' + json + '\n```\nPRIVATE COMMENT', '```json\n' + json + '\n```\n```json\n' + json + '\n```', '```javascript\n' + json + '\n```']) {
+    const payload = envelope(page()); payload.candidates[0].content.parts[0].text = output;
+    await assert.rejects((await setup({payload})).extract(), {code: 'DOCUMENT_VISION_INVALID_JSON'});
+  }
+});
+
+test('oversized envelope and streaming output are classified separately and bounded before parsing', async () => {
   let cancelled = false;
   const f = await setup({fetchImpl: async () => ({ok: true, headers: new Headers(), body: {async *[Symbol.asyncIterator]() { try { yield Buffer.alloc(MAX_RESPONSE_BYTES); yield Buffer.alloc(1); assert.fail('must not read later data'); } finally { cancelled = true; } }}})});
-  await assert.rejects(f.extract(), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'}); assert.equal(cancelled, true);
+  await assert.rejects(f.extract(), {code: 'DOCUMENT_VISION_RESPONSE_TOO_LARGE'}); assert.equal(cancelled, true);
   const g = await setup({fetchImpl: async () => ({ok: true, headers: new Headers({'Content-Length': String(MAX_RESPONSE_BYTES + 1)}), text() { assert.fail('announced excessive bytes must not be read'); }})});
-  await assert.rejects(g.extract(), {code: 'DOCUMENT_VISION_INVALID_OUTPUT'});
+  await assert.rejects(g.extract(), {code: 'DOCUMENT_VISION_RESPONSE_TOO_LARGE'});
+});
+
+test('schema diagnostics expose only fixed sections and allowlisted field names, never values or unknown keys', () => {
+  for (const [value, section, name] of [
+    [page({fields: {passportNumber: field('PRIVATE/SECRET')}}), 'fields', 'passportNumber'],
+    [page({fields: {birthDate: field('PRIVATE_DATE')}}), 'fields', 'birthDate'],
+    [page({fields: {PRIVATE_UNKNOWN_FIELD: field('PRIVATE_VALUE')}}), 'fields', undefined],
+    [page({PRIVATE_UNKNOWN_ROOT: 'PRIVATE_VALUE'}), 'root', undefined],
+    [page({mrzLines: ['PRIVATE VALUE']}), 'mrzLines', undefined],
+    [page({portraitBox: {PRIVATE_RECTANGLE: 'PRIVATE_VALUE'}}), 'portraitBox', undefined]
+  ]) assert.throws(() => validateDocumentExtraction(value), error => {
+    assert.equal(error.code, 'DOCUMENT_VISION_SCHEMA_INVALID'); assert.equal(error.schemaSection, section); assert.equal(error.fieldName, name);
+    assert.equal(JSON.stringify(error).includes('PRIVATE'), false); assert.equal(error.message.includes('PRIVATE'), false); return true;
+  });
 });
 
 test('HTTP, timeout and network failures are sanitized and never fall through to a paid provider', async () => {
