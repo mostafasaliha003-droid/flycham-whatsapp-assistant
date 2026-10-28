@@ -25,3 +25,5 @@ test('wrapper returns only booleans and recomputes proof rather than trusting fl
 test('wrapper failure is fail closed',async()=>{assert.equal((await getAccountSignals({evaluate:async()=>{throw Error('private');}})).accountUiVerified,false);});
 
 test('hidden account menu presence is metadata only, never proof',()=>{const r=inspect({controls:[el({text:'Logout',visible:false}),el({text:'طلباتي',visible:false})]});assert.equal(r.logoutPresent,true);assert.equal(r.myApplicationsPresent,true);assert.equal(r.logoutVisible,false);assert.equal(r.applicationsVisible,false);assert.equal(r.accountUiVerified,false);});
+
+test('an application image captcha alone is not a login control',()=>{const location=new URL('https://visa.mofa.gov.sa/SmartForm/TraditionalApp'),window={};window.top=window;window.self=window;const result=vm.runInNewContext('('+inspectAccountSignals.toString()+')(false)',{location,window,URL,getComputedStyle:()=>({display:'block',visibility:'visible'}),document:{querySelectorAll:selector=>selector.includes('#Captcha')?[el({tag:'INPUT'})]:[]}});assert.equal(result.loginControlsVisible,false);assert.equal(result.accountUiVerified,false);});

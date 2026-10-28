@@ -21,7 +21,7 @@ function inspectAccountSignals(otpPresent=false){
    else return null;
    try{const u=new URL(raw,location.href);return u.origin===location.origin?u:null;}catch{return null;}
   };
-  result.loginControlsVisible=Array.from(document.querySelectorAll('#myform #UserName,#myform #Password,#myform #Captcha,#NafathID,input[type="password"]')).some(visible);
+  result.loginControlsVisible=Array.from(document.querySelectorAll('#myform #UserName,#myform #Password,#NafathID,input[type="password"]')).some(visible);
   for(const el of document.querySelectorAll('a,button,input[type="submit"],input[type="button"],[role="button"]')){
    const u=target(el);if(!u)continue;const text=caption(el);
    const isLogout=/^(?:تسجيل الخروج|تسجيل خروج|خروج|logout|log out|sign out)$/i.test(text)||/(?:^|\/)(?:logout|logoff|signout)(?:\/|$)/i.test(u.pathname);

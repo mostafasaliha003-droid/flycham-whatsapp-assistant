@@ -6,18 +6,24 @@ function failure(code,filledCount=0){const error=new Error(ERROR_CODES.has(code)
 function checkPortalDocument(){return location.origin==='https://visa.mofa.gov.sa'&&window.top===window.self;}
 // Runs in the page. Returns retained original elements only when binding; later
 // checks use those same elements and never re-resolve a field for an action.
-function inspectPortalFields({fields,originals,bind=false}){
+function inspectPortalFields({fields,originals,bind=false,includeOptions=false}){
  const fail=code=>{throw Error(code);};
  if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self)fail('PORTAL_FILL_UNTRUSTED_PAGE');
  const sensitive=/password|passwd|token|otp|verification|captcha|authenticity|one[-_\s]?time[-_\s]?(?:code|password)|csrf|xsrf|nonce|security[-_\s]?code|verify[-_\s]?code|validation[-_\s]?code|كلمة\s*(?:المرور|السر)|رمز\s*(?:التحقق|التأكيد|التفعيل|الصورة)/i;
  const safeAction=raw=>{try{const action=new URL(raw||location.href,document.baseURI||location.href);return action.origin==='https://visa.mofa.gov.sa'&&!action.username&&!action.password;}catch{return false;}};
  const visible=el=>{const box=el.getBoundingClientRect(),style=getComputedStyle(el);return box.width>0&&box.height>0&&style.display!=='none'&&!['hidden','collapse'].includes(style.visibility)&&style.opacity!=='0'&&!el.closest('[hidden],[inert],[aria-hidden="true"]');};
- const elements=[];
+ const elements=[],select2Flags=[];
  for(let index=0;index<fields.length;index++){
-  const field=fields[index],matches=Array.from(document.querySelectorAll('#'+CSS.escape(field.id)));
+  const field=fields[index];let matches=Array.from(document.querySelectorAll('#'+CSS.escape(field.id)));
+  if(field.kind==='radio')matches=matches.filter(el=>el.tagName==='INPUT'&&String(el.type).toLowerCase()==='radio'&&el.name===field.name&&el.getAttribute('value')===field.optionValue);
   if(matches.length!==1)fail('PORTAL_FILL_FIELD_UNAVAILABLE');
   const el=originals?originals[index]:matches[0];
-  if(!el||el!==matches[0]||!el.isConnected||el.ownerDocument!==document||el.namespaceURI!=='http://www.w3.org/1999/xhtml'||!['INPUT','SELECT','TEXTAREA'].includes(el.tagName)||!visible(el)||el.disabled||el.matches(':disabled')||el.readOnly||el.getAttribute('aria-disabled')==='true')fail('PORTAL_FILL_FIELD_UNAVAILABLE');
+  let select2=false;
+  if(el&&field.kind==='select'&&el.tagName==='SELECT'&&el.classList.contains('select2-hidden-accessible')&&el.getAttribute('aria-hidden')==='true'){
+   const containers=Array.from(document.querySelectorAll('#'+CSS.escape('select2-'+field.id+'-container')));
+   select2=containers.length===1&&containers[0].isConnected&&containers[0].ownerDocument===document&&containers[0].namespaceURI==='http://www.w3.org/1999/xhtml'&&visible(containers[0])&&Boolean(el.form)&&containers[0].closest('form')===el.form&&!el.closest('[hidden],[inert]');
+  }
+  if(!el||el!==matches[0]||!el.isConnected||el.ownerDocument!==document||el.namespaceURI!=='http://www.w3.org/1999/xhtml'||!['INPUT','SELECT','TEXTAREA'].includes(el.tagName)||(!visible(el)&&!select2)||el.disabled||el.matches(':disabled')||el.readOnly||el.getAttribute('aria-disabled')==='true')fail('PORTAL_FILL_FIELD_UNAVAILABLE');
   const type=String(el.type||'').toLowerCase();
   const identity=[el.id,el.name,el.getAttribute('autocomplete')].filter(Boolean).join(' ');
   if(sensitive.test(identity)||['hidden','password','file','submit','button','reset','image'].includes(type))fail('PORTAL_FILL_FIELD_FORBIDDEN');
@@ -33,25 +39,33 @@ function inspectPortalFields({fields,originals,bind=false}){
    if(options.length!==1)fail('PORTAL_FILL_OPTION_INVALID');
    const option=options[0],caption=String(option.textContent||'').replace(/^[\s\-–—_*()[\]<>]+|[\s\-–—_*()[\]<>]+$/g,'').replace(/[أإآ]/g,'ا');
    if(!field.value.trim()||!caption||option.disabled||option.hidden||option.parentElement?.disabled||option.hasAttribute('placeholder')||option.hasAttribute('data-placeholder')||/^(?:(?:please\s+)?(?:select|choose)(?:\s|[:.…]|$)|(?:الرجاء\s+|يرجى\s+)?(?:اختر|اختار|حدد)(?:\s|$))/i.test(caption))fail('PORTAL_FILL_OPTION_INVALID');
+  }else if(field.kind==='radio'){
+   if(el.tagName!=='INPUT'||type!=='radio'||field.value!==true||el.name!==field.name||el.getAttribute('value')!==field.optionValue)fail('PORTAL_FILL_KIND_MISMATCH');
   }else if(field.kind==='check'){
    if(el.tagName!=='INPUT'||type!=='checkbox')fail('PORTAL_FILL_KIND_MISMATCH');
   }else fail('PORTAL_FILL_KIND_MISMATCH');
-  elements.push(el);
+  elements.push(el);select2Flags.push(select2);
  }
- return bind?elements:true;
+ return bind?elements:includeOptions?{forceSelect2:select2Flags.length===1&&select2Flags[0]===true}:true;
 }
 function validateInput(fields){
  if(!Array.isArray(fields)||fields.length<1||fields.length>40)throw failure('PORTAL_FILL_INPUT_INVALID');
- const ids=new Set();
+ const ids=new Map(),radioNames=new Set();
  return fields.map(field=>{
-  if(!field||typeof field!=='object'||Array.isArray(field)||Object.keys(field).some(key=>!['id','value','kind'].includes(key))||typeof field.id!=='string'||!field.id.trim()||field.id.length>200||/[\u0000-\u001f\u007f]/.test(field.id)||ids.has(field.id)||!['text','select','check'].includes(field.kind))throw failure('PORTAL_FILL_INPUT_INVALID');
-  if(field.kind==='check'?typeof field.value!=='boolean':typeof field.value!=='string'||field.value.length>300||field.value.includes('\u0000'))throw failure('PORTAL_FILL_INPUT_INVALID');
-  ids.add(field.id);return {id:field.id,kind:field.kind,value:field.value};
+  if(!field||typeof field!=='object'||Array.isArray(field)||typeof field.id!=='string'||!field.id.trim()||field.id.length>200||/[\u0000-\u001f\u007f]/.test(field.id)||!['text','select','check','radio'].includes(field.kind))throw failure('PORTAL_FILL_INPUT_INVALID');
+  const radio=field.kind==='radio',allowed=radio?['id','value','kind','name','optionValue']:['id','value','kind'];
+  if(Object.keys(field).some(key=>!allowed.includes(key))||ids.has(field.id)&&(!radio||ids.get(field.id)!=='radio'))throw failure('PORTAL_FILL_INPUT_INVALID');
+  if(radio){
+   if(field.value!==true||typeof field.name!=='string'||!field.name.trim()||field.name.length>200||/[\u0000-\u001f\u007f]/.test(field.name)||typeof field.optionValue!=='string'||field.optionValue.length>300||field.optionValue.includes('\u0000')||radioNames.has(field.name))throw failure('PORTAL_FILL_INPUT_INVALID');
+   radioNames.add(field.name);
+  }else if(field.kind==='check'?typeof field.value!=='boolean':typeof field.value!=='string'||field.value.length>300||field.value.includes('\u0000'))throw failure('PORTAL_FILL_INPUT_INVALID');
+  ids.set(field.id,field.kind);return {id:field.id,kind:field.kind,value:field.value,...(radio?{name:field.name,optionValue:field.optionValue}:{})};
  });
 }
 async function assertOfficial(page){let trusted=false;try{trusted=new URL(page.url()).origin===ORIGIN&&await page.evaluate(checkPortalDocument)===true;}catch{}if(!trusted)throw failure('PORTAL_FILL_UNTRUSTED_PAGE');}
 function verifyFilledField(el,field){
  if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self||el.ownerDocument!==document||!el.isConnected)return false;
+ if(field.kind==='radio')return el.name===field.name&&el.getAttribute('value')===field.optionValue&&el.checked===true;
  return field.kind==='check'?el.checked===field.value:el.value===field.value;
 }
 async function fillPortalFields(page,input={}){
@@ -71,9 +85,9 @@ async function fillPortalFields(page,input={}){
   for(let index=0;index<batch.length;index++){
    await assertOfficial(page);
    const field=batch[index],handle=handles[index];
-   await page.evaluate(inspectPortalFields,{fields:[field],originals:[handle]});
+   const options=await page.evaluate(inspectPortalFields,{fields:[field],originals:[handle],includeOptions:true});
    if(field.kind==='text')await handle.fill(field.value,{timeout:5000});
-   else if(field.kind==='select')await handle.selectOption({value:field.value},{timeout:5000});
+   else if(field.kind==='select')await handle.selectOption({value:field.value},{timeout:5000,...(options.forceSelect2?{force:true}:{})});
    else await handle.setChecked(field.value,{timeout:5000});
    await assertOfficial(page);
    if(await handle.evaluate(verifyFilledField,field)!==true)throw failure('PORTAL_FILL_UNCONFIRMED');

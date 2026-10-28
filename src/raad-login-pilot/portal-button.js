@@ -8,10 +8,11 @@ function inspectPortalButton(args){
   if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   const safe=text=>String(text||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/[0-9\u0660-\u0669\u06f0-\u06f9]{6,}/g,'[number]').replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[id]').replace(/[A-Za-z0-9_-]{40,}/g,'[id]').replace(/[<>]/g,' ').replace(/\s+/g,' ').trim().slice(0,120);
   const visible=el=>{if(el.hidden||el.getAttribute('aria-hidden')==='true'||el.closest('[hidden],[aria-hidden="true"]'))return false;const s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&s.visibility!=='collapse'&&el.getClientRects().length>0;};
-  const all=Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===args.id);if(all.length!==1)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
+  const captionOf=el=>{let raw;if(el.tagName==='INPUT')raw=el.getAttribute('value');else{const copy=el.cloneNode(true);for(const child of copy.querySelectorAll('input,textarea,select,button,script,style'))child.remove();raw=copy.textContent;}return safe(raw);};
+  const all=args.id?Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===args.id):Array.from(document.querySelectorAll('button,input[type=button],input[type=submit]')).filter(el=>['BUTTON','INPUT'].includes(el.tagName)&&['button','submit'].includes(el.type)&&el.isConnected&&visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'&&captionOf(el)===args.label);if(all.length!==1)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   const button=all[0];if(args.button&&button!==args.button)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   if(!button.isConnected||!visible(button)||button.disabled||button.getAttribute('aria-disabled')==='true'||!(['BUTTON','INPUT'].includes(button.tagName)&&['button','submit'].includes(button.type)))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
-  let rawCaption;if(button.tagName==='INPUT')rawCaption=button.getAttribute('value');else{const copy=button.cloneNode(true);for(const child of copy.querySelectorAll('input,textarea,select,button,script,style'))child.remove();rawCaption=copy.textContent;}const caption=safe(rawCaption);if(caption!==args.label)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
+  const caption=captionOf(button);if(caption!==args.label)return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   const agreement=args.mode==='agreement';if(agreement&&location.pathname!=='/SmartForm/Agreement')return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   const form=button.form||null;if(!form&&!agreement||Object.prototype.hasOwnProperty.call(args,'form')&&form!==args.form||!form&&button.getAttribute('formaction'))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   const target=new URL(button.getAttribute('formaction')||(form&&form.getAttribute('action'))||location.href,location.href);
@@ -35,7 +36,7 @@ async function attemptsFor(page){
  const attempts=await page.evaluateHandle(()=>new WeakSet());attemptContexts.set(page,{document:documentHandle,attempts});return attempts;
 }
 async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
- if(typeof id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(id)||typeof label!=='string'||!label||label.length>120||!['next','submit','agreement'].includes(mode)||!Array.isArray(expectedFields)||expectedFields.length>40||mode==='submit'&&!expectedFields.length)throw finite('PORTAL_BUTTON_INPUT_INVALID');
+ if(id!==undefined&&id!==''&&(typeof id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(id))||typeof label!=='string'||!label||label.length>120||!['next','submit','agreement'].includes(mode)||!Array.isArray(expectedFields)||expectedFields.length>40||mode==='submit'&&!expectedFields.length)throw finite('PORTAL_BUTTON_INPUT_INVALID');
  const seen=new Set();for(const field of expectedFields){if(!field||typeof field!=='object'||Array.isArray(field)||Object.keys(field).sort().join(',')!=='expectedValue,id,kind'||typeof field.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(field.id)||seen.has(field.id)||!['text','select','check'].includes(field.kind)||mode==='agreement'&&field.kind!=='check'||(field.kind==='check'?typeof field.expectedValue!=='boolean':typeof field.expectedValue!=='string'||field.expectedValue.length>4096))throw finite('PORTAL_BUTTON_INPUT_INVALID');seen.add(field.id);}
  let raw,button,form,started=false;
  const guard=()=>{const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.username||u.password||!main||main.url()!==page.url())throw finite('PORTAL_BUTTON_UNAVAILABLE');};
@@ -43,7 +44,7 @@ async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
   guard();const attempts=await attemptsFor(page);raw=await page.evaluateHandle(inspectPortalButton,{id,label,mode,expectedFields,attempts});const error=await raw.evaluate(result=>result.error||null);if(error)throw finite(error);
   const handle=await raw.getProperty('button');button=handle.asElement();form=await raw.getProperty('form');if(!button)throw finite('PORTAL_BUTTON_UNAVAILABLE');
   guard();const checked=await page.evaluate(inspectPortalButton,{id,label,mode,expectedFields,button,form,attempts,mark:true});if(checked.error)throw finite(checked.error);if(checked.ok!==true)throw finite('PORTAL_BUTTON_UNAVAILABLE');
-  started=true;await button.click({timeout:10000});guard();return {activationDispatched:true,mode};
+  started=true;await button.focus();if(await button.evaluate(el=>el.isConnected&&!el.disabled&&document.activeElement===el)!==true)throw finite('PORTAL_BUTTON_ACTIVATION_UNCONFIRMED');await button.press('Enter',{timeout:10000,noWaitAfter:true});guard();return {activationDispatched:true,mode};
  }catch(error){if(started)throw finite('PORTAL_BUTTON_ACTIVATION_UNCONFIRMED');throw finite(error?.code);}finally{if(form)await form.dispose().catch(()=>{});if(button)await button.dispose().catch(()=>{});if(raw)await raw.dispose().catch(()=>{});}
 }
 module.exports={activatePortalButton,inspectPortalButton};
