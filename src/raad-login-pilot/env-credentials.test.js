@@ -1,0 +1,4 @@
+const {test}=require('node:test'),assert=require('node:assert/strict');const {credentialConfig,getCredentials}=require('./env-credentials');
+test('env credentials override browser input and config exposes only flags',()=>{const env={RAAD_MOFA_USERNAME:'example@test.invalid',RAAD_MOFA_PASSWORD:'secret-test'};assert.deepEqual(credentialConfig(env),{configured:true,incomplete:false});assert.deepEqual(getCredentials(env,{username:'wrong',password:'wrong'}),{username:env.RAAD_MOFA_USERNAME,password:env.RAAD_MOFA_PASSWORD});assert.equal(JSON.stringify(credentialConfig(env)).includes('secret'),false);});
+test('partial env configuration fails closed',()=>{assert.throws(()=>getCredentials({RAAD_MOFA_USERNAME:'example@test.invalid'},{}));assert.throws(()=>getCredentials({RAAD_MOFA_PASSWORD:'secret-test'},{}));});
+test('manual input remains available when env is unset',()=>assert.deepEqual(getCredentials({}, {username:'u',password:'p'}),{username:'u',password:'p'}));

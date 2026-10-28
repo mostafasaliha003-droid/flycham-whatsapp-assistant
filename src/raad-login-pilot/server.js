@@ -6,6 +6,8 @@ const path=require('node:path');
 const {findVerificationControls,getVerificationDiagnostics}=require('./verification-controls');
 const {captureCaptcha}=require('./captcha-image');
 const {getAccountSignals}=require('./account-signals');
+const {openAccountMenu}=require('./account-menu');
+const {credentialConfig,getCredentials}=require('./env-credentials');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
@@ -29,7 +31,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
    await context.route('**/*',route=>{const request=route.request(),u=new URL(request.url());if((request.isNavigationRequest()||!['GET','HEAD'].includes(request.method()))&&u.origin!=='https://visa.mofa.gov.sa')return route.abort();return route.continue();});
    j.page=await context.newPage();await j.page.goto(LOGIN,{waitUntil:'domcontentloaded',timeout:45000});await guard(j);
    for(const selector of Object.values(SEL)){const l=j.page.locator(selector);if(await l.count()!==1||!await l.isVisible())throw Error('FORM_UNAVAILABLE');}
-   j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires};
+   j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires,credentialsFromEnvironment:credentialConfig(env).configured};
   }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
  const staticAssets=Object.create(null);for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
@@ -39,7 +41,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(req.method==='GET'&&url.pathname==='/health'){reply(res,200,{ready:!shutting});return;}
   if(req.method==='GET'&&staticAssets[url.pathname]){const [content,type]=staticAssets[url.pathname];reply(res,200,content,type);return;}
-  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/refresh-captcha'];
+  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/refresh-captcha','/api/inspect-account-menu'];
   if(!allowed.includes(url.pathname)){reply(res,404,{error:'NOT_FOUND'});return;}
   if(!equal(req.headers.authorization)){reply(res,401,{error:'UNAUTHORIZED'});return;}
   if(env.RAAD_DIRECT_LOGIN_ENABLED!=='true'||shutting){reply(res,503,{error:'DISABLED'});return;}
@@ -47,11 +49,20 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
    if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
-   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,credentialsFromEnvironment:credentialConfig(env).configured,canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
      if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:j.stage==='authenticated',expiresAt:j.expires});}
+     else if(url.pathname==='/api/inspect-account-menu'){
+      if(j.verificationStatus!=='submitted')throw Error('LOGIN_NOT_SUBMITTED');
+      const otp=await findVerificationControls(j.page);const structure=await getVerificationDiagnostics(j.page);const codeStillVisible=Array.isArray(structure.fields)&&structure.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete));const before=await getAccountSignals(j.page,Boolean(otp)||codeStillVisible);
+      if(otp||codeStillVisible||before.loginControlsVisible||before.loginRoute||!before.officialHost||!before.mainDocument)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
+      let result={opened:false,reason:'ALREADY_INSPECTED',signals:before};
+      if(!j.accountMenuInspected&&!before.accountUiVerified){j.accountMenuInspected=true;result=await openAccountMenu(j.page);}
+      j.accountSignals=result.signals;j.stage=result.signals.accountUiVerified?'authenticated':'result_unverified';
+      reply(res,200,{sessionId:j.id,stage:j.stage,canVerify:false,authenticated:j.stage==='authenticated',expiresAt:j.expires,accountSignals:j.accountSignals,menuInspection:{opened:result.opened===true,reason:result.reason}});
+     }
      else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await captureCaptcha(j.page),'image/png');}
      else if(url.pathname==='/api/refresh-captcha'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
@@ -81,6 +92,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
      }
      else if(url.pathname==='/api/submit'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
+      const credentials=getCredentials(env,data);data.username=credentials.username;data.password=credentials.password;
       if(typeof data.username!=='string'||!data.username.trim()||data.username.length>254||typeof data.password!=='string'||!data.password||data.password.length>256||typeof data.captcha!=='string'||!data.captcha.trim()||data.captcha.length>32)throw Error('INPUT_INVALID');
       j.stage='submitting';
       try{await j.page.locator(SEL.username).fill(data.username);await j.page.locator(SEL.password).fill(data.password);await j.page.locator(SEL.captcha).fill(data.captcha);data.username=data.password=data.captcha='';await guard(j);await j.page.locator(SEL.submit).click({timeout:10000});j.stage='submitted_unverified';reply(res,200,{stage:j.stage,submitted:true,authenticated:false});}
@@ -95,3 +107,4 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
 }
 if(require.main===module){const {chromium}=require('playwright');const pilot=createPilot({launch:options=>chromium.launch(options)});pilot.server.listen(process.env.PORT||10000,'0.0.0.0',async()=>{if(process.env.RAAD_PILOT_STARTUP_CHECK!=='true')return;let id;const outcome={pageReady:false,imageLoaded:false,closed:false};try{const base='http://127.0.0.1:'+pilot.server.address().port;const call=(action,data)=>fetch(base+'/api/'+action,{method:'POST',headers:{Authorization:'Bearer '+process.env.RAAD_PILOT_KEY,Origin:process.env.RAAD_PILOT_ORIGIN,'Content-Type':'application/json'},body:JSON.stringify(data||{}),signal:AbortSignal.timeout(60000)});const started=await call('start');if(!started.ok)throw Error();const result=await started.json();id=result.sessionId;outcome.pageReady=result.stage==='awaiting_input';const image=await call('image',{sessionId:id});const bytes=Buffer.from(await image.arrayBuffer());outcome.imageLoaded=image.ok&&image.headers.get('content-type')==='image/png'&&bytes.length>8&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));const stop=await call('close',{sessionId:id});outcome.closed=stop.ok&&(await stop.json()).closed===true;}catch{await pilot.close();}console.log('RAAD_STARTUP_CHECK '+JSON.stringify(outcome));});process.on('SIGTERM',()=>{void pilot.shutdown();setTimeout(()=>process.exit(0),5000).unref();});}
 module.exports={createPilot};
+
