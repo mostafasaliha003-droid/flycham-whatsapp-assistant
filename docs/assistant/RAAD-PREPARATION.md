@@ -1,5 +1,7 @@
 # Raad: Saudi tourist visa preparation
 
+Current automatic document reading is described in [Automatic document reading](VISA-DOCUMENT-READING-2026-10-28.md), and the production browser path in [Visa fulfilment](VISA-FULFILMENT-2026-10-28.md). The manual preparation release notes below describe the earlier staff-only implementation.
+
 Raad is the protected staff preparation desk behind Ismail's Saudi visa intake.
 This release prepares and reviews local drafts. Authenticated MOFA access through
 an interactive TinyFish saved profile has been verified separately, but the

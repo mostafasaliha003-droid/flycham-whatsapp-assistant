@@ -38,10 +38,10 @@ test('the current approval excludes stale jobs and preserves explicit client and
 });
 
 function harness({approve, capabilities, list, item, media} = {}) {
-  const nodes = [], requests = [], toasts = [], revoked = [], mediaCalls = [];
+  const nodes = [], requests = [], toasts = [], revoked = [], mediaCalls = [], opened = [];
   const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
   class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.parentNode = null; this.attributes = {}; this.dataset = {}; this.listeners = {}; this.value = ''; this._text = ''; this.disabled = false; this.checked = false; this.open = false; this.isConnected = true; nodes.push(this); }
+    constructor(tag) { this.tagName = tag; this.children = []; this.parentNode = null; this.attributes = {}; this.dataset = {}; this.listeners = {}; this.value = ''; this._text = ''; this.disabled = false; this.checked = false; this.open = false; this.isConnected = true; this.classList = {add() {}}; nodes.push(this); }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
     set textContent(value) { this._text = String(value); this.children = []; }
     append(...children) { for (const child of children) { this.children.push(child); child.parentNode = this; } }
@@ -65,7 +65,7 @@ function harness({approve, capabilities, list, item, media} = {}) {
   const context = {document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
   vm.runInNewContext(source, context);
   let current = sample(item);
-  const ui = context.RemalVisaJourney.create({toast: message => toasts.push(message), openConversation() {}, media: async (id, customer) => { mediaCalls.push(id); return media ? media(id, customer) : new Blob(['fake'], {type: 'image/png'}); }, request: async (path, method, payload, headers) => {
+  const ui = context.RemalVisaJourney.create({toast: message => toasts.push(message), openConversation: customer => opened.push(customer), media: async (id, customer) => { mediaCalls.push(id); return media ? media(id, customer) : new Blob(['fake'], {type: 'image/png'}); }, request: async (path, method, payload, headers) => {
     requests.push({path, method, payload, headers});
     if (method === 'POST') { if (approve) return approve({path, payload, headers}); current = {...current, approval: {id: 'approved', state: 'approved', amount: payload.amount}}; return {ok: true}; }
     if (path.includes('?')) { if (list) return list({headers}); return {items: [current], capabilities: capabilities || {accountantConfigured: true, accountantReview: headers['X-Accountant-Key'] === 'test-accountant'}}; }
@@ -77,7 +77,7 @@ function harness({approve, capabilities, list, item, media} = {}) {
   const submit = async form => { await form.onsubmit({preventDefault() {}}); await tick(); };
   const authorize = async () => { await ui.reviewPayment('971500000001'); const dialog = activeDialog(), form = descendants(dialog).find(node => node.tagName === 'form'); descendants(form).find(node => node.type === 'password').value = 'test-accountant'; await submit(form); };
   const reviewForm = () => descendants(activeDialog()).find(node => node.tagName === 'form');
-  return {ui, root, body, document, nodes, requests, toasts, revoked, mediaCalls, find, descendants, activeDialog, submit, tick, authorize, reviewForm};
+  return {ui, root, body, document, nodes, requests, toasts, revoked, mediaCalls, opened, find, descendants, activeDialog, submit, tick, authorize, reviewForm};
 }
 
 test('accountant authority is confirmed by the server before the approval form opens', async () => {
@@ -152,4 +152,38 @@ test('accountant dialogs keep keyboard traversal inside the first and last visib
   const h = harness(); await h.authorize(); const dialog = h.activeDialog(), controls = dialog.querySelectorAll(), first = controls[0], last = controls.at(-1), handle = dialog.listeners.keydown[0];
   let prevented = false; first.focus(); handle({key: 'Tab', shiftKey: true, preventDefault() { prevented = true; }}); assert.equal(prevented, true); assert.equal(h.document.activeElement, last);
   prevented = false; handle({key: 'Tab', shiftKey: false, preventDefault() { prevented = true; }}); assert.equal(prevented, true); assert.equal(h.document.activeElement, first);
+});
+
+test('document fields display only supplied canonical values and leave an unknown optional grandfather name absent', () => {
+  const fields = UI.visibleDocumentFields({passportNumber:'DEMO123',latinFirstName:'DEMO',latinGrandfatherName:'',arabicGrandfatherName:'   ',contactEmail:'not-a-document-field@example.test',password:'never-show',birthDate:null});
+  assert.deepEqual(fields.map(field => field.key), ['latinFirstName','passportNumber']);
+  assert.deepEqual(fields.map(field => field.value), ['DEMO','DEMO123']);
+});
+test('ready document results show source matching without claiming authenticity and still require customer confirmation', async () => {
+  const h = harness({item:{documentReview:{enabled:true,configured:true,status:'ready',updatedAt:'2026-10-28T12:00:00Z',applicants:[{applicantIndex:0,status:'ready',fields:{passportNumber:'DEMO123',latinFirstName:'DEMO',latinGrandfatherName:''},documents:{passport:'passport-source',residence:'residence-source',photo:'photo-source'},issues:[],evidence:{passportMrzChecked:true,matchedResidence:true,fieldSources:{passportNumber:[{mediaId:'passport-source',page:1,method:'visible_and_mrz_checked',confidence:0.99}]}}}],issues:[]}}});
+  await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review');
+  assert.match(section.textContent,/اكتملت القراءة والمطابقة الآلية/); assert.match(section.textContent,/DEMO123/); assert.match(section.textContent,/مقارنة النص الظاهر مع منطقة الجواز الآلية/); assert.match(section.textContent,/مطابقة الهوية \/ الإقامة مع بيانات الجواز/); assert.match(section.textContent,/يبقى تأكيد العميل/); assert.match(section.textContent,/لا تثبت أصالة الوثائق/); assert.doesNotMatch(section.textContent,/اسم الجد|99%|0\.99/);
+  assert.equal(h.requests.length,1); assert.equal(h.requests[0].path,'visa-workflow/971500000001');
+});
+test('document mismatch reasons stay actionable and open the existing client and Raad editor', async () => {
+  const h = harness({item:{documentReview:{enabled:true,configured:true,status:'needs_review',applicants:[{applicantIndex:1,status:'needs_review',fields:{passportNumber:'DEMO124'},documents:{passport:'source'},issues:[{code:'PASSPORT_VIZ_MRZ_MISMATCH',field:'passportNumber'}],evidence:{passportMrzChecked:false,matchedResidence:false}}],issues:[]}}});
+  await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review');
+  assert.match(section.textContent,/المتقدم 2/); assert.match(section.textContent,/اختلف النص الظاهر عن القراءة الآلية/); assert.match(section.textContent,/تحتاج مراجعة/); assert.equal(h.descendants(section).find(node => node.className === 'vj-document-fields').open,true);
+  h.descendants(section).find(node => node.tagName === 'button').click(); assert.deepEqual(h.opened,['971500000001']); assert.equal(h.activeDialog(),undefined);
+});
+test('absent, pending and unavailable document results show their actual state without invented extracted values', async () => {
+  for (const [documentReview, expected] of [[undefined,'لم تصل نتيجة قراءة بعد'],[{enabled:true,configured:true,status:'processing',applicants:[]},'جارٍ قراءة المستندات ومطابقتها'],[{enabled:true,configured:false,status:'not_started',applicants:[]},'خدمة القراءة غير متاحة']]) {
+    const h = harness({item:{documentReview}}); await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review'); assert.match(section.textContent,new RegExp(expected)); assert.equal(h.descendants(section).some(node => node.tagName === 'dd'),false);
+  }
+});
+test('unshown required facts wait for the client without becoming a staff exception or invented field value', async () => {
+  const h = harness({item:{documentReview:{enabled:true,configured:true,status:'needs_confirmation',applicants:[{applicantIndex:0,status:'needs_confirmation',fields:{passportNumber:'DEMO123'},clientFieldsRequired:['passportType','issueDate','birthPlace'],documents:{passport:'passport-source',residence:'residence-source'},issues:[],evidence:{passportMrzChecked:true,matchedResidence:true}}],issues:[]}}});
+  await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review');
+  assert.match(section.textContent,/بانتظار تأكيد العميل/); assert.match(section.textContent,/يُستكمل من العميل/); assert.match(section.textContent,/نوع الجواز/); assert.match(section.textContent,/إصدار الجواز/); assert.match(section.textContent,/مكان الميلاد/);
+  assert.equal(h.descendants(section).filter(node => node.tagName === 'dd').length,1); assert.equal(h.descendants(section).some(node => node.tagName === 'button'),false);
+});
+test('reading completed before accountant approval shows a payment wait chip without creating a document exception', async () => {
+  const h = harness({item:{documentReview:{enabled:true,configured:true,status:'ready',applicants:[{applicantIndex:0,status:'ready',awaitingPayment:true,applied:false,fields:{passportNumber:'DEMO123'},documents:{passport:'source'},issues:[]},{applicantIndex:1,status:'ready',awaitingPayment:false,applied:true,fields:{passportNumber:'DEMO456'},documents:{passport:'source-two'},issues:[]}],issues:[]}}});
+  await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review'), applicants = h.descendants(section).filter(node => node.className === 'vj-document-applicant');
+  assert.match(applicants[0].textContent,/القراءة والمطابقة مكتملة/); assert.match(applicants[0].textContent,/بانتظار اعتماد الدفعة/); assert.doesNotMatch(applicants[1].textContent,/بانتظار اعتماد الدفعة/); assert.equal(h.descendants(section).some(node => node.tagName === 'button'),false); assert.doesNotMatch(section.textContent,/جاهز للبوابة|الدفعة معتمدة/);
 });

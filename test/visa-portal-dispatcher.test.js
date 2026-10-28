@@ -112,6 +112,33 @@ test('explicit client consent and complete answers are required before portal PO
   await f.dispatcher.launch(f.fulfilment.job(result.jobs[0].id)); assert.equal(f.calls.length, 0);
 });
 
+test('production dossier resolution authorizes a verified machine dossier independently of staff flags', async () => {
+ const f=fixture(),[job]=await f.activate();let fingerprint='verified-machine-execution-v1',resolutions=0;
+ f.drafts[0].review.complete=false;
+ f.raad.portalDossier=(customer,{applicantIndex,clientProof})=>{resolutions++;assert.equal(customer,CUSTOMER);assert.equal(applicantIndex,0);assert.equal(clientProof.complete,true);return {ready:true,source:'machine',fingerprint,fields:{...f.drafts[0].fields},defaults:f.drafts[0].defaults,documents:f.drafts[0].documents};};
+ await f.dispatcher.launch(job);
+ const run=f.store.data.visaPortalRuns[job.id];assert.equal(run.phase,'running');assert.equal(run.reviewSource,'machine');assert.equal(run.draftFingerprint,fingerprint);
+ await f.dispatcher.poll(job,run);assert.ok(resolutions>=3);assert.equal(run.phase,'running');
+ fingerprint='updated-machine-execution-v2';await f.dispatcher.poll(job,run);
+ assert.equal(run.phase,'cancelled');assert.equal(job.state,'portal_review_required');assert.equal(f.fulfilment.data().lease,null);
+ assert.equal(f.calls.filter(call=>call.path==='/internal/raad/jobs'&&call.method==='POST').length,1);
+});
+
+test('a production dossier blocker cannot be bypassed by an otherwise complete old staff review', async () => {
+ const f=fixture(),[job]=await f.activate();f.raad.portalDossier=()=>({ready:false,blockedReason:'DOCUMENT_DATA_CONFLICT'});
+ await f.dispatcher.launch(job);assert.equal(job.blockedReason,'DOCUMENT_DATA_CONFLICT');assert.equal(f.calls.length,0);assert.equal(f.fulfilment.data().lease,null);
+});
+
+test('queued questions wait for document intake and a current staff review remains a valid manual path', async () => {
+ const f=fixture();f.drafts[0].review.complete=false;const approval=f.approve(),job=f.fulfilment.job(approval.jobs[0].id);
+ const events=[];let ready=false;
+ f.dispatcher.documentIntake={enabled:()=>true,prepareJob:async()=>{events.push('prepare');return {readyForQuestions:ready,status:ready?'ready':'processing'};}};
+ const ask=f.fulfilment.askQuestions.bind(f.fulfilment);f.fulfilment.askQuestions=(...args)=>{events.push('questions');return ask(...args);};
+ await f.dispatcher.tick();assert.equal(job.state,'queued');assert.equal(job.blockedReason,'DOCUMENTS_READING');assert.equal(events.includes('questions'),false);
+ f.drafts[0].review.complete=true;
+ await f.dispatcher.tick();assert.equal(job.state,'awaiting_answers');assert.equal(events.at(-2),'prepare');assert.equal(events.at(-1),'questions');assert.equal(f.calls.length,0);
+});
+
 test('reviewed applicant documents are required and source/client identity conflicts block launch', async () => {
   const f = fixture(), [job] = await f.activate(); f.drafts[0].review.complete = false;
   await f.dispatcher.launch(job); assert.equal(job.blockedReason, 'DOCUMENTS_REVIEW_REQUIRED'); assert.equal(f.calls.length, 0);

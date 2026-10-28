@@ -4,6 +4,9 @@ const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding}=require('./saudi-visa-nlu');
 const {VisaMediaStore,handleVisaMediaRequest}=require('./visa-media');
 const {VisaPdfAutoPreparer}=require('./visa-pdf-auto');
+const {createDocumentVision}=require('./visa-document-vision');
+const {VisaDocumentIntake}=require('./visa-document-intake');
+const {VisaDocumentNotifications}=require('./visa-document-notifications');
 const {RaadVisaWorkflow}=require('./raad-visa-workflow');
 const {handleRaadRequest}=require('./raad-http');
 const {VisaFulfilment}=require('./visa-fulfilment');
@@ -61,10 +64,14 @@ for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCu
 const portalMonitor=new PortalMonitor();
 const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
+const documentVision=createDocumentVision({env:process.env,fetchImpl:(...args)=>fetch(...args)});
+if(documentVision.status().enabled&&!Number.isFinite(assistant.store.data.visaDocumentFeedbackActivatedAt)){assistant.store.data.visaDocumentFeedbackActivatedAt=Date.now();assistant.store.save();}
+let visaDocumentIntake,visaDocumentNotifications;
+function documentFeedbackAllowed(customer){const activatedAt=assistant.store.data.visaDocumentFeedbackActivatedAt,inboundAt=journal.summary(customer)?.lastInboundAt;return documentVision.status().enabled&&activeService(assistant.store,customer)==='saudi_visa'&&Number.isFinite(activatedAt)&&Number.isFinite(inboundAt)&&inboundAt>=activatedAt;}
 const visaPdfAuto=new VisaPdfAutoPreparer({media:visaMedia,store:assistant.store,report:code=>console.log(code)});
 if(visaEnabled())visaPdfAuto.start();
-async function receiveVisaMedia(customer,message){const result=await visaMedia.receive(customer,message);if(result.ok&&result.media?.mimeType==='application/pdf'){try{visaPdfAuto.enqueue(customer,result.media.id);}catch{console.log('PDF_AUTO_ENQUEUE_FAILED');}}return result;}
-const raad=new RaadVisaWorkflow({store:assistant.store,mediaStore:visaMedia,env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
+async function receiveVisaMedia(customer,message){const result=await visaMedia.receive(customer,message);if(result.ok&&result.media?.mimeType==='application/pdf'){try{visaPdfAuto.enqueue(customer,result.media.id);}catch{console.log('PDF_AUTO_ENQUEUE_FAILED');}}if(result.ok&&['image/jpeg','image/png','image/webp','application/pdf'].includes(result.media?.mimeType)){try{if(visaDocumentIntake?.enqueue(customer,result.media.id)&&documentVision.ready())result.reply='وصل المرفق، وجارٍ قراءته وتحديد نوعه ومطابقة بيانات المستندات لاستكمال ملفك.';}catch{console.log('DOCUMENT_INTAKE_ENQUEUE_FAILED');}}return result;}
+const raad=new RaadVisaWorkflow({store:assistant.store,mediaStore:visaMedia,env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{},canAutomate:id=>!inbox.isHumanOwned(id)&&!inbox.isBlocked(id)});
 const raadProvider=new RaadTinyFishProfile({env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
 function operationsUrl(customer){const base=process.env.RENDER_EXTERNAL_URL||'https://flycham-whatsapp-assistant.onrender.com';return new URL('/operations?customer='+encodeURIComponent(customer),base).href;}
@@ -83,11 +90,14 @@ const deliveries=new Map();
 const visaWhatsApp=createVisaWhatsAppAdapter({env:process.env,mediaStore:visaMedia,journal});
 let visaDispatcher;
 const visaFulfilment=new VisaFulfilment({store:assistant.store,inbox,journal,mediaStore:visaMedia,raad,env:process.env,canAutomate:id=>!inbox.isHumanOwned(id),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata);const messageId=result?.messages?.[0]?.id;if(messageId&&journal.hasCustomer(to))journal.recordOutbound(to,{id:messageId,text:payload.type==='document'?'[نسخة طلب تأشيرة PDF]':payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),resumeOtp:input=>visaDispatcher.resumeOtp(input)});
-visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady()});
+visaDocumentIntake=new VisaDocumentIntake({store:assistant.store,mediaStore:visaMedia,vision:documentVision,raad,fulfilment:visaFulfilment,inbox,env:process.env,onUpdate:customer=>{if(documentFeedbackAllowed(customer))Promise.resolve(visaDocumentNotifications?.update(customer)).then(()=>visaDocumentNotifications?.flush(customer)).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));wakeVisa();}});
+visaDocumentNotifications=new VisaDocumentNotifications({store:assistant.store,documentIntake:visaDocumentIntake,inbox,send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata),messageId=result?.messages?.[0]?.id;if(messageId)journal.recordOutbound(to,{id:messageId,text:payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;})});
+visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
-const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured()});
-const handleVisaWorkflow=createVisaFulfilmentHttp({fulfilment:visaFulfilment,inbox,journal,mediaStore:visaMedia,store:assistant.store,wake:wakeVisa});
+const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured(),documentVision,documentIntake:visaDocumentIntake});
+const handleVisaWorkflow=createVisaFulfilmentHttp({fulfilment:visaFulfilment,inbox,journal,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,wake:()=>{visaDocumentIntake.wake();wakeVisa();}});
+if(visaEnabled())visaDocumentIntake.start();
 
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
 
@@ -188,6 +198,7 @@ async function processCustomerMessages(sender,messages){
     const attachments=messages.filter(m=>m.media),mediaReplies=[];
     for(const m of attachments){const result=await receiveVisaMedia(sender,m);mediaReplies.push(result.reply);}
     const result=await visa.handle(sender,text,{messages});
+    visaDocumentIntake.wake();
     if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
     if(result.superseded||!result.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
@@ -299,6 +310,7 @@ async function handleWebhookPost(request, response) {
       if(result.handled){await rawSendTextMessage(message.from,result.ok?'وصل الرمز إلى رعد وجارٍ استكمال التحقق من الطلب.':'تعذر ربط الرمز بطلب تحقق نشط. انتظر رسالة طلب الرمز الحالية ورد عليها مباشرة.').catch(()=>{});wakeVisa();continue;}
     }
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
+    if(documentFeedbackAllowed(message.from)){visaDocumentNotifications.update(message.from);visaDocumentNotifications.reopen(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));}visaDocumentIntake.wake();
     const reopenedVisa=visaFulfilment.requeuePausedMessages(message.from);
     if(!inbox.isHumanOwned(message.from)){
       const answered=visaFulfilment.handleCustomerMessage(message.from,message);
@@ -398,14 +410,14 @@ function createServer() {
       const body=logo?Buffer.from(require('./remal-logo').split(',')[1],'base64'):readFileSync(join(__dirname,asset));
       response.writeHead(200,{'Content-Type':logo?'image/jpeg':asset.endsWith('.js')?'text/javascript; charset=utf-8':asset.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"}).end(body);return;
     }
-    if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template','/internal/assistant/visa-portal/payment-template'].includes(url.pathname)){
+    if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template','/internal/assistant/visa-portal/payment-template','/internal/assistant/visa-portal/document-ocr/probe'].includes(url.pathname)){
       if(!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
       if(await handleVisaSetup(request,response,url))return;
     }
     const visaLease=url.pathname.match(/^\/internal\/assistant\/visa-portal\/jobs\/([a-f0-9-]{36})\/lease$/);
     if(visaLease){
       if(request.method!=='GET'||!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
-      let current=false;try{const id=visaLease[1];visaFulfilment.guardLease(id,request.headers['x-raad-lease-token']);const job=visaFulfilment.job(id),run=assistant.store.data.visaPortalRuns[id],draft=raad.get(job.customer,{applicantIndex:job.applicantIndex});const original=assistant.store.data.raadApplications?.[job.customer]?.applicants?.[job.applicantIndex];current=Boolean(run&&draft.review?.complete&&run.draftFingerprint===original?.review?.fingerprint);}catch{}
+      let current=false;try{const id=visaLease[1];visaFulfilment.guardLease(id,request.headers['x-raad-lease-token']);const job=visaFulfilment.job(id),run=assistant.store.data.visaPortalRuns[id];current=Boolean(run&&visaDispatcher.currentDossier(job,run).ready);}catch{}
       response.writeHead(current?200:409,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({current}));return;
     }
     if(url.pathname.startsWith('/internal/assistant/')){
@@ -457,7 +469,7 @@ function createServer() {
   });
   const sweep=setInterval(()=>{
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
-   if(visaEnabled()){visaMedia.prune();for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
+   if(visaEnabled()){visaMedia.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
    for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));

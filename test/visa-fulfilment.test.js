@@ -2,8 +2,11 @@
 
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
+const {createHash} = require('node:crypto');
 const {VisaFulfilment} = require('../src/visa-fulfilment');
 const {visaCaseSignature} = require('../src/visa-case-signature');
+const {RaadVisaWorkflow} = require('../src/raad-visa-workflow');
+const {reconcileDocumentEvidence} = require('../src/visa-document-matching');
 
 const CUSTOMER = '15550001001', OWNER = '15550001999', OTHER = '15550001002';
 const RECEIPT = '4bcb3aaa-67be-405b-854e-ebc4f962bc00', PDF = 'c444dc53-ab4e-4f46-9e6a-4f080ab1d742';
@@ -628,4 +631,118 @@ test('template approval cannot revive notification after material case changes',
   await f.service.dispatchMessage(approval.jobs[0].paymentNoticeId); f.c.quote.total = 280;
   assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: true, ownerTemplateApproved: true}).requeued, 0);
   assert.equal(f.service.data().outbox[approval.jobs[0].paymentNoticeId].state, 'cancelled');
+});
+
+function canonicalMachineValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalMachineValue);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalMachineValue(value[key])]));
+  return value;
+}
+const machineHash = value => createHash('sha256').update(JSON.stringify(canonicalMachineValue(value))).digest('hex');
+const bytesHash = bytes => createHash('sha256').update(bytes).digest('hex');
+function checkDigit(value) { return String([...value].reduce((sum, character, index) => sum + (character === '<' ? 0 : /\d/.test(character) ? Number(character) : character.charCodeAt(0) - 55) * [7, 3, 1][index % 3], 0) % 10); }
+async function machineFactsFixture({missing = []} = {}) {
+  const f = fixture({count: 1}); f.tick(Date.parse('2026-10-28T00:00:00Z') - 1000000);
+  f.service.canAutomate = () => true;
+  for (const record of Object.values(f.store.data.visaMedia)) record.expiresAt = Date.parse('2032-01-01T00:00:00Z');
+  const approval = await f.activate(), jobId = approval.jobs[0].id;
+  const ids = {passportSource: '20000000-0000-4000-8000-000000000001', residenceSource: '20000000-0000-4000-8000-000000000002', photoSource: '20000000-0000-4000-8000-000000000003', passport: '20000000-0000-4000-8000-000000000004', residence: '20000000-0000-4000-8000-000000000005', photo: '20000000-0000-4000-8000-000000000006', evidence: '20000000-0000-4000-8000-000000000007'};
+  const png = label => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from(label)]);
+  const expiresAt = Date.parse('2032-01-01T00:00:00Z');
+  for (const [key, id] of Object.entries(ids).filter(([key]) => key !== 'evidence')) {
+    const bytes = png('synthetic-' + key), kind = ['passport', 'residence', 'photo'].includes(key) ? key : null;
+    f.store.data.visaMedia[id] = {id, customer: CUSTOMER, mimeType: 'image/png', size: bytes.length, checksum: bytesHash(bytes), bytes, receivedAt: f.options.now(), expiresAt, ...(kind ? {purpose: 'raad_portal_upload', kind, sourceIds: [ids[kind + 'Source']]} : {})};
+  }
+  f.mediaStore.read = (id, {customer}) => { const record = f.store.data.visaMedia[id]; if (!record || record.customer !== customer) throw Error('MEDIA_NOT_FOUND'); const {bytes, ...metadata} = record; if (!Buffer.isBuffer(bytes)) throw Error('MEDIA_NOT_FOUND'); return {metadata: structuredClone(metadata), bytes: Buffer.from(bytes)}; };
+  const passportFields = {latinFirstName: 'Ari', latinFamilyName: 'Example', passportNumber: 'N12345678', passportType: 'ordinary', nationalityCode: 'EGY', issuingCountryCode: 'EGY', birthDate: '1990-01-15', birthPlace: 'Example City', sex: 'M', issueDate: '2020-01-01', expiryDate: '2031-01-01'};
+  const number = passportFields.passportNumber, birth = '900115', expiry = '310101', optional = '<'.repeat(14);
+  const first = 'P<EGYEXAMPLE<<ARI'.padEnd(44, '<'), second = number + checkDigit(number) + 'EGY' + birth + checkDigit(birth) + 'M' + expiry + checkDigit(expiry) + optional + checkDigit(optional);
+  const mrz = [first, second + checkDigit(second.slice(0, 10) + second.slice(13, 20) + second.slice(21, 43))];
+  const extraction = (kind, fields, mrzLines = []) => ({version: 1, kind, readable: true, rotation: 0, fields: Object.fromEntries(Object.entries(fields).map(([field, value]) => [field, {value, confidence: 1, visible: true}])), mrzLines});
+  const visiblePassport = {...passportFields}; for (const field of missing) delete visiblePassport[field];
+  const documents = [[ids.passportSource, extraction('passport', visiblePassport, mrz)], [ids.residenceSource, extraction('uae_id_front', {latinFullName: 'Ari Example', passportNumber: 'N12345678', nationalityCode: 'EGY', birthDate: '1990-01-15', sex: 'M', emiratesId: '784190012345673', residenceExpiry: '2031-04-30'})], [ids.photoSource, extraction('portrait', {})]].map(([mediaId, value]) => ({mediaId, page: 1, sha256: f.store.data.visaMedia[mediaId].checksum, sourceSha256: f.store.data.visaMedia[mediaId].checksum, extraction: value}));
+  const matched = reconcileDocumentEvidence({documents, applicants: f.c.applicants, referenceDate: '2026-10-28'}).applicants[0];
+  const applicant = {id: ids.evidence, applicantIndex: 0, status: matched.status, fields: structuredClone(matched.fields), clientFieldsRequired: [...matched.clientFieldsRequired], documents: {passport: ids.passport, residence: ids.residence, photo: ids.photo}, sourceManifest: [ids.passportSource, ids.residenceSource, ids.photoSource].map(mediaId => ({mediaId, sha256: f.store.data.visaMedia[mediaId].checksum})), preparedManifest: ['passport', 'residence', 'photo'].map(kind => ({kind, mediaId: ids[kind], sha256: f.store.data.visaMedia[ids[kind]].checksum})), evidence: structuredClone(matched.evidence), extractionDigest: machineHash({documents, applicantIndex: 0, fields: matched.fields, matchedDocuments: matched.documents, evidence: matched.evidence})};
+  f.store.data.visaDocumentIntake = {version: 1, cases: {[CUSTOMER]: {caseId: f.c.id, caseSignature: visaCaseSignature(f.c), generation: 1, status: missing.length ? 'needs_review' : 'ready', documents, applicants: [applicant]}}};
+  const raad = new RaadVisaWorkflow({store: f.store, mediaStore: f.mediaStore, now: f.options.now, env: {RAAD_APPLICATION_PHONE: '+' + CUSTOMER, RAAD_CONTACT_EMAIL: 'example@example.test', RAAD_INSURANCE_PHONE: '+' + CUSTOMER, RAAD_POSTAL_CODE: '00000'}, canAutomate: () => true});
+  f.service.raad = raad;
+  return {...f, jobId, ids, applicant, documents, raad};
+}
+function answerRemainingMachineQuestions(f) {
+  const asked = f.service.askQuestions(f.jobId);
+  for (const question of asked.questions) {
+    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : question.field === 'passportType' ? 'ordinary' : 'no'});
+    else f.service.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'issueDate' ? '2020-01-01' : question.field === 'birthPlace' ? 'Example City' : question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : 'Example Hotel, Riyadh'});
+  }
+  return asked;
+}
+
+test('verified document facts stage privately and receive one final actual client summary', async () => {
+  const f = await machineFactsFixture(), before = structuredClone(f.c);
+  f.raad.applyMachineDossier(CUSTOMER, {applicantIndex: 0, expectedRevision: 0, expectedCaseSignature: visaCaseSignature(f.c), evidenceId: f.ids.evidence});
+  const staged = f.service.stageDocumentFacts(f.jobId, {fields: f.applicant.fields, evidenceId: f.ids.evidence});
+  assert.equal(staged.ok, true); assert.equal(staged.stagedFields.passportNumber, 'N12345678'); assert.equal(staged.stagedFields.health, undefined); assert.equal(staged.stagedFields.maritalStatus, undefined);
+  assert.deepEqual(f.service.job(f.jobId).confirmedFields, {}); assert.equal(f.service.job(f.jobId).answerConfirmation, undefined); assert.deepEqual(f.c, before); assert.equal(f.service.get(CUSTOMER).approval.state, 'approved');
+  const asked = answerRemainingMachineQuestions(f);
+  assert.ok(!asked.questions.some(question => ['latinFirstName', 'birthPlace', 'sex'].includes(question.field))); assert.ok(asked.questions.some(question => question.field === 'health.hospitalizedOrEmergency'));
+  const summary = f.service.job(f.jobId).summary, summaryMessage = Object.values(f.service.data().outbox).find(item => item.payload.token === summary.token);
+  assert.equal(summary.answers.passportNumber, 'N12345678'); assert.equal(summary.answers.health.hospitalizedOrEmergency, false); assert.ok(summaryMessage.payload.entries.some(entry => entry.field === 'expiryDate')); assert.equal(f.service.getConfirmedFields(f.jobId).complete, false);
+  f.service.confirmAnswers({sender: CUSTOMER, token: summary.token, confirm: true, messageId: 'real-machine-consent-message'});
+  const proof = f.service.getConfirmedFields(f.jobId); assert.equal(proof.complete, true); assert.equal(proof.documentEvidence.id, f.ids.evidence); assert.deepEqual(proof.confirmation.documentEvidence, proof.documentEvidence);
+  const dossier = f.raad.portalDossier(CUSTOMER, {applicantIndex: 0, clientProof: proof}); assert.equal(dossier.ready, true); assert.equal(dossier.source, 'machine'); assert.deepEqual(f.c, before);
+});
+
+test('document staging rejects forged medical defaults, supplied mismatches and unverified private evidence', async () => {
+  const f = await machineFactsFixture();
+  throwsCode(() => f.service.stageDocumentFacts(f.jobId, {fields: {...f.applicant.fields, health: {hospitalizedOrEmergency: false}}, evidenceId: f.ids.evidence}), 'VISA_DOCUMENT_FIELDS_INVALID');
+  throwsCode(() => f.service.stageDocumentFacts(f.jobId, {fields: {...f.applicant.fields, passportNumber: 'FORGED123'}, evidenceId: f.ids.evidence}), 'VISA_DOCUMENT_FIELDS_INVALID');
+  f.applicant.evidence.passportMrzChecked = false;
+  throwsCode(() => f.service.stageDocumentFacts(f.jobId, {fields: f.applicant.fields, evidenceId: f.ids.evidence}), 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
+  assert.deepEqual(f.service.job(f.jobId).confirmedFields, {}); assert.equal(f.service.job(f.jobId).documentFacts, undefined);
+});
+
+test('same evidence staging is idempotent and preserves current question token and real consent', async () => {
+  const f = await machineFactsFixture(); f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence});
+  const asked = f.service.askQuestions(f.jobId), revision = f.service.job(f.jobId).revision;
+  assert.equal(f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence}).duplicate, true); assert.equal(f.service.job(f.jobId).revision, revision); assert.ok(f.service.job(f.jobId).questions[asked.questions[0].token]);
+  answerRemainingMachineQuestions(f); f.service.confirmAnswers({sender: CUSTOMER, token: f.service.job(f.jobId).summary.token, confirm: true, messageId: 'idempotent-machine-consent'});
+  assert.equal(f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence}).duplicate, true); assert.equal(f.service.job(f.jobId).answerConfirmation.messageId, 'idempotent-machine-consent');
+});
+
+test('changed document bytes stop old questions and summaries while actual payment stays current', async () => {
+  const f = await machineFactsFixture(); f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence});
+  const asked = f.service.askQuestions(f.jobId), questionMessage = Object.values(f.service.data().outbox).find(item => item.payload.token === asked.questions[0].token);
+  f.store.data.visaMedia[f.ids.passport].bytes = Buffer.concat([f.store.data.visaMedia[f.ids.passport].bytes, Buffer.from('changed')]);
+  const result = await f.service.dispatchMessage(questionMessage.id); assert.equal(result.state, 'cancelled');
+  throwsCode(() => f.service.answerQuestion({sender: CUSTOMER, token: asked.questions[0].token, option: 'single'}), 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
+  assert.equal(f.service.get(CUSTOMER).approval.state, 'approved'); assert.equal(f.c.paymentStatus, 'verified');
+});
+
+test('only missing safe document facts become explicit client questions rather than fabricated defaults', async () => {
+  const f = await machineFactsFixture({missing: ['passportType', 'issueDate', 'birthPlace']});
+  const staged = f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence}), fingerprint = staged.documentEvidence.evidenceFingerprint;
+  assert.deepEqual(new Set(staged.clientFieldsRequired), new Set(['passportType', 'issueDate', 'birthPlace'])); assert.equal(staged.stagedFields.passportType, undefined);
+  const asked = answerRemainingMachineQuestions(f); for (const field of staged.clientFieldsRequired) assert.ok(asked.questions.some(question => question.field === field));
+  const summary = f.service.job(f.jobId).summary; assert.equal(summary.answers.passportType, 'ordinary'); assert.equal(summary.answers.issueDate, '2020-01-01');
+  f.service.confirmAnswers({sender: CUSTOMER, token: summary.token, confirm: true, messageId: 'missing-document-client-consent'});
+  const proof = f.service.getConfirmedFields(f.jobId); assert.equal(proof.complete, true); assert.equal(proof.documentEvidence.evidenceFingerprint, fingerprint);
+});
+
+test('staging after prior personal answers preserves those actual facts and requires a new combined summary', async () => {
+  const f = await machineFactsFixture(); answerRemainingMachineQuestions(f);
+  f.service.confirmAnswers({sender: CUSTOMER, token: f.service.job(f.jobId).summary.token, confirm: true, messageId: 'prior-personal-consent'});
+  f.service.stageDocumentFacts(f.jobId, {evidenceId: f.ids.evidence});
+  assert.equal(f.service.job(f.jobId).stagedFields.health.hospitalizedOrEmergency, false); assert.equal(f.service.job(f.jobId).answerConfirmation, undefined);
+  const asked = f.service.askQuestions(f.jobId); assert.equal(asked.questions.length, 0); assert.equal(f.service.job(f.jobId).state, 'awaiting_answer_confirmation'); assert.equal(f.service.getConfirmedFields(f.jobId).complete, false);
+});
+
+test('document staging cannot overwrite conflicting client facts or run during a browser lease/staff claim', async () => {
+  const conflict = await machineFactsFixture(); conflict.service.job(conflict.jobId).confirmedFields.latinFirstName = 'Another';
+  throwsCode(() => conflict.service.stageDocumentFacts(conflict.jobId, {evidenceId: conflict.ids.evidence}), 'VISA_DOCUMENT_FACT_CONFLICT');
+  const owned = await machineFactsFixture(); owned.claim(true);
+  throwsCode(() => owned.service.stageDocumentFacts(owned.jobId, {evidenceId: owned.ids.evidence}), 'HUMAN_OWNERSHIP');
+  const running = await machineFactsFixture(); running.service.acquireJob(running.jobId, {workerId: 'already-running-document-job'});
+  throwsCode(() => running.service.stageDocumentFacts(running.jobId, {evidenceId: running.ids.evidence}), 'VISA_DOCUMENT_STAGE_IN_PROGRESS');
+  const unconfigured = await machineFactsFixture(); unconfigured.service.canAutomate = undefined;
+  throwsCode(() => unconfigured.service.stageDocumentFacts(unconfigured.jobId, {evidenceId: unconfigured.ids.evidence}), 'VISA_DOCUMENT_AUTOMATION_PAUSED');
 });

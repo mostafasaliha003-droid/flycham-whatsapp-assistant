@@ -10,6 +10,9 @@ const hash = value => createHash('sha256').update(JSON.stringify(value)).digest(
 const phone = value => typeof value === 'string' && /^\+?\d{8,16}$/.test(value) ? value.replace(/^\+/, '') : null;
 const terminal = new Set(['saved_application', 'stale', 'cancelled', 'portal_review_required']);
 const OTP_TTL = 5 * 60000;
+const DOCUMENT_FACT_FIELDS = Object.freeze(['nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode', 'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry']);
+const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
+const CLIENT_DOCUMENT_FIELDS = new Set(['passportType', 'issueDate', 'birthPlace']);
 function fail(code, statusCode = 409) { throw Object.assign(Error(code), {code, statusCode}); }
 function text(value, max = 150) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) fail('VISA_VALUE_INVALID', 400);
@@ -23,6 +26,12 @@ function setField(target, field, value) {
   else { target[names[0]] ||= {}; target[names[0]][names[1]] = value; }
 }
 function fieldAt(target, field) { return field.split('.').reduce((value, key) => value?.[key], target); }
+function documentFactValue(field, value) {
+  if (typeof value !== 'string') return value;
+  const normalized = value.normalize('NFC').trim().replace(/\s+/gu, ' ');
+  return field === 'emiratesId' ? normalized.replace(/[ -]/gu, '') : normalized.toUpperCase();
+}
+const documentFactsHash = fields => hash(Object.fromEntries(Object.keys(fields).sort().map(field => [field, documentFactValue(field, fields[field])])));
 
 // This coordinator contains no browser, model, bank, or government-payment
 // implementation. Its injected adapters must perform their final guard directly
@@ -302,6 +311,7 @@ class VisaFulfilment {
       if (!job || ['stale', 'cancelled', 'portal_review_required'].includes(job.state) || item.questionRevision !== undefined && item.questionRevision !== job.questionRevision) return false;
       if (item.kind === 'applicant_question' && (job.state !== 'awaiting_answers' || job.questions[item.payload.token]?.state !== 'pending')) return false;
       if (item.kind === 'applicant_answer_summary' && (job.state !== 'awaiting_answer_confirmation' || job.summary?.token !== item.payload.token)) return false;
+      if (job.documentFacts && ['applicant_question', 'applicant_answer_summary'].includes(item.kind)) { try { this.assertDocumentFactsCurrent(job); } catch { return false; } }
     }
     if (item.challengeId) { const challenge = this.data().challenges[item.challengeId]; if (challenge?.state !== 'pending' || challenge.expiresAt <= this.now()) return false; }
     if (item.kind === 'owner_otp_request') {
@@ -375,15 +385,75 @@ class VisaFulfilment {
     return this.commit(() => { if (['delivered', 'read'].includes(status)) item.state = 'delivered'; else if (status === 'failed') { item.state = 'failed'; item.failure = 'PROVIDER_DELIVERY_FAILED'; } item.updatedAt = this.now(); return item; });
   }
 
+  verifiedDocumentFacts(job, evidenceId) {
+    let allowed = false;
+    try { allowed = typeof this.canAutomate === 'function' && this.canAutomate(job.customer) === true; } catch {}
+    if (!allowed) fail('VISA_DOCUMENT_AUTOMATION_PAUSED');
+    const verify = require('./raad-visa-workflow').verifyMachineDossier;
+    if (typeof verify !== 'function') fail('VISA_DOCUMENT_VERIFIER_REQUIRED', 503);
+    const dossier = verify({store: this.store, mediaStore: this.mediaStore, customer: job.customer, applicantIndex: job.applicantIndex, expectedCaseSignature: job.caseSignature, evidenceId, now: this.now});
+    if (!dossier?.ready || !/^[a-f0-9]{64}$/.test(dossier.evidenceFingerprint || '') || !object(dossier.fields) || !Object.keys(dossier.fields).length) fail('VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
+    const fields = {};
+    for (const [field, value] of Object.entries(dossier.fields)) {
+      if (!DOCUMENT_FACT_SET.has(field)) fail('VISA_DOCUMENT_FIELDS_INVALID', 400);
+      fields[field] = validateAnswer(field, value);
+    }
+    const clientFieldsRequired = dossier.clientFieldsRequired || [];
+    if (!Array.isArray(clientFieldsRequired) || clientFieldsRequired.length > 3 || new Set(clientFieldsRequired).size !== clientFieldsRequired.length || clientFieldsRequired.some(field => !CLIENT_DOCUMENT_FIELDS.has(field) || Object.hasOwn(fields, field))) fail('VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
+    return {...dossier, fields, clientFieldsRequired};
+  }
+  assertDocumentFactsCurrent(job) {
+    if (!job.documentFacts) return null;
+    const dossier = this.verifiedDocumentFacts(job, job.documentFacts.evidenceId);
+    if (dossier.evidenceFingerprint !== job.documentFacts.evidenceFingerprint || documentFactsHash(dossier.fields) !== job.documentFacts.fieldsFingerprint || hash(dossier.clientFieldsRequired) !== hash(job.documentRequiredFields || [])) fail('VISA_DOCUMENT_EVIDENCE_STALE');
+    return dossier;
+  }
+  missingClientFields(job, fields) {
+    return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: job.documentRequiredFields || []})])];
+  }
+  stageDocumentFacts(jobId, {fields, evidenceId} = {}) {
+    const job = this.guardJob(jobId);
+    if (!['queued', 'ready', 'awaiting_answers', 'needs_followup', 'awaiting_answer_confirmation'].includes(job.state) || this.data().lease?.jobId === jobId) fail('VISA_DOCUMENT_STAGE_IN_PROGRESS');
+    if (typeof evidenceId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(evidenceId)) fail('VISA_DOCUMENT_EVIDENCE_INVALID', 400);
+    const dossier = this.verifiedDocumentFacts(job, evidenceId), verifiedFields = dossier.fields;
+    if (fields !== undefined && (!object(fields) || Object.keys(fields).some(field => !DOCUMENT_FACT_SET.has(field)) || documentFactsHash(fields) !== documentFactsHash(verifiedFields))) fail('VISA_DOCUMENT_FIELDS_INVALID', 400);
+    const fieldsFingerprint = documentFactsHash(verifiedFields);
+    if (job.documentFacts?.evidenceId === evidenceId && job.documentFacts.evidenceFingerprint === dossier.evidenceFingerprint && job.documentFacts.fieldsFingerprint === fieldsFingerprint && hash(job.documentRequiredFields || []) === hash(dossier.clientFieldsRequired)) return clone({ok: true, duplicate: true, jobId, applicantIndex: job.applicantIndex, state: job.state, stagedFields: job.stagedFields || {}, clientFieldsRequired: dossier.clientFieldsRequired, documentEvidence: {id: evidenceId, evidenceFingerprint: dossier.evidenceFingerprint}});
+    for (const [field, value] of Object.entries(verifiedFields)) {
+      if (Object.hasOwn(job.confirmedFields, field) && documentFactValue(field, job.confirmedFields[field]) !== documentFactValue(field, value)) fail('VISA_DOCUMENT_FACT_CONFLICT');
+      const staged = job.stagedFields?.[field];
+      if (staged !== undefined && documentFactValue(field, staged) !== documentFactValue(field, value) && documentFactValue(field, staged) !== documentFactValue(field, job.documentFacts?.fields?.[field])) fail('VISA_DOCUMENT_FACT_CONFLICT');
+    }
+    return this.commit(() => {
+      const staged = {...clone(job.confirmedFields), ...clone(job.stagedFields || {}), ...clone(verifiedFields)};
+      for (const nested of ['health', 'guardian']) if (job.confirmedFields[nested] || job.stagedFields?.[nested]) staged[nested] = {...job.confirmedFields[nested], ...job.stagedFields?.[nested]};
+      job.stagedFields = staged; job.documentFacts = {evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, fieldsFingerprint, fields: clone(verifiedFields), stagedAt: this.now()};
+      job.documentRequiredFields = [...dossier.clientFieldsRequired];
+      job.questions = {}; job.questionRevision = (job.questionRevision || 0) + 1; job.revision++; job.state = 'queued'; delete job.summary; delete job.answerConfirmation;
+      for (const item of Object.values(this.data().outbox)) if (item.jobId === jobId && item.state === 'pending' && ['applicant_question', 'applicant_answer_summary'].includes(item.kind)) { item.state = 'cancelled'; item.failure = 'DOCUMENT_FACTS_CHANGED'; item.updatedAt = this.now(); }
+      this.audit('document_facts_staged', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, fields: Object.keys(verifiedFields)});
+      return {ok: true, duplicate: false, jobId, applicantIndex: job.applicantIndex, state: job.state, stagedFields: job.stagedFields, clientFieldsRequired: dossier.clientFieldsRequired, documentEvidence: {id: evidenceId, evidenceFingerprint: dossier.evidenceFingerprint}};
+    });
+  }
+  queueAnswerSummary(job, answers) {
+    const documentEvidence = job.documentFacts ? {id: job.documentFacts.evidenceId, evidenceFingerprint: job.documentFacts.evidenceFingerprint} : null;
+    const summary = {token: randomUUID(), questionRevision: job.questionRevision, caseRevision: job.caseRevision, answers: clone(answers), documentEvidence, createdAt: this.now()};
+    job.summary = summary; job.state = 'awaiting_answer_confirmation';
+    const answeredPaths = Object.keys(answers).flatMap(field => object(answers[field]) ? Object.keys(answers[field]).map(name => field + '.' + name) : [field]);
+    const entries = answeredPaths.map(field => ({field, label: questionFor(field, {applicantIndex: job.applicantIndex}).prompt, value: fieldAt(answers, field), ...(fieldAt(answers, field) === null ? {displayValue: 'غير منطبق'} : {})}));
+    this.enqueue({key: 'summary:' + summary.token, kind: 'applicant_answer_summary', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId: job.id, questionRevision: job.questionRevision, payload: {type: 'answer_summary', text: `يرجى مراجعة إجابات المسافر ${job.applicantIndex + 1}. باختيار «أؤكد وأفوّض» تقر بما يلي: أؤكد صحة الإجابات وأفوّض شركة الرمال بتقديم طلب التأشيرة بهذه البيانات.`, token: summary.token, applicantIndex: job.applicantIndex, entries, options: [{id: 'confirm', label: 'أؤكد وأفوّض'}, {id: 'correct', label: 'أريد تصحيح الإجابات'}]}});
+    return summary;
+  }
   askQuestions(jobId, {fields, leaseToken} = {}) {
     const job = this.guardJob(jobId);
+    this.assertDocumentFactsCurrent(job);
     const activeLease = this.data().lease;
     if (activeLease?.jobId === jobId && (activeLease.token !== leaseToken || activeLease.cancelled)) fail('VISA_BROWSER_LEASE_REQUIRED');
     // Staff-entered or document-extracted personal facts still require the
     // applicant's own answer. A draft's medical No is never client provenance.
     const known = {...job.confirmedFields, ...job.stagedFields};
     for (const nested of ['health', 'guardian']) if (job.confirmedFields[nested] || job.stagedFields?.[nested]) known[nested] = {...job.confirmedFields[nested], ...job.stagedFields?.[nested]};
-    const candidates = fields || requiredQuestions(known);
+    const candidates = fields || this.missingClientFields(job, known);
     if (!Array.isArray(candidates) || candidates.length > 40 || new Set(candidates).size !== candidates.length) fail('VISA_QUESTION_FIELDS_INVALID', 400);
     const requested = [];
     for (const field of candidates) {
@@ -411,6 +481,7 @@ class VisaFulfilment {
         job.questions[token] = question;
         this.enqueue({key: 'question:' + token, kind: 'applicant_question', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, questionRevision: job.questionRevision, payload: {type: 'question', text: definition.prompt, token, field: definition.field, applicantIndex: job.applicantIndex, options: definition.options || []}});
       }
+      if (!prepared.length && job.stagedFields && !job.answerConfirmation) this.queueAnswerSummary(job, job.stagedFields);
       this.audit('questions_requested', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, fields: requested});
       return {jobId, applicantIndex: job.applicantIndex, questionRevision: job.questionRevision, questions: Object.values(job.questions)};
     });
@@ -419,6 +490,7 @@ class VisaFulfilment {
     const match = Object.values(this.data().jobs).find(job => Object.hasOwn(job.questions || {}, token));
     if (!match || sender !== match.customer) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
     const job = this.guardJob(match.id), question = job.questions[token];
+    this.assertDocumentFactsCurrent(job);
     if (job.state !== 'awaiting_answers' || question.questionRevision !== job.questionRevision || question.caseRevision !== job.caseRevision || question.state !== 'pending') fail('VISA_ANSWER_TOKEN_STALE');
     let answer;
     if (question.type === 'choice') {
@@ -440,11 +512,7 @@ class VisaFulfilment {
           job.state = 'needs_followup'; job.followupFields = required;
           return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, followupFields: required};
         }
-        const summary = {token: randomUUID(), questionRevision: job.questionRevision, caseRevision: job.caseRevision, answers, createdAt: this.now()};
-        job.summary = summary; job.state = 'awaiting_answer_confirmation';
-        const answeredPaths = Object.keys(answers).flatMap(field => object(answers[field]) ? Object.keys(answers[field]).map(name => field + '.' + name) : [field]);
-        const entries = answeredPaths.map(field => ({field, label: questionFor(field, {applicantIndex: job.applicantIndex}).prompt, value: fieldAt(answers, field), ...(fieldAt(answers, field) === null ? {displayValue: 'غير منطبق'} : {})}));
-        this.enqueue({key: 'summary:' + summary.token, kind: 'applicant_answer_summary', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId: job.id, questionRevision: job.questionRevision, payload: {type: 'answer_summary', text: `يرجى مراجعة إجابات المسافر ${job.applicantIndex + 1}. باختيار «أؤكد وأفوّض» تقر بما يلي: أؤكد صحة الإجابات وأفوّض شركة الرمال بتقديم طلب التأشيرة بهذه البيانات.`, token: summary.token, applicantIndex: job.applicantIndex, entries, options: [{id: 'confirm', label: 'أؤكد وأفوّض'}, {id: 'correct', label: 'أريد تصحيح الإجابات'}]}});
+        this.queueAnswerSummary(job, answers);
       }
       return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state};
     });
@@ -453,15 +521,17 @@ class VisaFulfilment {
     const found = Object.values(this.data().jobs).find(job => job.summary?.token === token);
     if (!found || found.customer !== sender) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
     const job = this.guardJob(found.id);
+    this.assertDocumentFactsCurrent(job);
     if (job.state !== 'awaiting_answer_confirmation' || job.summary.questionRevision !== job.questionRevision || job.summary.caseRevision !== job.caseRevision) fail('VISA_ANSWER_TOKEN_STALE');
     if (confirm !== true) return this.commit(() => { job.state = 'needs_followup'; job.followupFields = Object.keys(job.summary.answers).flatMap(field => object(job.summary.answers[field]) ? Object.keys(job.summary.answers[field]).map(name => field + '.' + name) : [field]); delete job.summary; delete job.stagedFields; return {ok: true, state: job.state, followupFields: job.followupFields}; });
     const incomingMessageId = messageId === undefined ? null : text(messageId, 500);
     const answers = clone(job.summary.answers);
-    return this.commit(() => { job.confirmedFields = answers; job.answerConfirmation = {at: this.now(), grantedAt: this.now(), granted: true, scope: 'saudi_visa_application', caseSignature: job.caseSignature, messageId: incomingMessageId, sender, questionRevision: job.questionRevision}; job.state = 'ready'; job.revision++; delete job.summary; delete job.stagedFields; this.audit('applicant_answers_confirmed', {customer: job.customer, jobId: job.id, applicantIndex: job.applicantIndex, messageId: incomingMessageId, scope: 'saudi_visa_application', fields: Object.values(job.questions).map(item => item.field)}); return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state}; });
+    return this.commit(() => { job.confirmedFields = answers; job.answerConfirmation = {at: this.now(), grantedAt: this.now(), granted: true, scope: 'saudi_visa_application', caseSignature: job.caseSignature, messageId: incomingMessageId, sender, questionRevision: job.questionRevision, documentEvidence: clone(job.summary.documentEvidence || null)}; job.state = 'ready'; job.revision++; delete job.summary; delete job.stagedFields; this.audit('applicant_answers_confirmed', {customer: job.customer, jobId: job.id, applicantIndex: job.applicantIndex, messageId: incomingMessageId, scope: 'saudi_visa_application', fields: Object.values(job.questions).map(item => item.field)}); return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state}; });
   }
   getConfirmedFields(jobId) {
-    const job = this.guardJob(jobId), fields = clone(job.confirmedFields), missing = requiredQuestions(fields);
-    const context = {jobId, jobRevision: job.revision, customer: job.customer, applicantIndex: job.applicantIndex, caseId: job.caseId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, fields, confirmation: job.answerConfirmation || null};
+    const job = this.guardJob(jobId), fields = clone(job.confirmedFields), missing = this.missingClientFields(job, fields);
+    this.assertDocumentFactsCurrent(job);
+    const context = {jobId, jobRevision: job.revision, customer: job.customer, applicantIndex: job.applicantIndex, caseId: job.caseId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, fields, confirmation: job.answerConfirmation || null, documentEvidence: job.documentFacts ? {id: job.documentFacts.evidenceId, evidenceFingerprint: job.documentFacts.evidenceFingerprint} : null};
     return {...context, proof: hash(context), complete: Boolean(job.answerConfirmation) && missing.length === 0, missing};
   }
 
@@ -600,8 +670,9 @@ class VisaFulfilment {
       return clone({ok: true, duplicate: true, status: 'saved_application', visaIssued: false, governmentPaymentMade: false, job: previous, message});
     }
     const {job} = this.guardLease(jobId, leaseToken);
+    this.assertDocumentFactsCurrent(job);
     if (status !== 'saved_application' || paymentAttempted !== false || returnedFromPayment !== true) fail('VISA_PORTAL_RESULT_UNSAFE', 400);
-    if (job.state !== 'running' || !job.answerConfirmation || requiredQuestions(job.confirmedFields).length) fail('VISA_CLIENT_FACTS_UNCONFIRMED');
+    if (job.state !== 'running' || !job.answerConfirmation || this.missingClientFields(job, job.confirmedFields).length) fail('VISA_CLIENT_FACTS_UNCONFIRMED');
     const reference = text(applicationReference, 150);
     const artifact = this.observeMedia(job.customer, requestCopy?.mediaId, this.artifactStore);
     if (artifact.mimeType !== 'application/pdf') fail('VISA_REQUEST_COPY_PDF_REQUIRED', 400);
@@ -614,4 +685,4 @@ class VisaFulfilment {
   }
 }
 
-module.exports = {VisaFulfilment, OTP_TTL};
+module.exports = {VisaFulfilment, OTP_TTL, DOCUMENT_FACT_FIELDS};

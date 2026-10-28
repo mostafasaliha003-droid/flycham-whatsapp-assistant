@@ -5,6 +5,8 @@ const P = require('./saudi-visa-policy');
 const {validCustomer} = require('./conversation-journal');
 const {visaCaseSignature, currentVisaEvidence} = require('./visa-case-signature');
 const {validateApplicant, proposedEntryDate} = require('./raad-document-validation');
+const {requiredQuestions} = require('./visa-client-questions');
+const {reconcileDocumentEvidence} = require('./visa-document-matching');
 
 // This module prepares protected local drafts. It has no portal client, payment
 // client, session credentials, submission action, or legal-consent action.
@@ -25,6 +27,14 @@ const BOOLEAN_FIELDS = new Set(['previousNationality', 'travelledLastFiveYears',
 const HEALTH_FIELDS = Object.freeze(['hospitalizedOrEmergency', 'accidentDisability', 'congenitalCondition']);
 const GUARDIAN_FIELDS = Object.freeze(['relationship', 'visaReference', 'status']);
 const DOCUMENT_KINDS = Object.freeze(['passport', 'residence', 'photo']);
+const DOCUMENT_FACT_FIELDS = Object.freeze([
+  'nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode',
+  'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex',
+  'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName',
+  'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName',
+  'emiratesId', 'residenceExpiry'
+]);
+const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
 const CONTACT_FIELDS = Object.freeze(['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode']);
 const CONTACT_ENV = Object.freeze({applicationPhone: 'RAAD_APPLICATION_PHONE', contactEmail: 'RAAD_CONTACT_EMAIL', insurancePhone: 'RAAD_INSURANCE_PHONE', postalCode: 'RAAD_POSTAL_CODE', city: 'RAAD_CITY', postOfficeBox: 'RAAD_POST_OFFICE_BOX'});
 const NATIONALITY_CODES = Object.freeze({
@@ -125,11 +135,108 @@ function dubaiDate(now) {
   return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type).value).join('-');
 }
 
+function equivalentFact(field, first, second) {
+  const normalized = value => {
+    if (typeof value !== 'string') return value;
+    let result = value.normalize('NFKC').trim();
+    if (field.includes('Name')) return result.normalize('NFKD').replace(/\p{M}/gu, '').toUpperCase().replace(/[ .’'\-]+/g, ' ').trim();
+    if (field === 'sex') return ({male: 'M', female: 'F', unspecified: 'X', m: 'M', f: 'F', x: 'X'})[result.toLowerCase()] || result;
+    if (field === 'emiratesId') return result.replace(/[ -]/g, '');
+    if (['nationalityCode', 'issuingCountryCode'].includes(field)) return countryCode(result);
+    if (field === 'passportNumber') return result.toUpperCase();
+    return result;
+  };
+  return hash(normalized(first)) === hash(normalized(second));
+}
+function documentFields(input) {
+  if (!isObject(input) || Object.keys(input).some(field => !DOCUMENT_FACT_SET.has(field))) fail('RAAD_MACHINE_FIELDS_INVALID', 409);
+  return cleanFields(input);
+}
+function imageHeader(bytes, mimeType) {
+  return mimeType === 'image/jpeg' ? bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 : mimeType === 'image/png' && bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+}
+function validPortraitBox(value) {
+  return isObject(value) && ['x', 'y', 'width', 'height', 'confidence'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0 && value[key] <= 1) && value.width > 0 && value.height > 0 && value.x + value.width <= 1 && value.y + value.height <= 1 && value.confidence >= 0.98;
+}
+
+// Recompute from the protected intake and actual decrypted media on every use.
+// This is document-consistency evidence, never a staff review or authenticity
+// assertion. Caller authorization and client consent are separate gates.
+function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now = Date.now} = {}) {
+  const notReady = code => ({ready: false, evidenceId: evidenceId || null, evidenceFingerprint: null, fields: {}, documents: {}, issues: [issue('documents', code, 'The current document evidence requires review.')], blockedReason: code});
+  try {
+    const at = typeof now === 'function' ? now() : now;
+    if (!store?.data || typeof mediaStore?.read !== 'function' || !Number.isFinite(at) || !validCustomer(customer)) return notReady('RAAD_MACHINE_CONFIG_INVALID');
+    const c = store.data.visaCases?.[customer];
+    if (!c || !Number.isSafeInteger(c.applicantCount) || !Array.isArray(c.applicants) || c.applicants.length !== c.applicantCount || !Number.isSafeInteger(applicantIndex) || applicantIndex < 0 || applicantIndex >= c.applicantCount || !UUID.test(evidenceId || '')) return notReady('RAAD_MACHINE_EVIDENCE_INVALID');
+    const signature = visaCaseSignature(c);
+    if (expectedCaseSignature !== signature || !currentVisaEvidence(c).payment) return notReady('RAAD_MACHINE_CASE_STALE');
+    const intake = store.data.visaDocumentIntake;
+    const record = intake?.version === 1 && intake.cases?.[customer];
+    if (!isObject(record) || record.caseId !== c.id || record.caseSignature !== signature || !['ready', 'needs_confirmation', 'needs_review'].includes(record.status) || !Number.isSafeInteger(record.generation) || record.generation < 1 || !Array.isArray(record.documents) || record.documents.length > 100 || !Array.isArray(record.applicants)) return notReady('RAAD_MACHINE_CASE_STALE');
+    const applicant = record.applicants.find(item => item?.id === evidenceId && item.applicantIndex === applicantIndex);
+    if (!applicant || !['ready', 'needs_confirmation'].includes(applicant.status) || record.applicants.filter(item => item?.applicantIndex === applicantIndex).length !== 1 || record.applicants.filter(item => item?.id === evidenceId).length !== 1 || !Array.isArray(applicant.sourceManifest) || !applicant.sourceManifest.length || applicant.sourceManifest.length > 30 || !Array.isArray(applicant.preparedManifest) || applicant.preparedManifest.length !== 3 || !isObject(applicant.documents) || Object.keys(applicant.documents).sort().join(',') !== 'passport,photo,residence') return notReady('RAAD_MACHINE_EVIDENCE_INVALID');
+    const sources = new Map(), sourceSnapshots = [];
+    const read = id => {
+      const result = mediaStore.read(id, {customer}), metadata = result?.metadata, bytes = result?.bytes;
+      if (!isObject(metadata) || metadata.customer !== customer || metadata.id !== id || !Buffer.isBuffer(bytes) || !bytes.length || bytes.length !== metadata.size || metadata.expiresAt !== undefined && metadata.expiresAt !== null && metadata.expiresAt <= at) fail('RAAD_MACHINE_MEDIA_INVALID', 409);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const raw = store.data.visaMedia?.[id];
+      const recordedDigests = raw ? [raw.checksum, raw.sha256].filter(value => value !== undefined) : [];
+      if (!raw || raw.customer !== customer || !recordedDigests.length || recordedDigests.some(value => value !== sha256)) fail('RAAD_MACHINE_MEDIA_INVALID', 409);
+      return {metadata, bytes, raw, sha256};
+    };
+    for (const manifest of applicant.sourceManifest) {
+      if (!isObject(manifest) || !UUID.test(manifest.mediaId || '') || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '') || sources.has(manifest.mediaId)) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+      const observed = read(manifest.mediaId);
+      if (observed.sha256 !== manifest.sha256 || ['raad_pdf_preview', 'raad_portal_upload', 'raad_application_copy'].includes(observed.raw.purpose)) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+      sources.set(manifest.mediaId, observed);
+      sourceSnapshots.push({mediaId: manifest.mediaId, sha256: observed.sha256, expiresAt: observed.metadata.expiresAt ?? null});
+    }
+    for (const document of record.documents) {
+      if (!isObject(document) || !UUID.test(document.mediaId || '') || !Number.isInteger(document.page) || document.page < 1 || document.page > 10 || !/^[a-f0-9]{64}$/.test(document.sha256 || '') || !/^[a-f0-9]{64}$/.test(document.sourceSha256 || '')) return notReady('RAAD_MACHINE_EXTRACTION_INVALID');
+      if (sources.has(document.mediaId) && sources.get(document.mediaId).sha256 !== document.sourceSha256) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+    }
+    const matched = reconcileDocumentEvidence({documents: record.documents, applicants: c.applicants, referenceDate: dubaiDate(at)}).applicants[applicantIndex];
+    const clientFieldsRequired = matched?.clientFieldsRequired || [];
+    const allowedClientGaps = new Set(['passportType', 'issueDate', 'birthPlace']);
+    const identityReady = matched && (matched.status === 'ready' && !matched.issues.length || matched.status === 'needs_confirmation' && matched.identityReady === true && Array.isArray(clientFieldsRequired) && clientFieldsRequired.length > 0 && clientFieldsRequired.every(field => allowedClientGaps.has(field)) && matched.issues.every(item => item.code === 'DOCUMENT_FIELD_REQUIRED' && clientFieldsRequired.includes(item.field)));
+    if (!identityReady || applicant.status !== matched.status || matched.evidence.passportMrzChecked !== true || matched.evidence.matchedResidence !== true || hash(applicant.clientFieldsRequired || []) !== hash(clientFieldsRequired)) return notReady('RAAD_MACHINE_MATCH_REVIEW_REQUIRED');
+    const fields = documentFields(matched.fields);
+    if (hash(documentFields(applicant.fields)) !== hash(fields) || hash(applicant.evidence) !== hash(matched.evidence)) return notReady('RAAD_MACHINE_MATCH_CHANGED');
+    const extractionDigest = hash({documents: record.documents, applicantIndex, fields: matched.fields, matchedDocuments: matched.documents, evidence: matched.evidence});
+    if (applicant.extractionDigest !== extractionDigest) return notReady('RAAD_MACHINE_EXTRACTION_CHANGED');
+    const matchedRefs = [matched.documents.passport, ...matched.documents.residence, ...(matched.documents.photo ? [matched.documents.photo] : [])];
+    if (matchedRefs.some(ref => !sources.has(ref.mediaId) || !record.documents.some(document => document.mediaId === ref.mediaId && document.page === ref.page && document.sha256 === ref.sha256))) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+    const byRef = ref => record.documents.find(document => document.mediaId === ref.mediaId && document.page === ref.page && document.sha256 === ref.sha256);
+    const cropRefs = [matched.documents.passport, ...matched.documents.residence].filter(ref => validPortraitBox(byRef(ref)?.extraction?.portraitBox));
+    const roleSources = {
+      passport: new Set([matched.documents.passport.mediaId]),
+      residence: new Set(matched.documents.residence.map(ref => ref.mediaId)),
+      photo: new Set((matched.documents.photo ? [matched.documents.photo] : cropRefs).map(ref => ref.mediaId))
+    };
+    if (!roleSources.photo.size) return notReady('RAAD_MACHINE_PHOTO_REVIEW_REQUIRED');
+    const documents = {}, preparedSnapshots = [], usedIds = new Set(), usedDigests = new Set();
+    for (const manifest of applicant.preparedManifest) {
+      const kind = manifest?.kind;
+      if (!DOCUMENT_KINDS.includes(kind) || documents[kind] || !UUID.test(manifest.mediaId || '') || manifest.mediaId !== applicant.documents[kind] || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '') || usedIds.has(manifest.mediaId)) return notReady('RAAD_MACHINE_PREPARED_INVALID');
+      const observed = read(manifest.mediaId), sourceIds = observed.raw.sourceIds;
+      if (observed.sha256 !== manifest.sha256 || observed.raw.purpose !== 'raad_portal_upload' || observed.raw.kind !== kind || !['image/jpeg', 'image/png'].includes(observed.metadata.mimeType) || observed.bytes.length > 1000000 || !imageHeader(observed.bytes, observed.metadata.mimeType) || !Array.isArray(sourceIds) || !sourceIds.length || new Set(sourceIds).size !== sourceIds.length || sourceIds.some(id => !sources.has(id) || !roleSources[kind].has(id)) || (kind !== 'photo' && [...roleSources[kind]].some(id => !sourceIds.includes(id))) || usedDigests.has(observed.sha256)) return notReady('RAAD_MACHINE_PREPARED_INVALID');
+      if (record.applicants.some(other => other.id !== applicant.id && Array.isArray(other.preparedManifest) && other.preparedManifest.some(entry => entry?.mediaId === manifest.mediaId || entry?.sha256 === observed.sha256))) return notReady('RAAD_MACHINE_DOCUMENT_REUSED');
+      usedIds.add(manifest.mediaId); usedDigests.add(observed.sha256);
+      documents[kind] = {mediaId: manifest.mediaId, sha256: observed.sha256, mimeType: observed.metadata.mimeType, size: observed.bytes.length, expiresAt: observed.metadata.expiresAt ?? null};
+      preparedSnapshots.push({kind, ...documents[kind], sourceIds: [...sourceIds].sort()});
+    }
+    const evidenceFingerprint = hash({version: 1, matcherVersion: 1, customer, caseId: c.id, caseSignature: signature, applicantIndex, evidenceId, generation: record.generation, extractionDigest, fields, clientFieldsRequired, sources: sourceSnapshots.sort((a, b) => a.mediaId.localeCompare(b.mediaId)), prepared: preparedSnapshots.sort((a, b) => a.kind.localeCompare(b.kind))});
+    return {ready: true, evidenceId, evidenceFingerprint, caseId: c.id, caseSignature: signature, applicantIndex, generation: record.generation, fields, clientFieldsRequired: clone(clientFieldsRequired), documents, extractionDigest, issues: [], blockedReason: null};
+  } catch { return notReady('RAAD_MACHINE_EVIDENCE_INVALID'); }
+}
+
 class RaadVisaWorkflow {
-  constructor({store, mediaStore, now = Date.now, env = {}, privateConfig = {}} = {}) {
+  constructor({store, mediaStore, now = Date.now, env = {}, privateConfig = {}, canAutomate = () => false} = {}) {
     if (!store?.data || typeof store.save !== 'function') fail('RAAD_STORE_REQUIRED', 500);
     if (typeof mediaStore?.get !== 'function') fail('RAAD_MEDIA_STORE_REQUIRED', 500);
-    Object.assign(this, {store, mediaStore, now, env, privateConfig});
+    Object.assign(this, {store, mediaStore, now, env, privateConfig, canAutomate});
   }
 
   portalStatus() { return {connected: false, mode: 'preparation', reason: 'PORTAL_NOT_CONNECTED'}; }
@@ -267,6 +374,112 @@ class RaadVisaWorkflow {
     return this.summary(context, job);
   }
 
+  machineAllowed(customer) {
+    try { return typeof this.canAutomate === 'function' && this.canAutomate(customer) === true; }
+    catch { return false; }
+  }
+
+  executionOwnershipBlock(customer) {
+    const journal = this.store.data.conversationJournal?.customers?.[customer];
+    if (journal?.blocked || journal?.whatsappBlocked || ['pending', 'uncertain'].includes(journal?.whatsappBlockState)) return 'RAAD_CUSTOMER_BLOCKED';
+    if (journal?.operatorOwned || this.store.data.customers?.[customer]?.humanOwned || this.store.data.conversations?.[customer]?.humanOwned) return 'RAAD_HUMAN_OWNERSHIP';
+    return null;
+  }
+
+  applyMachineDossier(customer, {applicantIndex = 0, expectedRevision, expectedCaseSignature, evidenceId} = {}) {
+    const context = this.context(customer, applicantIndex), previous = this.job(context);
+    this.assertRevision(previous, expectedRevision);
+    const ownershipBlock = this.executionOwnershipBlock(customer);
+    if (ownershipBlock) fail(ownershipBlock, 409);
+    if (!this.machineAllowed(customer)) fail('RAAD_MACHINE_AUTOMATION_PAUSED', 409);
+    if (context.blockedReason) fail(context.blockedReason, 409);
+    if (expectedCaseSignature !== context.caseSignature) fail('RAAD_CASE_SIGNATURE_CONFLICT', 409);
+    if (previous && (!previous.machineReview || previous.review?.reviewedAt || previous.review?.confirmedFields?.length || previous.machineReview.draftFingerprint !== hash({fields: previous.fields, documents: previous.documents}))) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
+    const dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now: this.now});
+    if (!dossier.ready) fail(dossier.blockedReason || 'RAAD_MACHINE_REVIEW_REQUIRED', 409);
+    for (const [field, value] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(dossier.fields, field) && !equivalentFact(field, value, dossier.fields[field])) fail('RAAD_MACHINE_SOURCE_CONFLICT', 409);
+    if (previous?.machineReview?.evidenceFingerprint === dossier.evidenceFingerprint) return clone({...this.summary(context, previous), ok: true, duplicate: true, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview: previous.machineReview});
+    const documents = Object.fromEntries(DOCUMENT_KINDS.map(kind => [kind, this.observeDocument(dossier.documents[kind].mediaId, context)]));
+    if (Object.values(documents).some(value => !value)) fail('RAAD_MACHINE_DOCUMENT_UNAVAILABLE', 409);
+    const fields = clone(dossier.fields);
+    const machineReview = {scope: 'machine_document_consistency', version: 1, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, extractionDigest: dossier.extractionDigest, verifiedAt: this.now(), draftFingerprint: hash({fields, documents}), authenticityVerified: false};
+    const job = {jobId: previous?.jobId || randomUUID(), caseId: context.c.id, applicantIndex, revision: (previous?.revision || 0) + 1, caseSignature: context.caseSignature, parentSignature: context.parentSignature, sourceFields: sourceFields(context.person), fields, defaults: this.defaults(context, dubaiDate(this.now())), documents, machineReview, review: {scope: 'staff_data_review', confirmedFields: []}, createdAt: previous?.createdAt || this.now(), updatedAt: this.now()};
+    this.persist(context, job);
+    return clone({...this.summary(context, job), ok: true, duplicate: false, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview});
+  }
+
+  portalDossier(customer, {applicantIndex = 0, clientProof} = {}) {
+    const context = this.context(customer, applicantIndex), job = this.job(context), issues = [];
+    const source = job?.machineReview ? 'machine' : 'staff';
+    const add = (field, code, message) => issues.push(issue(field, code, message));
+    const ownershipBlock = this.executionOwnershipBlock(customer);
+    if (ownershipBlock) add('case', ownershipBlock, 'Automatic execution is paused for this conversation.');
+    if (!job) add('draft', 'RAAD_APPLICATION_NOT_PREPARED', 'Prepare a current applicant draft first.');
+    if (context.blockedReason) add('case', context.blockedReason, 'The case is paused or unavailable for this route.');
+    if (!context.evidence.payment) add('evidence.payment', 'PAYMENT_NOT_VERIFIED', 'Current payment evidence is required.');
+    let dossier = null;
+    if (source === 'machine') {
+      if (!this.machineAllowed(customer)) add('case', 'RAAD_MACHINE_AUTOMATION_PAUSED', 'Automatic preparation is paused.');
+      dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature: context.caseSignature, evidenceId: job.machineReview.evidenceId, now: this.now});
+      if (!dossier.ready || dossier.evidenceFingerprint !== job.machineReview.evidenceFingerprint || job.machineReview.draftFingerprint !== hash({fields: job.fields, documents: job.documents})) add('documents', 'RAAD_MACHINE_EVIDENCE_STALE', 'Document evidence has changed and must be checked again.');
+    } else if (job) {
+      const assessment = this.assess(context, job);
+      if (!assessment.complete || assessment.stale) add('review', 'RAAD_STAFF_REVIEW_REQUIRED', 'The current staff draft requires review.');
+      if (!context.evidence.documents) add('evidence.documents', 'DOCUMENTS_NOT_REVIEWED', 'Current staff document review is required.');
+    }
+    const defaults = this.defaults(context, dubaiDate(this.now()));
+    let answers = {};
+    const live = isObject(clientProof) ? this.store.data.visaFulfilment?.jobs?.[clientProof.jobId] : null;
+    const confirmation = clientProof?.confirmation;
+    const finance = this.store.data.visaFulfilment?.cases?.[customer], approval = finance?.approvals?.[finance.activeApprovalId];
+    if (!live || !approval || live.approvalId !== approval.id || approval.state !== 'approved' || approval.caseId !== context.c.id || approval.caseSignature !== context.caseSignature || approval.paymentFingerprint !== createHash('sha256').update(JSON.stringify(context.c.staffVerification?.payment || null)).digest('hex')) add('evidence.payment', 'ACCOUNTANT_APPROVAL_REQUIRED', 'A current accountant approval for this exact payment is required.');
+    let consent = Boolean(live && clientProof.complete === true && clientProof.customer === customer && clientProof.caseId === context.c.id && clientProof.caseSignature === context.caseSignature && clientProof.applicantIndex === applicantIndex && clientProof.jobRevision === live.revision && live.customer === customer && live.caseId === context.c.id && live.caseSignature === context.caseSignature && live.applicantIndex === applicantIndex && ['ready', 'running', 'waiting_otp'].includes(live.state) && hash(clientProof.fields) === hash(live.confirmedFields) && hash(confirmation) === hash(live.answerConfirmation) && confirmation?.granted === true && confirmation.scope === 'saudi_visa_application' && confirmation.sender === customer && confirmation.caseSignature === context.caseSignature && typeof confirmation.messageId === 'string' && confirmation.messageId.length > 0 && confirmation.messageId.length <= 500 && !/[\u0000-\u001f\u007f]/u.test(confirmation.messageId));
+    try {
+      if (!isObject(clientProof?.fields) || requiredQuestions(clientProof.fields).length) consent = false;
+      else answers = cleanFields(clientProof.fields);
+    } catch { consent = false; }
+    if (clientProof?.documentEvidence) {
+      if (!live?.documentFacts || clientProof.documentEvidence.id !== live.documentFacts.evidenceId || clientProof.documentEvidence.evidenceFingerprint !== live.documentFacts.evidenceFingerprint) consent = false;
+    }
+    if (source === 'machine' && (!dossier?.ready || clientProof?.documentEvidence?.id !== dossier.evidenceId || clientProof?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint || confirmation?.documentEvidence?.id !== dossier.evidenceId || confirmation?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint)) consent = false;
+    if (dossier?.ready && requiredQuestions(answers, {requestedFields: dossier.clientFieldsRequired}).length) add('consent', 'RAAD_CLIENT_DOCUMENT_FACTS_REQUIRED', 'Missing document facts require the applicant’s explicit answer.');
+    if (!consent) add('consent', 'RAAD_CLIENT_CONSENT_REQUIRED', 'A current explicit applicant confirmation and authorization is required.');
+    let fields = mergeFields({...defaults}, job?.fields || {});
+    fields = mergeFields(fields, answers);
+    if (!Object.hasOwn(fields, 'entryDate')) fields.entryDate = defaults.proposedEntryDate;
+    delete fields.proposedEntryDate;
+    for (const [field, expected] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(fields, field) && !equivalentFact(field, expected, fields[field])) add(field, 'CASE_FACT_MISMATCH', 'This document fact differs from the paid applicant record.');
+    for (const [field, expected] of Object.entries(job?.fields || {})) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(answers, field) && !equivalentFact(field, expected, answers[field])) add(field, 'DOCUMENT_DATA_CONFLICT', 'The client answer differs from the verified document fact.');
+    const validation = validateApplicant(fields, {referenceDate: dubaiDate(this.now())});
+    issues.push(...validation.issues);
+    if (fields.gccResident !== true) add('gccResident', 'GCC_RESIDENCE_REQUIRED', 'Confirmed current GCC residence is required.');
+    if (fields.visitPurpose !== 'tourism') add('visitPurpose', 'TOURIST_ONLY', 'This route supports tourism only.');
+    for (const field of ['entries', 'visaValidityDays']) if (fields[field] !== defaults[field]) add(field, 'OFFICE_POLICY_MISMATCH', 'The visa product must match the paid case policy.');
+    for (const field of CONTACT_FIELDS) {
+      const value = fields[field];
+      if (!value) add(field, 'REQUIRED', 'A configured application contact is required.');
+      else if (typeof value !== 'string' || (field === 'contactEmail' ? !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) : field.endsWith('Phone') ? !/^\+?[0-9 ()-]{7,25}$/.test(value) : !/^[\p{L}\p{N} -]{1,20}$/u.test(value))) add(field, 'CONTACT_INVALID', 'Verify this application contact value.');
+    }
+    const observed = this.documentIssues(job?.documents || {}, context);
+    issues.push(...observed.issues);
+    // Staff paths retain their existing review contract; actual bytes are still
+    // rechecked so an execution fingerprint never authorizes another image.
+    const documents = {};
+    for (const kind of DOCUMENT_KINDS) if (observed.current[kind]) {
+      try {
+        const {metadata, bytes} = this.mediaStore.read(observed.current[kind].mediaId, {customer});
+        if (metadata?.customer !== customer || metadata.id !== observed.current[kind].mediaId || !Buffer.isBuffer(bytes) || !imageHeader(bytes, metadata.mimeType) || bytes.length > 1000000 || bytes.length !== metadata.size) throw Error();
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (source === 'machine' && sha256 !== dossier?.documents?.[kind]?.sha256) throw Error();
+        documents[kind] = {...observed.current[kind], sha256};
+      } catch { add('documents.' + kind, 'DOCUMENT_CONTENT_UNAVAILABLE', 'The current prepared image could not be verified.'); }
+    }
+    const uniqueIssues = issues.filter((value, index) => issues.findIndex(other => other.field === value.field && other.code === value.code) === index);
+    const ready = uniqueIssues.length === 0;
+    const fingerprint = ready ? hash({version: 1, source, customer, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, draftId: job.jobId, draftRevision: job.revision, machineEvidence: dossier?.evidenceFingerprint || null, staffReview: source === 'staff' ? job.review : null, fields, defaults, documents, payment: context.c.staffVerification.payment, clientProof}) : null;
+    return clone({ready, source, fingerprint, fields, defaults, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
+  }
+
   persist(context, job) {
     const old = this.store.data.raadApplications;
     const oldCustomer = old?.[context.customer];
@@ -322,4 +535,4 @@ class RaadVisaWorkflow {
   }
 }
 
-module.exports = {RaadVisaWorkflow, FIELD_ALLOWLIST, DOCUMENT_KINDS, HEALTH_FIELDS, CONTACT_FIELDS};
+module.exports = {RaadVisaWorkflow, verifyMachineDossier, DOCUMENT_FACT_FIELDS, FIELD_ALLOWLIST, DOCUMENT_KINDS, HEALTH_FIELDS, CONTACT_FIELDS};
