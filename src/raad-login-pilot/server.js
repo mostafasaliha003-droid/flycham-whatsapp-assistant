@@ -4,6 +4,7 @@ const crypto=require('node:crypto');
 const fs=require('node:fs');
 const path=require('node:path');
 const {findVerificationControls}=require('./verification-controls');
+const {captureCaptcha}=require('./captcha-image');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
@@ -37,7 +38,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(req.method==='GET'&&url.pathname==='/health'){reply(res,200,{ready:!shutting});return;}
   if(req.method==='GET'&&staticAssets[url.pathname]){const [content,type]=staticAssets[url.pathname];reply(res,200,content,type);return;}
-  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify'];
+  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/refresh-captcha'];
   if(!allowed.includes(url.pathname)){reply(res,404,{error:'NOT_FOUND'});return;}
   if(!equal(req.headers.authorization)){reply(res,401,{error:'UNAUTHORIZED'});return;}
   if(env.RAAD_DIRECT_LOGIN_ENABLED!=='true'||shutting){reply(res,503,{error:'DISABLED'});return;}
@@ -50,7 +51,15 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
      if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:false,expiresAt:j.expires});}
-     else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await j.page.locator(SEL.image).screenshot({type:'png',timeout:10000}),'image/png');}
+     else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await captureCaptcha(j.page),'image/png');}
+     else if(url.pathname==='/api/refresh-captcha'){
+      if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
+      const previous=await j.page.locator(SEL.image).evaluate(el=>el.currentSrc||el.src);
+      const refresh=j.page.locator('#myform #btnRefreshCaptcha');if(await refresh.count()!==1||!await refresh.isVisible())throw Error('REFRESH_UNAVAILABLE');
+      await refresh.click({timeout:10000});
+      await j.page.waitForFunction(previous=>{const img=document.querySelector('#myform #imgCaptcha');return img&&img.complete&&img.naturalWidth>0&&(img.currentSrc||img.src)!==previous;},previous,{timeout:15000});
+      reply(res,200,await captureCaptcha(j.page),'image/png');
+     }
      else if(url.pathname==='/api/verify'){
       if(j.verificationAttempted||!['submitted_unverified','verification_required','result_unverified'].includes(j.stage))throw Error('INVALID_STAGE');
       const verification=await findVerificationControls(j.page);if(!verification)throw Error('VERIFICATION_FORM_UNAVAILABLE');
