@@ -91,7 +91,16 @@ async function fillPortalFields(page,input={}){
    await assertOfficial(page);
    const field=batch[index],handle=handles[index];
    const options=await page.evaluate(inspectPortalFields,{fields:[field],originals:[handle],includeOptions:true});
-   if(field.kind==='text')await handle.fill(field.value,{timeout:5000});
+   if(field.kind==='text'&&field.id==='MobileInfo_Mobile'){
+    await handle.fill('',{timeout:5000});
+    await assertOfficial(page);
+    await page.evaluate(inspectPortalFields,{fields:[field],originals:[handle]});
+    await handle.type(field.value,{delay:50,timeout:5000});
+    await assertOfficial(page);
+    if(await handle.evaluate(verifyFilledField,field)!==true)throw failure('PORTAL_FILL_UNCONFIRMED');
+    const stillFocused=await handle.evaluate(el=>el.isConnected&&el.ownerDocument===document&&document.activeElement===el);
+    if(stillFocused){await assertOfficial(page);if(await handle.evaluate(el=>el.isConnected&&el.ownerDocument===document&&document.activeElement===el))await page.keyboard.press('Tab');await assertOfficial(page);if(await handle.evaluate(verifyFilledField,field)!==true)throw failure('PORTAL_FILL_UNCONFIRMED');}
+   }else if(field.kind==='text')await handle.fill(field.value,{timeout:5000});
    else if(field.kind==='select-label')await handle.selectOption({index:options.optionIndex},{timeout:5000,...(options.forceSelect2?{force:true}:{})});
    else if(field.kind==='select')await handle.selectOption({value:field.value},{timeout:5000,...(options.forceSelect2?{force:true}:{})});
    else await handle.setChecked(field.value,{timeout:5000});
