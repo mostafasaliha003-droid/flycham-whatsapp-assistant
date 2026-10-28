@@ -3,8 +3,8 @@ const {inspectPortalPage}=require('./portal-inspection');
 const ORIGIN='https://visa.mofa.gov.sa',PATH='/SmartForm/TraditionalApp';
 // The owner route must enforce its authenticated application session. Optional
 // guard is re-run throughout native interaction; this module never logs in.
-const contexts=new WeakMap();
-const CODES=new Set(['APPLICATION_SMS_INPUT_INVALID','APPLICATION_SMS_UNAVAILABLE','APPLICATION_SMS_PHONE_MISMATCH','APPLICATION_SMS_CHALLENGE_UNAVAILABLE','APPLICATION_SMS_ALREADY_ATTEMPTED','APPLICATION_SMS_CANCELLED','APPLICATION_SMS_ACTIVATION_UNCONFIRMED']);
+const contexts=new WeakMap(),contextInitializations=new WeakMap();
+const CODES=new Set(['APPLICATION_SMS_INPUT_INVALID','APPLICATION_SMS_UNAVAILABLE','APPLICATION_SMS_PHONE_MISMATCH','APPLICATION_SMS_CHALLENGE_UNAVAILABLE','APPLICATION_SMS_ALREADY_ATTEMPTED','APPLICATION_SMS_RESEND_COOLDOWN','APPLICATION_SMS_RESEND_LIMIT','APPLICATION_SMS_RESEND_UNAVAILABLE','APPLICATION_SMS_CANCELLED','APPLICATION_SMS_ACTIVATION_UNCONFIRMED']);
 const finite=code=>Object.assign(new Error(CODES.has(code)?code:'APPLICATION_SMS_UNAVAILABLE'),{code:CODES.has(code)?code:'APPLICATION_SMS_UNAVAILABLE'});
 
 // This callback returns DOM references only to the private caller. It never
@@ -38,7 +38,7 @@ function inspectSmsControls(args){
   const phoneRoots=rootsFor(phone),inPhoneComponent=el=>phoneRoots.some(root=>root.contains(el));
   if(!phoneRoots.length)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
   let code=null,roots=phoneRoots;
-  if(args.action==='verify'||args.action==='enter'){
+  if(['verify','enter','probe'].includes(args.action)){
    const modals=Array.from(document.querySelectorAll('.modal.in,.modal.show,[role="dialog"],dialog[open],.swal-modal,.sweet-alert,.swal2-popup')).filter(visible);
    const smsModals=modals.filter(root=>smsText(visibleText(root))),smsPhoneRoots=phoneRoots.filter(root=>smsText(visibleText(root)));
    const candidates=Array.from(document.querySelectorAll('input')).filter(el=>{
@@ -54,23 +54,24 @@ function inspectSmsControls(args){
    roots=containing.length?containing:rootsFor(code).filter(root=>inPhoneComponent(root)||phoneRoots.some(parent=>parent.contains(root)));
    if(!roots.length)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
   }
-  if(args.action==='enter'){
+  if(args.action==='enter'||args.action==='probe'){
    if(!args.attempts||typeof args.attempts.codeFields?.has!=='function')return fail('APPLICATION_SMS_UNAVAILABLE');
    if(args.attempts.codeFields.has(code)&&!args.owned)return fail('APPLICATION_SMS_ALREADY_ATTEMPTED');
-   if(args.phase==='consume'){args.attempts.codeFields.add(code);return {ok:true};}
+   if(args.phase==='consume'){if(args.action!=='probe')args.attempts.codeFields.add(code);return {ok:true};}
    if(args.phase==='activate')return {ok:true};
    return {control:null,codeField:code,phone,prefix};
   }
   const controls=[];for(const root of roots)for(const el of root.querySelectorAll('button,input,a,span,i'))if(!controls.includes(el))controls.push(el);
   const matches=controls.filter(el=>{
    if(!visible(el)||args.id&&el.getAttribute('id')!==args.id||caption(el)!==args.label)return false;
-   const tag=el.tagName,type=String(el.type||el.getAttribute('type')||'').toLowerCase(),href=el.getAttribute('href')||'',onclick=el.getAttribute('onclick')||'',js=href.match(/^\s*javascript:\s*(?:return\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,63})\(\s*\)\s*;?\s*$/i),jsFunction=js&&/^(?:(?:send|request|receive|get|generate)(?:(?:sms|otp|mobile|phone|verification|verify|code)){1,4}|(?:verify|confirm|validate|check)(?:(?:sms|otp|mobile|phone|verification|code)){1,4})$/i.test(js[1])?js[1]:null;
+   const tag=el.tagName,type=String(el.type||el.getAttribute('type')||'').toLowerCase(),href=el.getAttribute('href')||'',onclick=el.getAttribute('onclick')||'',js=href.match(/^\s*javascript:\s*(?:return\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,63})\(\s*\)\s*;?\s*$/i),jsFunction=js&&/^(?:(?:send|resend|request|receive|get|generate)(?:(?:sms|otp|mobile|phone|verification|verify|code)){1,4}|(?:verify|confirm|validate|check)(?:(?:sms|otp|mobile|phone|verification|code)){1,4})$/i.test(js[1])?js[1]:null;
    const classes=String(el.getAttribute('class')||'').split(/\s+/),delegatedButton=['SPAN','I'].includes(tag)&&classes.some(name=>/^btn(?:-|$)/.test(name))&&!classes.some(name=>/^(?:select2(?:-|$)|status(?:-|$)|field-validation|help-block|alert(?:-|$))/.test(name))&&el.getAttribute('role')!=='status'&&!['polite','assertive'].includes(el.getAttribute('aria-live'))&&!el.closest('label,.select2-container,.select2-selection,[role="status"],[aria-live="polite"],[aria-live="assertive"]');
    const native=['BUTTON','INPUT'].includes(tag)&&['button','submit'].includes(type),nonNative=['SPAN','I','A'].includes(tag)&&(el.getAttribute('role')==='button'||el.hasAttribute('onclick')||typeof el.onclick==='function'||tag==='A'&&jsFunction||delegatedButton);
-   if(!native&&!nonNative||args.action==='request'&&(el.disabled||el.getAttribute('aria-disabled')==='true')||args.phase==='activate'&&(el.disabled||el.getAttribute('aria-disabled')==='true'))return false;
+   const disabled=Boolean(el.disabled)||el.hasAttribute('disabled')||el.getAttribute('aria-disabled')==='true'||classes.includes('disabled');
+   if(!native&&!nonNative||(args.action==='request'||args.phase==='activate')&&disabled)return false;
    const actionMeta=[el.getAttribute('id'),el.getAttribute('name'),caption(el),el.getAttribute('title'),el.getAttribute('aria-label'),jsFunction].filter(Boolean).join(' ');
    if(delegatedButton&&!/sms|otp|(?:mobile|phone).*(?:verif|confirm|code)|(?:verif|confirm|code).*(?:mobile|phone)|(?:تأكيد|تحقق|إرسال|ارسال).*(?:رمز|جوال|هاتف)|(?:رمز|جوال|هاتف).*(?:تحقق|تأكيد)/i.test(actionMeta))return false;
-   if(blocked(actionMeta+' '+href+' '+onclick)||/resend|re.?send|send.?again|إعادة|اعادة|مجددا|مرة\s*أخرى/i.test(actionMeta+' '+href+' '+onclick))return false;
+   if(blocked(actionMeta+' '+href+' '+onclick)||!args.resend&&/resend|re.?send|send.?again|إعادة|اعادة|مجددا|مرة\s*أخرى/i.test(actionMeta+' '+href+' '+onclick))return false;
    const requestSemantic=/sms|otp|(?:mobile|phone).*(?:verif|confirm|code)|(?:verif|confirm|code).*(?:mobile|phone)|(?:send|request|receive|get).*(?:verification.?code|sms.?code|otp)|(?:إرسال|ارسال|طلب).*(?:رمز|تحقق)|(?:تحقق|تأكيد).*رقم\s*(?:الجوال|الهاتف)/i.test(actionMeta);
    const confirmSemantic=/verify|confirm|validate|check|تحقق|تأكيد|تفعيل/i.test(actionMeta);
    if(args.action==='request'?!requestSemantic:!confirmSemantic)return false;
@@ -85,31 +86,37 @@ function inspectSmsControls(args){
   if(args.id&&findId(args.id).length!==1||matches.length!==1)return fail('APPLICATION_SMS_UNAVAILABLE');
   const control=matches[0];if(args.control&&args.control!==control)return fail('APPLICATION_SMS_UNAVAILABLE');
   if(!args.attempts||typeof args.attempts.requested?.has!=='function')return fail('APPLICATION_SMS_UNAVAILABLE');
-  const attempted=args.action==='request'?args.attempts.requested.has(control):args.attempts.verified.has(control)||args.attempts.codeFields.has(code);
-  if(attempted&&!args.owned)return fail('APPLICATION_SMS_ALREADY_ATTEMPTED');
-  if(args.phase==='consume'){if(args.action==='request')args.attempts.requested.add(control);else{args.attempts.verified.add(control);args.attempts.codeFields.add(code);}return {ok:true};}
+  const history=args.action==='request'?args.attempts.requested.get(control):null;
+  if(history&&(history.phone!==phone||history.prefix!==prefix||history.expectedPhone!==args.expectedPhone||history.expectedPrefixLabel!==args.expectedPrefixLabel))return fail('APPLICATION_SMS_PHONE_MISMATCH');
+  if(args.action==='request'&&!args.owned){
+   if(history){if(!args.resend||history.inFlight)return fail('APPLICATION_SMS_ALREADY_ATTEMPTED');if(history.count>=3)return fail('APPLICATION_SMS_RESEND_LIMIT');if(!Number.isSafeInteger(args.now)||args.now-history.lastRequestAt<120000)return fail('APPLICATION_SMS_RESEND_COOLDOWN');}
+   else if(args.resend)return fail('APPLICATION_SMS_RESEND_UNAVAILABLE');
+  }else if(args.action!=='request'&&(args.attempts.verified.has(control)||args.attempts.codeFields.has(code))&&!args.owned)return fail('APPLICATION_SMS_ALREADY_ATTEMPTED');
+  if(args.phase==='consume'){if(args.action==='request')args.attempts.requested.set(control,{count:(history?.count||0)+1,lastRequestAt:args.now,inFlight:true,phone,prefix,expectedPhone:args.expectedPhone,expectedPrefixLabel:args.expectedPrefixLabel});else{args.attempts.verified.add(control);args.attempts.codeFields.add(code);}return {ok:true};}
   if(args.phase==='activate')return {ok:true};
   return {control,codeField:code,phone,prefix};
  }catch{return {error:'APPLICATION_SMS_UNAVAILABLE'};}
 }
 async function attemptsFor(page){
- const document=await page.evaluateHandle(()=>globalThis.document),old=contexts.get(page);
- if(old){let same=false;try{same=await document.evaluate((node,previous)=>node===previous,old.document);}catch{}if(same){await document.dispose();return old.attempts;}await old.document.dispose().catch(()=>{});await old.attempts.dispose().catch(()=>{});}
- const attempts=await page.evaluateHandle(()=>({requested:new WeakSet(),verified:new WeakSet(),codeFields:new WeakSet()}));contexts.set(page,{document,attempts});return attempts;
+ const pending=contextInitializations.get(page);if(pending)return pending;
+ const work=(async()=>{const document=await page.evaluateHandle(()=>globalThis.document),old=contexts.get(page);
+  if(old){let same=false;try{same=await document.evaluate((node,previous)=>node===previous,old.document);}catch{}if(same){await document.dispose();return old.attempts;}await old.document.dispose().catch(()=>{});await old.attempts.dispose().catch(()=>{});}
+  const attempts=await page.evaluateHandle(()=>({requested:new WeakMap(),verified:new WeakSet(),codeFields:new WeakSet()}));contexts.set(page,{document,attempts});return attempts;
+ })();contextInitializations.set(page,work);try{return await work;}finally{if(contextInitializations.get(page)===work)contextInitializations.delete(page);}
 }
 function validate(options,action){
- if(!options||typeof options!=='object'||Array.isArray(options)||options.id!==undefined&&options.id!==''&&(typeof options.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(options.id))||action!=='enter'&&(typeof options.label!=='string'||options.label.length>120||!options.label&&!options.id)||typeof options.expectedPhone!=='string'||!/^\+?[0-9]{7,20}$/.test(options.expectedPhone)||typeof options.expectedPrefixLabel!=='string'||!options.expectedPrefixLabel||options.expectedPrefixLabel.length>120||options.guard!==undefined&&typeof options.guard!=='function')throw finite('APPLICATION_SMS_INPUT_INVALID');
+ if(!options||typeof options!=='object'||Array.isArray(options)||options.id!==undefined&&options.id!==''&&(typeof options.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(options.id))||!['enter','probe'].includes(action)&&(typeof options.label!=='string'||options.label.length>120||!options.label&&!options.id)||typeof options.expectedPhone!=='string'||!/^\+?[0-9]{7,20}$/.test(options.expectedPhone)||typeof options.expectedPrefixLabel!=='string'||!options.expectedPrefixLabel||options.expectedPrefixLabel.length>120||options.guard!==undefined&&typeof options.guard!=='function'||options.resend!==undefined&&(action!=='request'||typeof options.resend!=='boolean'))throw finite('APPLICATION_SMS_INPUT_INVALID');
 }
 async function act(page,options,action){
- let raw,control,codeField,phone,prefix,started=false,code=action!=='request'?options?.code:undefined;
+ let raw,control,codeField,phone,prefix,attempts,started=false,code=action!=='request'?options?.code:undefined;
  const guard=async()=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
  try{
   validate(options,action);if(action!=='request'&&(typeof code!=='string'||!/^\d{4,8}$/.test(code)))throw finite('APPLICATION_SMS_INPUT_INVALID');
-  await guard();const attempts=await attemptsFor(page),args={action,id:options.id,label:options.label,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,codeLength:code?.length,attempts};
+  await guard();attempts=await attemptsFor(page);const args={action,id:options.id,label:options.label,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,codeLength:code?.length,resend:options.resend===true,now:Date.now(),attempts};
   raw=await page.evaluateHandle(inspectSmsControls,args);let error=await raw.evaluate(result=>result.error||null);if(error)throw finite(error);
   for(const key of ['control','codeField','phone','prefix']){const handle=await raw.getProperty(key),element=handle.asElement();if(key==='control')control=element;else if(key==='codeField')codeField=element;else if(key==='phone')phone=element;else prefix=element;if(!element)await handle.dispose();}
   if(action!=='enter'&&!control||!phone||!prefix||action!=='request'&&!codeField)throw finite('APPLICATION_SMS_UNAVAILABLE');
-  await guard();const retained={...args,control,codeField,phone,prefix};let checked=await page.evaluate(inspectSmsControls,{...retained,phase:'consume'});if(checked.error)throw finite(checked.error);if(checked.ok!==true)throw finite('APPLICATION_SMS_UNAVAILABLE');started=true;
+  await guard();const retained={...args,control,codeField,phone,prefix,now:Date.now()};let checked=await page.evaluate(inspectSmsControls,{...retained,phase:'consume'});if(checked.error)throw finite(checked.error);if(checked.ok!==true)throw finite('APPLICATION_SMS_UNAVAILABLE');started=true;
   if(action!=='request'){
    await codeField.fill('',{timeout:5000});await guard();
    await codeField.type(code,{delay:80,timeout:5000});await guard();
@@ -124,7 +131,19 @@ async function act(page,options,action){
   else{if(action==='verify'&&await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');await control.click({timeout:10000,noWaitAfter:true});}
   await guard();return {activationDispatched:true,action};
  }catch(error){if(started&&error?.code!=='APPLICATION_SMS_CANCELLED'&&error?.code!=='APPLICATION_SMS_PHONE_MISMATCH')throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');throw finite(error?.code);}
- finally{code='';if(action!=='request'&&options&&typeof options==='object')try{options.code='';}catch{}for(const handle of [prefix,phone,codeField,control,raw])if(handle)await handle.dispose().catch(()=>{});}
+ finally{code='';if(action!=='request'&&options&&typeof options==='object')try{options.code='';}catch{}if(action==='request'&&started&&control&&attempts)await page.evaluate(({attempts,control,now})=>{const entry=attempts.requested.get(control);if(entry){entry.lastRequestAt=Math.max(entry.lastRequestAt,now);entry.inFlight=false;}},{attempts,control,now:Date.now()}).catch(()=>{});for(const handle of [prefix,phone,codeField,control,raw])if(handle)await handle.dispose().catch(()=>{});}
+}
+async function probeApplicationSmsEntry(page,options){
+ let raw,codeField,phone,prefix;
+ const guard=async()=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
+ try{
+  validate(options,'probe');await guard();const attempts=await attemptsFor(page),args={action:'probe',expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,attempts};
+  raw=await page.evaluateHandle(inspectSmsControls,args);const error=await raw.evaluate(result=>result.error||null);if(error)throw finite(error);
+  for(const key of ['codeField','phone','prefix']){const handle=await raw.getProperty(key),element=handle.asElement();if(key==='codeField')codeField=element;else if(key==='phone')phone=element;else prefix=element;if(!element)await handle.dispose();}
+  if(!codeField||!phone||!prefix)throw finite('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
+  await guard();const checked=await page.evaluate(inspectSmsControls,{...args,codeField,phone,prefix,phase:'activate'});if(checked.error||checked.ok!==true)throw finite(checked.error);return {ready:true};
+ }catch(error){return {ready:false,reason:CODES.has(error?.code)?error.code:'APPLICATION_SMS_UNAVAILABLE'};}
+ finally{for(const handle of [prefix,phone,codeField,raw])if(handle)await handle.dispose().catch(()=>{});}
 }
 async function inspectApplicationSms(page){
  try{
@@ -138,4 +157,4 @@ async function inspectApplicationSms(page){
 const requestApplicationSms=(page,options)=>act(page,options,'request');
 const verifyApplicationSms=(page,options)=>act(page,options,'verify');
 const enterApplicationSms=(page,options)=>act(page,options,'enter');
-module.exports={inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms};
+module.exports={inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms,probeApplicationSmsEntry};
