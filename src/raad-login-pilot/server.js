@@ -32,7 +32,7 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
  const staticAssets=Object.create(null);for(const [route,file,type] of [['/','index.html','text/html; charset=utf-8'],['/app.js','app.js','text/javascript; charset=utf-8'],['/style.css','style.css','text/css; charset=utf-8']])staticAssets[route]=[fs.readFileSync(path.join(__dirname,file)),type];
- async function classify(j){await guard(j);const verification=await findVerificationControls(j.page);j.canVerify=Boolean(verification)&&!j.verificationAttempted;if(verification)return j.verificationAttempted?'verification_submitted':'verification_required';const loginVisible=await j.page.locator(SEL.password).isVisible().catch(()=>false);if(loginVisible)return 'login_not_completed';return 'result_unverified';}
+ async function classify(j){await guard(j);if(j.verificationStatus==='unconfirmed')return 'verification_unconfirmed';const verification=await findVerificationControls(j.page);j.canVerify=Boolean(verification)&&!j.verificationAttempted;if(verification)return j.verificationAttempted?'verification_submitted':'verification_required';const loginVisible=await j.page.locator(SEL.password).isVisible().catch(()=>false);if(loginVisible)return 'login_not_completed';return 'result_unverified';}
  const server=http.createServer(async(req,res)=>{
   let url;try{url=new URL(req.url,'https://pilot.invalid');}catch{reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
@@ -46,11 +46,11 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
   if(busy){reply(res,409,{error:'BUSY'});return;}busy=true;
   try{
    if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
-   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,expiresAt:job.expires,...(job.stage==='result_unverified'?{diagnostics:await getVerificationDiagnostics(job.page)}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
+   else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,canVerify:job.canVerify===true,expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
    else {const data=await body(req);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
-     if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:false,expiresAt:j.expires});}
+     if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:false,expiresAt:j.expires});}
      else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await captureCaptcha(j.page),'image/png');}
      else if(url.pathname==='/api/refresh-captcha'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
@@ -65,8 +65,16 @@ function createPilot({env=process.env,launch,now=Date.now}={}) {
       const verification=await findVerificationControls(j.page);if(!verification)throw Error('VERIFICATION_FORM_UNAVAILABLE');
       if(typeof data.code!=='string'||!new RegExp('^[0-9]{4,'+verification.maxLength+'}$').test(data.code))throw Error('INPUT_INVALID');
       j.verificationAttempted=true;j.canVerify=false;
-      try{await j.page.locator(verification.inputSelector).fill(data.code);data.code='';await guard(j);await j.page.locator(verification.buttonSelector).click({timeout:10000});j.stage='verification_submitted';reply(res,200,{stage:j.stage,submitted:true,canVerify:false,authenticated:false});}
-      catch{data.code='';j.stage='verification_submitted';throw Error('VERIFICATION_UNCONFIRMED');}
+      try{
+       j.verificationCheck={phase:'locating_original_controls'};
+       const input=await j.page.locator(verification.inputSelector).elementHandle(),button=await j.page.locator(verification.buttonSelector).elementHandle();
+       if(!input||!button)throw Error('CONTROLS_UNAVAILABLE');
+       j.verificationCheck.enabledBeforeTyping=await button.isEnabled();
+       j.verificationCheck.phase='typing_code';await input.fill('');await input.type(data.code,{delay:80});data.code='';await guard(j);
+       j.verificationCheck.buttonAttached=await button.evaluate(el=>el.isConnected);if(!j.verificationCheck.buttonAttached)throw Error('PAGE_CHANGED');
+       j.verificationCheck.enabledAfterTyping=await button.isEnabled();j.verificationCheck.phase='waiting_for_original_submit';
+       await button.click({timeout:10000});j.verificationCheck.phase='submit_click_completed';j.verificationStatus='submitted';j.stage='verification_submitted';reply(res,200,{stage:j.stage,submitted:true,canVerify:false,authenticated:false});
+      }catch{data.code='';j.verificationStatus='unconfirmed';j.stage='verification_unconfirmed';throw Error('VERIFICATION_UNCONFIRMED');}
      }
      else if(url.pathname==='/api/submit'){
       if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');
