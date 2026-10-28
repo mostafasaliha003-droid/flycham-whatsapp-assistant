@@ -115,3 +115,17 @@ test('diagnostics cap output counts and omit hidden controls',()=>{
  assert.equal(out.fields[0].id,null);assert.equal(out.buttons[0].id,null);
  assert.equal(JSON.stringify(out).includes('hidden'),false);
 });
+
+
+test('observed six-digit verification field and native btnSubmit need no caption match',()=>{
+ const f=fixture({inputs:[{id:'emailActivation',name:'emailActivation',attrs:{'aria-label':'رمز التفعيل'},maxLength:6}],buttons:[{tagName:'INPUT',id:'btnSubmit',type:'submit',attrs:{value:'تفعيل الحساب'}}]});
+ assert.deepEqual(f.run(),{inputSelector:'#emailActivation',buttonSelector:'#btnSubmit',maxLength:6});
+});
+test('observed fallback rejects hidden, disabled, wrong-form, resend or non-six-digit controls',()=>{
+ const base={tagName:'INPUT',id:'btnSubmit',type:'submit',attrs:{value:'تفعيل الحساب'}};
+ for(const overrides of [{visible:false},{disabled:true},{attrs:{value:'تفعيل الحساب',title:'إعادة إرسال'}},{id:'differentSubmit'}]){
+  assert.equal(fixture({buttons:[{...base,...overrides}]}).run(),null);
+ }
+ const wrong=fixture({buttons:[base]});wrong.controls[0].form={};assert.equal(wrong.run(),null);
+ assert.equal(fixture({inputs:[{id:'otp',maxLength:8}],buttons:[base]}).run(),null);
+});

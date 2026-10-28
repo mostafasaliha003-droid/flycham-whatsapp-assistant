@@ -8,18 +8,18 @@ function inspectVerificationControls(){
  const candidates=Array.from(document.querySelectorAll('input')).filter(el=>{
   if(!visible(el)||el.disabled||el.readOnly||!['text','password','tel','number'].includes(el.type))return false;
   const text=label(el);if(/captcha|رمز\s*الصورة|UserName|NafathID/i.test(text))return false;
-  const strong=/one-time-code|one.?time.?password|\botp\b|otpcode|verification.?code|verify.?code|رمز\s*(التحقق|التأكيد)|كود\s*(التحقق|التأكيد)/i.test(text);
+  const strong=/one-time-code|one.?time.?password|\botp\b|otpcode|verification.?code|verify.?code|activation.?code|رمز\s*(التحقق|التأكيد|التفعيل)|كود\s*(التحقق|التأكيد|التفعيل)/i.test(text)||el.type==='text'&&el.maxLength===6&&/otp|verification|one.?time|رمز\s*(التحقق|التأكيد|التفعيل)|كود\s*(التحقق|التأكيد)/i.test(text);
   if(/Password/i.test(text)&&!strong)return false;if(strong)return true;
   const form=el.closest('form');return /^(code|pin|token|validationcode|checkcode)$/i.test(el.id||el.name||'')&&form&&/رمز\s*(التحقق|التأكيد)|verification\s*code|one.time\s*(code|password)/i.test(form.textContent||'');
  });
  if(candidates.length!==1)return null;
  const input=candidates[0],form=input.closest('form');if(!form)return null;
  const buttons=Array.from(form.querySelectorAll('button,input[type=submit],input[type=button],a[role=button]')).filter(el=>{
-  if(!visible(el)||el.disabled)return false;
+  if(!visible(el)||el.disabled||el.closest('form')!==form)return false;
   // Button captions are public control labels, not editable values.
   const text=(el.tagName==='INPUT'?el.getAttribute('value'):el.textContent)||'';
   const metadata=[text,el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('title'),el.getAttribute('formaction')].filter(Boolean).join(' ');
-  return !/resend|إعادة|اعادة|جديد|إرسال.*رمز|ارسال.*رمز/i.test(metadata)&&/^(\s*)(تحقق|التحقق|تأكيد|تاكيد|دخول|تسجيل الدخول|متابعة|إرسال|ارسال|verify|confirm|continue|submit|login|sign in)(\s*)$/i.test(text);
+  return !/resend|إعادة|اعادة|جديد|إرسال.*رمز|ارسال.*رمز/i.test(metadata)&&(/^(\s*)(تحقق|التحقق|تأكيد|تاكيد|دخول|تسجيل الدخول|متابعة|إرسال|ارسال|verify|confirm|continue|submit|login|sign in)(\s*)$/i.test(text)||el.tagName==='INPUT'&&el.type==='submit'&&el.id==='btnSubmit'&&input.type==='text'&&input.maxLength===6);
  });
  if(buttons.length!==1)return null;
  const inputSelector=path(input),buttonSelector=path(buttons[0]);if(inputSelector.length>2048||buttonSelector.length>2048)return null;
