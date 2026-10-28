@@ -22,7 +22,7 @@ function inspectObservedNavigation({path,label}){
    if(unsafeQuery||blocked.test(relevant)||actionPath.test(u.pathname)||actionLabel.test(caption)||!service.test(relevant))continue;
    matches.push(u.href);
   }
-  return matches.length===1?{href:matches[0]}:null;
+  const targets=[...new Set(matches)];return targets.length===1?{href:targets[0]}:null;
  }catch{return null;}
 }
 async function navigateObservedLink(page,{path,label}={}){
