@@ -10,6 +10,10 @@ const {openAccountMenu}=require('./account-menu');
 const {credentialConfig,getCredentials}=require('./env-credentials');
 const {otpConfig,validAccount,waitForMofaCode,mofaOtpHealth}=require('./mofa-otp-provider');
 const {captchaConfig,captchaHealth,readCaptcha}=require('./captcha-provider');
+const {inspectPortalPage}=require('./portal-inspection');
+const {navigateObservedLink}=require('./portal-navigation');
+const {fillPortalFields}=require('./portal-fill');
+const {uploadPortalDocuments}=require('./portal-upload');
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
@@ -27,7 +31,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
  async function close(){const old=job;if(!old)return true;if(old.stage!=='closing'&&old.stage!=='cleanup_unconfirmed')lastOutcome=old.stage;old.stage='closing';old.controller?.abort();clearTimeout(old.timer);try{if(!await boundedClose(old.browser))throw Error('CLEANUP_UNCONFIRMED');if(job===old)job=null;return true;}catch{old.stage='cleanup_unconfirmed';return false;}}
  function requireJob(id){if(!job||id!==job.id||job.expires<=now())throw Error('SESSION_UNAVAILABLE');return job;}
  async function guard(j){if(j!==job||j.controller?.signal.aborted||j.expires<=now()||!j.browser.isConnected()||j.page.isClosed()||new URL(j.page.url()).origin!=='https://visa.mofa.gov.sa')throw Error('SESSION_UNAVAILABLE');}
- async function body(req){if(req.headers['content-type']!=='application/json')throw Error('INPUT_INVALID');let size=0,parts=[];for await(const p of req){size+=p.length;if(size>2048)throw Error('INPUT_INVALID');parts.push(p);}const value=JSON.parse(Buffer.concat(parts).toString('utf8'));parts=[];return value;}
+ async function body(req,maxBytes=2048){if(req.headers['content-type']!=='application/json')throw Error('INPUT_INVALID');let size=0,parts=[];for await(const p of req){size+=p.length;if(size>maxBytes)throw Error('INPUT_INVALID');parts.push(p);}const value=JSON.parse(Buffer.concat(parts).toString('utf8'));parts=[];return value;}
  async function start(){if(job)throw Error('SESSION_EXISTS');starts=starts.filter(t=>t>now()-600000);if(starts.length>=3)throw Error('START_LIMIT');starts.push(now());
   const browser=await launch({headless:true,args:['--no-sandbox']});
   const j={id:crypto.randomBytes(24).toString('hex'),browser,page:null,controller:new AbortController(),captchaImages:new Set(),stage:'starting',expires:now()+TTL};job=j;
@@ -46,7 +50,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
   if(url.search||url.hash){reply(res,400,{error:'INVALID_REQUEST'});return;}
   if(req.method==='GET'&&url.pathname==='/health'){reply(res,200,{ready:!shutting});return;}
   if(req.method==='GET'&&staticAssets[url.pathname]){const [content,type]=staticAssets[url.pathname];reply(res,200,content,type);return;}
-  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/auto-verify','/api/refresh-captcha','/api/inspect-account-menu','/api/otp-health','/api/captcha-health','/api/auto-login'];
+  const allowed=['/api/start','/api/image','/api/submit','/api/status','/api/close','/api/current','/api/verify','/api/auto-verify','/api/refresh-captcha','/api/inspect-account-menu','/api/otp-health','/api/captcha-health','/api/auto-login','/api/inspect-page','/api/open-page','/api/fill-draft','/api/upload-documents'];
   if(!allowed.includes(url.pathname)){reply(res,404,{error:'NOT_FOUND'});return;}
   if(!equal(req.headers.authorization)){reply(res,401,{error:'UNAUTHORIZED'});return;}
   if(env.RAAD_DIRECT_LOGIN_ENABLED!=='true'||shutting){reply(res,503,{error:'DISABLED'});return;}
@@ -59,10 +63,30 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
    else if(url.pathname==='/api/otp-health'){const credentials=credentialConfig(env);reply(res,200,{credentialsConfigured:credentials.configured,credentialsIncomplete:credentials.incomplete,...await mofaOtpHealth({env,fetchImpl:otpFetch})});}
    else if(url.pathname==='/api/start'){if(job){reply(res,409,{error:'SESSION_EXISTS'});}else reply(res,200,await start());}
    else if(url.pathname==='/api/current'){if(job&&job.expires<=now()&&!await close()){reply(res,200,{stage:'cleanup_unconfirmed'});}else if(job){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(job.stage)){await guard(job);job.stage=await classify(job);}reply(res,200,{sessionId:job.id,stage:job.stage,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(job),automaticCaptcha:automaticCaptcha(job),captchaAutomationAvailable:captchaAutomationAvailable(),canVerify:job.canVerify===true,authenticated:job.stage==='authenticated',expiresAt:job.expires,...(['result_unverified','verification_unconfirmed'].includes(job.stage)?{diagnostics:await getVerificationDiagnostics(job.page)}:{}),...(job.verificationCheck?{interaction:job.verificationCheck}:{}),...(job.accountSignals?{accountSignals:job.accountSignals}:{})});}else reply(res,200,{stage:'no_session',lastOutcome});}
-   else {const data=await body(req);const j=requireJob(data.sessionId);
+   else {const data=await body(req,url.pathname==='/api/upload-documents'?4100000:url.pathname==='/api/fill-draft'?24000:2048);const j=requireJob(data.sessionId);
     if(url.pathname==='/api/close'){reply(res,200,{closed:await close()});}
     else {await guard(j);
      if(url.pathname==='/api/status'){if(['submitted_unverified','login_not_completed','verification_required','result_unverified','verification_submitted','verification_unconfirmed','authenticated'].includes(j.stage))j.stage=await classify(j);reply(res,200,{stage:j.stage,canVerify:j.canVerify===true,authenticated:j.stage==='authenticated',expiresAt:j.expires});}
+     else if(['/api/fill-draft','/api/upload-documents'].includes(url.pathname)){
+      if(j.verificationStatus!=='submitted'||!['result_unverified','authenticated'].includes(j.stage))throw Error('ACCOUNT_PAGE_UNAVAILABLE');
+      const verification=await findVerificationControls(j.page),diagnostics=await getVerificationDiagnostics(j.page);const codePresent=Boolean(verification)||(Array.isArray(diagnostics.fields)&&diagnostics.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete)));
+      const signals=await getAccountSignals(j.page,codePresent);if(signals.loginControlsVisible||signals.otpPresent||signals.loginRoute)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
+      if(!j.portalEdits)j.portalEdits=0;if(j.portalEdits>=15)throw Error('EDIT_LIMIT');j.portalEdits++;
+      let result;try{result=url.pathname==='/api/fill-draft'?await fillPortalFields(j.page,{fields:data.fields}):await uploadPortalDocuments(j.page,{documents:data.documents});}
+      catch(error){const reasons=new Set(['PORTAL_FILL_INPUT_INVALID','PORTAL_FILL_UNTRUSTED_PAGE','PORTAL_FILL_FIELD_UNAVAILABLE','PORTAL_FILL_FIELD_FORBIDDEN','PORTAL_FILL_FORM_UNAVAILABLE','PORTAL_FILL_KIND_MISMATCH','PORTAL_FILL_OPTION_INVALID','PORTAL_FILL_UNCONFIRMED','PORTAL_FILL_BUSY','UPLOAD_INPUT_INVALID','UPLOAD_PAGE_UNAVAILABLE','UPLOAD_FIELD_UNAVAILABLE','UPLOAD_FAILED']);reply(res,409,{error:'PORTAL_EDIT_UNCONFIRMED',reason:reasons.has(error?.code)?error.code:'UNCONFIRMED',...(Number.isInteger(error?.filledCount)?{filledCount:error.filledCount}:{}),...(Number.isInteger(error?.uploadedCount)?{uploadedCount:error.uploadedCount}:{})});return;}
+      finally{if(Array.isArray(data.documents))for(const doc of data.documents)if(doc&&typeof doc==='object')doc.data='';if(Array.isArray(data.fields))for(const field of data.fields)if(field&&typeof field==='object')field.value='';}
+      await guard(j);j.portalDraftTouched=true;reply(res,200,{stage:j.stage,...result});
+     }
+     else if(url.pathname==='/api/inspect-page'){
+      const inspection=await inspectPortalPage(j.page);await guard(j);reply(res,200,{stage:j.stage,inspection});
+     }
+     else if(url.pathname==='/api/open-page'){
+      if(j.verificationStatus!=='submitted'||!['result_unverified','authenticated'].includes(j.stage))throw Error('ACCOUNT_PAGE_UNAVAILABLE');
+      const verification=await findVerificationControls(j.page),diagnostics=await getVerificationDiagnostics(j.page);const codePresent=Boolean(verification)||(Array.isArray(diagnostics.fields)&&diagnostics.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete)));
+      const signals=await getAccountSignals(j.page,codePresent);if(signals.loginControlsVisible||signals.otpPresent||signals.loginRoute)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
+      if(!j.portalNavigations)j.portalNavigations=0;if(j.portalNavigations>=12)throw Error('NAVIGATION_LIMIT');j.portalNavigations++;
+      const navigation=await navigateObservedLink(j.page,{path:data.path,label:data.label});await guard(j);j.stage=await classify(j);reply(res,200,{stage:j.stage,navigation,inspection:await inspectPortalPage(j.page)});
+     }
      else if(url.pathname==='/api/inspect-account-menu'){
       if(j.verificationStatus!=='submitted')throw Error('LOGIN_NOT_SUBMITTED');
       const otp=await findVerificationControls(j.page);const structure=await getVerificationDiagnostics(j.page);const codeStillVisible=Array.isArray(structure.fields)&&structure.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete));const before=await getAccountSignals(j.page,Boolean(otp)||codeStillVisible);
