@@ -27,3 +27,16 @@ test('wrapper failure is fail closed',async()=>{assert.equal((await getAccountSi
 test('hidden account menu presence is metadata only, never proof',()=>{const r=inspect({controls:[el({text:'Logout',visible:false}),el({text:'طلباتي',visible:false})]});assert.equal(r.logoutPresent,true);assert.equal(r.myApplicationsPresent,true);assert.equal(r.logoutVisible,false);assert.equal(r.applicationsVisible,false);assert.equal(r.accountUiVerified,false);});
 
 test('an application image captcha alone is not a login control',()=>{const location=new URL('https://visa.mofa.gov.sa/SmartForm/TraditionalApp'),window={};window.top=window;window.self=window;const result=vm.runInNewContext('('+inspectAccountSignals.toString()+')(false)',{location,window,URL,getComputedStyle:()=>({display:'block',visibility:'visible'}),document:{querySelectorAll:selector=>selector.includes('#Captcha')?[el({tag:'INPUT'})]:[]}});assert.equal(result.loginControlsVisible,false);assert.equal(result.accountUiVerified,false);});
+
+test('observed exact official applications anchor route supplies applications evidence without inventing labels',()=>{
+ for(const href of ['/SmartForm','/SmartForm/']){const r=inspect({controls:[el({text:'Logout',href:'/Account/LogOff'}),el({text:'Observed application navigation',href})]});assert.equal(r.applicationsVisible,true);assert.equal(r.accountUiVerified,true);}
+});
+test('route evidence rejects other paths, query, fragment, external target and non-anchor controls',()=>{
+ for(const href of ['/SmartForm?view=all','/SmartForm#section','/SmartForm/Agreement','/SmartForm/Index','/smartform','https://external.test/SmartForm']){const r=inspect({controls:[el({text:'Logout',href:'/Account/LogOff'}),el({text:'Observed navigation',href})]});assert.equal(r.myApplicationsPresent,false);assert.equal(r.accountUiVerified,false);}
+ const form={getAttribute:()=>'/SmartForm'};assert.equal(inspect({controls:[el({text:'Logout',href:'/Account/LogOff'}),el({tag:'BUTTON',text:'Observed navigation',form})]}).accountUiVerified,false);
+});
+test('applications route never substitutes for visible logout or overrides login and OTP blockers',()=>{
+ const controls=[el({text:'Logout',href:'/Account/LogOff',visible:false}),el({text:'Observed application navigation',href:'/SmartForm'})];assert.equal(inspect({controls}).accountUiVerified,false);
+ controls[0]=el({text:'Logout',href:'/Account/LogOff'});assert.equal(inspect({controls,otp:true}).accountUiVerified,false);assert.equal(inspect({controls,login:[el({tag:'INPUT'})]}).accountUiVerified,false);
+ assert.equal(inspect({controls:[controls[0],el({text:'Observed navigation',href:'/SmartForm',visible:false})]}).accountUiVerified,false);
+});
