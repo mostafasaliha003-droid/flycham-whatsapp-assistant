@@ -69,12 +69,14 @@ class VisaPortalDispatcher{
  async recoverStoppedLogin(){
   for(const job of Object.values(this.fulfilment.data().jobs)){
    const run=this.store.data.visaPortalRuns[job.id];
-   if(job.state!=='portal_review_required'||job.blockedReason!=='PILOT_UNAVAILABLE'||!run||run.phase!=='blocked'||run.lastStage!=='login'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.loginRecoveryAttempts||0)>=1)continue;
+   const policyRetry=job.blockedReason==='LOGIN_UNCONFIRMED'&&job.loginPolicyRecovery!=='single_observed_v2';
+   const transportRetry=job.blockedReason==='PILOT_UNAVAILABLE'&&(job.loginRecoveryAttempts||0)<1;
+   if(job.state!=='portal_review_required'||(!policyRetry&&!transportRetry)||!run||run.phase!=='blocked'||run.lastStage!=='login'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease)continue;
    const previous=job.state;job.state='ready';let dossier;
    try{const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete)continue;dossier=this.dossier(job,proof);}catch{continue;}finally{job.state=previous;}
    if(!dossier?.ready)continue;
    try{const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob===true)continue;await this.cancelOwned(job.id);}catch{continue;}
-   job.state='ready';job.loginRecoveryAttempts=(job.loginRecoveryAttempts||0)+1;delete job.blockedReason;run.phase='retry_ready';this.store.save();
+   job.state='ready';job.loginRecoveryAttempts=(job.loginRecoveryAttempts||0)+1;if(policyRetry)job.loginPolicyRecovery='single_observed_v2';delete job.blockedReason;run.phase='retry_ready';this.store.save();
   }
  }
  async recoverMissingPreflight(){
