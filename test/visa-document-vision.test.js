@@ -100,12 +100,12 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v11');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v14');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
-  assert.equal(WIRE_PROJECTION_POLICY, 'typed-visible-passport-number-and-independent-checked-mrz-v5');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d']);
+  assert.equal(WIRE_PROJECTION_POLICY, 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6');
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
-  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d']);
+  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045']);
   assert.equal(Object.isFrozen(COMPATIBLE_COMPLETED_FAILURE_POLICIES), true);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
@@ -298,6 +298,20 @@ test('discarding an unwrapped known fact preserves a separately classified usabl
   assert.equal(matched.complete, true);
   assert.deepEqual(matched.applicants[0].documents.photo, {mediaId: documents[2].mediaId, page: 1, sha256: documents[2].sha256});
   assert.equal(matched.applicants[0].evidence.authenticityVerified, false);
+});
+
+test('standalone portrait wire crops are always discarded while direct extraction validation remains strict',()=>{
+ const base={version:1,kind:'portrait',readable:true,rotation:0,fields:{},mrzLines:[],portraitBox:null};
+ for(const portraitBox of [{x:40,y:75,width:920,height:1217,confidence:1},'portrait crop',[0,0,920,1217],{unexpected:'PRIVATE_UNUSED_CROP'},true,42,{x:'0.1',y:0,width:1,height:1,confidence:0.99},{x:0.1,y:0.1,width:0.5,height:0.5,confidence:0.99}]){
+  const wire={...base,portraitBox},before=structuredClone(wire);assert.throws(()=>validateDocumentExtraction(wire),{code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'portraitBox'});const result=parseDocumentOutput(JSON.stringify(wire));assert.deepEqual(result,base);assert.deepEqual(wire,before);assert(!JSON.stringify(result).includes('PRIVATE_UNUSED_CROP'));
+ }
+ assert.deepEqual(parseDocumentOutput(JSON.stringify({...base,readable:false,portraitBox:['unused']})),{...base,readable:false});
+});
+
+test('ignoring a standalone portrait crop never ignores root, field, MRZ or passport-crop errors',()=>{
+ const base={version:1,kind:'portrait',readable:true,rotation:0,fields:{},mrzLines:[],portraitBox:'unused'};
+ for(const patch of [{unknownRoot:'PRIVATE_ROOT'},{fields:{unknownField:field('PRIVATE_VALUE')}},{fields:{birthDate:field('1990-02-03')}},{fields:[]},{readable:'true'},{rotation:1},{version:2},{mrzLines:'not-an-array'},{mrzLines:['P<EGY']},{mrzLines:[12]},{kind:'unrecognized'}])assert.throws(()=>parseDocumentOutput(JSON.stringify({...base,...patch})),{code:'DOCUMENT_VISION_SCHEMA_INVALID'});
+ for(const portraitBox of ['unused',[0,0,1,1],{unknown:'PRIVATE_CROP'},{x:'0.1',y:0,width:1,height:1,confidence:1}])assert.throws(()=>parseDocumentOutput(JSON.stringify(page({portraitBox}))),{code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'portraitBox'});
 });
 
 test('ambiguous slash dates remain private evidence until checked passport dates resolve their order', () => {

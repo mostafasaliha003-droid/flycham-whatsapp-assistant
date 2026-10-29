@@ -63,7 +63,14 @@ class VisaDocumentIntake{
   if(this.policyFingerprint===POLICY_FINGERPRINT)for(const job of Object.values(this.data().jobs)){
    const keepCompleted=COMPATIBLE_COMPLETED_FAILURE_POLICIES.includes(job.policy);
    if(!COMPATIBLE_PREVIOUS_POLICIES.includes(job.policy)||!(job.status==='ready'&&Object.keys(job.pages||{}).length||keepCompleted&&job.status==='failed'))continue;
-   let sourceBound=false;try{const source=this.rawSource(job.customer,job.mediaId),c=this.caseFor(job.customer),state=this.data().cases[job.customer];if(!source||source.checksum!==job.sourceSha256||!c||job.caseId!==c.id||job.caseSignature!==visaCaseSignature(c)||!state||state.caseId!==c.id||job.generation!==state.generation)continue;sourceBound=true;const pages=Object.values(job.pages||{});if(pages.some(page=>{const valid=validateDocumentExtraction(page.extraction);return !keepCompleted&&valid.readable!==true&&valid.kind!=='other';}))continue;job.policy=this.policyFingerprint;changed=true;}catch(error){if(keepCompleted&&sourceBound){job.policy=this.policyFingerprint;job.status='failed';job.pages={};job.issues=[failureReason(error)];changed=true;}}
+   let sourceBound=false;try{const source=this.rawSource(job.customer,job.mediaId),c=this.caseFor(job.customer),state=this.data().cases[job.customer];if(!source||source.checksum!==job.sourceSha256||!c||job.caseId!==c.id||job.caseSignature!==visaCaseSignature(c)||!state||state.caseId!==c.id||job.generation!==state.generation)continue;sourceBound=true;const pages=Object.values(job.pages||{});if(pages.some(page=>{const valid=validateDocumentExtraction(page.extraction);return !keepCompleted&&valid.readable!==true&&valid.kind!=='other';}))continue;
+    // Older page checkpoints omitted the immutable raw-source binding already
+    // established by their ready job. Retain that exact known binding only;
+    // never repair an existing digest, page reference, extraction or image hash.
+    if(job.status==='ready'&&SHA.test(job.sourceSha256||''))for(const [key,page]of Object.entries(job.pages||{})){
+     if(page&&typeof page==='object'&&!Array.isArray(page)&&!Object.hasOwn(page,'sourceSha256')&&page.mediaId===job.mediaId&&Number.isInteger(page.page)&&page.page>=1&&page.page<=10&&String(page.page)===key&&SHA.test(page.sha256||''))page.sourceSha256=job.sourceSha256;
+    }
+    job.policy=this.policyFingerprint;changed=true;}catch(error){if(keepCompleted&&sourceBound){job.policy=this.policyFingerprint;job.status='failed';job.pages={};job.issues=[failureReason(error)];changed=true;}}
   }
   for(const [customer,state]of Object.entries(this.data().cases))if(state.policy!==this.policyFingerprint)affected.add(customer);
   for(const job of Object.values(this.data().jobs)){
