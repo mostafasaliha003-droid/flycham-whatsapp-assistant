@@ -25,7 +25,7 @@ function inspectAccountSignals(otpPresent=false){
   for(const el of document.querySelectorAll('a,button,input[type="submit"],input[type="button"],[role="button"]')){
    const u=target(el);if(!u)continue;const text=caption(el);
    const isLogout=/^(?:تسجيل الخروج|تسجيل خروج|خروج|logout|log out|sign out)$/i.test(text)||/(?:^|\/)(?:logout|logoff|signout)(?:\/|$)/i.test(u.pathname);
-   const isApplications=/^(?:طلباتي|my applications)$/i.test(text);
+   const isApplications=/^(?:طلباتي|my applications)$/i.test(text)||el.tagName==='A'&&/^\/SmartForm\/?$/.test(u.pathname)&&!u.search&&!u.hash;
    if(isLogout)result.logoutPresent=true;if(isApplications)result.myApplicationsPresent=true;
    const actionable=visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true';
    if(actionable&&isLogout)result.logoutVisible=true;
