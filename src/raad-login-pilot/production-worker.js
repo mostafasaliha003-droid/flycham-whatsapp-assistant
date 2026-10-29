@@ -140,7 +140,7 @@ async function loginGovernmentAccount(ctx){
    if(state.automaticOtp!==true)throw finite('LOGIN_EMAIL_OTP_UNAVAILABLE');
    const verified=await api('auto-verify');report('email_otp',verified);if(verified.submitted!==true)throw finite('LOGIN_EMAIL_OTP_UNCONFIRMED');otpSubmitted=true;continue;
   }
-  if(state.stage==='result_unverified'){
+  if(state.stage==='result_unverified'&&otpSubmitted){
    await api('inspect-account-menu');const checked=await api('current',{},false);report('account_check',checked);if(checked.stage==='authenticated'||checked.accountSignals?.accountUiVerified===true)return;
   }
   if(state.stage==='login_not_completed')throw finite('LOGIN_REJECTED');
