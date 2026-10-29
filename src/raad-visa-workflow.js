@@ -435,7 +435,7 @@ class RaadVisaWorkflow {
 
   portalDossier(customer, {applicantIndex = 0, clientProof} = {}) {
     const context = this.context(customer, applicantIndex), job = this.job(context), issues = [];
-    const source = job?.machineReview ? 'machine' : 'staff';
+    const source = job?.machineReview ? 'machine' : job?.documentAssistance ? 'assisted' : 'staff';
     const add = (field, code, message) => issues.push(issue(field, code, message));
     const ownershipBlock = this.executionOwnershipBlock(customer);
     if (ownershipBlock) add('case', ownershipBlock, 'Automatic execution is paused for this conversation.');
@@ -447,6 +447,15 @@ class RaadVisaWorkflow {
       if (!this.machineAllowed(customer)) add('case', 'RAAD_MACHINE_AUTOMATION_PAUSED', 'Automatic preparation is paused.');
       dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature: context.caseSignature, evidenceId: job.machineReview.evidenceId, now: this.now});
       if (!dossier.ready || dossier.evidenceFingerprint !== job.machineReview.evidenceFingerprint || job.machineReview.draftFingerprint !== hash({fields: job.fields, documents: job.documents})) add('documents', 'RAAD_MACHINE_EVIDENCE_STALE', 'Document evidence has changed and must be checked again.');
+    } else if (source === 'assisted') {
+      if(!this.machineAllowed(customer))add('case','RAAD_MACHINE_AUTOMATION_PAUSED','Automatic preparation is paused.');
+      dossier=verifyMachineDossier({store:this.store,mediaStore:this.mediaStore,customer,applicantIndex,expectedCaseSignature:context.caseSignature,evidenceId:job.documentAssistance.evidenceId,now:this.now});
+      if(!dossier.ready||job.caseId!==context.c.id||job.caseSignature!==context.caseSignature||job.documentAssistance.evidenceFingerprint!==dossier.evidenceFingerprint)add('documents','RAAD_MACHINE_EVIDENCE_STALE','Document evidence requires verification.');
+      else {
+        for(const [field,value]of Object.entries(dossier.fields))if(!Object.hasOwn(job.fields,field)||!equivalentFact(field,value,job.fields[field]))add(field,'DOCUMENT_DATA_CONFLICT','Draft document facts differ from verified facts.');
+        for(const field of Object.keys(job.fields||{}))if(DOCUMENT_FACT_SET.has(field)&&!Object.hasOwn(dossier.fields,field)&&!dossier.clientFieldsRequired.includes(field))add(field,'DOCUMENT_DATA_CONFLICT','An unverified extra document fact cannot be used.');
+        for(const kind of DOCUMENT_KINDS)if(job.documents?.[kind]?.mediaId!==dossier.documents?.[kind]?.mediaId)add(kind,'RAAD_MACHINE_EVIDENCE_STALE','The selected document differs from verified evidence.');
+      }
     } else if (job) {
       const assessment = this.assess(context, job);
       if (!assessment.complete || assessment.stale) add('review', 'RAAD_STAFF_REVIEW_REQUIRED', 'The current staff draft requires review.');
@@ -466,7 +475,12 @@ class RaadVisaWorkflow {
     if (clientProof?.documentEvidence) {
       if (!live?.documentFacts || clientProof.documentEvidence.id !== live.documentFacts.evidenceId || clientProof.documentEvidence.evidenceFingerprint !== live.documentFacts.evidenceFingerprint) consent = false;
     }
-    if (source === 'machine' && (!dossier?.ready || clientProof?.documentEvidence?.id !== dossier.evidenceId || clientProof?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint || confirmation?.documentEvidence?.id !== dossier.evidenceId || confirmation?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint)) consent = false;
+    if (['machine','assisted'].includes(source) && (!dossier?.ready || clientProof?.documentEvidence?.id !== dossier.evidenceId || clientProof?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint || confirmation?.documentEvidence?.id !== dossier.evidenceId || confirmation?.documentEvidence?.evidenceFingerprint !== dossier.evidenceFingerprint)) consent = false;
+    if(source==='assisted'){
+      const supplement=live?.staffDocumentSupplement,supplementHash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+      if(!supplement||supplement.draftJobId!==job.jobId||supplement.draftFingerprint!==supplementHash({fields:Object.fromEntries(Object.entries(job.fields||{}).filter(([field])=>DOCUMENT_FACT_SET.has(field))),documents:job.documents})||supplement.fingerprint!==supplementHash(supplement.fields||{}))consent=false;
+      else for(const [field,value]of Object.entries(supplement.fields||{}))if(!['passportType','issueDate','birthPlace'].includes(field)||!dossier?.clientFieldsRequired?.includes(field)||!Object.hasOwn(answers,field)||!equivalentFact(field,value,answers[field])||!equivalentFact(field,value,job.fields[field]))consent=false;
+    }
     if (dossier?.ready && requiredQuestions(answers, {requestedFields: dossier.clientFieldsRequired}).length) add('consent', 'RAAD_CLIENT_DOCUMENT_FACTS_REQUIRED', 'Missing document facts require the applicant’s explicit answer.');
     if (!consent) add('consent', 'RAAD_CLIENT_CONSENT_REQUIRED', 'A current explicit applicant confirmation and authorization is required.');
     let fields = mergeFields({...defaults}, job?.fields || {});
