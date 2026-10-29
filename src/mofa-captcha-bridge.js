@@ -30,7 +30,7 @@ function createMofaCaptchaBridge({env=process.env,fetchImpl=fetch,now=Date.now}=
   const url='https://generativelanguage.googleapis.com/v1beta/models/'+GEMMA+':generateContent',headers={'x-goog-api-key':env.GEMINI_API_KEY,'Content-Type':'application/json'};
   const body={systemInstruction:{parts:[{text:PROMPT}]},contents:[{role:'user',parts:[{inlineData:{mimeType:'image/png',data:input.image}}]}],generationConfig:{temperature:0,maxOutputTokens:128,thinkingConfig:{thinkingLevel:'minimal'}}};
   try{
-   const response=await fetchImpl(url,{method:'POST',headers,redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(18000)]),body:JSON.stringify(body)});
+   const response=await fetchImpl(url,{method:'POST',headers,redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(30000)]),body:JSON.stringify(body)});
    if(signal.aborted)return {code:null,reason:'CANCELLED'};if(!response.ok)return {code:null,reason:'PROVIDER_UNAVAILABLE'};
    const payload=await response.json();if(signal.aborted)return {code:null,reason:'CANCELLED'};if(JSON.stringify(payload).length>64000)return {code:null,reason:'INVALID_PROVIDER_REPLY'};
    const candidate=payload.candidates?.[0];if(payload.promptFeedback?.blockReason||candidate?.finishReason!=='STOP')return {code:null,reason:'INVALID_PROVIDER_REPLY'};const text=(candidate.content?.parts||[]).filter(v=>!v.thought&&typeof v.text==='string').map(v=>v.text).join('');
@@ -50,7 +50,7 @@ function createMofaCaptchaBridge({env=process.env,fetchImpl=fetch,now=Date.now}=
   busy=true;const controller=new AbortController();let disconnected=false,timedOut=false,timer,currentImageId=null;
   const disconnect=()=>{disconnected=true;controller.abort();};const responseClosed=()=>{if(!res.writableEnded)disconnect();};
   req.on?.('aborted',disconnect);res.on?.('close',responseClosed);
-  const deadline=new Promise(resolve=>{timer=setTimeout(()=>{timedOut=true;controller.abort();resolve({imageId:currentImageId,code:null,reason:'TIMEOUT'});},20000);timer.unref?.();});
+  const deadline=new Promise(resolve=>{timer=setTimeout(()=>{timedOut=true;controller.abort();resolve({imageId:currentImageId,code:null,reason:'TIMEOUT'});},35000);timer.unref?.();});
   const work=(async()=>{let input;try{const bytes=await readBody(req);if(controller.signal.aborted)return {code:null,reason:'CANCELLED'};if(!Buffer.isBuffer(bytes)||bytes.length>MAX_BODY)return {code:null,reason:'INVALID_IMAGE'};input=validateImage(JSON.parse(bytes.toString('utf8')));if(!input)return {code:null,reason:'INVALID_IMAGE'};currentImageId=input.imageId;starts.push(now());const result=await infer(input,controller.signal);if(controller.signal.aborted)return {imageId:input.imageId,code:null,reason:timedOut?'TIMEOUT':'CANCELLED'};return {imageId:input.imageId,...result};}catch{return {code:null,reason:controller.signal.aborted?(timedOut?'TIMEOUT':'CANCELLED'):'INVALID_IMAGE'};}finally{input=null;}})();
   // Hold concurrency lock until IO actually settles, even if client/budget ended.
   work.then(()=>{busy=false;},()=>{busy=false;});
