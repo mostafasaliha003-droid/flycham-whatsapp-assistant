@@ -403,13 +403,27 @@ class RaadVisaWorkflow {
     if (!this.machineAllowed(customer)) fail('RAAD_MACHINE_AUTOMATION_PAUSED', 409);
     if (context.blockedReason) fail(context.blockedReason, 409);
     if (expectedCaseSignature !== context.caseSignature) fail('RAAD_CASE_SIGNATURE_CONFLICT', 409);
-    if (previous && (!previous.machineReview || previous.review?.reviewedAt || previous.review?.confirmedFields?.length || previous.machineReview.draftFingerprint !== hash({fields: previous.fields, documents: previous.documents}))) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
+    if (previous && (previous.review?.reviewedAt || previous.review?.confirmedFields?.length || previous.machineReview && previous.machineReview.draftFingerprint !== hash({fields: previous.fields, documents: previous.documents}))) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
     const dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now: this.now});
     if (!dossier.ready) fail(dossier.blockedReason || 'RAAD_MACHINE_REVIEW_REQUIRED', 409);
     for (const [field, value] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(dossier.fields, field) && !equivalentFact(field, value, dossier.fields[field])) fail('RAAD_MACHINE_SOURCE_CONFLICT', 409);
     if (previous?.machineReview?.evidenceFingerprint === dossier.evidenceFingerprint) return clone({...this.summary(context, previous), ok: true, duplicate: true, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview: previous.machineReview});
     const documents = Object.fromEntries(DOCUMENT_KINDS.map(kind => [kind, this.observeDocument(dossier.documents[kind].mediaId, context)]));
     if (Object.values(documents).some(value => !value)) fail('RAAD_MACHINE_DOCUMENT_UNAVAILABLE', 409);
+    if (previous && !previous.machineReview) {
+      // Add verified document facts to an unreviewed staff draft without
+      // changing any staff value, and keep the staff-review gate intact.
+      if (previous.caseId !== context.c.id || previous.caseSignature !== context.caseSignature) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
+      for (const [field, value] of Object.entries(previous.fields || {})) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(dossier.fields, field) && !equivalentFact(field, value, dossier.fields[field])) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
+      for (const kind of DOCUMENT_KINDS) if (previous.documents?.[kind] && hash(previous.documents[kind]) !== hash(documents[kind])) fail('RAAD_MANUAL_DRAFT_PROTECTED', 409);
+      const fields = {...clone(dossier.fields), ...clone(previous.fields || {})};
+      const mergedDocuments = {...documents, ...clone(previous.documents || {})};
+      const unchanged = hash({fields, documents: mergedDocuments}) === hash({fields: previous.fields, documents: previous.documents});
+      if (unchanged && previous.parentSignature === context.parentSignature && previous.documentAssistance?.evidenceFingerprint === dossier.evidenceFingerprint) return clone({...this.summary(context, previous), ok:true, duplicate:true, evidenceId, staffReviewRequired:true});
+      const job = {...clone(previous), revision:previous.revision+1, parentSignature:context.parentSignature, fields, documents:mergedDocuments, updatedAt:this.now(), documentAssistance:{evidenceId,evidenceFingerprint:dossier.evidenceFingerprint,authenticityVerified:false}, review:{scope:'staff_data_review',confirmedFields:[]}};
+      this.persist(context, job);
+      return clone({...this.summary(context, job), ok:true, duplicate:false, evidenceId, staffReviewRequired:true});
+    }
     const fields = clone(dossier.fields);
     const machineReview = {scope: 'machine_document_consistency', version: 1, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, extractionDigest: dossier.extractionDigest, verifiedAt: this.now(), draftFingerprint: hash({fields, documents}), authenticityVerified: false};
     const job = {jobId: previous?.jobId || randomUUID(), caseId: context.c.id, applicantIndex, revision: (previous?.revision || 0) + 1, caseSignature: context.caseSignature, parentSignature: context.parentSignature, sourceFields: sourceFields(context.person), fields, defaults: this.defaults(context, dubaiDate(this.now())), documents, machineReview, review: {scope: 'staff_data_review', confirmedFields: []}, createdAt: previous?.createdAt || this.now(), updatedAt: this.now()};
