@@ -406,7 +406,16 @@ class VisaFulfilment {
     if (!job.documentFacts) return null;
     const dossier = this.verifiedDocumentFacts(job, job.documentFacts.evidenceId);
     if (dossier.evidenceFingerprint !== job.documentFacts.evidenceFingerprint || documentFactsHash(dossier.fields) !== job.documentFacts.fieldsFingerprint || hash(dossier.clientFieldsRequired) !== hash(job.documentRequiredFields || [])) fail('VISA_DOCUMENT_EVIDENCE_STALE');
+    if(job.staffDocumentSupplement){const supplement=job.staffDocumentSupplement,draft=this.store.data.raadApplications?.[job.customer]?.applicants?.[job.applicantIndex];if(!draft||draft.jobId!==supplement.draftJobId||draft.caseSignature!==job.caseSignature||hash({fields:Object.fromEntries(Object.entries(draft.fields||{}).filter(([field])=>DOCUMENT_FACT_SET.has(field))),documents:draft.documents})!==supplement.draftFingerprint||hash(Object.fromEntries(Object.keys(supplement.fields).map(field=>[field,draft.fields?.[field]])))!==supplement.fingerprint)fail('VISA_DOCUMENT_EVIDENCE_STALE');}
     return dossier;
+  }
+  stageDraftDocumentSupplement(jobId){
+    const job=this.guardJob(jobId);if(!['queued','ready','awaiting_answers','needs_followup','awaiting_answer_confirmation'].includes(job.state)||this.data().lease?.jobId===jobId)fail('VISA_DOCUMENT_STAGE_IN_PROGRESS');
+    const dossier=this.assertDocumentFactsCurrent(job),draft=this.store.data.raadApplications?.[job.customer]?.applicants?.[job.applicantIndex];
+    if(!dossier||!draft||draft.caseId!==job.caseId||draft.caseSignature!==job.caseSignature||draft.documentAssistance?.evidenceId!==job.documentFacts.evidenceId||draft.documentAssistance?.evidenceFingerprint!==job.documentFacts.evidenceFingerprint)fail('VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
+    const fields={};for(const field of CLIENT_DOCUMENT_FIELDS)if(!Object.hasOwn(dossier.fields,field)&&Object.hasOwn(draft.fields||{},field)){const value=validateAnswer(field,draft.fields[field]);if(Object.hasOwn(job.confirmedFields,field)&&documentFactValue(field,job.confirmedFields[field])!==documentFactValue(field,value))fail('VISA_DOCUMENT_FACT_CONFLICT');if(Object.hasOwn(job.stagedFields||{},field)&&documentFactValue(field,job.stagedFields[field])!==documentFactValue(field,value))fail('VISA_DOCUMENT_FACT_CONFLICT');fields[field]=value;}
+    const fingerprint=hash(fields),draftFingerprint=hash({fields:Object.fromEntries(Object.entries(draft.fields||{}).filter(([field])=>DOCUMENT_FACT_SET.has(field))),documents:draft.documents}),prior=job.staffDocumentSupplement;if(prior?.fingerprint===fingerprint&&prior.draftFingerprint===draftFingerprint)return {ok:true,duplicate:true};
+    return this.commit(()=>{job.stagedFields={...clone(job.confirmedFields),...clone(job.stagedFields||{}),...clone(fields)};job.staffDocumentSupplement={draftJobId:draft.jobId,draftRevision:draft.revision,draftFingerprint,fields:clone(fields),fingerprint};this.audit('staff_document_supplement_staged',{customer:job.customer,jobId,evidenceId:job.documentFacts.evidenceId,fields:Object.keys(fields)});return {ok:true,duplicate:false};});
   }
   missingClientFields(job, fields) {
     return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: job.documentRequiredFields || []})])];
@@ -428,7 +437,7 @@ class VisaFulfilment {
       const staged = {...clone(job.confirmedFields), ...clone(job.stagedFields || {}), ...clone(verifiedFields)};
       for (const nested of ['health', 'guardian']) if (job.confirmedFields[nested] || job.stagedFields?.[nested]) staged[nested] = {...job.confirmedFields[nested], ...job.stagedFields?.[nested]};
       job.stagedFields = staged; job.documentFacts = {evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, fieldsFingerprint, fields: clone(verifiedFields), stagedAt: this.now()};
-      job.documentRequiredFields = [...dossier.clientFieldsRequired];
+      job.documentRequiredFields = [...dossier.clientFieldsRequired]; delete job.staffDocumentSupplement;
       job.questions = {}; job.questionRevision = (job.questionRevision || 0) + 1; job.revision++; job.state = 'queued'; delete job.summary; delete job.answerConfirmation;
       for (const item of Object.values(this.data().outbox)) if (item.jobId === jobId && item.state === 'pending' && ['applicant_question', 'applicant_answer_summary'].includes(item.kind)) { item.state = 'cancelled'; item.failure = 'DOCUMENT_FACTS_CHANGED'; item.updatedAt = this.now(); }
       this.audit('document_facts_staged', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, fields: Object.keys(verifiedFields)});
