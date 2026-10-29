@@ -200,3 +200,24 @@ test('legacy staff dossier also refuses execution during human ownership while l
   assert.equal(f.workflow.portalDossier(CUSTOMER, {clientProof: proof}).ready, false);
   assert.equal(f.workflow.get(CUSTOMER).review.complete, true, 'staff review itself is not erased by a temporary claim');
 });
+
+test('verified facts add to an unreviewed staff draft without replacing supplied facts or asserting staff review',()=>{
+ const f=fixture({gaps:['passportType','issueDate']});f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2025-01-01'},confirm:true});const before=structuredClone(f.c);
+ const result=f.apply({expectedRevision:1});assert.equal(result.staffReviewRequired,true);assert.equal(result.machineReview,undefined);
+ const raw=f.store.data.raadApplications[CUSTOMER].applicants[0];assert.equal(raw.fields.passportType,'ordinary');assert.equal(raw.fields.issueDate,'2025-01-01');assert.equal(raw.fields.passportNumber,DOC_FIELDS.passportNumber);assert.equal(raw.documents.passport.mediaId,IDS.passport);assert.deepEqual(raw.review.confirmedFields,[]);assert.equal(raw.review.reviewedAt,undefined);assert.deepEqual(f.c,before);
+ assert.equal(f.apply({expectedRevision:2}).duplicate,true);assert.equal(f.store.data.raadApplications[CUSTOMER].applicants[0].revision,2);
+});
+test('staff-reviewed drafts and contradictory manual or document choices remain protected',()=>{
+ const f=fixture();f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportNumber:'OTHER'},confirm:true});const prior=structuredClone(f.store.data.raadApplications);assert.throws(()=>f.apply({expectedRevision:1}),{code:'RAAD_MANUAL_DRAFT_PROTECTED'});assert.deepEqual(f.store.data.raadApplications,prior);
+ const g=fixture();g.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary'},confirm:true});g.store.data.raadApplications[CUSTOMER].applicants[0].review.reviewedAt=NOW;const previous=structuredClone(g.store.data.raadApplications);assert.throws(()=>g.apply({expectedRevision:1}),{code:'RAAD_MANUAL_DRAFT_PROTECTED'});assert.deepEqual(g.store.data.raadApplications,previous);
+});
+
+test('stale staff drafts are never carried into current case evidence',()=>{
+ const f=fixture();f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary'},confirm:true});f.store.data.raadApplications[CUSTOMER].applicants[0].caseSignature='f'.repeat(64);const before=structuredClone(f.store.data.raadApplications);
+ assert.throws(()=>f.apply({expectedRevision:1}),{code:'RAAD_MANUAL_DRAFT_PROTECTED'});assert.deepEqual(f.store.data.raadApplications,before);
+});
+
+test('payment confirmation refreshes an otherwise unchanged manual draft without marking it staff reviewed',()=>{
+ const f=fixture({gaps:['passportType','issueDate']});f.c.paymentStatus='unverified';f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2025-01-01'},confirm:true});
+ f.c.paymentStatus='verified';assert.equal(f.workflow.get(CUSTOMER).state,'stale');const result=f.apply({expectedRevision:1});assert.equal(result.staffReviewRequired,true);const draft=f.workflow.get(CUSTOMER);assert.notEqual(draft.state,'stale');assert.equal(draft.fields.passportType,'ordinary');assert.equal(draft.review.complete,false);assert.equal(f.c.submissionStatus,'not_submitted');
+});
