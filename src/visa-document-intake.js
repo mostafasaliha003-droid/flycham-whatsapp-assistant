@@ -15,7 +15,7 @@ const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
 // Changing matching/preparation reuses the existing OCR page checkpoints.
 // It must not silently send all existing originals to the provider again.
-const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v4';
+const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v5';
 const clone=value=>structuredClone(value);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value===undefined?null:value;}

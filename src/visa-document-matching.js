@@ -4,6 +4,8 @@ const {parseTD3MRZ, validateApplicant, proposedEntryDate} = require('./raad-docu
 const {parseTD1MRZ, matchesPrintedEmiratesId, resolvePrintedDate} = require('./visa-id-mrz');
 
 const THRESHOLD = 0.98;
+const PRIVATE_NUMERIC_THRESHOLD = 0.90;
+const PRIVATE_PASSPORT_NUMERIC = new Set(['passportNationalNumber','printedPassportExpiry']);
 const KINDS = new Set(['passport', 'uae_id_front', 'uae_id_back', 'portrait', 'other']);
 const PASSPORT_FIELDS = Object.freeze(['latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'passportNumber', 'passportType', 'nationalityCode', 'issuingCountryCode', 'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate']);
 const ALL_FIELDS = new Set([...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName', 'visiblePassportNumber', 'passportNationalNumber', 'printedPassportExpiry', 'printedResidenceExpiry', 'emiratesId', 'residenceExpiry']);
@@ -86,7 +88,7 @@ function exactIdentityNameMatch(first,second) {
 function nationalDigits(value) {
   if (typeof value!=='string' || !/^[0-9< -]+$/.test(value)) return null;
   const normalized=value.replace(/[< -]/g,'');
-  return /^\d{10,14}$/.test(normalized)?normalized:null;
+  return /^\d{10,14}$/.test(normalized)&&!/^0+$/.test(normalized)?normalized:null;
 }
 function structurallyCheckedTD3(parsed) {
   const checks=['documentNumber','birthDate','expiryDate','optionalData','composite'];
@@ -95,9 +97,24 @@ function structurallyCheckedTD3(parsed) {
 function checkedOptionalDigits(parsed) {
   return structurallyCheckedTD3(parsed)?nationalDigits(parsed.fields?.optionalDataRaw):null;
 }
+function evidenceConfidence(document,field){return document.fieldProvenance?.[field]?.[0]?.confidence??document.extraction?.fields?.[field]?.confidence;}
+function validPrivateNumeric(field,value){
+  if(typeof value!=='string')return false;const literal=value.trim();
+  if(field==='passportNationalNumber')return /^[0-9]+(?:[ -][0-9]+)*$/.test(literal)&&nationalDigits(literal)!==null;
+  if(field!=='printedPassportExpiry')return false;const match=literal.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);if(!match)return false;
+  return [[match[1],match[2]],[match[2],match[1]]].some(([day,month])=>realDate(match[3]+'-'+month.padStart(2,'0')+'-'+day.padStart(2,'0')));
+}
+function optionalNationalAnchor(mrz,visible){
+  if(!mrz.checkedOptionalDigits||mrz.checkedOptionalDigits!==nationalDigits(visible.fields.passportNationalNumber))return false;
+  const confidence=evidenceConfidence(visible,'passportNationalNumber');
+  if(confidence>=THRESHOLD)return true;
+  // Lower-confidence private digits never identify a page on their own. They
+  // need the full printed year and exact checked expiry intersection as well.
+  return confidence>=PRIVATE_NUMERIC_THRESHOLD&&evidenceConfidence(visible,'printedPassportExpiry')>=PRIVATE_NUMERIC_THRESHOLD
+    &&Boolean(mrz.checkedMrzDates&&resolvePrintedDate(visible.fields.printedPassportExpiry,mrz.checkedMrzDates.expiryDateRaw));
+}
 function nationalPageAnchor(first,second) {
-  return Boolean(first.checkedOptionalDigits && first.checkedOptionalDigits===nationalDigits(second.fields.passportNationalNumber)
-    || second.checkedOptionalDigits && second.checkedOptionalDigits===nationalDigits(first.fields.passportNationalNumber));
+  return optionalNationalAnchor(first,second)||optionalNationalAnchor(second,first);
 }
 function passportPageLink(first,second) {
   if (matchesIdentity(identityFields(first),identityFields(second))) return 'printed_identity';
@@ -140,7 +157,8 @@ function readDocument(document) {
     const evidence = extraction.fields[field];
     if (!plain(evidence) || typeof evidence.visible !== 'boolean' || !Number.isFinite(evidence.confidence) || evidence.confidence < 0 || evidence.confidence > 1 || (evidence.visible ? typeof evidence.value !== 'string' : evidence.value !== null)) { parsed.invalidFields.push(field); continue; }
     if (!evidence.visible) continue;
-    if (evidence.confidence < THRESHOLD) { parsed.lowConfidence.push(field); continue; }
+    const privateNumeric=parsed.kind==='passport'&&PRIVATE_PASSPORT_NUMERIC.has(field)&&validPrivateNumeric(field,evidence.value);
+    if (evidence.confidence < (privateNumeric?PRIVATE_NUMERIC_THRESHOLD:THRESHOLD)) { parsed.lowConfidence.push(field); continue; }
     const value = normalizedValue(field, evidence.value);
     if (value === null) { parsed.invalidFields.push(field); continue; }
     parsed.fields[field] = value;
@@ -183,6 +201,12 @@ function inspectPassport(document, referenceDate) {
       // Check-digit validation is deterministic evidence, not an OCR confidence
       // estimate. Keep the literal VIZ observation above even when it disagrees.
       fieldProvenance.passportNumber=[{...ref(document),evidenceField:'mrzLines',method:'td3_document_number_checked',checks:['documentNumber','birthDate','expiryDate','optionalData','composite']}];
+      // These zones are literal transcriptions, not values protected by a TD3
+      // check digit. Existing visual values and every conflict are retained.
+      for(const [field,line,positions]of [['nationalityCode',2,[11,13]],['issuingCountryCode',1,[3,5]]])if(!fields[field]){
+        fields[field]=normalizedValue(field,parsed.fields[field]);
+        fieldProvenance[field]=[{...ref(document),evidenceField:'mrzLines',method:'td3_zone_transcription',line,positions}];
+      }
     }
     const labelledGiven=normalizedName(fields.latinFirstName);
     const given = normalizedName([fields.latinFirstName, fields.latinFatherName, fields.latinGrandfatherName].filter(Boolean).join(' '));
@@ -345,7 +369,7 @@ function projectPrintedPassportDates(parts) {
     // Resolve only the full printed four-digit year. A separate page must have
     // its explicit national number anchored to the complete checked optional
     // TD3 field; dates alone and arbitrary optional data are not a page link.
-    const witnesses=parts.filter(other=>other.checkedMrzDates&&(other===part||nationalPageAnchor(other,part)));
+    const witnesses=parts.filter(other=>other.checkedMrzDates&&(other===part&&evidenceConfidence(part,'printedPassportExpiry')>=THRESHOLD||nationalPageAnchor(other,part)));
     if(!witnesses.length)return part;
     const resolved=witnesses.map(witness=>({witness,value:resolvePrintedDate(raw,witness.checkedMrzDates.expiryDateRaw)}));
     const values=[...new Set(resolved.map(item=>item.value).filter(Boolean))];
@@ -356,6 +380,41 @@ function projectPrintedPassportDates(parts) {
     const witness=resolved.find(item=>item.value===values[0]).witness;
     return {...part,fields:{...part.fields,expiryDate:values[0]},fieldProvenance:{...part.fieldProvenance,expiryDate:[{...source,evidenceField:'printedPassportExpiry',corroboratedBy:ref(witness)}]}};
   });
+}
+function consistentPartValue(field,first,second){
+  if(field==='passportNationalNumber')return Boolean(nationalDigits(first)&&nationalDigits(first)===nationalDigits(second));
+  if(field==='printedPassportExpiry'){
+    const numeric=value=>{const match=value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);return match?[Number(match[1]),Number(match[2]),match[3]].join('/'):value;};
+    return numeric(first)===numeric(second);
+  }
+  return equivalent(field,first,second);
+}
+function selectPassportPreparation(parts){
+  const groups=new Map(),selected=[],duplicates=[],issues=[];
+  for(const part of parts){
+    // The complete two-line transcription, not an image resemblance or just a
+    // document number, defines a possible repeated main page.
+    const lines=part.extraction.mrzLines;
+    const key=part.checkedMrzDates&&lines.length===2&&lines.every(line=>/^[A-Z0-9<]{44}$/.test(line))?JSON.stringify(lines):null;
+    if(!key){selected.push(part);continue;}
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push(part);
+  }
+  for(const group of groups.values()){
+    if(group.length===1){selected.push(group[0]);continue;}
+    const union={},numberValues=new Set(group.flatMap(part=>part.passportNumberObservations||[]).map(observed=>normalizedValue('passportNumber',observed.value)));
+    let consistent=numberValues.size<=1;if(!consistent)issues.push(issue('SOURCE_CONFLICT','passportNumber'));
+    for(const part of group)for(const [field,value]of Object.entries(part.fields)){
+      if(Object.hasOwn(union,field)&&!consistentPartValue(field,union[field],value)){consistent=false;issues.push(issue('SOURCE_CONFLICT',field));}
+      else union[field]=value;
+    }
+    const critical=PASSPORT_FIELDS.filter(field=>Object.hasOwn(union,field));
+    const covering=consistent?group.filter(part=>critical.every(field=>Object.hasOwn(part.fields,field)&&equivalent(field,part.fields[field],union[field]))).sort(compareReference):[];
+    if(!covering.length){selected.push(...group);continue;}
+    const representative=covering[0];selected.push(representative);
+    for(const source of group.filter(part=>part!==representative).sort(compareReference))duplicates.push({representative:ref(representative),source:ref(source),method:'exact_checked_td3_same_visible_values'});
+  }
+  selected.sort((a,b)=>Number(b.extraction.mrzLines.length===2)-Number(a.extraction.mrzLines.length===2)||compareReference(a,b));
+  return {selected,duplicates:duplicates.sort((a,b)=>compareReference(a.source,b.source)),issues:uniqueIssues(issues)};
 }
 function passportGroups(documents, referenceDate) {
   // Strong identity edges may reveal a contradiction; keep that contradiction
@@ -380,22 +439,25 @@ function passportGroups(documents, referenceDate) {
         else fields[field] = part.fields[field];
       }
     }
-    // Full visual dates may be on a strongly linked supplementary page. Only
-    // printed, confident values resolve MRZ centuries; MRZ-only fields are never
-    // filled into the applicant, nor are name components inferred.
+    // Full printed dates may be on a strongly linked supplementary page. A
+    // two-digit MRZ date never chooses its own century, and name components
+    // are never inferred. Literal country zones are handled separately above.
     const mrzParts = parts.filter(part => part.extraction.mrzLines.length > 0);
     const checked = (mrzParts.length ? mrzParts : [parts[0]]).map(part => inspectPassport({...part, fields, invalidFields:[]}, referenceDate));
     for (const document of checked) issues.push(...document.issues);
     for (const field of invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
-    const primary = checked.find(part => part.mrzChecked) || checked[0];
+    const preparation=selectPassportPreparation(parts),selectedRef=part=>preparation.selected.some(source=>source.mediaId===part.mediaId&&source.page===part.page&&source.sha256===part.sha256);
+    issues.push(...preparation.issues);
+    const primary = checked.find(part => part.mrzChecked&&selectedRef(part)) || checked.find(selectedRef) || checked[0];
     if(fields.passportNumber&&!primary.fieldProvenance?.passportNumber){
       const source=parts.find(part=>part.fields.passportNumber&&equivalent('passportNumber',part.fields.passportNumber,fields.passportNumber));
       if(source)primary.fieldProvenance={...primary.fieldProvenance,passportNumber:source.fieldProvenance?.passportNumber||[{...ref(source),confidence:source.extraction.fields.passportNumber.confidence}]};
     }
     if (checked.some(part => part.mrzIdentity && primary.mrzIdentity && [...MRZ_FIELDS, 'latinFullName'].some(field => part.mrzIdentity[field] && primary.mrzIdentity[field] && !equivalent(field, part.mrzIdentity[field], primary.mrzIdentity[field])))) issues.push(issue('MULTIPLE_PASSPORTS', 'mrz'));
-    if (parts.length > 2) issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));
+    if (preparation.selected.length > 2) issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));
     const ordered = [parts.find(part => part.mediaId === primary.mediaId && part.page === primary.page), ...parts.filter(part => part.mediaId !== primary.mediaId || part.page !== primary.page)];
-    groups.push({...primary, fields, parts:ordered, issues:uniqueIssues(issues), mrzChecked:checked.length > 0 && checked.every(part => part.mrzChecked)});
+    const preparationParts=[...preparation.selected].sort((a,b)=>Number(b.mediaId===primary.mediaId&&b.page===primary.page)-Number(a.mediaId===primary.mediaId&&a.page===primary.page)||Number(b.extraction.mrzLines.length===2)-Number(a.extraction.mrzLines.length===2)||compareReference(a,b));
+    groups.push({...primary, fields, parts:ordered,preparationParts,logicalDuplicates:preparation.duplicates,issues:uniqueIssues(issues),mrzChecked:checked.length > 0 && checked.every(part => part.mrzChecked)});
   }
   return groups;
 }
@@ -441,8 +503,9 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (passportFor.has(index)) { result.issues.push(issue('MULTIPLE_PASSPORTS', 'passport')); document.parts.forEach(part => unassign(part, 'MULTIPLE_PASSPORTS')); continue; }
     passportFor.set(index, document); document.parts.forEach(part => assignments.set(part, index));
     result.documents.passport = ref(document); result.evidence.passportMrzChecked = document.mrzChecked;
-    if (document.parts.length > 1) result.documents.passportParts = document.parts.slice(0,2).map(ref);
-    for (const part of document.parts.slice(2)) unassign(part, 'MULTIPLE_PASSPORTS');
+    if(document.preparationParts.length>1&&document.preparationParts.length<=2)result.documents.passportParts=document.preparationParts.map(ref);
+    if(document.preparationParts.length>2)for(const part of document.preparationParts.filter(part=>part.mediaId!==document.mediaId||part.page!==document.page))unassign(part,'MULTIPLE_PASSPORTS');
+    if(document.logicalDuplicates.length)result.evidence.passportLogicalDuplicates=document.logicalDuplicates;
     for (const field of PASSPORT_FIELDS) if (Object.hasOwn(document.fields, field)) result.fields[field] = document.fields[field];
     result.evidence.passportNumberObservations=document.parts.flatMap(part=>part.passportNumberObservations||[]);
     for (const part of document.parts) addSources(result, part, PASSPORT_FIELDS.filter(field=>field!=='passportNumber'), document.mrzChecked ? 'visible_and_mrz_checked' : 'visible_unconfirmed');
@@ -486,6 +549,14 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (result.documents.residence.length > 2) result.issues.push(issue('RESIDENCE_CONFLICT', 'residence'));
     result.documents.residence.sort((a,b) => identities.findIndex(document => document.mediaId === a.mediaId && document.page === a.page) - identities.findIndex(document => document.mediaId === b.mediaId && document.page === b.page));
     result.evidence.matchedResidence = result.documents.residence.length > 0 && !result.issues.some(item => ['DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT','RESIDENCE_MRZ_INVALID'].includes(item.code));
+    const nationalitySources=result.evidence.fieldSources.nationalityCode||[];
+    if(nationalitySources.some(source=>source.method==='td3_zone_transcription')){
+      const code=result.fields.nationalityCode;
+      const caseMatch=Boolean(code&&known[result.applicantIndex].nationalityCode===code);
+      const identityMatch=identities.some(document=>assignments.get(document)===result.applicantIndex&&document.fields.nationalityCode===code);
+      result.evidence.nationalityCorroborated=caseMatch||identityMatch;
+      if(!result.evidence.nationalityCorroborated)result.issues.push(issue('DOCUMENT_FIELD_REQUIRED','nationalityCode'));
+    }
     result.issues.push(...validationIssues(result.fields, referenceDate, applicants[result.applicantIndex].entryDate, DOCUMENT_FIELDS));
     result.issues = uniqueIssues(result.issues);
     const isClientGap = item => item.code === 'DOCUMENT_FIELD_REQUIRED' && CLIENT_GAP_FIELDS.includes(item.field) && !Object.hasOwn(result.fields,item.field);

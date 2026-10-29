@@ -270,7 +270,14 @@ test('wire-only known bare field projections discard values without manufacturin
     assert.deepEqual(validateDocumentExtraction(result), result, 'projection produces only the existing strict internal schema');
     const matched = name === 'emiratesId' ? f.match(passport, result) : f.match(result, identity);
     assert.equal(matched.complete, false); assert.equal(matched.applicants[0].identityReady, false);
-    assert.equal(matched.applicants[0].fields[name], undefined);
+    if (name === 'nationalityCode') {
+      assert.equal(matched.applicants[0].fields[name], 'EGY');
+      const sources = matched.applicants[0].evidence.fieldSources[name];
+      assert.ok(sources.length > 0);
+      assert.ok(sources.every(item => item.method === 'td3_zone_transcription' && item.evidenceField === 'mrzLines' && item.line === 2));
+      assert.ok(sources.every(item => JSON.stringify(item.positions) === '[11,13]' && !Object.hasOwn(item, 'confidence') && !Object.hasOwn(item, 'checks')));
+      assert.equal(matched.applicants[0].evidence.nationalityCorroborated, false);
+    } else assert.equal(matched.applicants[0].fields[name], undefined);
     assert.equal(matched.applicants[0].issues.some(issue => issue.code === 'DOCUMENT_FIELD_REQUIRED' && issue.field === name), true);
   }
   for (const name of DOCUMENT_FIELD_NAMES) {

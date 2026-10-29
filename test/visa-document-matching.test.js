@@ -93,7 +93,7 @@ test('unreadable allowed client gaps stay distinct from actual invalid values an
 });
 
 test('identity-critical gaps never become replaceable client facts', () => {
-  for(const key of ['nationalityCode','birthDate','expiryDate','latinFirstName']){
+  for(const key of ['birthDate','expiryDate','latinFirstName']){
     const p=passport(); delete p.extraction.fields[key]; const person=run([p,front()]).applicants[0];
     assert.equal(person.identityReady,false,key); assert.equal(person.status,'needs_review',key); assert.deepEqual(person.clientFieldsRequired,[],key);
   }
@@ -294,8 +294,8 @@ test('invalid critical metadata on a linked supplement is not erased by valid pr
 test('more than two distinct linked passport pages require selection and never become an accepted two-page bundle', () => {
   const second=document(IDS.passport2,'passport',{passportNumber:'N12345678',issueDate:'2020-01-01'}); second.sha256='b'.repeat(64);
   const third=document(IDS.portrait,'passport',{passportNumber:'N12345678',birthPlace:'Example City'}); third.sha256='c'.repeat(64);
-  const result=run([passport(),second,third,front()]); assert.equal(result.complete,false); assert.equal(result.applicants[0].documents.passportParts.length,2);
-  assert.ok(codes(result).includes('MULTIPLE_PASSPORTS')); assert.equal(result.unassigned.length,1);
+  const result=run([passport(),second,third,front()]); assert.equal(result.complete,false); assert.equal(result.applicants[0].documents.passportParts,undefined);
+  assert.ok(codes(result).includes('MULTIPLE_PASSPORTS')); assert.equal(result.unassigned.length,2);
 });
 
 test('byte-identical reuploads deduplicate passport and identity pages while distinct page images remain linked', () => {
@@ -303,7 +303,7 @@ test('byte-identical reuploads deduplicate passport and identity pages while dis
   const result=run([p2,f2,p,f]); assert.equal(result.complete,true); assert.equal(result.applicants[0].documents.passportParts,undefined);
   assert.equal(result.applicants[0].documents.residence.length,1); assert.equal(result.applicants[0].documents.residence[0].mediaId,IDS.front);
   assert.equal(result.applicants[0].evidence.fieldSources.passportNumber.length,1);
-  p2.sha256='b'.repeat(64); const distinct=run([p,p2,f]); assert.equal(distinct.complete,true); assert.equal(distinct.applicants[0].documents.passportParts.length,2);
+  p2.sha256='b'.repeat(64); const distinct=run([p,p2,f]); assert.equal(distinct.complete,true); assert.equal(distinct.applicants[0].documents.passportParts,undefined);assert.equal(distinct.applicants[0].evidence.passportLogicalDuplicates.length,1);
 });
 
 test('reuploaded PDF digests deduplicate only matching pages, never every page in the original PDF', () => {
@@ -458,7 +458,7 @@ test('national optional-data anchoring needs the entire explicitly printed numbe
   const {p,datePage,id}=nationalDateCase();if(value===undefined)delete datePage.extraction.fields.passportNationalNumber;else datePage.extraction.fields.passportNationalNumber=field(value);
   const result=run([p,datePage,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);assert.equal(result.applicants[0].documents.passportParts,undefined);assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
  }
- const f=nationalDateCase();f.datePage.extraction.fields.passportNationalNumber.confidence=0.979;assert.equal(run([f.p,f.datePage,f.id]).applicants[0].fields.expiryDate,undefined);
+ const f=nationalDateCase();f.datePage.extraction.fields.passportNationalNumber.confidence=0.899;assert.equal(run([f.p,f.datePage,f.id]).applicants[0].fields.expiryDate,undefined);
 });
 
 test('all five TD3 checks and complete layout are mandatory before optional data can anchor another page',()=>{
@@ -500,7 +500,7 @@ test('typed VIZ number and checked TD3 number have separate provenance without f
 test('checked TD3 positions supply the number when no VIZ number is independently readable, without creating other missing facts',()=>{
  const p=passport();delete p.extraction.fields.passportNumber;
  const result=run([p,front()]);assert.equal(result.complete,true);assert.equal(result.applicants[0].fields.passportNumber,'N12345678');assert.deepEqual(result.applicants[0].evidence.passportNumberObservations,[]);assert.equal(Object.hasOwn(result.applicants[0].evidence.fieldSources.passportNumber[0],'confidence'),false);
- for(const missing of ['birthDate','expiryDate','nationalityCode','latinFirstName']){
+ for(const missing of ['birthDate','expiryDate','latinFirstName']){
   const copy=structuredClone(p);delete copy.extraction.fields[missing];const person=run([copy,front()]).applicants[0];assert.equal(person.identityReady,false,missing);assert.equal(person.fields[missing],undefined,missing);
  }
 });
@@ -537,4 +537,98 @@ test('exact-pixel duplicate reads retain every literal number conflict after can
  const p=passport(),copy=passport({},IDS.passport2);copy.extraction.fields.visiblePassportNumber=field('N123456785');delete copy.extraction.fields.passportNumber;
  const result=run([p,copy,front()]),person=result.applicants[0];assert.equal(result.complete,false);assert.equal(person.identityReady,false);assert.ok(person.issues.some(issue=>['SOURCE_CONFLICT','PASSPORT_VIZ_MRZ_MISMATCH'].includes(issue.code)&&issue.field==='passportNumber'));
  assert.deepEqual(new Set(person.evidence.passportNumberObservations.map(item=>item.value)),new Set(['N12345678','N123456785']));assert.equal(Object.hasOwn(person.evidence.fieldSources.passportNumber[0],'confidence'),false);
+});
+
+test('absent country zones are literal MRZ transcriptions with separate nationality corroboration and no invented confidence or check proof',()=>{
+ const p=passport();delete p.extraction.fields.nationalityCode;delete p.extraction.fields.issuingCountryCode;
+ const result=run([p,front()]),person=result.applicants[0];assert.equal(result.complete,true);assert.equal(person.fields.nationalityCode,'EGY');assert.equal(person.fields.issuingCountryCode,'UTO');assert.equal(person.evidence.nationalityCorroborated,true);
+ for(const [field,line,positions]of [['nationalityCode',2,[11,13]],['issuingCountryCode',1,[3,5]]]){
+  const source=person.evidence.fieldSources[field][0];assert.equal(source.method,'td3_zone_transcription');assert.equal(source.evidenceField,'mrzLines');assert.equal(source.line,line);assert.deepEqual(source.positions,positions);assert.equal(Object.hasOwn(source,'confidence'),false);assert.equal(Object.hasOwn(source,'checks'),false);
+ }
+});
+
+test('MRZ nationality requires the exact case or matched identity value, and independent issuer never copies nationality',()=>{
+ const p=passport();delete p.extraction.fields.nationalityCode;delete p.extraction.fields.issuingCountryCode;
+ const id=front();delete id.extraction.fields.nationalityCode;
+ const noCorroboration=run([p,id],[{}]).applicants[0];assert.equal(noCorroboration.fields.nationalityCode,'EGY');assert.equal(noCorroboration.evidence.nationalityCorroborated,false);assert.equal(noCorroboration.identityReady,false);assert.ok(noCorroboration.issues.some(issue=>issue.code==='DOCUMENT_FIELD_REQUIRED'&&issue.field==='nationalityCode'));
+ assert.equal(run([p,id],[{nationality:'مصر'}]).complete,true);assert.equal(run([p,front()],[{}]).complete,true);
+ const wrongCase=run([p,front()],[{nationality:'سوريا'}]);assert.equal(wrongCase.complete,false);assert.ok(codes(wrongCase).includes('CASE_DATA_MISMATCH'));
+ const wrongIdentity=run([p,front({nationalityCode:'SYR'})]);assert.equal(wrongIdentity.complete,false);assert.ok(codes(wrongIdentity).includes('DOCUMENT_IDENTITY_MISMATCH'));
+});
+
+test('country transcription never overwrites a conflicting VIZ value or operates with a failed TD3 check',()=>{
+ for(const field of ['nationalityCode','issuingCountryCode']){
+  const p=passport();p.extraction.fields[field]=field==='nationalityCode'?{value:'SYR',confidence:1,visible:true}:{value:'SYR',confidence:1,visible:true};
+  const result=run([p,front()]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields[field],'SYR');assert.ok(result.applicants[0].issues.some(issue=>issue.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&issue.field===field));
+ }
+ for(const offset of [9,19,27,42,43]){
+  const p=passport();delete p.extraction.fields.nationalityCode;delete p.extraction.fields.issuingCountryCode;const line=p.extraction.mrzLines[1];p.extraction.mrzLines[1]=line.slice(0,offset)+(Number(line[offset])+1)%10+line.slice(offset+1);
+  const result=run([p,front()]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.nationalityCode,undefined);assert.equal(result.applicants[0].fields.issuingCountryCode,undefined);
+ }
+});
+
+test('private numeric evidence at .95 resolves only with whole checked national number and the unique full-year expiry intersection',()=>{
+ const f=nationalDateCase();for(const field of ['passportNationalNumber','printedPassportExpiry'])f.datePage.extraction.fields[field].confidence=0.95;
+ const result=run([f.p,f.datePage,f.id]),person=result.applicants[0];assert.equal(result.complete,true);assert.equal(person.fields.expiryDate,'2031-09-11');assert.equal(person.evidence.fieldSources.expiryDate[0].confidence,0.95);assert.equal(person.evidence.fieldSources.expiryDate[0].evidenceField,'printedPassportExpiry');assert.equal(person.fields.passportNationalNumber,undefined);assert.equal(person.fields.printedPassportExpiry,undefined);
+ const boundary=nationalDateCase();for(const field of ['passportNationalNumber','printedPassportExpiry'])boundary.datePage.extraction.fields[field].confidence=0.90;assert.equal(run([boundary.p,boundary.datePage,boundary.id]).complete,true);
+});
+
+test('weaker private numeric evidence cannot link absent, wrong, meaningless, incomplete-year or nonintersecting passport data',()=>{
+ for(const mutate of [
+  f=>{delete f.datePage.extraction.fields.passportNationalNumber;},
+  f=>{f.datePage.extraction.fields.passportNationalNumber.value='001-23456780';},
+  f=>{f.datePage.extraction.fields.passportNationalNumber.value='0123456789';},
+  f=>{f.datePage.extraction.fields.printedPassportExpiry.value='12/09/2031';},
+  f=>{f.datePage.extraction.fields.printedPassportExpiry.value='11/09/31';},
+  f=>{f.datePage.extraction.fields.passportNationalNumber.confidence=0.899;},
+  f=>{f.datePage.extraction.fields.printedPassportExpiry.confidence=0.899;},
+ ]){
+  const f=nationalDateCase();for(const field of ['passportNationalNumber','printedPassportExpiry'])f.datePage.extraction.fields[field].confidence=0.95;mutate(f);
+  const result=run([f.p,f.datePage,f.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);assert.equal(result.applicants[0].documents.passportParts,undefined);
+ }
+ const zero=nationalDateCase();zero.p=withCheckedNationalOptional(zero.p,'00000000000<<<');zero.datePage.extraction.fields.passportNationalNumber=field('000-00000000',0.95);zero.datePage.extraction.fields.printedPassportExpiry.confidence=0.95;const result=run([zero.p,zero.datePage,zero.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);
+});
+
+test('lower private threshold does not lower any government field threshold, supply issue date, infer names, or choose a century',()=>{
+ const f=nationalDateCase();for(const field of ['passportNationalNumber','printedPassportExpiry'])f.datePage.extraction.fields[field].confidence=0.95;
+ f.p.extraction.fields.issueDate.confidence=0.95;f.p.extraction.fields.passportType.confidence=0.95;f.p.extraction.fields.latinGrandfatherName=field('UNCONFIRMED',0.95);
+ const person=run([f.p,f.datePage,f.id]).applicants[0];assert.equal(person.status,'needs_confirmation');assert.equal(person.fields.issueDate,undefined);assert.equal(person.fields.passportType,undefined);assert.equal(person.fields.latinGrandfatherName,undefined);assert.deepEqual(person.clientFieldsRequired,['passportType','issueDate']);
+ const lowGov=passport();lowGov.extraction.fields.expiryDate.confidence=0.95;assert.equal(run([lowGov,front()]).applicants[0].fields.expiryDate,undefined);
+ const direct=passport({expiryDate:'2031-09-11',printedPassportExpiry:'11/09/2031'});delete direct.extraction.fields.expiryDate;direct.extraction.fields.printedPassportExpiry.confidence=0.95;assert.equal(run([direct,front()]).applicants[0].fields.expiryDate,undefined,'low-confidence same-page expiry still needs the explicit whole national-number anchor');
+});
+
+function logicalMainDateCase(){
+ const f=nationalDateCase();delete f.p.extraction.fields.nationalityCode;delete f.p.extraction.fields.issuingCountryCode;
+ const copy=structuredClone(f.p);copy.mediaId=IDS.portrait;copy.sha256='c'.repeat(64);delete copy.extraction.fields.birthPlace;
+ for(const field of ['passportNationalNumber','printedPassportExpiry'])f.datePage.extraction.fields[field].confidence=0.95;
+ return {...f,copy};
+}
+
+test('different-pixel copies with identical checked MRZ select one covering main page plus the actual date page while retaining all source evidence',()=>{
+ const f=logicalMainDateCase(),result=run([f.copy,f.datePage,f.id,f.p]),person=result.applicants[0];assert.equal(result.complete,true);assert.equal(person.fields.expiryDate,'2031-09-11');assert.equal(person.fields.nationalityCode,'EGY');assert.equal(person.fields.issuingCountryCode,'UTO');
+ assert.deepEqual(person.documents.passportParts.map(ref=>ref.mediaId),[IDS.passport,IDS.passport2]);assert.equal(person.documents.passport.mediaId,IDS.passport);
+ assert.deepEqual(person.evidence.passportLogicalDuplicates,[{representative:{mediaId:IDS.passport,page:1,sha256:'a'.repeat(64)},source:{mediaId:IDS.portrait,page:1,sha256:'c'.repeat(64)},method:'exact_checked_td3_same_visible_values'}]);
+ assert.deepEqual(new Set(person.evidence.fieldSources.latinFirstName.map(source=>source.mediaId)),new Set([IDS.passport,IDS.portrait]));assert.equal(result.unassigned.length,0);assert.deepEqual(run([f.p,f.id,f.datePage,f.copy]),result);
+});
+
+test('logical main copies without a single actual page covering the critical union remain for review and never emit a sliced bundle',()=>{
+ const f=logicalMainDateCase();f.copy=structuredClone(f.p);f.copy.mediaId=IDS.portrait;f.copy.sha256='c'.repeat(64);delete f.p.extraction.fields.birthPlace;delete f.copy.extraction.fields.issueDate;
+ const result=run([f.p,f.copy,f.datePage,f.id]),person=result.applicants[0];assert.equal(result.complete,false);assert.equal(person.identityReady,false);assert.ok(codes(result).includes('MULTIPLE_PASSPORTS'));assert.equal(person.documents.passportParts,undefined);assert.equal(person.evidence.passportLogicalDuplicates,undefined);
+});
+
+test('logical duplicate handling never drops government, private numeric, legacy-number or literal MRZ contradictions',()=>{
+ for(const mutate of [
+  f=>{f.copy.extraction.fields.birthPlace=field('Different City');},
+  f=>{f.p.extraction.fields.passportNationalNumber=field('001-23456789',0.95);f.copy.extraction.fields.passportNationalNumber=field('001-23456780',0.95);},
+  f=>{f.copy.extraction.fields.passportNumber=field('N123456785');},
+  f=>{f.copy.extraction.mrzLines[0]='PP'+f.copy.extraction.mrzLines[0].slice(2);},
+ ]){
+  const f=logicalMainDateCase();mutate(f);const result=run([f.p,f.copy,f.datePage,f.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.equal(result.applicants[0].evidence.passportLogicalDuplicates,undefined);
+ }
+ const f=logicalMainDateCase();f.p.extraction.fields.passportNationalNumber=field('001-23456789',0.95);f.copy.extraction.fields.passportNationalNumber=field('001-23456780',0.95);const two=run([f.p,f.copy,f.id]);assert.equal(two.complete,false);assert.ok(codes(two).includes('SOURCE_CONFLICT'));
+});
+
+test('identical unverified MRZ strings are not sufficient to coalesce main image copies',()=>{
+ const f=logicalMainDateCase();const line=f.p.extraction.mrzLines[1];f.p.extraction.mrzLines[1]=line.slice(0,9)+(Number(line[9])+1)%10+line.slice(10);f.copy.extraction.mrzLines=structuredClone(f.p.extraction.mrzLines);
+ const result=run([f.p,f.copy,f.datePage,f.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].evidence.passportLogicalDuplicates,undefined);
 });
