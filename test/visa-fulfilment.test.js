@@ -754,3 +754,24 @@ test('assisted staff document gaps skip duplicate document questions while healt
  const asked=f.service.askQuestions(f.jobId);assert.ok(!asked.questions.some(q=>['passportType','issueDate','latinFirstName','birthPlace','sex'].includes(q.field)));assert.ok(asked.questions.some(q=>q.field==='health.hospitalizedOrEmergency'));assert.ok(asked.questions.some(q=>q.field==='maritalStatus'));assert.equal(f.service.job(f.jobId).stagedFields.health,undefined);assert.equal(f.service.job(f.jobId).stagedFields.maritalStatus,undefined);assert.equal(f.service.job(f.jobId).answerConfirmation,undefined);assert.equal(f.raad.get(CUSTOMER).review.complete,false);assert.deepEqual(f.c,before);
  const raw=f.store.data.raadApplications[CUSTOMER].applicants[0];raw.revision++;raw.review.reviewedAt=f.options.now();assert.doesNotThrow(()=>f.service.assertDocumentFactsCurrent(f.service.job(f.jobId)));assert.equal(f.service.getConfirmedFields(f.jobId).complete,false);raw.fields.issueDate='2020-02-01';assert.throws(()=>f.service.assertDocumentFactsCurrent(f.service.job(f.jobId)),{code:'VISA_DOCUMENT_EVIDENCE_STALE'});
 });
+
+async function confirmedAssistedFixture(){
+ const f=await machineFactsFixture({missing:['passportType','issueDate']});
+ f.raad.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2020-01-01'},confirm:true});f.raad.applyMachineDossier(CUSTOMER,{applicantIndex:0,expectedRevision:1,expectedCaseSignature:visaCaseSignature(f.c),evidenceId:f.ids.evidence});
+ f.service.stageDocumentFacts(f.jobId,{fields:f.applicant.fields,evidenceId:f.ids.evidence});f.service.stageDraftDocumentSupplement(f.jobId);answerRemainingMachineQuestions(f);const summary=f.service.job(f.jobId).summary;f.service.confirmAnswers({sender:CUSTOMER,token:summary.token,confirm:true,messageId:'synthetic-assisted-consent'});return f;
+}
+test('assisted portal uses exact verified media and genuine current client consent without inventing staff review',async()=>{
+ const f=await confirmedAssistedFixture(),before=structuredClone(f.c),proof=f.service.getConfirmedFields(f.jobId),result=f.raad.portalDossier(CUSTOMER,{clientProof:proof});
+ assert.equal(result.ready,true,JSON.stringify(result.issues));assert.equal(result.source,'assisted');assert.equal(result.fields.passportType,'ordinary');assert.equal(result.fields.issueDate,'2020-01-01');assert.equal(result.fields.health.hospitalizedOrEmergency,false);assert.equal(f.raad.get(CUSTOMER).review.complete,false);assert.equal(f.store.data.raadApplications[CUSTOMER].applicants[0].machineReview,undefined);assert.deepEqual(f.c,before);assert.equal(f.c.submissionStatus,'not_submitted');
+});
+test('assisted portal rejects absent consent, changed draft facts, extra facts, swapped documents and stale payment approval',async()=>{
+ for(const mutate of [
+ (f,p)=>{p.confirmation.granted=false;},
+ (f,p)=>{f.store.data.raadApplications[CUSTOMER].applicants[0].fields.issueDate='2020-02-01';},
+ (f,p)=>{f.store.data.raadApplications[CUSTOMER].applicants[0].fields.passportNumber='OTHER123';},
+ (f,p)=>{f.store.data.raadApplications[CUSTOMER].applicants[0].fields.latinGrandfatherName='Unverified';},
+ (f,p)=>{f.store.data.raadApplications[CUSTOMER].applicants[0].documents.passport.mediaId=f.ids.photo;},
+ (f,p)=>{delete f.service.job(f.jobId).staffDocumentSupplement;},
+ (f,p)=>{f.c.paymentStatus='unverified';}
+ ]){const f=await confirmedAssistedFixture(),proof=f.service.getConfirmedFields(f.jobId);mutate(f,proof);assert.equal(f.raad.portalDossier(CUSTOMER,{clientProof:proof}).ready,false);}
+});
