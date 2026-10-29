@@ -252,6 +252,47 @@ function addSources(result, document, acceptedFields, method) {
   }
 }
 
+function completePrintedId(document){return /^784\d{12}$/.test(document.fields.emiratesId||'');}
+function residenceNameComponentConflicts(document,passport){
+  return ['latinFirstName','latinFatherName','latinGrandfatherName','latinFamilyName'].filter(field=>document.fields[field]&&passport.fields[field]&&!equivalent(field,document.fields[field],passport.fields[field])).map(field=>issue('DOCUMENT_IDENTITY_MISMATCH',field));
+}
+function pairPrintedConflicts(document,passport,eid){
+  const expected={birthDate:passport.fields.birthDate,sex:passport.fields.sex,nationalityCode:passport.fields.nationalityCode,emiratesId:eid};
+  for(const [field,value]of Object.entries(expected)){
+    if(!value)continue;
+    const printed=document.extraction.fields[field];
+    const observed=document.fields[field]??(printed?.visible===true&&typeof printed.value==='string'?normalizedValue(field,printed.value):null);
+    if(observed&&!equivalent(field,observed,value))return true;
+  }
+  return document.issues.length>0||residenceNameComponentConflicts(document,passport).length>0||document.invalidFields.some(field=>['birthDate','sex','nationalityCode','emiratesId','latinFullName','latinFirstName','latinFamilyName'].includes(field));
+}
+function pairComparisonFields(document,front,birthDate){
+  // This temporary view is used only by matching and conflict comparisons.
+  // The original fields and government field-source manifests remain untouched.
+  return {...document.fields,...(!document.fields.birthDate?{birthDate}:{}),...(!fullName(document.fields)?{latinFullName:fullName(front.fields)}:{})};
+}
+function checkedResidencePair(passport,front,back){
+  if(passport.mrzChecked!==true||passport.issues.length||!realDate(passport.fields.birthDate)||!completePrintedId(front)||!front.fields.latinFullName)return null;
+  const parsed=parseTD1MRZ(back.extraction.mrzLines);
+  if(!parsed.ok||parsed.fields.latinNames.truncated||!matchesPrintedEmiratesId(parsed,front.fields.emiratesId))return null;
+  const identity=identityFields(passport),variants=identity._documentNameVariants||[fullName(identity)];
+  const name=normalizedName([parsed.fields.latinNames.givenNames,parsed.fields.latinNames.family].filter(Boolean).join(' '));
+  if(name!==fullName(front.fields)||!variants.includes(name)||passport.fields.birthDate.replaceAll('-','').slice(2)!==parsed.fields.birthDateRaw)return null;
+  for(const document of [front,back]){
+    if(pairPrintedConflicts(document,passport,front.fields.emiratesId))return null;
+    const comparison=pairComparisonFields(document,front,passport.fields.birthDate);
+    if(identityConflicts(identity,comparison).length)return null;
+  }
+  if([front.fields,back.fields,passport.fields].some(fields=>fields.sex&&fields.sex!==parsed.fields.sex||fields.nationalityCode&&!equivalent('nationalityCode',fields.nationalityCode,parsed.fields.nationalityCode)))return null;
+  return {front,back,birthDate:passport.fields.birthDate,method:'printed_front_identity_and_checked_td1'};
+}
+function assignedFrontContext(passport,document,fronts){
+  if(passport.mrzChecked!==true||passport.issues.length||document.fields.birthDate||!completePrintedId(document)||document.extraction.mrzLines.length)return null;
+  const identity=identityFields(passport);
+  const front=fronts.find(source=>source!==document&&completePrintedId(source)&&source.fields.emiratesId===document.fields.emiratesId&&realDate(source.fields.birthDate)&&source.fields.birthDate===passport.fields.birthDate&&matchesIdentity(identity,source.fields)&&identityConflicts(identity,source.fields).length===0&&!pairPrintedConflicts(document,passport,source.fields.emiratesId)&&!pairPrintedConflicts(source,passport,source.fields.emiratesId));
+  return front?{front,back:document,birthDate:front.fields.birthDate,method:'printed_id_and_assigned_front_birth_date'}:null;
+}
+
 function projectPrintedResidenceDates(result, documents, passport, known) {
   const fronts=documents.filter(document=>document.kind==='uae_id_front');
   const suppliedBacks=documents.filter(document=>document.kind==='uae_id_back'&&document.extraction.mrzLines.length);
@@ -260,23 +301,11 @@ function projectPrintedResidenceDates(result, documents, passport, known) {
   for(const back of suppliedBacks){
     const parsed=parseTD1MRZ(back.extraction.mrzLines);
     if(!parsed.ok){result.issues.push(issue('RESIDENCE_MRZ_INVALID','residence'));continue;}
-    // Both sides are already assigned independently to this same applicant.
+    // Both sides are already assigned to this same applicant.
     // Optional data becomes an anchor only after an explicit, complete front
     // ID matches its whole protected zone. Never extract or repair an ID here.
-    const linked=fronts.filter(front=>matchesPrintedEmiratesId(parsed,front.fields.emiratesId));
-    const mrzName=normalizedName([parsed.fields.latinNames.givenNames,parsed.fields.latinNames.family].filter(Boolean).join(' '));
-    const passportIdentity=identityFields(passport);
-    const passportNames=passportIdentity._documentNameVariants||[fullName(passportIdentity)];
-    const rawDate=value=>realDate(value)?value.replaceAll('-','').slice(2):null;
-    const agrees=front=>{
-      const born=[front.fields.birthDate,passport.fields.birthDate].filter(Boolean);
-      const names=[fullName(front.fields),...passportNames].filter(Boolean);
-      const sourceFields=[front.fields,passport.fields];
-      return born.length>0&&born.every(value=>rawDate(value)===parsed.fields.birthDateRaw)
-        && !parsed.fields.latinNames.truncated&&names.includes(mrzName)
-        && sourceFields.every(fields=>(!fields.sex||fields.sex===parsed.fields.sex)&&(!fields.nationalityCode||equivalent('nationalityCode',fields.nationalityCode,parsed.fields.nationalityCode)));
-    };
-    if(!linked.length||!linked.every(agrees)||back.fields.emiratesId&&!matchesPrintedEmiratesId(parsed,back.fields.emiratesId)){
+    const linked=fronts.filter(front=>checkedResidencePair(passport,front,back));
+    if(!linked.length){
       result.issues.push(issue('RESIDENCE_CONFLICT','residence'));continue;
     }
     checked.push({back,parsed});
@@ -512,6 +541,11 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     addSources(result,document,['passportNumber'],'visible_unconfirmed');
   }
   const identities = distinct.filter(document => document.kind === 'uae_id_front' || document.kind === 'uae_id_back').sort((a,b) => Number(a.kind === 'uae_id_back') - Number(b.kind === 'uae_id_back') || compareReference(a,b));
+  const closedPairs=[];
+  for(const [index,passport]of passportFor)for(const front of identities.filter(document=>document.kind==='uae_id_front'))for(const back of identities.filter(document=>document.kind==='uae_id_back')){
+    const pair=checkedResidencePair(passport,front,back);if(pair)closedPairs.push({...pair,index});
+  }
+  const contextsFor=(document,index)=>closedPairs.filter(pair=>(index===undefined||pair.index===index)&&(pair.front===document||pair.back===document)&&[pair.front,pair.back].every(source=>!assignments.has(source)||assignments.get(source)===pair.index));
   const pending = new Set(identities);
   let changed = true;
   while (changed) {
@@ -519,11 +553,19 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     for (const document of pending) {
       let candidates = [...passportFor].filter(([, passport]) => matchesIdentity(identityFields(passport), document.fields)).map(([index]) => index);
       if (!candidates.length && document.fields.emiratesId) candidates = [...passportFor].filter(([index]) => known[index].emiratesId === document.fields.emiratesId || identities.some(other => assignments.get(other) === index && other.fields.emiratesId === document.fields.emiratesId)).map(([index]) => index);
+      if(!candidates.length)candidates=[...new Set(contextsFor(document).map(pair=>pair.index))];
       if (candidates.length !== 1) continue;
       const index = candidates[0], result = output.applicants[index], passport = passportFor.get(index);
+      const context=contextsFor(document,index)[0]||assignedFrontContext(passport,document,identities.filter(other=>other.kind==='uae_id_front'&&assignments.get(other)===index));
+      const comparison=context?pairComparisonFields(document,context.front,context.birthDate):document.fields;
       pending.delete(document); changed = true; assignments.set(document, index);
       result.documents.residence.push(ref(document));
-      result.issues.push(...document.issues, ...identityConflicts(identityFields(passport), document.fields), ...conflictsWithCase({fields:Object.fromEntries(Object.entries(document.fields).filter(([field]) => field !== 'expiryDate' && field !== 'issueDate' && field !== 'issuingCountryCode'))}, known[index]));
+      result.issues.push(...document.issues, ...identityConflicts(identityFields(passport), comparison), ...residenceNameComponentConflicts(document,passport), ...conflictsWithCase({fields:Object.fromEntries(Object.entries(document.fields).filter(([field]) => field !== 'expiryDate' && field !== 'issueDate' && field !== 'issuingCountryCode'))}, known[index]));
+      if(context){
+        result.evidence.residencePairLinks||=[];
+        const link={front:ref(context.front),source:ref(context.back),method:context.method};
+        if(!result.evidence.residencePairLinks.some(value=>value.front.mediaId===link.front.mediaId&&value.source.mediaId===link.source.mediaId&&value.method===link.method))result.evidence.residencePairLinks.push(link);
+      }
       for (const field of ['emiratesId', 'residenceExpiry']) if (document.fields[field]) {
         if (result.fields[field] && !equivalent(field, result.fields[field], document.fields[field])) result.issues.push(issue('RESIDENCE_CONFLICT', field));
         else result.fields[field] = document.fields[field];

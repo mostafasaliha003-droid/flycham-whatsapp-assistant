@@ -632,3 +632,91 @@ test('identical unverified MRZ strings are not sufficient to coalesce main image
  const f=logicalMainDateCase();const line=f.p.extraction.mrzLines[1];f.p.extraction.mrzLines[1]=line.slice(0,9)+(Number(line[9])+1)%10+line.slice(10);f.copy.extraction.mrzLines=structuredClone(f.p.extraction.mrzLines);
  const result=run([f.p,f.copy,f.datePage,f.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].evidence.passportLogicalDuplicates,undefined);
 });
+
+function residencePairTd1({birth='900115',expiry='270430',eid='784190012345673',sex='F',nationality='EGY',name='EXAMPLE<<SYNTHETIC<PARENT'}={}){
+ const number='X12345678';
+ const first='I<ARE'+number+digit(number)+eid;
+ const body=birth+digit(birth)+sex+expiry+digit(expiry)+nationality+'<'.repeat(11);
+ return[first,body+digit(first.slice(5)+body.slice(0,7)+body.slice(8,15)+body.slice(18,29)),name.padEnd(30,'<')];
+}
+function residencePairCase({printedBackId=true,printedBackName=true,frontBirth=true}={}){
+ const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT'}),id=front({latinFullName:'SYNTHETIC PARENT EXAMPLE'});
+ if(!frontBirth)delete id.extraction.fields.birthDate;
+ const back=document(IDS.back,'uae_id_back',{...(printedBackId?{emiratesId:'784190012345673'}:{}),...(printedBackName?{latinFullName:'SYNTHETIC PARENT EXAMPLE'}:{})},{mrzLines:residencePairTd1()});back.sha256='b'.repeat(64);
+ return{p,id,back};
+}
+
+test('a proven printed-ID pair uses its front DOB for comparison without inventing a missing back DOB',()=>{
+ const {p,id,back}=residencePairCase(),documents=[p,id,back],before=structuredClone(documents),result=run(documents),person=result.applicants[0];
+ assert.equal(result.complete,true,JSON.stringify(person.issues));assert.equal(person.evidence.matchedResidence,true);assert.equal(person.documents.residence.length,2);assert.equal(result.unassigned.length,0);
+ assert.equal(person.fields.birthDate,'1990-01-15');assert.deepEqual(documents,before);
+ assert.equal(back.extraction.fields.birthDate,undefined);assert.equal(person.evidence.fieldSources.birthDate.some(source=>source.mediaId===IDS.back),false);
+});
+
+test('a closed checked TD1 pair assigns an unlabelled back and uses only the full passport DOB when the front abstains',()=>{
+ for(const frontBirth of [true,false]){
+  const {p,id,back}=residencePairCase({printedBackId:false,printedBackName:false,frontBirth}),documents=[back,id,p],before=structuredClone(documents),result=run(documents),person=result.applicants[0];
+  assert.equal(result.complete,true,JSON.stringify({issues:person.issues,unassigned:result.unassigned}));assert.equal(person.documents.residence.length,2);assert.equal(result.unassigned.length,0);
+  assert.equal(person.fields.birthDate,'1990-01-15');assert.equal(person.fields.emiratesId,'784190012345673');assert.equal(person.fields.latinFatherName,'PARENT');
+  assert.equal(person.evidence.fieldSources.birthDate.every(source=>source.mediaId===IDS.passport),true);assert.equal(person.evidence.fieldSources.emiratesId.every(source=>source.mediaId===IDS.front),true);assert.deepEqual(documents,before);
+ }
+});
+
+test('same explicit ID without MRZ can compare a missing back DOB only through an already assigned full-DOB front',()=>{
+ const f=residencePairCase();f.back.extraction.mrzLines=[];const documents=[f.back,f.p,f.id],before=structuredClone(documents),result=run(documents);
+ assert.equal(result.complete,true);assert.equal(result.unassigned.length,0);assert.deepEqual(documents,before);assert.equal(f.back.extraction.fields.birthDate,undefined);
+ delete f.id.extraction.fields.birthDate;assert.equal(run(documents).complete,false);
+ const noId=residencePairCase({printedBackId:false});noId.back.extraction.mrzLines=[];const unlinked=run([noId.p,noId.id,noId.back]);assert.equal(unlinked.complete,false);assert.ok(unlinked.unassigned.some(source=>source.mediaId===IDS.back));
+});
+
+test('closed residence pairs require exact whole ID, untruncated names, raw birth, sex and nationality on valid TD1 data',()=>{
+ for(const options of [{eid:'784190012345674'},{birth:'910115'},{sex:'M'},{nationality:'SYR'},{name:'EXAMPLE<<SYNTHETIC<OTHER'},{name:'EXAMPLE<<SYNTHETIC<PARENT<ABCD'}]){
+  const f=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false});f.back.extraction.mrzLines=residencePairTd1(options);
+  const result=run([f.back,f.id,f.p]);assert.equal(result.complete,false,JSON.stringify(options));assert.equal(result.applicants[0].identityReady,false);assert.ok(result.unassigned.some(source=>source.mediaId===IDS.back));
+ }
+ for(const [line,position]of [[0,14],[1,6],[1,14],[1,29]]){
+  const f=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false}),raw=f.back.extraction.mrzLines[line];f.back.extraction.mrzLines[line]=raw.slice(0,position)+(Number(raw[position])+1)%10+raw.slice(position+1);
+  assert.equal(run([f.p,f.id,f.back]).complete,false);
+ }
+ const incomplete=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false});incomplete.back.extraction.mrzLines[0]=incomplete.back.extraction.mrzLines[0].slice(1);assert.equal(run([incomplete.p,incomplete.id,incomplete.back]).complete,false);
+});
+
+test('a checked pair never overrides printed DOB centuries, IDs, names, sex, nationality or passport contradictions',()=>{
+ const mutations=[
+  f=>{f.id.extraction.fields.birthDate=field('1890-01-15');},
+  f=>{f.back.extraction.fields.birthDate=field('1890-01-15');},
+  f=>{f.back.extraction.fields.birthDate=field('1990-01-16');},
+  f=>{f.back.extraction.fields.emiratesId=field('784190012345674');},
+  f=>{f.back.extraction.fields.emiratesId=field('78419001234567');},
+  f=>{f.back.extraction.fields.emiratesId=field('784190012345674',0.95);},
+  f=>{f.id.extraction.fields.latinFullName=field('SYNTHETIC OTHER EXAMPLE');},
+  f=>{f.back.extraction.fields.latinFullName=field('SYNTHETIC OTHER EXAMPLE');},
+  f=>{f.id.extraction.fields.sex=field('M');},
+  f=>{f.back.extraction.fields.sex=field('M');},
+  f=>{f.id.extraction.fields.nationalityCode=field('SYR');},
+  f=>{f.back.extraction.fields.nationalityCode=field('SYR');},
+  f=>{f.back.extraction.fields.passportNumber=field('OTHER1234');},
+  f=>{delete f.id.extraction.fields.emiratesId;},
+  f=>{delete f.p.extraction.fields.birthDate;},
+  f=>{f.p.extraction.fields.latinFatherName.confidence=0.97;},
+ ];
+ for(const mutate of mutations){
+  const f=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false});mutate(f);const before=structuredClone(f),result=run([f.p,f.id,f.back]);
+  assert.equal(result.complete,false,mutate.toString());assert.equal(result.applicants[0].identityReady,false);assert.deepEqual(f,before);assert.equal(result.applicants[0].fields.birthDate==='1890-01-15',false);
+ }
+});
+
+test('a closed pair cannot choose an applicant through conflicting passports with the same name and DOB',()=>{
+ const f=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false}),second=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT',passportNumber:'X12345678'},IDS.passport2);second.sha256='c'.repeat(64);
+ const result=run([f.p,f.id,f.back,second],[{nationality:'مصر',passportNumber:'N12345678'},{nationality:'مصر',passportNumber:'X12345678'}]);
+ assert.equal(result.complete,false);assert.ok(result.applicants.every(person=>person.identityReady===false));assert.ok(result.unassigned.some(source=>source.mediaId===IDS.back));assert.ok(result.applicants.some(person=>person.issues.some(item=>item.code==='MULTIPLE_PASSPORTS')));
+});
+
+test('an exact-ID comparison cannot hide a contradictory partial name without a full name, DOB or MRZ',()=>{
+ for(const [name,value]of [['latinFirstName','SYNTHETIC'],['latinFatherName','PARENT'],['latinFamilyName','EXAMPLE']]){
+  const f=residencePairCase({printedBackName:false});f.back.extraction.mrzLines=[];f.back.extraction.fields[name]=field('OTHER');
+  const documents=[f.p,f.id,f.back],before=structuredClone(documents),result=run(documents),person=result.applicants[0];
+  assert.equal(result.complete,false,name);assert.equal(person.identityReady,false);assert.ok(person.issues.some(item=>item.code==='DOCUMENT_IDENTITY_MISMATCH'&&item.field===name));assert.equal(person.evidence.residencePairLinks,undefined);assert.deepEqual(documents,before);
+  f.back.extraction.fields[name]=field(value);const consistent=run(documents);assert.equal(consistent.complete,true,name+' can be an explicit consistent partial observation');assert.equal(f.back.extraction.fields.birthDate,undefined);assert.equal(f.back.extraction.fields.latinFullName,undefined);
+ }
+});
