@@ -172,6 +172,7 @@ function readDocument(document) {
       parsed.fieldProvenance={passportNumber:[{...ref(parsed),evidenceField:'visiblePassportNumber',confidence:extraction.fields.visiblePassportNumber.confidence,method:'visible_unconfirmed'}]};
     }
   }
+  if(parsed.kind==='uae_id_back'&&document.mrzFocusStatus==='checked'&&parseTD1MRZ(extraction.mrzLines).ok)parsed.nativeTd1Checked=true;
   if (typeof document.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(document.sourceSha256)) parsed.sourceSha256 = document.sourceSha256;
   return parsed;
 }
@@ -256,10 +257,18 @@ function completePrintedId(document){return /^784\d{12}$/.test(document.fields.e
 function residenceNameComponentConflicts(document,passport){
   return ['latinFirstName','latinFatherName','latinGrandfatherName','latinFamilyName'].filter(field=>document.fields[field]&&passport.fields[field]&&!equivalent(field,document.fields[field],passport.fields[field])).map(field=>issue('DOCUMENT_IDENTITY_MISMATCH',field));
 }
+function uncertainNativeId(document){
+  const field=document.extraction.fields.emiratesId;
+  return document.kind==='uae_id_back'&&document.nativeTd1Checked===true&&field?.visible===true&&typeof field.value==='string'&&Number.isFinite(field.confidence)&&field.confidence>=0&&field.confidence<THRESHOLD&&!Object.hasOwn(document.fields,'emiratesId');
+}
 function pairPrintedConflicts(document,passport,eid){
   const expected={birthDate:passport.fields.birthDate,sex:passport.fields.sex,nationalityCode:passport.fields.nationalityCode,emiratesId:eid};
   for(const [field,value]of Object.entries(expected)){
     if(!value)continue;
+    // A low-confidence model ID is not an accepted fact. Only a locally
+    // checked TD1 back may leave that observation uncertain; the complete
+    // printed front ID still has to match the whole protected optional zone.
+    if(field==='emiratesId'&&uncertainNativeId(document))continue;
     const printed=document.extraction.fields[field];
     const observed=document.fields[field]??(printed?.visible===true&&typeof printed.value==='string'?normalizedValue(field,printed.value):null);
     if(observed&&!equivalent(field,observed,value))return true;
@@ -381,7 +390,8 @@ function deduplicateDocuments(documents) {
     }
     const passportNumberObservations=group.flatMap(document=>document.passportNumberObservations||[]);
     if(group.length>1&&new Set(passportNumberObservations.map(observed=>normalizedValue('passportNumber',observed.value))).size>1)issues.push(issue('SOURCE_CONFLICT','passportNumber'));
-    return {...primary,fields,fieldProvenance,passportNumberObservations,issues:uniqueIssues(issues),invalidFields:[...new Set(group.flatMap(document=>document.invalidFields))],lowConfidence:[...new Set(group.flatMap(document=>document.lowConfidence))]};
+    const nativeTd1Checked=group.some(document=>document.nativeTd1Checked===true&&JSON.stringify(document.extraction.mrzLines)===JSON.stringify(primary.extraction.mrzLines));
+    return {...primary,fields,fieldProvenance,passportNumberObservations,...(nativeTd1Checked?{nativeTd1Checked:true}:{}),issues:uniqueIssues(issues),invalidFields:[...new Set(group.flatMap(document=>document.invalidFields))],lowConfidence:[...new Set(group.flatMap(document=>document.lowConfidence))]};
   }).sort(compareReference);
 }
 function hasStrongVisualIdentity(document) {
@@ -597,6 +607,10 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
         result.evidence.residencePairLinks||=[];
         const link={front:ref(context.front),source:ref(context.back),method:context.method};
         if(!result.evidence.residencePairLinks.some(value=>value.front.mediaId===link.front.mediaId&&value.source.mediaId===link.source.mediaId&&value.method===link.method))result.evidence.residencePairLinks.push(link);
+      }
+      if(uncertainNativeId(document)){
+        result.evidence.residenceUncertainIdObservations||=[];
+        result.evidence.residenceUncertainIdObservations.push({...ref(document),evidenceField:'emiratesId',confidence:document.extraction.fields.emiratesId.confidence,method:'uncertain_raw_id_with_native_td1'});
       }
       for (const field of ['emiratesId', 'residenceExpiry']) if (document.fields[field]) {
         if (result.fields[field] && !equivalent(field, result.fields[field], document.fields[field])) result.issues.push(issue('RESIDENCE_CONFLICT', field));

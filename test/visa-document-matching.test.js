@@ -782,3 +782,33 @@ test('different or invalid TD1 transcriptions cannot disappear as logical copies
   assert.equal(person.identityReady,false);assert.ok(person.documents.residence.some(source=>source.mediaId===f.copies[0].mediaId)||result.unassigned.some(source=>source.mediaId===f.copies[0].mediaId));assert.equal((person.evidence.residenceLogicalDuplicates||[]).some(item=>item.source.mediaId===f.copies[0].mediaId),false);
  }
 });
+
+test('native-checked TD1 keeps a low-confidence raw ID uncertain while government ID remains the printed front value',()=>{
+ for(const value of ['78419001234567','123456789','784190012345674']){
+  const f=residencePairCase();f.back.mrzFocusStatus='checked';f.back.extraction.fields.emiratesId=field(value,0.95);f.back.extraction.fields.birthDate=field('1990-01-15');
+  const documents=[f.p,f.id,f.back],before=structuredClone(documents),result=run(documents),person=result.applicants[0];
+  assert.equal(result.complete,true,JSON.stringify(person.issues));assert.equal(person.identityReady,true);assert.equal(result.unassigned.length,0);
+  assert.equal(person.fields.emiratesId,'784190012345673');assert.ok(person.evidence.fieldSources.emiratesId.every(source=>source.mediaId===IDS.front));assert.deepEqual(documents,before);
+  assert.deepEqual(person.evidence.residenceUncertainIdObservations,[{mediaId:IDS.back,page:1,sha256:'b'.repeat(64),evidenceField:'emiratesId',confidence:0.95,method:'uncertain_raw_id_with_native_td1'}]);
+ }
+});
+
+test('native evidence never overrides accepted ID conflicts or grants the low-confidence exception to an unverified source',()=>{
+ for(const marker of [undefined,'original_checked','needs_review']){
+  const f=residencePairCase();if(marker)f.back.mrzFocusStatus=marker;f.back.extraction.fields.emiratesId=field('123456789',0.95);f.back.extraction.fields.birthDate=field('1990-01-15');
+  const person=run([f.p,f.id,f.back]).applicants[0];assert.equal(person.identityReady,false);assert.ok(person.issues.some(item=>item.code==='RESIDENCE_CONFLICT'));assert.equal(person.evidence.residenceUncertainIdObservations,undefined);
+ }
+ for(const value of ['784190012345674','78419001234567','123456789']){
+  const f=residencePairCase();f.back.mrzFocusStatus='checked';f.back.extraction.fields.emiratesId=field(value,0.99);f.back.extraction.fields.birthDate=field('1990-01-15');
+  const result=run([f.p,f.id,f.back]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.equal(result.applicants[0].evidence.residenceUncertainIdObservations,undefined);
+ }
+ const bad=residencePairCase();bad.back.mrzFocusStatus='checked';bad.back.extraction.fields.emiratesId=field('123456789',0.95);bad.back.extraction.fields.birthDate=field('1990-01-15');const line=bad.back.extraction.mrzLines[1];bad.back.extraction.mrzLines[1]=line.slice(0,29)+(Number(line[29])+1)%10;
+ const person=run([bad.p,bad.id,bad.back]).applicants[0];assert.equal(person.identityReady,false);assert.ok(person.issues.some(item=>item.code==='RESIDENCE_MRZ_INVALID'));assert.equal(person.evidence.residenceUncertainIdObservations,undefined);
+});
+
+test('native-checked uncertain ID handling leaves every full DOB, sex, nationality and name conflict blocked',()=>{
+ for(const [name,value]of [['birthDate','1890-01-15'],['sex','M'],['nationalityCode','SYR'],['latinFullName','SYNTHETIC OTHER EXAMPLE'],['latinFirstName','OTHER']]){
+  const f=residencePairCase();f.back.mrzFocusStatus='checked';f.back.extraction.fields.emiratesId=field('123456789',0.95);f.back.extraction.fields.birthDate=field('1990-01-15');f.back.extraction.fields.passportNumber=field('N12345678');f.back.extraction.fields[name]=field(value);
+  const before=structuredClone(f),result=run([f.p,f.id,f.back]);assert.equal(result.complete,false,name);assert.equal(result.applicants[0].identityReady,false);assert.deepEqual(f,before);
+ }
+});
