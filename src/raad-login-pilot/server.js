@@ -150,7 +150,7 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
       const otp=await findVerificationControls(j.page);const structure=await getVerificationDiagnostics(j.page);const codeStillVisible=Array.isArray(structure.fields)&&structure.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete));const before=await getAccountSignals(j.page,Boolean(otp)||codeStillVisible);
       if(otp||codeStillVisible||before.loginControlsVisible||before.loginRoute||!before.officialHost||!before.mainDocument)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
       let result={opened:false,reason:'ALREADY_INSPECTED',signals:before};
-      if(!j.accountMenuInspected&&!before.accountUiVerified){j.accountMenuInspected=true;result=await openAccountMenu(j.page);}
+      if(!j.accountMenuInspected&&!before.accountUiVerified){result=await openAccountMenu(j.page);if(result.attempted===true||result.opened===true)j.accountMenuInspected=true;}
       j.accountSignals=result.signals;j.stage=result.signals.accountUiVerified?'authenticated':'result_unverified';
       reply(res,200,{sessionId:j.id,stage:j.stage,canVerify:false,authenticated:j.stage==='authenticated',expiresAt:j.expires,accountSignals:j.accountSignals,menuInspection:{opened:result.opened===true,reason:result.reason}});
      }
