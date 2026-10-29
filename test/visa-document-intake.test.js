@@ -328,3 +328,20 @@ test('cached local TD1 validates the actual source bytes before accepting a new 
 test('an older ordinary OCR job cannot starve a cached local TD1 job while the external provider is unavailable',async()=>{
  const f=await setup({ready:false}),source=f.add(1,3),job=await cachedTd1(f,source);let local=0;const worker=td1Worker(f,{supports:()=>true,ready:()=>true,status:()=>({local:true,configured:true}),extract:async()=>{local++;return{version:1,mrzLines:td1()};}}),ordinary=f.add(2,0);worker.enqueue(CUSTOMER,ordinary);const old=Object.values(worker.data().jobs).find(value=>value.mediaId===ordinary);old.createdAt=NOW-1;await worker.tick();assert.equal(local,1);assert.equal(f.counts().visionCalls,0);assert.equal(job.status,'ready');assert.deepEqual(job.pages[1].extraction.mrzLines,td1());assert.equal(old.status,'queued');
 });
+
+test('paid application safely enriches the existing unreviewed manual draft and clears repeated apply errors without asking the customer',async()=>{
+ const f=await setup({unpaid:true,gaps:['passportType','issueDate']});f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();
+ f.realRaad.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2025-01-01'},confirm:true});
+ f.c.paymentStatus='verified';const state=f.worker.data().cases[CUSTOMER],app=state.applicants[0];state.status='needs_review';for(let i=0;i<20;i++){state.issues.push({code:'DOCUMENT_APPLY_UNCONFIRMED'});app.issues.push({code:'DOCUMENT_APPLY_UNCONFIRMED'});}
+ const job={id:id(91),customer:CUSTOMER,caseId:f.c.id,caseSignature:visaCaseSignature(f.c),applicantIndex:0,state:'queued'};f.store.data.visaFulfilment={jobs:{[job.id]:job}};
+ const result=await f.worker.prepareJob(job);assert.equal(result.readyForQuestions,false);assert.equal(result.status,'needs_review');
+ const draft=f.realRaad.get(CUSTOMER,{applicantIndex:0});assert.equal(draft.fields.passportType,'ordinary');assert.equal(draft.fields.issueDate,'2025-01-01');assert.equal(draft.fields.passportNumber,FIELDS.passportNumber);assert.ok(draft.documents.passport);assert.equal(draft.review.complete,false);
+ assert.equal(state.issues.filter(i=>i.code==='DOCUMENT_APPLY_UNCONFIRMED').length,0);assert.equal(state.issues.filter(i=>i.code==='DOCUMENT_STAFF_REVIEW_REQUIRED').length,1);assert.equal(f.counts().stages,0);assert.equal(job.state,'queued');assert.equal(f.c.paymentStatus,'verified');assert.equal(f.c.submissionStatus,'not_submitted');
+ const calls=f.counts().applies;await f.worker.prepareJob(job);assert.equal(f.counts().applies,calls);assert.equal(state.issues.filter(i=>i.code==='DOCUMENT_STAFF_REVIEW_REQUIRED').length,1);
+});
+
+test('a protected conflicting staff draft keeps data intact and records one failure across repeated worker attempts',async()=>{
+ const f=await setup({unpaid:true});f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();f.realRaad.prepare(CUSTOMER,{expectedRevision:0,fields:{passportNumber:'CONFLICT123'},confirm:true});f.c.paymentStatus='verified';const job={id:id(91),customer:CUSTOMER,caseId:f.c.id,caseSignature:visaCaseSignature(f.c),applicantIndex:0,state:'queued'};f.store.data.visaFulfilment={jobs:{[job.id]:job}};const saved=structuredClone(f.store.data.raadApplications);
+ for(let i=0;i<5;i++)assert.equal((await f.worker.prepareJob(job)).readyForQuestions,false);
+ assert.equal(f.worker.data().cases[CUSTOMER].issues.filter(i=>i.code==='DOCUMENT_APPLY_UNCONFIRMED').length,1);assert.deepEqual(f.store.data.raadApplications,saved);assert.equal(f.counts().stages,0);assert.equal(f.c.submissionStatus,'not_submitted');
+});
