@@ -812,3 +812,53 @@ test('native-checked uncertain ID handling leaves every full DOB, sex, nationali
   const before=structuredClone(f),result=run([f.p,f.id,f.back]);assert.equal(result.complete,false,name);assert.equal(result.applicants[0].identityReady,false);assert.deepEqual(f,before);
  }
 });
+
+function logicalFrontAndBackCase(){
+ const f=logicalResidenceBackCase();f.id.extraction.fields.birthDate=field('1990-01-15');f.id.extraction.fields.issueDate=field('2025-01-01');f.id.extraction.fields.arabicFullName=field('اسم اختباري');
+ const partial=document('12345678-1234-4321-abcd-123456789007','uae_id_front',{latinFullName:'SYNTHETIC PARENT EXAMPLE',arabicFullName:'اسم اختباري',emiratesId:'784190012345673'});partial.sha256='7'.repeat(64);
+ return {...f,partial,documents:[...f.documents,partial]};
+}
+
+test('two independently proven front photos select the actual covering front before exact TD1 back coalescing',()=>{
+ const f=logicalFrontAndBackCase(),before=structuredClone(f.documents),result=run(f.documents),person=result.applicants[0];
+ assert.equal(person.identityReady,true,JSON.stringify(person.issues));assert.equal(person.status,'needs_confirmation');assert.deepEqual(person.clientFieldsRequired,['passportType','issueDate']);assert.equal(result.unassigned.length,0);
+ assert.deepEqual(person.documents.residence.map(source=>source.mediaId),[IDS.front,IDS.back]);assert.equal(person.evidence.residenceLogicalDuplicates.length,2);assert.equal(person.evidence.residenceFrontLogicalDuplicates.length,1);
+ assert.equal(person.evidence.residenceFrontLogicalDuplicates[0].source.mediaId,f.partial.mediaId);assert.equal(person.evidence.residenceFrontLogicalDuplicates[0].representative.mediaId,IDS.front);
+ assert.deepEqual(new Set(person.evidence.fieldSources.emiratesId.map(source=>source.mediaId)),new Set([IDS.front,f.partial.mediaId]));assert.deepEqual(new Set(person.evidence.residencePairLinks.map(link=>link.front.mediaId)),new Set([IDS.front,f.partial.mediaId]));assert.deepEqual(f.documents,before);assert.deepEqual(run([...f.documents].reverse()),result);
+});
+
+test('symmetric front selection preserves every overlapping trusted identity, date, name and rotation conflict',()=>{
+ for(const mutate of [
+  f=>{f.partial.extraction.fields.emiratesId=field('784190012345674');},
+  f=>{f.partial.extraction.fields.latinFullName=field('SYNTHETIC OTHER EXAMPLE');},
+  f=>{f.partial.extraction.fields.arabicFullName=field('اسم مختلف');},
+  f=>{f.partial.extraction.fields.birthDate=field('1890-01-15');},
+  f=>{f.partial.extraction.fields.sex=field('M');},
+  f=>{f.partial.extraction.fields.nationalityCode=field('SYR');},
+  f=>{f.partial.extraction.fields.residenceExpiry=field('2028-04-30');},
+  f=>{f.partial.extraction.fields.printedResidenceExpiry=field('01/05/2027');},
+  f=>{f.partial.extraction.fields.issueDate=field('2024-01-01');},
+  f=>{f.partial.extraction.rotation=90;},
+ ]){
+  const f=logicalFrontAndBackCase();mutate(f);const before=structuredClone(f.documents),result=run(f.documents),person=result.applicants[0];
+  assert.equal(result.complete,false,mutate.toString());assert.ok(!person.identityReady||result.unassigned.length>0);assert.deepEqual(f.documents,before);
+  assert.equal(person.evidence.residenceFrontLogicalDuplicates,undefined);assert.ok(person.documents.residence.some(source=>source.mediaId===f.partial.mediaId)||result.unassigned.some(source=>source.mediaId===f.partial.mediaId));
+ }
+});
+
+test('matching front identity without one real image covering the complete government/date witness union stays for review',()=>{
+ const f=logicalFrontAndBackCase();f.partial.extraction.fields.residenceExpiry=field('2027-04-30');
+ const person=run(f.documents).applicants[0];assert.equal(person.identityReady,false);assert.equal(person.evidence.residenceFrontLogicalDuplicates,undefined);assert.ok(person.documents.residence.some(source=>source.mediaId===f.partial.mediaId));assert.ok(person.issues.some(item=>item.code==='RESIDENCE_CONFLICT'));
+});
+
+test('weak front IDs and absent or invalid shared proof cannot qualify for symmetric front selection',()=>{
+ for(const mutate of [
+  f=>{f.partial.extraction.fields.emiratesId.confidence=0.97;},
+  f=>{for(const back of [f.back,...f.copies])back.extraction.mrzLines=[];},
+  f=>{for(const back of [f.back,...f.copies]){const line=back.extraction.mrzLines[1];back.extraction.mrzLines[1]=line.slice(0,29)+(Number(line[29])+1)%10;}},
+  f=>{const line=f.p.extraction.mrzLines[1];f.p.extraction.mrzLines[1]=line.slice(0,9)+(Number(line[9])+1)%10+line.slice(10);},
+ ]){
+  const f=logicalFrontAndBackCase();mutate(f);const result=run(f.documents),person=result.applicants[0];assert.equal(result.complete,false);assert.equal(person.evidence.residenceFrontLogicalDuplicates,undefined);assert.ok(person.documents.residence.some(source=>source.mediaId===f.partial.mediaId)||result.unassigned.some(source=>source.mediaId===f.partial.mediaId));
+ }
+ const f=logicalFrontAndBackCase();f.copies[0].extraction.mrzLines=residencePairTd1({number:'X12345679'});const result=run(f.documents);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.ok(result.applicants[0].documents.residence.some(source=>source.mediaId===f.copies[0].mediaId));
+});

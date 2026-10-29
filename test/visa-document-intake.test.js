@@ -78,8 +78,45 @@ test('repeated identity uploads are deduplicated and the prepared identity has f
  assert.deepEqual(f.records[app.documents.residence].sourceIds,[front,back]);assert.equal(f.counts().visionCalls,4);
 });
 
-test('a preparation-version refresh rebuilds cached pixels without rereading originals through Google',async()=>{
- const f=await setup();f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();const reads=f.counts().visionCalls,state=f.worker.data().cases[CUSTOMER];state.inputFingerprint='previous-preparation-policy';await f.worker.tick();assert.equal(f.counts().visionCalls,reads);assert.equal(f.worker.summary(CUSTOMER).status,'ready');
+test('a preparation-version refresh replaces a historical front-plus-front image with the current front-plus-back without another provider read',async()=>{
+ const f=await setup({unpaid:true,gaps:['passportType','issueDate']}),beforeCase=structuredClone(f.c);
+ f.add(1,0);const front=f.add(2,1),secondFront=f.add(3,1),back=f.add(4,3);f.add(5,2);
+ const currentMatching=f.worker.reconcile;
+ // Seed the historical selection through the real composer and media store.
+ // Both old references are actual uploaded fronts; all OCR checkpoints remain
+ // untouched so that only matching/preparation changes on the next pass.
+ f.worker.reconcile=input=>{
+  const matched=currentMatching(input),app=matched.applicants[0],first=input.documents.find(page=>page.mediaId===front),second=input.documents.find(page=>page.mediaId===secondFront);
+  if(app?.identityReady&&first&&second)app.documents.residence=[first,second].map(page=>({mediaId:page.mediaId,page:page.page,sha256:page.sha256}));
+  return matched;
+ };
+ await f.processAll();
+ const state=f.worker.data().cases[CUSTOMER],historicalApp=state.applicants[0],historicalId=historicalApp.documents.residence,historicalEvidenceId=historicalApp.id,historicalDigest=historicalApp.extractionDigest;
+ assert.equal(historicalApp.status,'needs_confirmation');assert.equal(historicalApp.identityReady,true);
+ assert.deepEqual(f.records[historicalId].sourceIds,[front,secondFront]);
+ const historicalBytes=Buffer.from(f.bytes.get(historicalId)),reads=f.counts().visionCalls;
+ f.worker.reconcile=currentMatching;
+ // Simulate the fingerprint persisted by the earlier preparation policy.
+ // A deployment's preparation-policy bump changes this input, not OCR policy.
+ state.inputFingerprint=sha(Buffer.from('raad-document-preparation-2026-10-29.v8'));
+ await f.worker.tick();
+ const current=f.worker.data().cases[CUSTOMER].applicants[0],currentId=current.documents.residence,currentManifest=current.preparedManifest.find(item=>item.kind==='residence');
+ assert.equal(f.worker.summary(CUSTOMER).status,'needs_confirmation');assert.equal(current.identityReady,true);
+ assert.deepEqual(current.clientFieldsRequired,['passportType','issueDate']);
+ assert.notEqual(currentId,historicalId);assert.notEqual(current.id,historicalEvidenceId);assert.notEqual(current.extractionDigest,historicalDigest);
+ assert.deepEqual(f.records[currentId].sourceIds,[front,back]);assert.equal(currentManifest.mediaId,currentId);assert.equal(currentManifest.sha256,sha(f.bytes.get(currentId)));
+ assert.equal(current.preparedManifest.some(item=>item.mediaId===historicalId),false);
+ assert.deepEqual(f.bytes.get(historicalId),historicalBytes,'the historical derivative stays archived, unchanged');
+ const sampleHalves=async content=>{
+  const meta=await sharp(content).metadata(),x=Math.floor(meta.width/2);
+  return Promise.all([0.25,0.75].map(fraction=>sharp(content).extract({left:x,top:Math.floor(meta.height*fraction),width:1,height:1}).removeAlpha().raw().toBuffer()));
+ };
+ const isFront=pixel=>pixel[1]>pixel[0]*2&&pixel[1]>pixel[2]*2,isBack=pixel=>pixel[0]>pixel[1]*2&&pixel[0]>pixel[2]*2;
+ assert.equal((await sampleHalves(historicalBytes)).every(isFront),true,'the seeded historical pixels contain two fronts');
+ const [upper,lower]=await sampleHalves(f.bytes.get(currentId));assert.equal(isFront(upper),true);assert.equal(isBack(lower),true,'the current pixels contain the actual back below the front');
+ assert.equal(f.counts().visionCalls,reads);assert.equal(f.counts().applies,0);assert.equal(f.counts().stages,0);assert.deepEqual(f.c,beforeCase);
+ assert.deepEqual(new Set(current.sourceManifest.map(source=>source.mediaId)),new Set([id(1),front,secondFront,back,id(5)]));
+ await f.worker.tick();assert.equal(f.worker.data().cases[CUSTOMER].applicants[0].documents.residence,currentId);assert.equal(f.counts().visionCalls,reads);
 });
 
 test('compatible V3 migration reuses legible checkpoints and rereads only a supported unreadable page',async()=>{

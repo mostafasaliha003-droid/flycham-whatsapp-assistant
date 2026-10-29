@@ -428,11 +428,39 @@ function consistentPartValue(field,first,second){
   }
   return equivalent(field,first,second);
 }
+function selectResidenceFrontPreparation(documents,passport){
+  const backs=documents.filter(document=>document.kind==='uae_id_back'),groups=new Map(),selected=[],duplicates=[];
+  for(const front of documents.filter(document=>document.kind==='uae_id_front')){
+    const witnesses=backs.filter(back=>checkedResidencePair(passport,front,back));
+    if(!witnesses.length){selected.push(front);continue;}
+    const key=JSON.stringify([front.fields.emiratesId,fullName(front.fields)]);
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push({front,witnesses});
+  }
+  for(const group of groups.values()){
+    if(group.length===1){selected.push(group[0].front);continue;}
+    const parts=group.map(item=>item.front),union={};
+    const common=group[0].witnesses.map(back=>JSON.stringify(back.extraction.mrzLines)).filter(lines=>group.every(item=>item.witnesses.some(back=>JSON.stringify(back.extraction.mrzLines)===lines)));
+    let consistent=common.length>0&&parts.every(part=>part.extraction.rotation===parts[0].extraction.rotation);
+    for(const part of parts)for(const [field,value]of Object.entries(part.fields)){
+      if(Object.hasOwn(union,field)&&!consistentPartValue(field,union[field],value))consistent=false;
+      else union[field]=value;
+    }
+    const critical=[...DOCUMENT_FIELDS,'printedResidenceExpiry'].filter(field=>Object.hasOwn(union,field));
+    const covering=consistent?parts.filter(part=>critical.every(field=>Object.hasOwn(part.fields,field)&&consistentPartValue(field,part.fields[field],union[field]))).sort(compareReference):[];
+    if(!covering.length){selected.push(...parts);continue;}
+    const representative=covering[0],lines=[...new Set(common)].sort()[0];selected.push(representative);
+    const witness=group.find(item=>item.front===representative).witnesses.filter(back=>JSON.stringify(back.extraction.mrzLines)===lines).sort(compareReference)[0];
+    for(const source of parts.filter(part=>part!==representative).sort(compareReference))duplicates.push({representative:ref(representative),source:ref(source),back:ref(witness),method:'same_printed_front_identity_and_exact_checked_td1'});
+  }
+  return {selected:selected.sort(compareReference),duplicates:duplicates.sort((a,b)=>compareReference(a.source,b.source))};
+}
 function selectResidencePreparation(result,documents,passport){
   if(result.issues.some(item=>['SOURCE_CONFLICT','DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT','RESIDENCE_MRZ_INVALID','CASE_DATA_MISMATCH','DOCUMENT_FIELD_INVALID'].includes(item.code)))return;
-  const fronts=documents.filter(document=>document.kind==='uae_id_front'),groups=new Map(),selected=[],duplicates=[];
-  for(const document of documents){
-    if(document.kind!=='uae_id_back'){selected.push(document);continue;}
+  // Several photographs can prove the same front. Select one actual covering
+  // front first, using a shared exact checked TD1 witness; retain all evidence.
+  const frontSelection=selectResidenceFrontPreparation(documents,passport);
+  const fronts=frontSelection.selected,groups=new Map(),selected=[...fronts],duplicates=[];
+  for(const document of documents.filter(document=>document.kind==='uae_id_back')){
     const proofs=fronts.map(front=>checkedResidencePair(passport,front,document)).filter(Boolean);
     if(proofs.length!==1){selected.push(document);continue;}
     const front=proofs[0].front,key=JSON.stringify({mrzLines:document.extraction.mrzLines,front:ref(front)});
@@ -454,11 +482,12 @@ function selectResidencePreparation(result,documents,passport){
     const representative=covering[0];selected.push(representative);
     for(const source of parts.filter(part=>part!==representative).sort(compareReference))duplicates.push({representative:ref(representative),source:ref(source),front:ref(front),method:'exact_checked_td1_same_paired_identity_and_visible_values'});
   }
-  if(!duplicates.length)return;
+  if(!duplicates.length&&!frontSelection.duplicates.length)return;
   // Only preparation references are reduced. Every original remains in the
   // intake manifest, matching evidence and pair links for integrity checks.
   result.documents.residence=selected.map(ref);
-  result.evidence.residenceLogicalDuplicates=duplicates.sort((a,b)=>compareReference(a.source,b.source));
+  if(duplicates.length)result.evidence.residenceLogicalDuplicates=duplicates.sort((a,b)=>compareReference(a.source,b.source));
+  if(frontSelection.duplicates.length)result.evidence.residenceFrontLogicalDuplicates=frontSelection.duplicates;
 }
 function selectPassportPreparation(parts){
   const groups=new Map(),selected=[],duplicates=[],issues=[];
