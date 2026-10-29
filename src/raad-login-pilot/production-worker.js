@@ -126,6 +126,30 @@ function chooseCheapest(inspection){
  const offers=quotes.offers.map(offer=>{const amounts=[];for(const cell of offer.cells||[]){for(const match of String(cell).matchAll(/(?:\$|USD|US\s*dollars?|دولار(?:\s*امريكي)?)\s*([0-9]{1,5}(?:\.[0-9]{1,2})?)|([0-9]{1,5}(?:\.[0-9]{1,2})?)\s*(?:\$|USD|US\s*dollars?|دولار(?:\s*امريكي)?)/gi))amounts.push(Number(match[1]||match[2]));}const unique=[...new Set(amounts)];if(unique.length!==1||!Number.isFinite(unique[0])||unique[0]<=0||! /^[0-9]{3}$/.test(offer.publicChoice||''))throw finite('INSURANCE_PRICE_UNCONFIRMED');return {choice:offer.publicChoice,amount:unique[0],company:norm(offer.companyLabel)};});
  offers.sort((a,b)=>a.amount-b.amount||a.choice.localeCompare(b.choice));return {choice:offers[0].choice,fingerprint:crypto.createHash('sha256').update(JSON.stringify(offers)).digest('hex')};
 }
+async function loginGovernmentAccount(ctx){
+ const {record:r,api,wait}=ctx;r.phase='login';let otpSubmitted=false,lastStage='unconfirmed';
+ const stages=new Set(['awaiting_input','submitted_unverified','verification_required','verification_submitted','verification_unconfirmed','authenticated','result_unverified','login_not_completed','no_session']);
+ const report=(operation,state)=>{const stage=stages.has(state?.stage)?state.stage:'unconfirmed';if(r.loginDiagnostic?.operation===operation&&r.loginDiagnostic?.stage===stage)return;r.loginDiagnostic={operation,stage};console.info('[RAAD_LOGIN_DIAGNOSTIC] '+JSON.stringify(r.loginDiagnostic));};
+ const started=await api('start');r.sessionId=started.sessionId;report('start',started);if(!r.sessionId||started.automaticCaptcha!==true)throw finite('AUTOMATIC_LOGIN_UNAVAILABLE');
+ const submitted=await api('auto-login');report('submit',submitted);if(submitted.submitted!==true){const reasons=new Set(['DISABLED','READ_ALREADY_ATTEMPTED','IMAGE_CHANGED','CANCELLED','UNREADABLE','BRIDGE_UNAVAILABLE','PROVIDER_UNAVAILABLE','TIMEOUT','INVALID_PROVIDER_REPLY','RATE_LIMITED','BUSY','IMAGE_LIMIT']);throw finite('LOGIN_CAPTCHA_'+(reasons.has(submitted.captcha?.reason)?submitted.captcha.reason:'UNCONFIRMED'));}
+ for(let poll=0;poll<30;poll++){
+  await wait(1500);const state=await api('current',{},false);report('observe',state);lastStage=state.stage;
+  if(state.stage==='authenticated'||state.accountSignals?.accountUiVerified===true)return;
+  if(state.stage==='verification_required'){
+   if(otpSubmitted)throw finite('LOGIN_EMAIL_OTP_REJECTED');
+   if(state.automaticOtp!==true)throw finite('LOGIN_EMAIL_OTP_UNAVAILABLE');
+   const verified=await api('auto-verify');report('email_otp',verified);if(verified.submitted!==true)throw finite('LOGIN_EMAIL_OTP_UNCONFIRMED');otpSubmitted=true;continue;
+  }
+  if(state.stage==='result_unverified'){
+   await api('inspect-account-menu');const checked=await api('current',{},false);report('account_check',checked);if(checked.stage==='authenticated'||checked.accountSignals?.accountUiVerified===true)return;
+  }
+  if(state.stage==='login_not_completed')throw finite('LOGIN_REJECTED');
+  if(state.stage==='verification_unconfirmed')throw finite('LOGIN_EMAIL_OTP_UNCONFIRMED');
+  if(state.stage==='no_session')throw finite('LOGIN_SESSION_LOST');
+ }
+ throw finite(otpSubmitted?'LOGIN_EMAIL_OTP_UNCONFIRMED':lastStage==='result_unverified'?'LOGIN_ACCOUNT_UI_UNCONFIRMED':'LOGIN_UNCONFIRMED');
+}
+
 async function runGovernmentJob(ctx,{resume=false}={}){
  const {record:r,manifest:m,api,wait}=ctx,f=m.facts;
  const inspect=async()=>{const result=await api('inspect-page',{},false);if(!result.inspection)throw finite('PORTAL_INSPECTION_UNAVAILABLE');return result.inspection;};
@@ -143,13 +167,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
   // names deliberately remain blank; no health/marital answer is inferred.
   for(const key of ['nationalityCode','passportNumber','passportType','issuingCountryCode','issueDate','expiryDate','birthDate','birthPlace','sex','latinFirstName','latinFatherName','latinFamilyName','arabicFirstName','arabicFatherName','arabicFamilyName','maritalStatus','previousNationality','travelledLastFiveYears','performUmrah','saudiAddress','transport','arrivalPort','gccResident','priorGccDeportation','priorGccRuleViolation','applicationPhone','contactEmail','insurancePhone','postalCode','city','postOfficeBox'])required(f,key);
   required(f,'entryDate');if(f.visitPurpose!=='tourism'||f.residenceCountryCode!=='ARE')throw finite('SUPPORTED_WORKFLOW_REQUIRED',f.visitPurpose!=='tourism'?'visitPurpose':'residenceCountryCode');const born=new Date(f.birthDate+'T00:00:00Z'),entry=new Date(f.entryDate+'T00:00:00Z');let age=entry.getUTCFullYear()-born.getUTCFullYear();if(entry.getUTCMonth()<born.getUTCMonth()||entry.getUTCMonth()===born.getUTCMonth()&&entry.getUTCDate()<born.getUTCDate())age--;if(!Number.isFinite(age)||age<18||Object.values(f.guardian||{}).some(Boolean))throw finite('MANUAL_REVIEW_REQUIRED','guardian');if(f.gccResident!==true)throw finite('GCC_RESIDENCY_REQUIRED','gccResident');for(const key of ['previousNationality','travelledLastFiveYears'])if(f[key]===true)throw finite('MANUAL_REVIEW_REQUIRED',key);if(f.priorGccDeportation||f.priorGccRuleViolation)throw finite('ELIGIBLE_ROUTE_REVIEW_REQUIRED',f.priorGccDeportation?'priorGccDeportation':'priorGccRuleViolation');for(const key of HEALTH)if(typeof f.health?.[key]!=='boolean')throw finite('MISSING_FIELD','health.'+key);required(f,'emiratesId');required(f,'residenceExpiry');uaePhone(f.applicationPhone);
-  r.phase='login';let authenticated=false;
-  for(let attempt=0;attempt<3&&!authenticated;attempt++){
-   if(attempt){const stopped=await api('close');if(!stopped.closed)throw finite('OWNED_BROWSER_CLEANUP_UNCONFIRMED');r.sessionId=null;}
-   const started=await api('start');r.sessionId=started.sessionId;if(!r.sessionId||started.automaticCaptcha!==true)throw finite('AUTOMATIC_LOGIN_UNAVAILABLE');const submitted=await api('auto-login');if(!submitted.submitted)continue;
-   for(let poll=0;poll<8;poll++){await wait(1500);const state=await api('current',{},false);if(state.stage==='verification_required'&&state.automaticOtp===true){await api('auto-verify');continue;}if(state.stage==='authenticated'||state.accountSignals?.accountUiVerified){authenticated=true;break;}if(state.stage==='result_unverified'){await api('inspect-account-menu');const check=await api('current',{},false);if(check.authenticated||check.accountSignals?.accountUiVerified){authenticated=true;break;}}if(['login_not_completed','verification_unconfirmed','no_session'].includes(state.stage))break;}
-  }
-  if(!authenticated)throw finite('LOGIN_UNCONFIRMED');r.phase='lookup';
+  await loginGovernmentAccount(ctx);r.phase='lookup';
   let metadata=await inspect();for(let nav=0;(await locate()).path!=='/SmartForm'&&nav<3;nav++){const links=(metadata.links||[]).filter(link=>link.path==='/SmartForm'&&/طلب|تأشير|تاشير|application|visa/i.test(link.label));if(links.length!==1)throw finite('CASE_LIST_LINK_UNAVAILABLE');await open(links[0]);metadata=await settle();}
   const existing=await lookup();if(existing.matchCount){const match=existing.matches[0];if(!m.existingApplicationReference||match.applicationReference!==m.existingApplicationReference)throw finite('EXISTING_APPLICATION_REVIEW_REQUIRED');r.reference=match.applicationReference;r.saved=true;const continuations=match.continuations||[],link=continuations.find(item=>/^\/SmartForm\/HealthInsuranceInfo\/[0-9]+$/.test(item.path))||continuations.find(item=>/^\/SmartForm\/PayFee\/[0-9]+$/.test(item.path));if(!link)throw finite('SAVED_CONTINUATION_UNAVAILABLE');await open(link,{viewPaymentDetails:/\/PayFee\//.test(link.path)});}
   else{if(m.existingApplicationReference||m.submissionUncertain)throw finite('SAVED_CASE_UNCONFIRMED');r.phase='agreements';metadata=await inspect();let link=(metadata.links||[]).filter(item=>item.path==='/SmartForm/Agreement'&&/إضافة طلب جديد|اضافة طلب جديد/i.test(item.label));if(link.length!==1)throw finite('NEW_APPLICATION_LINK_UNAVAILABLE');await open(link[0]);for(let step=0;step<3&&(await locate()).path!=='/SmartForm/TraditionalApp';step++){metadata=await inspect();const path=(await locate()).path;if(!['/SmartForm/Agreement','/SmartForm/ElectronicAgreement'].includes(path))throw finite('AGREEMENT_FLOW_UNCONFIRMED');const links=(metadata.links||[]).filter(item=>/^\/SmartForm\/(?:ElectronicAgreement|TraditionalApp)$/.test(item.path)&&/^(?:موافق|أوافق|اوافق|Agree|I Agree)$/i.test(item.label));if(links.length===1)await open(links[0],{acceptAgreement:true});else if(path==='/SmartForm/Agreement')await originalButton(metadata,'agreement');else throw finite('AGREEMENT_CONTROL_UNAVAILABLE');await wait(700);}
@@ -183,4 +201,4 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=chooseCheapest(await inspect());await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);await wait(1000);state=await locate();}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
