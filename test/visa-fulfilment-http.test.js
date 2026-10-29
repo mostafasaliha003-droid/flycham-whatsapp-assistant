@@ -12,10 +12,11 @@ const OTHER = '15550001102';
 const RECEIPT = '67847793-007b-4fea-9ff8-3cad1ea8fbfa';
 const OTHER_RECEIPT = 'a32a853f-9b39-4c63-a81b-558519952978';
 const ACCOUNTANT_KEY = 'fictitious-accountant-test-key-000000000000';
+const ADMIN_KEY = 'fictitious-employee-test-key-00000000000000';
 const BASE = '/internal/assistant/visa-workflow';
 const NOW = Date.parse('2026-10-27T12:00:00Z');
 
-function fixture({env = {}, onClaim} = {}) {
+function fixture({env = {}, onClaim, documentIntake} = {}) {
   const c = {
     id: 'fictitious-visa-http-case', policyVersion: 'fictitious-policy', revision: 3,
     applicantCount: 2,
@@ -41,9 +42,9 @@ function fixture({env = {}, onClaim} = {}) {
     get(id, {customer}) { const item = store.data.visaMedia[id]; if (!item || item.customer !== customer) throw Error('MEDIA_NOT_FOUND'); return structuredClone(item); },
     list(customer) { return Object.values(store.data.visaMedia).filter(item => item.customer === customer).map(item => structuredClone(item)); }
   };
-  const actualEnv = {RAAD_ACCOUNTANT_KEY: ACCOUNTANT_KEY, RAAD_ACCOUNTANT_ID: 'fictitious-finance-operator', ...env};
+  const actualEnv = {RAAD_ACCOUNTANT_KEY: ACCOUNTANT_KEY, RAAD_ACCOUNTANT_ID: 'fictitious-finance-operator', ASSISTANT_ADMIN_KEY: ADMIN_KEY, ...env};
   const fulfilment = new VisaFulfilment({store, inbox, mediaStore, now: () => NOW, env: actualEnv});
-  const handle = createVisaFulfilmentHttp({fulfilment, inbox, journal: inbox.journal, mediaStore, store, env: actualEnv, wake() { calls.wake++; }});
+  const handle = createVisaFulfilmentHttp({fulfilment, inbox, journal: inbox.journal, mediaStore, store, documentIntake, env: actualEnv, wake() { calls.wake++; }});
   const body = patch => ({receiptMediaId: RECEIPT, amount: 240, reference: 'BANK-HTTP-EXAMPLE', actualReceived: true, confirm: true, expectedCaseSignature: visaCaseSignature(c), expectedRevision: c.revision, idempotencyKey: 'http-finance-key-1', ...patch});
   async function invoke({path = BASE + '/' + CUSTOMER + '/confirm-payment', method = 'POST', data = body(), key = ACCOUNTANT_KEY, headers = {}, raw, readBody} = {}) {
     let status, payload, responseHeaders;
@@ -202,4 +203,19 @@ test('unexpected internal error details are redacted and temporary auto claim is
   assert.equal(result.status, 503); assert.equal(result.data.error, 'VISA_WORKFLOW_UNAVAILABLE');
   assert.doesNotMatch(JSON.stringify(result.data), /private finance/);
   assert.equal(f.inbox.isOperatorOwned(CUSTOMER), false); assert.equal(f.calls.release, 1); assert.equal(f.calls.wake, 0);
+});
+
+test('saved-original reread requires the employee bearer before parsing and never accepts accountant or body credentials', async()=>{
+ let calls=0;const intake={summary:()=>({status:'needs_review'}),rereadSource(){calls++;}},f=fixture({documentIntake:intake}),path=BASE+'/'+CUSTOMER+'/reread-document';
+ for(const headers of [{},{authorization:'Bearer wrong-employee-key-0000000000000000000'}]){const result=await f.invoke({path,headers,data:{adminKey:ADMIN_KEY}});assert.equal(result.status,403);assert.equal(result.data.error,'EMPLOYEE_REQUIRED');}assert.equal(calls,0);assert.equal(f.calls.read,0);assert.equal(f.calls.claim,0);assert.equal(f.calls.finance,0);
+});
+
+test('employee reread forwards exactly the source binding and queues no finance, claim or consent action',async()=>{
+ const calls=[],summary={status:'processing'},intake={summary:()=>summary,rereadSource(customer,binding){calls.push({customer,binding});return {ok:true,queued:true,generation:8};}},f=fixture({documentIntake:intake}),before=structuredClone(f.c),data={caseId:f.c.id,mediaId:RECEIPT,sourceSha256:'a'.repeat(64),generation:7},result=await f.invoke({path:BASE+'/'+CUSTOMER+'/reread-document',key:'',headers:{authorization:'Bearer '+ADMIN_KEY},data});
+ assert.equal(result.status,200);assert.equal(result.data.queued,true);assert.deepEqual(calls,[{customer:CUSTOMER,binding:data}]);assert.equal(result.data.item.documentReview.status,'processing');assert.deepEqual(f.c,before);assert.equal(f.calls.claim,0);assert.equal(f.calls.finance,0);assert.equal(f.calls.release,0);assert.equal(f.calls.wake,1);assert.equal(result.headers['Cache-Control'],'no-store, private');
+});
+
+test('reread rejects extra fields, invalid JSON, incorrect methods and stale source errors without side effects',async()=>{
+ let calls=0;const f=fixture({documentIntake:{summary:()=>({status:'needs_review'}),rereadSource(){calls++;throw Object.assign(Error('DOCUMENT_REREAD_STALE'),{code:'DOCUMENT_REREAD_STALE'});}}}),path=BASE+'/'+CUSTOMER+'/reread-document',headers={authorization:'Bearer '+ADMIN_KEY},data={caseId:f.c.id,mediaId:RECEIPT,sourceSha256:'a'.repeat(64),generation:7};
+ for(const raw of ['null','[]','not-json',JSON.stringify({...data,confirmIdentity:true}),JSON.stringify({...data,padding:'x'.repeat(1001)})]){const result=await f.invoke({path,headers,raw});assert.equal(result.status,400);assert.equal(result.data.error,'INVALID_BODY');}assert.equal(calls,0);assert.equal((await f.invoke({path,method:'GET',headers})).status,405);const stale=await f.invoke({path,headers,data});assert.equal(stale.status,409);assert.equal(stale.data.error,'DOCUMENT_REREAD_STALE');assert.equal(calls,1);assert.equal(f.calls.wake,0);assert.equal(f.calls.claim,0);assert.equal(f.calls.finance,0);
 });

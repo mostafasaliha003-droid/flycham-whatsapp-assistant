@@ -91,7 +91,8 @@
     const adapter = {
       list: () => request('visa-workflow?limit=100', 'GET', undefined, auth()),
       detail: id => request('visa-workflow/' + encodeURIComponent(id), 'GET', undefined, auth()),
-      approve: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/confirm-payment', 'POST', body, auth())
+      approve: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/confirm-payment', 'POST', body, auth()),
+      reread: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/reread-document', 'POST', body, auth())
     };
     function modal(title, className = '') {
       const dialog = n('dialog', 'vj-dialog ' + className), head = n('header', 'vj-dialog-head'), titleNode = n('h2', '', title), close = button('×', () => dialog.close());
@@ -182,6 +183,37 @@
         section.append(card);
       }
       const footer = n('div', 'vj-document-footer'); footer.append(n('p', '', 'المطابقة آلية بين البيانات المقروءة؛ لا تثبت أصالة الوثائق أو تحقق الجهة الحكومية. لا تُستكمل الأسماء أو القيم غير المقروءة بالتخمين.')); if (review?.updatedAt) footer.append(n('time', '', 'آخر نتيجة ' + stamp(review.updatedAt))); section.append(footer);
+      const originals = new Map((Array.isArray(item.media) ? item.media : []).filter(file => typeof file?.id === 'string' && !file.purpose && !file.derived && !file.isDerived && !file.sourceIds?.length && (!file.customer || String(file.customer) === item.customer) && !['unavailable','failed','expired','application_copy'].includes(file.status) && /^(image\/(jpeg|png|webp)|application\/pdf)$/.test(file.mimeType || '')).map(file => [file.id,file]));
+      const sources = (Array.isArray(review?.rereadSources) ? review.rereadSources : []).filter(source => originals.has(source?.mediaId) && source.caseId === review.caseId && source.caseId === item.id && Number.isSafeInteger(source.generation) && source.generation === review.generation && /^[a-f0-9]{64}$/.test(source.sourceSha256 || ''));
+      if (sources.length) {
+        const area = n('div', 'vj-document-reread'), status = n('p', 'muted small'); status.setAttribute('role','status');
+        area.append(n('h4', '', 'قراءة أصل محفوظ'), n('p', 'muted small', 'يعيد هذا الإجراء قراءة الملف الأصلي المحفوظ بواسطة خدمة القراءة المهيأة. لا يؤكد الهوية أو الدفعة أو موافقة العميل.'));
+        let pending = false;
+        const controls = [];
+        const kindLabels = {passport:'الجواز',uae_id_front:'الهوية الإماراتية · الوجه الأمامي',uae_id_back:'الهوية الإماراتية · الوجه الخلفي',portrait:'الصورة الشخصية',other:'مستند غير مصنف'};
+        const originalIds = [...originals.keys()];
+        for (const source of sources) {
+          const file = originals.get(source.mediaId), row = n('div', 'vj-document-reread-source'), binding = {caseId:source.caseId,mediaId:source.mediaId,sourceSha256:source.sourceSha256,generation:source.generation};
+          const action = button('إعادة قراءة الأصل المحفوظ', async () => {
+            if (pending || action.disabled || !dialog.open) return;
+            const epoch = state.epoch; pending = true; for (const control of controls) control.disabled = true; status.textContent = 'جارٍ طلب إعادة قراءة الأصل المحفوظ…';
+            try {
+              await adapter.reread(item.customer, binding);
+              if (epoch !== state.epoch || !dialog.open) return;
+              status.textContent = 'أُضيف الأصل المحفوظ إلى قائمة القراءة؛ لم تُعتمد الهوية أو الدفعة أو موافقة العميل.';
+              const fresh = await fetchCase(item.customer);
+              if (epoch !== state.epoch || !dialog.open) return;
+              section.replaceChildren(...documentReviewPanel(fresh, dialog).children);
+            } catch {
+              if (epoch === state.epoch && dialog.open) status.textContent = 'لم يتأكد طلب إعادة القراءة. حدّث الملف لمراجعة حالته قبل المحاولة مجددًا.';
+            }
+          });
+          action.disabled = source.allowed !== true; controls.push(action);
+          const kinds = [...new Set((Array.isArray(source.kinds) ? source.kinds : [source.kind]).filter(kind => typeof kind === 'string' && Object.hasOwn(kindLabels,kind)))], label = 'المرفق الأصلي ' + (originalIds.indexOf(source.mediaId) + 1) + ' · ' + (kinds.length ? kinds.map(kind => kindLabels[kind]).join('، ') : kindLabels.other);
+          row.append(n('span', '', label), n('small', '', 'وصل ' + stamp(source.receivedAt)), n('small', '', file.filename || 'المرفق الأصلي'), action); if (source.allowed !== true) row.append(n('small', '', 'إعادة القراءة غير متاحة لهذه النسخة.')); area.append(row);
+        }
+        area.append(status); section.append(area);
+      }
       if (['needs_review','provider_unavailable','disabled'].includes(info.key)) { const action = button('مراجعة المستندات والبيانات في رعد', () => { dialog.close(); openConversation(item.customer); document.getElementById('view-inbox')?.classList.add('show-details'); }); action.className += ' vj-document-action'; section.append(action); }
       return section;
     }

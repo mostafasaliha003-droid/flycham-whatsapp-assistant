@@ -1,11 +1,12 @@
 'use strict';
 
 const {parseTD3MRZ, validateApplicant, proposedEntryDate} = require('./raad-document-validation');
+const {parseTD1MRZ, matchesPrintedEmiratesId, resolvePrintedDate} = require('./visa-id-mrz');
 
 const THRESHOLD = 0.98;
 const KINDS = new Set(['passport', 'uae_id_front', 'uae_id_back', 'portrait', 'other']);
 const PASSPORT_FIELDS = Object.freeze(['latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'passportNumber', 'passportType', 'nationalityCode', 'issuingCountryCode', 'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate']);
-const ALL_FIELDS = new Set([...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName', 'emiratesId', 'residenceExpiry']);
+const ALL_FIELDS = new Set([...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName', 'passportNationalNumber', 'printedPassportExpiry', 'printedResidenceExpiry', 'emiratesId', 'residenceExpiry']);
 const DOCUMENT_FIELDS = new Set([...PASSPORT_FIELDS, 'emiratesId', 'residenceExpiry']);
 const IDENTITY_FIELDS = ['passportNumber', 'birthDate', 'nationalityCode', 'sex'];
 const MRZ_FIELDS = ['passportNumber', 'nationalityCode', 'issuingCountryCode', 'birthDate', 'expiryDate', 'sex'];
@@ -26,6 +27,7 @@ const MESSAGES = Object.freeze({
   RESIDENCE_MISSING: 'لم تُربط هوية أو إقامة واضحة ومطابقة لهذا المتقدم.',
   DOCUMENT_IDENTITY_MISMATCH: 'بيانات الهوية والإقامة لا تتطابق مع جواز المتقدم.',
   RESIDENCE_CONFLICT: 'توجد بيانات مختلفة بين صور الهوية والإقامة؛ يلزم توضيحها.',
+  RESIDENCE_MRZ_INVALID: 'المنطقة الآلية في الهوية غير مكتملة أو لم تجتز فحوص التحقق؛ يلزم مراجعة نسخة الهوية الأصلية.',
   DOCUMENT_FIELD_REQUIRED: 'إحدى البيانات الأساسية غير ظاهرة أو غير مؤكدة في المستند.',
   DOCUMENT_FIELD_INVALID: 'إحدى البيانات المقروءة تحتاج توضيحاً أو تصحيحاً من المستند.',
   PASSPORT_VALIDITY: 'صلاحية الجواز لا تحقق مدة الستة أشهر من موعد الدخول المستخدم في الملف.',
@@ -62,12 +64,46 @@ function equivalent(field, first, second) {
   if (field.includes('Name')) return normalizedName(first) === normalizedName(second);
   return normalizedValue(field, first) === normalizedValue(field, second);
 }
-function fullName(fields) {
-  if (typeof fields.latinFullName === 'string') return normalizedName(fields.latinFullName);
+function labelledFullName(fields) {
   if (!fields.latinFirstName || !fields.latinFamilyName) return '';
   return normalizedName([fields.latinFirstName, fields.latinFatherName, fields.latinGrandfatherName, fields.latinFamilyName].filter(Boolean).join(' '));
 }
-function identityFields(document) { return document.identityName ? {...document.fields, latinFullName:document.identityName} : document.fields; }
+function fullName(fields) {
+  return typeof fields.latinFullName === 'string' ? normalizedName(fields.latinFullName) : labelledFullName(fields);
+}
+function identityFields(document) {
+  return document.identityName ? {...document.fields, latinFullName:document.identityName, _documentNameVariants:document.identityNameVariants || [document.identityName]} : document.fields;
+}
+function exactIdentityNameMatch(first,second) {
+  const primaryFirst=fullName(first),primarySecond=fullName(second);
+  if (primaryFirst && primaryFirst===primarySecond) return true;
+  // A separately labelled patronymic may be absent from MRZ given names. Its
+  // exact printed composite is usable only with the same explicit full DOB.
+  if (!realDate(first.birthDate) || first.birthDate!==second.birthDate) return false;
+  const variants=fields=>Array.isArray(fields._documentNameVariants)?fields._documentNameVariants:[fullName(fields)];
+  return variants(first).some(value=>value&&variants(second).includes(value));
+}
+function nationalDigits(value) {
+  if (typeof value!=='string' || !/^[0-9< -]+$/.test(value)) return null;
+  const normalized=value.replace(/[< -]/g,'');
+  return /^\d{10,14}$/.test(normalized)?normalized:null;
+}
+function structurallyCheckedTD3(parsed) {
+  const checks=['documentNumber','birthDate','expiryDate','optionalData','composite'];
+  return parsed?.format==='TD3'&&checks.every(name=>parsed.checks?.[name]?.ok===true)&&parsed.issues.every(item=>item.code==='ambiguous_century');
+}
+function checkedOptionalDigits(parsed) {
+  return structurallyCheckedTD3(parsed)?nationalDigits(parsed.fields?.optionalDataRaw):null;
+}
+function nationalPageAnchor(first,second) {
+  return Boolean(first.checkedOptionalDigits && first.checkedOptionalDigits===nationalDigits(second.fields.passportNationalNumber)
+    || second.checkedOptionalDigits && second.checkedOptionalDigits===nationalDigits(first.fields.passportNationalNumber));
+}
+function passportPageLink(first,second) {
+  if (matchesIdentity(identityFields(first),identityFields(second))) return 'printed_identity';
+  if (nationalPageAnchor(first,second)) return 'printed_national_number_and_checked_mrz_optional';
+  return null;
+}
 function knownFields(person) {
   const fields = {};
   if (!plain(person)) return fields;
@@ -119,33 +155,38 @@ function validationIssues(fields, referenceDate, entryDate, allowed) {
 function inspectPassport(document, referenceDate) {
   const fields = document.fields, issues = [...document.issues];
   const mrzLines = document.extraction?.mrzLines;
-  let mrzChecked = false, mrzIdentity = null;
+  let mrzChecked = false, mrzIdentity = null, optionalDigits = null, checkedMrzDates = null;
   if (!Array.isArray(mrzLines) || mrzLines.length !== 2) issues.push(issue('PASSPORT_MRZ_REQUIRED', 'mrz'));
   else {
     const parsed = parseTD3MRZ(mrzLines, {referenceDate, ...(fields.birthDate ? {confirmedBirthDate: fields.birthDate} : {}), ...(fields.expiryDate ? {confirmedExpiryDate: fields.expiryDate} : {})});
+    optionalDigits=checkedOptionalDigits(parsed);
+    if(structurallyCheckedTD3(parsed))checkedMrzDates={birthDateRaw:parsed.fields.birthDateRaw,expiryDateRaw:parsed.fields.expiryDateRaw};
     if (!parsed.ok) {
       const ambiguous = parsed.issues.some(item => ['ambiguous_century', 'confirmed_date_mismatch'].includes(item.code));
       issues.push(issue(ambiguous ? 'PASSPORT_MRZ_DATE_AMBIGUOUS' : 'PASSPORT_MRZ_INVALID', 'mrz'));
     }
     let mismatch = false;
     for (const field of MRZ_FIELDS) if (fields[field] && parsed.fields?.[field] !== null && parsed.fields?.[field] !== undefined && !equivalent(field, fields[field], parsed.fields[field])) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', field)); }
+    const labelledGiven=normalizedName(fields.latinFirstName);
     const given = normalizedName([fields.latinFirstName, fields.latinFatherName, fields.latinGrandfatherName].filter(Boolean).join(' '));
     const mrzGiven = normalizedName(parsed.fields?.latinNames?.givenNames);
     // Missing optional trailing name labels are not reconstructed. Known VIZ
     // given names still must match the exact beginning of the checked MRZ.
-    const knownGivenMatches = given === mrzGiven || !fields.latinGrandfatherName && mrzGiven.startsWith(given + ' ');
+    const knownGivenMatches = labelledGiven === mrzGiven || given === mrzGiven || !fields.latinGrandfatherName && mrzGiven.startsWith(given + ' ');
+    const separatePatronymicOmitted=Boolean(labelledGiven && labelledGiven===mrzGiven && (fields.latinFatherName||fields.latinGrandfatherName));
     if (given && mrzGiven && !knownGivenMatches) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', 'latinFirstName')); }
     if (fields.latinFamilyName && parsed.fields?.latinNames?.family && normalizedName(fields.latinFamilyName) !== normalizedName(parsed.fields.latinNames.family)) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', 'latinFamilyName')); }
     const mrzFull = normalizedName([parsed.fields?.latinNames?.givenNames,parsed.fields?.latinNames?.family].filter(Boolean).join(' '));
-    if (fields.latinFullName && normalizedName(fields.latinFullName) !== mrzFull) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', 'latinFullName')); }
+    if (fields.latinFullName && normalizedName(fields.latinFullName) !== mrzFull && !(separatePatronymicOmitted && normalizedName(fields.latinFullName)===labelledFullName(fields))) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', 'latinFullName')); }
     mrzChecked = parsed.ok && !mismatch;
     if (mrzChecked) {
       document.identityName = mrzFull;
+      document.identityNameVariants=[...new Set([mrzFull,...(separatePatronymicOmitted?[labelledFullName(fields)]:[])].filter(Boolean))];
       mrzIdentity = {...Object.fromEntries(MRZ_FIELDS.map(field => [field, parsed.fields[field]])), latinFullName:mrzFull};
     }
   }
   for (const field of document.invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
-  return {...document, issues, mrzChecked, mrzIdentity};
+  return {...document, issues, mrzChecked, mrzIdentity, checkedOptionalDigits:optionalDigits, checkedMrzDates};
 }
 function conflictsWithCase(document, known) {
   const issues = [];
@@ -153,12 +194,12 @@ function conflictsWithCase(document, known) {
   return issues;
 }
 function matchesIdentity(first, second) {
-  return Boolean(first.passportNumber && second.passportNumber && first.passportNumber === second.passportNumber || first.birthDate && second.birthDate && first.birthDate === second.birthDate && fullName(first) && fullName(first) === fullName(second));
+  return Boolean(first.passportNumber && second.passportNumber && first.passportNumber === second.passportNumber || first.birthDate && second.birthDate && first.birthDate === second.birthDate && exactIdentityNameMatch(first,second));
 }
 function identityConflicts(first, second) {
   const issues = [];
   for (const field of IDENTITY_FIELDS) if (first[field] && second[field] && !equivalent(field, first[field], second[field])) issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', field));
-  if (fullName(first) && fullName(second) && fullName(first) !== fullName(second)) issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', 'latinFullName'));
+  if (fullName(first) && fullName(second) && !exactIdentityNameMatch(first,second)) issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', 'latinFullName'));
   return issues;
 }
 function addSources(result, document, acceptedFields, method) {
@@ -167,6 +208,64 @@ function addSources(result, document, acceptedFields, method) {
     result.evidence.fieldSources[field] ||= [];
     const sources = document.fieldProvenance?.[field] || [{...ref(document), confidence: document.extraction.fields[field].confidence}];
     result.evidence.fieldSources[field].push(...sources.map(source => ({...source, method})));
+  }
+}
+
+function projectPrintedResidenceDates(result, documents, passport, known) {
+  const fronts=documents.filter(document=>document.kind==='uae_id_front');
+  const suppliedBacks=documents.filter(document=>document.kind==='uae_id_back'&&document.extraction.mrzLines.length);
+  if(!suppliedBacks.length)return;
+  const checked=[];
+  for(const back of suppliedBacks){
+    const parsed=parseTD1MRZ(back.extraction.mrzLines);
+    if(!parsed.ok){result.issues.push(issue('RESIDENCE_MRZ_INVALID','residence'));continue;}
+    // Both sides are already assigned independently to this same applicant.
+    // Optional data becomes an anchor only after an explicit, complete front
+    // ID matches its whole protected zone. Never extract or repair an ID here.
+    const linked=fronts.filter(front=>matchesPrintedEmiratesId(parsed,front.fields.emiratesId));
+    const mrzName=normalizedName([parsed.fields.latinNames.givenNames,parsed.fields.latinNames.family].filter(Boolean).join(' '));
+    const passportIdentity=identityFields(passport);
+    const passportNames=passportIdentity._documentNameVariants||[fullName(passportIdentity)];
+    const rawDate=value=>realDate(value)?value.replaceAll('-','').slice(2):null;
+    const agrees=front=>{
+      const born=[front.fields.birthDate,passport.fields.birthDate].filter(Boolean);
+      const names=[fullName(front.fields),...passportNames].filter(Boolean);
+      const sourceFields=[front.fields,passport.fields];
+      return born.length>0&&born.every(value=>rawDate(value)===parsed.fields.birthDateRaw)
+        && !parsed.fields.latinNames.truncated&&names.includes(mrzName)
+        && sourceFields.every(fields=>(!fields.sex||fields.sex===parsed.fields.sex)&&(!fields.nationalityCode||equivalent('nationalityCode',fields.nationalityCode,parsed.fields.nationalityCode)));
+    };
+    if(!linked.length||!linked.every(agrees)||back.fields.emiratesId&&!matchesPrintedEmiratesId(parsed,back.fields.emiratesId)){
+      result.issues.push(issue('RESIDENCE_CONFLICT','residence'));continue;
+    }
+    checked.push({back,parsed});
+  }
+  // A second supplied but invalid/contradictory reading cannot be ignored in
+  // favour of a successful one. Existing explicit ISO facts remain visible.
+  if(checked.length!==suppliedBacks.length)return;
+  for(const document of documents){
+    if(document.fields.residenceExpiry&&checked.some(({parsed})=>document.fields.residenceExpiry.replaceAll('-','').slice(2)!==parsed.fields.expiryDateRaw))result.issues.push(issue('RESIDENCE_CONFLICT','residenceExpiry'));
+  }
+  if(result.issues.some(item=>['RESIDENCE_CONFLICT','RESIDENCE_MRZ_INVALID','DOCUMENT_IDENTITY_MISMATCH','SOURCE_CONFLICT'].includes(item.code)))return;
+  const candidates=[];
+  for(const document of documents){
+    const raw=document.fields.printedResidenceExpiry;if(!raw)continue;
+    const resolved=checked.map(({back,parsed})=>({back,value:resolvePrintedDate(raw,parsed.fields.expiryDateRaw)}));
+    const values=[...new Set(resolved.map(item=>item.value).filter(Boolean))];
+    if(values.length!==1||resolved.some(item=>!item.value)||document.fields.residenceExpiry&&document.fields.residenceExpiry!==values[0]){
+      result.issues.push(issue('RESIDENCE_CONFLICT','residenceExpiry'));continue;
+    }
+    candidates.push({document,value:values[0],back:resolved[0].back});
+  }
+  if(!candidates.length)return;
+  const values=[...new Set(candidates.map(item=>item.value))];
+  if(values.length!==1||result.fields.residenceExpiry&&result.fields.residenceExpiry!==values[0]||known.residenceExpiry&&known.residenceExpiry!==values[0])result.issues.push(issue('RESIDENCE_CONFLICT','residenceExpiry'));
+  if(result.issues.some(item=>item.code==='RESIDENCE_CONFLICT'))return;
+  result.fields.residenceExpiry=values[0];
+  result.evidence.fieldSources.residenceExpiry||=[];
+  for(const {document,back}of candidates){
+    const sources=document.fieldProvenance?.printedResidenceExpiry||[{...ref(document),confidence:document.extraction.fields.printedResidenceExpiry.confidence}];
+    result.evidence.fieldSources.residenceExpiry.push(...sources.map(source=>({...source,evidenceField:'printedResidenceExpiry',corroboratedBy:ref(back),method:'visible_and_passport_identity_matched'})));
   }
 }
 
@@ -221,20 +320,39 @@ function hasStrongVisualIdentity(document) {
 function hasPassportIdentityAnchor(document) {
   return Boolean(document.fields.passportNumber || document.extraction.mrzLines.length || fullName(document.fields) && document.fields.birthDate);
 }
+function projectPrintedPassportDates(parts) {
+  return parts.map(part=>{
+    const raw=part.fields.printedPassportExpiry;if(!raw)return part;
+    // Resolve only the full printed four-digit year. A separate page must have
+    // its explicit national number anchored to the complete checked optional
+    // TD3 field; dates alone and arbitrary optional data are not a page link.
+    const witnesses=parts.filter(other=>other.checkedMrzDates&&(other===part||nationalPageAnchor(other,part)));
+    if(!witnesses.length)return part;
+    const resolved=witnesses.map(witness=>({witness,value:resolvePrintedDate(raw,witness.checkedMrzDates.expiryDateRaw)}));
+    const values=[...new Set(resolved.map(item=>item.value).filter(Boolean))];
+    const conflicts=values.length!==1||resolved.some(item=>!item.value)||part.fields.expiryDate&&part.fields.expiryDate!==values[0];
+    if(conflicts)return {...part,issues:[...part.issues,issue('PASSPORT_VIZ_MRZ_MISMATCH','expiryDate')]};
+    if(part.fields.expiryDate)return part;
+    const source=part.fieldProvenance?.printedPassportExpiry?.[0]||{...ref(part),confidence:part.extraction.fields.printedPassportExpiry.confidence};
+    const witness=resolved.find(item=>item.value===values[0]).witness;
+    return {...part,fields:{...part.fields,expiryDate:values[0]},fieldProvenance:{...part.fieldProvenance,expiryDate:[{...source,evidenceField:'printedPassportExpiry',corroboratedBy:ref(witness)}]}};
+  });
+}
 function passportGroups(documents, referenceDate) {
   // Strong identity edges may reveal a contradiction; keep that contradiction
   // in the group and block it instead of silently selecting the latest page.
   const remaining = new Set(documents), groups = [];
   while (remaining.size) {
-    const parts = [remaining.values().next().value]; remaining.delete(parts[0]);
+    let parts = [remaining.values().next().value]; remaining.delete(parts[0]);
     let changed = true;
     while (changed) {
       changed = false;
-      for (const document of remaining) if (parts.some(other => matchesIdentity(identityFields(other), identityFields(document)))) {
+      for (const document of remaining) if (parts.some(other => passportPageLink(other,document))) {
         parts.push(document); remaining.delete(document); changed = true;
       }
     }
     parts.sort((a,b) => Number(b.extraction.mrzLines.length === 2) - Number(a.extraction.mrzLines.length === 2) || compareReference(a,b));
+    parts=projectPrintedPassportDates(parts);
     const fields = {}, issues = [], invalidFields = [];
     for (const part of parts) {
       issues.push(...part.issues); invalidFields.push(...part.invalidFields);
@@ -278,6 +396,9 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     parsed.push(document.kind === 'passport' ? inspectPassport(document, referenceDate) : document);
   }
   const distinct = deduplicateDocuments(parsed);
+  // An ambiguous/unassigned duplicate must still surface its known source
+  // contradictions; absence of an applicant assignment cannot erase them.
+  for(const document of distinct)output.issues.push(...document.issues.filter(item=>item.code==='SOURCE_CONFLICT'));
   // Strip the provisional per-page MRZ issues before group inspection. A page
   // with no MRZ can supplement a proven passport, but any supplied bad MRZ must
   // still fail the final group inspection.
@@ -287,11 +408,11 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   const uniqueVisualPassport=strongPassports.length===1&&passports.every(document=>document===strongPassports[0]||!hasPassportIdentityAnchor(document))?strongPassports[0]:null;
   for (const document of passports) {
     let candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.passportNumber && document.fields.passportNumber && fields.passportNumber === document.fields.passportNumber).map(item => item.index);
-    if (!candidates.length) candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.birthDate && document.fields.birthDate && fields.birthDate === document.fields.birthDate && fullName(fields) && fullName(fields) === fullName(identityFields(document))).map(item => item.index);
+    if (!candidates.length) candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.birthDate && document.fields.birthDate && fields.birthDate === document.fields.birthDate && exactIdentityNameMatch(fields,identityFields(document))).map(item => item.index);
     // An unanchored dates-only page must not erase the one identifiable main
     // passport. Keep it unassigned; its dates cannot complete the main page.
     if (!candidates.length && applicants.length === 1 && (passports.length === 1 || document === uniqueVisualPassport)) candidates = [0];
-    if (candidates.length !== 1) { document.parts.forEach(part => unassign(part)); continue; }
+    if (candidates.length !== 1) { const sourceConflict=document.issues.some(item=>item.code==='SOURCE_CONFLICT');document.parts.forEach(part => unassign(part,sourceConflict?'SOURCE_CONFLICT':'DOCUMENT_UNASSIGNED')); continue; }
     const index = candidates[0], result = output.applicants[index];
     result.issues.push(...document.issues, ...conflictsWithCase(document, known[index]));
     if (passportFor.has(index)) { result.issues.push(issue('MULTIPLE_PASSPORTS', 'passport')); document.parts.forEach(part => unassign(part, 'MULTIPLE_PASSPORTS')); continue; }
@@ -324,10 +445,11 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     }
   }
   for (const document of pending) {
-    const possible = [...passportFor].filter(([, passport]) => fullName(identityFields(passport)) && fullName(identityFields(passport)) === fullName(document.fields) || passport.fields.birthDate && passport.fields.birthDate === document.fields.birthDate).map(([index]) => index);
+    const possible = [...passportFor].filter(([, passport]) => fullName(identityFields(passport)) && exactIdentityNameMatch(identityFields(passport),document.fields) || passport.fields.birthDate && passport.fields.birthDate === document.fields.birthDate).map(([index]) => index);
     if (possible.length === 1) output.applicants[possible[0]].issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', 'residence'));
     unassign(document);
   }
+  for(const [index,passport]of passportFor)projectPrintedResidenceDates(output.applicants[index],identities.filter(document=>assignments.get(document)===index),passport,known[index]);
   const portraits = distinct.filter(document => document.kind === 'portrait');
   for (const document of portraits) {
     if (applicants.length === 1 && portraits.length === 1) { output.applicants[0].documents.photo = ref(document); output.applicants[0].issues.push(...document.issues); assignments.set(document, 0); }
@@ -338,7 +460,7 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (!result.documents.residence.length) result.issues.push(issue('RESIDENCE_MISSING', 'residence'));
     if (result.documents.residence.length > 2) result.issues.push(issue('RESIDENCE_CONFLICT', 'residence'));
     result.documents.residence.sort((a,b) => identities.findIndex(document => document.mediaId === a.mediaId && document.page === a.page) - identities.findIndex(document => document.mediaId === b.mediaId && document.page === b.page));
-    result.evidence.matchedResidence = result.documents.residence.length > 0 && !result.issues.some(item => ['DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT'].includes(item.code));
+    result.evidence.matchedResidence = result.documents.residence.length > 0 && !result.issues.some(item => ['DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT','RESIDENCE_MRZ_INVALID'].includes(item.code));
     result.issues.push(...validationIssues(result.fields, referenceDate, applicants[result.applicantIndex].entryDate, DOCUMENT_FIELDS));
     result.issues = uniqueIssues(result.issues);
     const isClientGap = item => item.code === 'DOCUMENT_FIELD_REQUIRED' && CLIENT_GAP_FIELDS.includes(item.field) && !Object.hasOwn(result.fields,item.field);

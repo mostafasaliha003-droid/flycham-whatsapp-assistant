@@ -58,6 +58,17 @@ test('safe review copy uses at most three known issue actions and never provider
   for (const forbidden of ['PRIVATE_PROVIDER_TEXT', 'WIRE MONEY', 'SECRET_', '784199012345671', 'ARBITRARY_CODE']) assert.equal(item.payload.text.includes(forbidden), false);
 });
 
+test('invalid Emirates ID feedback identifies the field before generic gaps without echoing its value', async () => {
+  const f = fixture({status: 'needs_review'});
+  f.raw.issues = [{code:'DOCUMENT_UNASSIGNED'}, {code:'PASSPORT_MRZ_INVALID'}, {code:'DOCUMENT_FIELD_REQUIRED'}, {code:'DOCUMENT_FIELD_INVALID', field:'emiratesId', message:'PRIVATE_ID_READING'}];
+  const item = f.service.update(CUSTOMER); await f.service.flush();
+  const lines = item.payload.text.split('\n');
+  assert.match(lines[1], /رقم الهوية.*15 خانة/);
+  assert.equal((item.payload.text.match(/•/g) || []).length, 3);
+  assert.doesNotMatch(item.payload.text, /PRIVATE_ID_READING|784199012345671|إعادة تصوير صفحة بيانات الجواز/);
+  assert.equal(f.c.paymentStatus, 'unverified');
+});
+
 test('receipt, other, audio and portrait-only input or processing states never announce identity review', async () => {
   for (const kind of ['other', 'portrait']) {
     const f = fixture(); f.raw.documents[0].extraction.kind = kind;

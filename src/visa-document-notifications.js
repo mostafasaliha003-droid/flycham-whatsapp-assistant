@@ -24,7 +24,7 @@ const ISSUE_TEXT = Object.freeze({
   DOCUMENT_READ_FAILED: 'تعذرت قراءة أحد المستندات؛ يرجى إعادة إرساله بصورة أوضح.',
   PASSPORT_MISSING: 'لم تتأكد قراءة صفحة بيانات الجواز من المرفقات بعد؛ نحتاج توضيحها فقط قبل المتابعة.',
   PASSPORT_MRZ_REQUIRED: 'يرجى إظهار السطرين أسفل صفحة بيانات الجواز بوضوح في الصورة.',
-  PASSPORT_MRZ_INVALID: 'يرجى إعادة تصوير صفحة بيانات الجواز مع السطرين أسفلها بوضوح.',
+  PASSPORT_MRZ_INVALID: 'لم تتأكد مطابقة قراءة السطرين أسفل الجواز؛ سيعيد القسم فحص الصورة المحفوظة قبل طلب بديل.',
   PASSPORT_MRZ_DATE_AMBIGUOUS: 'تاريخ في الجواز غير واضح بالكامل؛ سيطابقه القسم قبل المتابعة.',
   RESIDENCE_MISSING: 'لم تكتمل مطابقة صور الهوية أو الإقامة مع الجواز بعد؛ المرفقات محفوظة بملفك.',
   DOCUMENT_PORTRAIT_REQUIRED: 'الصورة الشخصية داخل المستند غير كافية للتجهيز؛ يرجى إرسال صورة شخصية واضحة.',
@@ -37,6 +37,7 @@ const ISSUE_TEXT = Object.freeze({
   CASE_DATA_MISMATCH: 'توجد بيانات تختلف عن الملف المسجل؛ سيطابقها القسم قبل المتابعة.',
   PASSPORT_VIZ_MRZ_MISMATCH: 'توجد قراءة غير متطابقة داخل صفحة الجواز؛ سيطابقها القسم قبل المتابعة.',
   RESIDENCE_CONFLICT: 'ظهرت بيانات مختلفة بين صور الهوية أو الإقامة؛ سيطابقها القسم قبل المتابعة.',
+  RESIDENCE_MRZ_INVALID: 'لم تكتمل قراءة سطور الهوية الآلية كما هي مطبوعة؛ يلزم التحقق من النسخة الأصلية للهوية فقط.',
   MULTIPLE_PASSPORTS: 'وصل أكثر من جواز مختلف؛ يرجى تحديد الجواز الحالي المطلوب استخدامه.',
   DOCUMENT_UNASSIGNED: 'بقي ربط بعض الصور بصاحب الطلب؛ سيطابقها القسم من المرفقات المحفوظة.',
   APPLICANT_REQUIRED: 'يلزم تحديد صاحب كل مستند وعدد المتقدمين قبل استكمال المطابقة.',
@@ -54,7 +55,10 @@ function copyFor(status, issues) {
   const prefix = 'معك إسماعيل من الرمال. ';
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
   if (status === 'needs_confirmation') return prefix + 'قرأت المستندات وطابقت بياناتها المتاحة. بقيت خانات أساسية غير ظاهرة سنطلب منك تأكيدها أثناء استكمال الطلب، ولن نملأها بالتخمين. يبدأ رعد بعد تأكيدك واعتماد الدفعة من المحاسب.';
-  const lines = [...new Set(issues.map(issue => ISSUE_TEXT[issue?.code]).filter(Boolean))].slice(0, 3);
+  const unconfirmedEmiratesId = issues.some(issue => ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId');
+  const specific = unconfirmedEmiratesId ? ['لم يتأكد رقم الهوية كاملًا؛ صيغة الهوية الإماراتية تتكون من 15 خانة. يرجى إرسال نسخة أصلية واضحة للبطاقة للتحقق من الرقم فقط.'] : [];
+  const general = issues.filter(issue => !(unconfirmedEmiratesId && ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId'));
+  const lines = [...new Set([...specific, ...general.map(issue => ISSUE_TEXT[issue?.code]).filter(Boolean)])].slice(0, 3);
   return 'وصلت المرفقات وحفظتها بملفك. بقيت نقاط لم تتأكد قراءتها أو مطابقتها بعد:\n' + (lines.length ? lines.map(line => '• ' + line).join('\n') : 'سيطابق القسم المستندات قبل استكمال الطلب، دون تخمين البيانات الناقصة.');
 }
 

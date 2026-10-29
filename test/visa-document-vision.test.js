@@ -40,10 +40,10 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-28.v6');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v7');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
-  assert.equal(WIRE_PROJECTION_POLICY, 'discard-only-known-bare-field-slash-date-or-outside-portrait-v2');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c']);
+  assert.equal(WIRE_PROJECTION_POLICY, 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-outside-portrait-v3');
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
@@ -162,6 +162,12 @@ test('instructions contain complete valid wrapped examples and distinct readable
   assert.match(prompt, /at least one allowed field/); assert.match(prompt, /partial supported page is not other/);
   assert.match(prompt, /For a standalone portrait, readable is true when the photo itself is visibly usable/);
   assert.match(prompt, /A bare string or number is invalid/); assert.match(prompt, /never map P to ordinary/);
+  assert.match(prompt, /characters 1 through 9 are the document-number zone and character 10 is its separate check digit/);
+  assert.match(prompt, /Never strip, append, replace, or repair a character/);
+  assert.match(prompt, /MRZ secondary identifiers are not labels for father or grandfather names/);
+  assert.match(prompt, /Father Name, Father's Name, or اسم الأب label is direct evidence/);
+  assert.match(prompt, /matching checksum, or desire to complete the application must not raise transcription confidence/);
+  assert.match(prompt, /passportNationalNumber is private linking evidence, never an application field/);
   const examples = prompt.split('Example for ').slice(1).map(part => JSON.parse(part.slice(part.indexOf(': ') + 2).trim()));
   assert.equal(examples.length, 3);
   for (const example of examples) assert.deepEqual(validateDocumentExtraction(example), example);
@@ -222,21 +228,109 @@ test('discarding an unwrapped known fact preserves a separately classified usabl
   assert.equal(matched.applicants[0].evidence.authenticityVerified, false);
 });
 
-test('wire-only slash dates become unknown without interpreting day and month; issue date becomes an explicit client gap', () => {
+test('ambiguous slash dates remain private evidence until checked passport dates resolve their order', () => {
   const f = wireMatchingFixture();
   for (const [name, source] of [['issueDate', f.passport], ['expiryDate', f.passport], ['residenceExpiry', f.identity]]) {
     const wire = structuredClone(source); wire.fields[name] = field('02/01/2030');
     assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'value_format'});
     const result = parseDocumentOutput(JSON.stringify(wire));
     assert.deepEqual(result.fields[name], {value: null, confidence: 0, visible: false});
+    if (name === 'expiryDate') assert.deepEqual(result.fields.printedPassportExpiry, wire.fields[name]);
+    if (name === 'residenceExpiry') assert.deepEqual(result.fields.printedResidenceExpiry, wire.fields[name]);
     for (const [key, evidence] of Object.entries(source.fields)) if (key !== name) assert.deepEqual(result.fields[key], evidence);
     const matched = name === 'residenceExpiry' ? f.match(f.passport, result) : f.match(result, f.identity);
-    assert.equal(matched.applicants[0].fields[name], undefined);
+    if (name === 'expiryDate') {
+      assert.equal(matched.applicants[0].fields.expiryDate, '2030-01-02');
+      assert.equal(matched.applicants[0].evidence.fieldSources.expiryDate[0].evidenceField, 'printedPassportExpiry');
+    } else assert.equal(matched.applicants[0].fields[name], undefined);
     if (name === 'issueDate') {
       assert.equal(matched.applicants[0].status, 'needs_confirmation');
       assert.deepEqual(matched.applicants[0].clientFieldsRequired, ['issueDate']);
-    } else assert.equal(matched.applicants[0].identityReady, false);
+    } else if (name === 'residenceExpiry') assert.equal(matched.applicants[0].identityReady, false);
   }
+});
+
+test('wrapped full-year slash dates retain exactly one real calendar interpretation and the original confidence', () => {
+  const cases = [['13/07/2030', '2030-07-13'], ['07/13/2030', '2030-07-13'], ['7/7/2030', '2030-07-07'], ['29/2/2000', '2000-02-29'], ['2/29/2000', '2000-02-29'], ['13/07/0099', '0099-07-13'], ['13/07/0001', '0001-07-13']];
+  for (const name of ['birthDate', 'issueDate', 'expiryDate', 'residenceExpiry']) for (const [raw, iso] of cases) {
+    const wire = page({fields: {[name]: field(raw, 0.731), latinFirstName: field('ARI')}});
+    assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaIssue: 'value_format'});
+    const result = parseDocumentOutput(JSON.stringify(wire));
+    assert.deepEqual(result.fields[name], {value: iso, confidence: 0.731, visible: true});
+    assert.deepEqual(result.fields.latinFirstName, wire.fields.latinFirstName);
+    assert.deepEqual(validateDocumentExtraction(result), result);
+  }
+});
+
+test('ambiguous, impossible and zero-year slash dates never choose an order, roll over or infer a century', () => {
+  for (const raw of ['02/01/2030', '01/02/2030', '31/02/2030', '02/31/2030', '29/02/1900', '13/13/2030', '0/1/2030', '1/0/2030', '1/1/0000']) {
+    const result = parseDocumentOutput(JSON.stringify(page({fields: {expiryDate: field(raw)}})));
+    assert.deepEqual(result.fields.expiryDate, {value: null, confidence: 0, visible: false});
+  }
+  for (const raw of ['13/07/30', '13/07/030', '13/07/12030', '2030/07/13', '13/7/2030 ', '-13/07/2030']) assert.throws(() => parseDocumentOutput(JSON.stringify(page({fields: {expiryDate: field(raw)}}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  for (const malformed of [{value: '13/07/2030'}, {value: '13/07/2030', confidence: 1}, {value: '13/07/2030', confidence: '0.99', visible: true}, {value: '13/07/2030', confidence: 2, visible: true}]) assert.throws(() => parseDocumentOutput(JSON.stringify(page({fields: {expiryDate: malformed}}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.deepEqual(parseDocumentOutput(JSON.stringify(page({fields: {expiryDate: '13/07/2030'}}))).fields.expiryDate, {value: null, confidence: 0, visible: false}, 'a uniquely parseable bare value still has no trusted visibility or confidence');
+});
+
+test('unique date conversion does not raise model certainty or repair a visual passport number to make MRZ agree', () => {
+  const f = wireMatchingFixture(), low = structuredClone(f.passport);
+  low.fields.issueDate = field('13/07/2020', 0.979);
+  const read = parseDocumentOutput(JSON.stringify(low));
+  assert.deepEqual(read.fields.issueDate, {value: '2020-07-13', confidence: 0.979, visible: true});
+  const unresolved = f.match(read);
+  assert.equal(unresolved.complete, false); assert.equal(unresolved.applicants[0].fields.issueDate, undefined);
+  assert.deepEqual(unresolved.applicants[0].clientFieldsRequired, ['issueDate']);
+  const wrongNumber = structuredClone(f.passport); wrongNumber.fields.passportNumber.value += '1';
+  const exact = parseDocumentOutput(JSON.stringify(wrongNumber));
+  assert.deepEqual(exact.fields.passportNumber, wrongNumber.fields.passportNumber); assert.deepEqual(exact.mrzLines, wrongNumber.mrzLines);
+  const failed = f.match(exact); assert.equal(failed.applicants[0].identityReady, false);
+  assert.equal(failed.applicants[0].issues.some(issue => issue.code === 'PASSPORT_VIZ_MRZ_MISMATCH'), true);
+});
+
+test('father-name evidence is retained exactly when supplied and never reconstructed from MRZ secondary names', () => {
+  const f = wireMatchingFixture(), wire = structuredClone(f.passport);
+  wire.mrzLines[0] = 'P<EGYEXAMPLE<<ARI<BELA'.padEnd(44, '<');
+  const absent = parseDocumentOutput(JSON.stringify(wire));
+  assert.equal(Object.hasOwn(absent.fields, 'latinFatherName'), false); assert.deepEqual(absent.mrzLines, wire.mrzLines);
+  wire.fields.latinFatherName = field('BELA', 0.987);
+  const present = parseDocumentOutput(JSON.stringify(wire));
+  assert.deepEqual(present.fields.latinFatherName, wire.fields.latinFatherName);
+  assert.equal(Object.hasOwn(present.fields, 'latinGrandfatherName'), false);
+});
+
+test('passport national number is bounded explicit evidence with preserved leading zeros and is never a government field', () => {
+  for (const raw of ['001-23456789', '001 23456789', '00123456789']) {
+    const wire = page({fields: {passportNationalNumber: field(raw, 0.987)}});
+    const result = validateDocumentExtraction(wire);
+    assert.deepEqual(result.fields.passportNationalNumber, {value: raw, confidence: 0.987, visible: true});
+    assert.deepEqual(parseDocumentOutput(JSON.stringify(wire)), result);
+  }
+  for (const raw of ['001--23456789', '001/23456789', '+00123456789', '001A23456789', '-00123456789', '00123456789-', '1'.repeat(21)]) assert.throws(() => validateDocumentExtraction(page({fields: {passportNationalNumber: field(raw)}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', fieldName: 'passportNationalNumber'});
+  assert.throws(() => validateDocumentExtraction(page({kind: 'uae_id_front', fields: {passportNationalNumber: field('001-23456789')}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', fieldName: 'passportNationalNumber'});
+  assert.deepEqual(parseDocumentOutput(JSON.stringify(page({fields: {passportNationalNumber: '001-23456789'}}))).fields.passportNationalNumber, {value: null, confidence: 0, visible: false});
+  assert.equal(require('../src/raad-visa-workflow').DOCUMENT_FACT_FIELDS.includes('passportNationalNumber'), false);
+});
+
+test('printed expiry evidence preserves exact wrapped full-year text without choosing order or adding government answers', () => {
+  const unknown = {value: null, confidence: 0, visible: false};
+  for (const [kind, sourceName, evidenceName] of [['passport', 'expiryDate', 'printedPassportExpiry'], ['uae_id_front', 'residenceExpiry', 'printedResidenceExpiry'], ['uae_id_back', 'residenceExpiry', 'printedResidenceExpiry']]) {
+    const wire = page({kind, fields: {[sourceName]: field('2/1/2030', 0.983)}});
+    const result = parseDocumentOutput(JSON.stringify(wire));
+    assert.deepEqual(result.fields[sourceName], unknown);
+    assert.deepEqual(result.fields[evidenceName], {value: '2/1/2030', confidence: 0.983, visible: true});
+    assert.deepEqual(validateDocumentExtraction(result), result);
+    assert.equal(require('../src/raad-visa-workflow').DOCUMENT_FACT_FIELDS.includes(evidenceName), false);
+    const explicit = page({kind, fields: {[evidenceName]: field('2/1/2030', 0.983)}});
+    assert.deepEqual(validateDocumentExtraction(explicit), explicit);
+    assert.deepEqual(parseDocumentOutput(JSON.stringify(page({kind, fields: {[evidenceName]: '2/1/2030'}}))).fields[evidenceName], unknown);
+    for (const invalid of ['2/1/30', '31/02/2030', '1/1/0000', '2030-01-02']) assert.throws(() => validateDocumentExtraction(page({kind, fields: {[evidenceName]: field(invalid)}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', fieldName: evidenceName});
+  }
+  assert.throws(() => validateDocumentExtraction(page({kind: 'uae_id_front', fields: {printedPassportExpiry: field('02/01/2030')}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  assert.throws(() => validateDocumentExtraction(page({kind: 'passport', fields: {printedResidenceExpiry: field('02/01/2030')}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+  const conflict = page({fields: {expiryDate: field('02/01/2030'), printedPassportExpiry: field('03/01/2030')}});
+  assert.throws(() => parseDocumentOutput(JSON.stringify(conflict)), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', fieldName: 'printedPassportExpiry'});
+  const weaker = page({fields: {expiryDate: field('02/01/2030', 0.99), printedPassportExpiry: field('02/01/2030', 0.8)}});
+  assert.equal(parseDocumentOutput(JSON.stringify(weaker)).fields.printedPassportExpiry.confidence, 0.8, 'combining duplicate evidence cannot raise the weaker confidence');
 });
 
 test('finite out-of-bounds wire crop is discarded; valid document facts survive and a full passport never becomes the portrait', async () => {
@@ -256,7 +350,7 @@ test('wire projection never suppresses unknown keys, wrong metadata, other date 
     {emiratesId: {value: '784199000000001', confidence: '1', visible: true}},
     {issueDate: {value: '02/01/2030', confidence: '1', visible: true}},
     {expiryDate: {...field('02/01/2030'), PRIVATE_KEY: 'PRIVATE_VALUE'}},
-    {birthDate: field('02/01/1990')}, {issueDate: field('2030/01/02')}, {nationalityCode: ' EGY '}
+    {issueDate: field('2030/01/02')}, {nationalityCode: ' EGY '}
   ]) assert.throws(() => parseDocumentOutput(JSON.stringify(page({fields}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   for (const portraitBox of [
     {x: 0.9, y: 0, width: 0.5, height: 0.5, confidence: 2},

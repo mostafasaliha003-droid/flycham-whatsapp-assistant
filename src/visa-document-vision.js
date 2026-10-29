@@ -6,13 +6,13 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-28.v6';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v7';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
-const WIRE_PROJECTION_POLICY = 'discard-only-known-bare-field-slash-date-or-outside-portrait-v2';
-// Successfully validated, readable evidence from V3/V4/V5 remains equally strict.
+const WIRE_PROJECTION_POLICY = 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-outside-portrait-v3';
+// Successfully validated, readable evidence from V3/V4/V5/V6 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -20,8 +20,9 @@ const TIMEOUT_MS = 60000;
 const DOCUMENT_FIELD_NAMES = Object.freeze([
   'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'latinFullName',
   'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'arabicFullName',
-  'passportNumber', 'passportType', 'nationalityCode', 'issuingCountryCode',
-  'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate', 'emiratesId', 'residenceExpiry'
+  'passportNumber', 'passportNationalNumber', 'passportType', 'nationalityCode', 'issuingCountryCode',
+  'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate', 'emiratesId', 'residenceExpiry',
+  'printedPassportExpiry', 'printedResidenceExpiry'
 ]);
 const FIELD_SET = new Set(DOCUMENT_FIELD_NAMES);
 const KINDS = new Set(['passport', 'uae_id_front', 'uae_id_back', 'portrait', 'other']);
@@ -44,16 +45,21 @@ const PROMPT = [
   'Completely omit every unknown, absent, ambiguous, hidden, or empty field. Especially omit father and grandfather names unless separately and explicitly printed. Do not emit null slots, empty strings, placeholders, or metadata for an absent field; the application will leave omitted fields blank.',
   'Read only what is actually visible. Never complete hidden, cropped, blurred, or ambiguous characters, never infer a missing fact, and never claim authenticity or official validity.',
   'Names: copy the exact labelled given name(s) into latinFirstName and exact labelled surname into latinFamilyName. Keep a full printed name in latinFullName or arabicFullName. Never split a full name to invent father or grandfather names. Fill father or grandfather fields only when separately and explicitly labelled.',
+  'A clearly legible, separately printed Father Name, Father\'s Name, or اسم الأب label is direct evidence for latinFatherName or arabicFatherName: copy that labelled value exactly, without inventing other name components. MRZ secondary identifiers are not labels for father or grandfather names; never split MRZ given names to populate those fields. An absent or unclear separate label means omit the optional field.',
   'For UAE identity cards a whole printed name belongs in latinFullName or arabicFullName; do not guess how it splits. Keep nationality distinct from the issuing country and residence country.',
   'Use ISO 3166-1 alpha-3 uppercase for a clearly visible, explicitly labelled nationality or issuing country. Never use the issuer to infer nationality.',
   'Dates: return YYYY-MM-DD only if day, month, and full four-digit year are unambiguous on the visible document. Never infer a century or a date from age, nationality, an MRZ two-digit year, today, or another field.',
+  'A numerical date with a full four-digit year must not acquire a guessed day/month order. Use a clearly printed order or a uniquely possible real calendar interpretation; if both day/month interpretations are different valid dates and no format is visibly printed, omit that field. Do not assume order from the country, language, document template, or expected validity period.',
   'birthDate is date of birth, issueDate is passport date of issue, expiryDate is passport expiry, residenceExpiry is the explicitly printed UAE identity/residence expiry. Never substitute a different date.',
+  'If an explicitly labelled passport expiry is clearly printed as an ambiguous numerical slash date with a full four-digit year, preserve its exact raw text as printedPassportExpiry with its own value/confidence/visible wrapper and omit expiryDate. On a UAE ID front or back use printedResidenceExpiry for an equivalently ambiguous labelled residence expiry and omit residenceExpiry. These are private evidence fields, never application answers; do not infer their order or use one date to invent another. Omit them when the labelled expiry itself is not clearly visible.',
   'Copy passportNumber exactly as printed. For emiratesId copy the visible 15 digits, optionally retaining printed hyphens. sex is M, F, or X only when explicitly visible. passportType is ordinary, diplomatic, service, or special only when that type is explicitly labelled. If the printed type is solely the marker P, completely omit passportType; never return P as passportType and never map P to ordinary. Never infer passportType solely from an MRZ.',
+  'passportNationalNumber is private linking evidence, never an application field. On a passport page only, copy a separately and explicitly labelled National number or الرقم الوطني value, using its exact numeric digits and printed simple space/hyphen separators. Preserve every leading zero. Do not substitute passportNumber, emiratesId, a date, file number or application reference. If no such label is clearly printed, omit passportNationalNumber; never construct it from MRZ optional data.',
+  'Distinguish the labelled visual passport number from the separate TD3 MRZ check digit. In a standard TD3 second line, characters 1 through 9 are the document-number zone and character 10 is its separate check digit, not an extra passport-number digit. Preserve the complete MRZ lines exactly. A genuinely longer labelled visual number must not be truncated to nine characters. Never strip, append, replace, or repair a character in either value to force agreement; omit an uncertain visual passportNumber instead of constructing one from MRZ.',
   'mrzLines are the exact visible machine-readable lines using A-Z, 0-9 and <, at most three lines and 44 characters per line. Do not repair or invent check digits or ambiguous O/0, I/1, B/8, < characters. If any line is unclear leave mrzLines empty.',
   'portraitBox, if a single printed identification portrait has a clear exact boundary on a passport or UAE identity card, is exactly {"x":number,"y":number,"width":number,"height":number,"confidence":number}. Coordinates and dimensions are fractions of the supplied image in its current orientation, between 0 and 1, with positive width and height entirely inside it.',
   'Do not crop, alter, identify, compare faces, assess age, health, ethnicity, or any biometric trait. Locate only the document portrait rectangle. Return portraitBox null when its boundary is uncertain, there are multiple portraits, the image is a standalone portrait, or no printed portrait is present.',
   'For a standalone portrait return kind portrait and empty fields and mrzLines. No personal, medical, marital, religion, or immigration-history inference is permitted.',
-  'Confidence is uncertainty about the exact transcription, not a guarantee. If unreadable, report uncertainty rather than guessing.',
+  'Confidence is uncertainty about the exact transcription, not a guarantee. A plausible format, matching checksum, or desire to complete the application must not raise transcription confidence. If unreadable, report uncertainty rather than guessing.',
   'The following are complete valid JSON shape examples using invented values, not data from the supplied image. Never copy an example value or confidence into the output; read only the supplied pixels and assess each field independently.',
   'Example for a partially readable UAE ID back with a visible ID number: {"version":1,"kind":"uae_id_back","readable":true,"rotation":0,"fields":{"emiratesId":{"value":"784-1990-1234567-1","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
   'Example for a partial passport with a visible number and only a P type marker, with no complete MRZ: {"version":1,"kind":"passport","readable":true,"rotation":0,"fields":{"passportNumber":{"value":"ZT1234567","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
@@ -111,7 +117,10 @@ function validateDocumentExtraction(value) {
       if (name === 'passportType' && field.value === 'P') { fields[name] = {value: null, confidence: 0, visible: false}; continue; }
       if (name === 'passportType' && !['ordinary', 'diplomatic', 'service', 'special'].includes(field.value)) return invalid('fields', name, 'value_format');
       if (name === 'passportNumber' && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'passportNationalNumber' && (value.kind !== 'passport' || field.value.length > 40 || !/^\d+(?:[ -]\d+)*$/.test(field.value) || field.value.replace(/[ -]/g, '').length > 20)) return invalid('fields', name, 'value_format');
       if (name === 'emiratesId' && !/^(?:\d{15}|\d{3}-\d{4}-\d{7}-\d)$/.test(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'printedPassportExpiry' && (value.kind !== 'passport' || slashDateCandidates(field.value).length === 0)) return invalid('fields', name, 'value_format');
+      if (name === 'printedResidenceExpiry' && (!['uae_id_front', 'uae_id_back'].includes(value.kind) || slashDateCandidates(field.value).length === 0)) return invalid('fields', name, 'value_format');
     }
     fields[name] = {value: field.value, confidence: field.confidence, visible: field.visible};
   }
@@ -161,7 +170,22 @@ async function readBoundedJSON(response) {
   try { return JSON.parse(text); } catch { throw failure('DOCUMENT_VISION_INVALID_JSON'); }
 }
 
-function projectWireAbsence(value) {
+function slashDateCandidates(text) {
+  const match = typeof text === 'string' && text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return [];
+  const first = Number(match[1]), second = Number(match[2]), year = Number(match[3]);
+  if (year < 1) return [];
+  const candidates = new Set();
+  for (const [day, month] of [[first, second], [second, first]]) {
+    if (month < 1 || month > 12 || day < 1 || day > 31) continue;
+    // setUTCFullYear avoids Date.UTC's implicit 1900 offset for years 00..99.
+    const date = new Date(0); date.setUTCHours(0, 0, 0, 0); date.setUTCFullYear(year, month - 1, day);
+    if (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) candidates.add(date.toISOString().slice(0, 10));
+  }
+  return [...candidates];
+}
+
+function projectWireEvidence(value) {
   if (!plain(value)) return value;
   const result = {...value};
   const unknown = () => ({value: null, confidence: 0, visible: false});
@@ -174,9 +198,23 @@ function projectWireAbsence(value) {
         result.fields[name] = unknown();
         continue;
       }
-      // A slash date has no accepted ISO interpretation here. Retain no raw
-      // date and leave required dates or client confirmation to the matcher.
-      if (['issueDate', 'expiryDate', 'residenceExpiry'].includes(name) && exactKeys(field, ['value', 'confidence', 'visible']) && field.visible === true && finiteUnit(field.confidence) && typeof field.value === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(field.value)) result.fields[name] = unknown();
+      // Preserve a wrapped, visible date only when both possible numeric
+      // orders reduce to one real calendar date. Never infer order, century,
+      // confidence or visibility from country, MRZ or application context.
+      if (['birthDate', 'issueDate', 'expiryDate', 'residenceExpiry'].includes(name) && exactKeys(field, ['value', 'confidence', 'visible']) && field.visible === true && finiteUnit(field.confidence) && typeof field.value === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(field.value)) {
+        const candidates = slashDateCandidates(field.value);
+        result.fields[name] = candidates.length !== 1 ? unknown() : {...field, value: candidates[0]};
+        const evidenceName = name === 'expiryDate' && value.kind === 'passport' ? 'printedPassportExpiry' : name === 'residenceExpiry' && ['uae_id_front', 'uae_id_back'].includes(value.kind) ? 'printedResidenceExpiry' : null;
+        if (candidates.length === 2 && evidenceName) {
+          // Keep only the bounded, explicitly wrapped printed evidence. It is
+          // not a chosen date and cannot become an application field here.
+          if (Object.hasOwn(value.fields, evidenceName)) {
+            const prior = value.fields[evidenceName];
+            if (!exactKeys(prior, ['value', 'confidence', 'visible']) || prior.visible !== true || !finiteUnit(prior.confidence) || prior.value !== field.value) throw Object.assign(failure('DOCUMENT_VISION_SCHEMA_INVALID'), {schemaSection: 'fields', fieldName: evidenceName, schemaIssue: 'value_format'});
+            result.fields[evidenceName] = {...prior, confidence: Math.min(prior.confidence, field.confidence)};
+          } else result.fields[evidenceName] = {...field};
+        }
+      }
     }
   }
   const box = value.portraitBox;
@@ -196,7 +234,7 @@ function parseDocumentOutput(output) {
     text = fence[1].trim();
   }
   let value; try { value = JSON.parse(text); } catch { throw failure('DOCUMENT_VISION_INVALID_JSON'); }
-  return validateDocumentExtraction(projectWireAbsence(value));
+  return validateDocumentExtraction(projectWireEvidence(value));
 }
 
 function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.now} = {}) {

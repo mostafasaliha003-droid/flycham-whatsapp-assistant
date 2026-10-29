@@ -12,13 +12,13 @@ const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
 // Changing matching/preparation reuses the existing OCR page checkpoints.
 // It must not silently send all existing originals to the provider again.
-const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v3';
+const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v4';
 const clone=value=>structuredClone(value);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value===undefined?null:value;}
 const digest=value=>hash(JSON.stringify(canonical(value)));
 function extractionDigestFor(documents,matched){return digest({documents,applicantIndex:matched.applicantIndex,fields:matched.fields,matchedDocuments:matched.documents,evidence:matched.evidence});}
-const reason=(code,field='documents')=>({code,field,message:({DOCUMENT_OCR_INTERRUPTED:'انقطعت قراءة أحد المرفقات؛ يلزم مراجعتها قبل اعتماد البيانات.',DOCUMENT_SOURCE_LIMIT:'تجاوز عدد المرفقات حد القراءة الآلية؛ يلزم مراجعة القسم.',DOCUMENT_SOURCE_CHANGED:'تغير أحد المرفقات أثناء المعالجة.',DOCUMENT_PDF_UNSUPPORTED:'ملف PDF غير مدعوم؛ الحد الأقصى عشر صفحات واضحة.',DOCUMENT_PAGE_LIMIT:'تجاوز مجموع صفحات المرفقات حد المئة صفحة؛ يلزم مراجعة القسم.',DOCUMENT_PORTRAIT_REQUIRED:'يلزم صورة شخصية واضحة أو صورة جواز تتضمن صورة شخصية قابلة للاقتصاص دون تكبير.',DOCUMENT_IMAGE_UNSUITABLE:'تعذر تجهيز صورة واضحة ضمن الحجم المطلوب.',DOCUMENT_APPLY_PAUSED:'قراءة المستندات محفوظة، لكن اعتمادها متوقف حتى انتهاء مراجعة القسم.',DOCUMENT_APPLY_UNCONFIRMED:'لم يتم تأكيد إدراج قراءة المستندات في ملف رعد.',DOCUMENT_READ_FAILED:'تعذرت قراءة المستند آلياً؛ يلزم مراجعة القسم أو إرساله بوضوح أكبر.',DOCUMENT_PROVIDER_UNAVAILABLE:'خدمة قراءة المستندات غير متاحة حالياً.',DOCUMENT_SOURCE_UNAVAILABLE:'أحد المرفقات لم يعد متاحاً.',DOCUMENT_WAITING_CASE:'بانتظار إنشاء ملف التأشيرة لربط المرفق الصحيح.'})[code]||'تحتاج المستندات إلى مراجعة قبل المتابعة.'});
+const reason=(code,field='documents')=>({code,field,message:({DOCUMENT_OCR_INTERRUPTED:'انقطعت قراءة أحد المرفقات؛ يلزم مراجعتها قبل اعتماد البيانات.',DOCUMENT_SOURCE_LIMIT:'تجاوز عدد المرفقات حد القراءة الآلية؛ يلزم مراجعة القسم.',DOCUMENT_SOURCE_CHANGED:'تغير أحد المرفقات أثناء المعالجة.',DOCUMENT_PDF_UNSUPPORTED:'ملف PDF غير مدعوم؛ الحد الأقصى عشر صفحات واضحة.',DOCUMENT_PAGE_LIMIT:'تجاوز مجموع صفحات المرفقات حد المئة صفحة؛ يلزم مراجعة القسم.',DOCUMENT_PORTRAIT_REQUIRED:'يلزم صورة شخصية واضحة أو صورة جواز تتضمن صورة شخصية قابلة للاقتصاص دون تكبير.',DOCUMENT_IMAGE_UNSUITABLE:'تعذر تجهيز صورة واضحة ضمن الحجم المطلوب.',DOCUMENT_APPLY_PAUSED:'قراءة المستندات محفوظة، لكن اعتمادها متوقف حتى انتهاء مراجعة القسم.',DOCUMENT_APPLY_UNCONFIRMED:'لم يتم تأكيد إدراج قراءة المستندات في ملف رعد.',DOCUMENT_READ_FAILED:'تعذرت قراءة المستند آلياً؛ يلزم مراجعة القسم أو إرساله بوضوح أكبر.',DOCUMENT_FIELD_INVALID:'رقم الهوية الإماراتية في القراءة غير صالح؛ يلزم مراجعة صورة الأصل أو التحقق من الرقم الصحيح دون تخمين.',DOCUMENT_PROVIDER_UNAVAILABLE:'خدمة قراءة المستندات غير متاحة حالياً.',DOCUMENT_SOURCE_UNAVAILABLE:'أحد المرفقات لم يعد متاحاً.',DOCUMENT_WAITING_CASE:'بانتظار إنشاء ملف التأشيرة لربط المرفق الصحيح.'})[code]||'تحتاج المستندات إلى مراجعة قبل المتابعة.'});
 const finite=code=>Object.assign(Error(code),{code});
 const originals=record=>record&&!record.purpose&&(['image/jpeg','image/png','image/webp'].includes(record.mimeType)&&record.type==='image'||record.mimeType==='application/pdf'&&record.type==='document');
 function dubaiDate(at){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(at));return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');}
@@ -90,13 +90,51 @@ class VisaDocumentIntake{
    const id=randomUUID();this.data().jobs[id]={id,customer,mediaId,caseId:c?.id||null,caseSignature:state?.caseSignature||null,generation:state?.generation||null,pendingFirstCase:!c,policy:this.policyFingerprint,status:c?'queued':'waiting_case',pages:{},pageAttempts:{},issues:[],receivedAt:source.receivedAt,createdAt:this.now(),updatedAt:this.now()};if(state){state.status='processing';state.updatedAt=this.now();}
   });this.notify(customer);this.wake();return true;
  }
+ rereadBinding(customer,{caseId,mediaId,sourceSha256,generation}={}){
+  if(!validCustomer(customer)||typeof caseId!=='string'||!caseId||caseId.length>160||!UUID.test(mediaId||'')||!SHA.test(sourceSha256||'')||!Number.isSafeInteger(generation)||generation<1)throw finite('DOCUMENT_REREAD_INVALID');
+  if(!this.enabled()||!this.configured()||this.stopped)throw finite('DOCUMENT_REREAD_UNAVAILABLE');
+  const c=this.caseFor(customer),state=this.data().cases[customer],source=this.rawSource(customer,mediaId);
+  if(!c||!state||c.id!==caseId||state.caseId!==caseId||state.policy!==this.policyFingerprint||state.caseSignature!==visaCaseSignature(c)||state.generation!==generation)throw finite('DOCUMENT_REREAD_STALE');
+  if(!source||source.checksum!==sourceSha256)throw finite('DOCUMENT_REREAD_SOURCE_CHANGED');
+  const job=Object.values(this.data().jobs).find(item=>item.customer===customer&&item.mediaId===mediaId&&item.caseId===caseId&&item.caseSignature===state.caseSignature&&item.generation===generation&&item.policy===this.policyFingerprint&&['ready','failed'].includes(item.status));
+  if(!job||job.sourceSha256&&job.sourceSha256!==sourceSha256)throw finite('DOCUMENT_REREAD_NOT_READY');
+  const key=digest({caseId,sourceSha256,policy:this.policyFingerprint});if(state.manualRereads?.[key])throw finite('DOCUMENT_REREAD_ALREADY_REQUESTED');
+  if(this.busy||state.status==='processing'||Object.values(this.data().jobs).some(item=>item.customer===customer&&item.caseId===caseId&&item.policy===this.policyFingerprint&&activeStatus(item.status)))throw finite('DOCUMENT_REREAD_BUSY');
+  if(this.blockReason(customer))throw finite('DOCUMENT_REREAD_PAUSED');
+  return {c,state,source,job,key};
+ }
+ rereadSource(customer,binding){
+  this.rereadBinding(customer,binding);let file;
+  try{file=this.mediaStore.read(binding.mediaId,{customer});if(hash(file.bytes)!==binding.sourceSha256)throw finite('DOCUMENT_REREAD_SOURCE_CHANGED');this.rereadBinding(customer,binding);
+   this.commit(()=>{const {state,key}=this.rereadBinding(customer,binding),previousGeneration=state.generation;let affectedSources=0;
+    // Duplicate uploads of the exact same original must lose their checkpoints
+    // together, otherwise the old extraction could silently refill this job.
+    for(const job of Object.values(this.data().jobs)){
+     if(job.customer!==customer||job.caseId!==binding.caseId)continue;
+     const source=this.rawSource(customer,job.mediaId),sameSource=job.sourceSha256===binding.sourceSha256||source?.checksum===binding.sourceSha256;
+     if(sameSource){job.pages={};job.pageAttempts={};job.issues=[];delete job.activePage;delete job.nextAttemptAt;
+      if(job.policy===this.policyFingerprint&&source?.checksum===binding.sourceSha256){job.sourceSha256=binding.sourceSha256;job.status='queued';job.manualRereadKey=key;affectedSources++;}else job.status='stale';job.updatedAt=this.now();
+     }
+     if(job.policy===this.policyFingerprint){job.generation=previousGeneration+1;job.caseSignature=state.caseSignature;}
+    }
+    if(!affectedSources)throw finite('DOCUMENT_REREAD_SOURCE_CHANGED');
+    state.manualRereads||={};state.manualRereads[key]={mediaId:binding.mediaId,sourceSha256:binding.sourceSha256,policy:this.policyFingerprint,requestedAt:this.now(),previousGeneration,generation:previousGeneration+1,affectedSources,pageAttempts:{}};
+    state.generation=previousGeneration+1;state.status='processing';state.documents=[];state.applicants=[];state.issues=[];delete state.inputFingerprint;delete state.resultFingerprint;delete state.awaitingPayment;state.updatedAt=this.now();
+   });
+  }finally{file?.bytes?.fill(0);}
+  this.notify(customer);this.wake();return {ok:true,queued:true,caseId:binding.caseId,mediaId:binding.mediaId,generation:this.data().cases[customer].generation};
+ }
+ rereadSources(customer,state){
+  if(!state)return [];
+  return Object.values(this.data().jobs).filter(job=>job.customer===customer&&job.caseId===state.caseId&&job.policy===this.policyFingerprint&&['ready','failed'].includes(job.status)).flatMap(job=>{const source=this.rawSource(customer,job.mediaId);if(!source||!SHA.test(source.checksum||''))return [];const binding={caseId:state.caseId,mediaId:job.mediaId,sourceSha256:source.checksum,generation:state.generation};let reason;try{this.rereadBinding(customer,binding);}catch(error){reason=/^DOCUMENT_REREAD_[A-Z_]+$/.test(error.code||'')?error.code:'DOCUMENT_REREAD_UNAVAILABLE';}const kinds=[...new Set(Object.values(job.pages||{}).map(page=>page.extraction?.kind).filter(kind=>['passport','uae_id_front','uae_id_back','portrait','other'].includes(kind)))];return [{...binding,kind:kinds[0]||'other',kinds,receivedAt:source.receivedAt,allowed:!reason,...(reason?{reason}:{})}];}).sort((a,b)=>b.receivedAt-a.receivedAt||a.mediaId.localeCompare(b.mediaId));
+ }
  backfill(){if(!this.enabled())return;for(const [customer,c]of Object.entries(this.store.data.visaCases||{})){if(!validCustomer(customer)||!Number.isFinite(c.createdAt))continue;const sources=Object.values(this.mediaStore.records||this.store.data.visaMedia||{}).filter(r=>r.customer===customer&&!this.knownReceipt(customer,r.id)&&originals(r)&&r.expiresAt>this.now()&&r.receivedAt>=c.createdAt).sort((a,b)=>a.receivedAt-b.receivedAt||a.id.localeCompare(b.id)).slice(0,MAX_SOURCES+1);for(const source of sources)this.enqueue(customer,source.id);}}
  bindWaiting(){for(const job of Object.values(this.data().jobs)){if(job.status!=='waiting_case'||job.policy!==this.policyFingerprint)continue;const c=this.caseFor(job.customer);if(!c)continue;const source=this.rawSource(job.customer,job.mediaId);if(!source){job.status='failed';job.issues=[reason('DOCUMENT_SOURCE_UNAVAILABLE')];continue;}const state=this.syncCase(job.customer);job.caseId=c.id;job.caseSignature=state.caseSignature;job.generation=state.generation;job.status='queued';job.updatedAt=this.now();state.status='processing';}}
  snapshot(job){return {id:job.id,customer:job.customer,mediaId:job.mediaId,caseId:job.caseId,signature:job.caseSignature,generation:job.generation,epoch:this.epoch,mediaEpoch:this.mediaStore.epochs?.get(job.customer)||0,policy:job.policy,sourceSha256:job.sourceSha256};}
  guard(snapshot){
   if(this.stopped||this.epoch!==snapshot.epoch||!this.enabled()||(this.mediaStore.epochs?.get(snapshot.customer)||0)!==snapshot.mediaEpoch)throw finite('DOCUMENT_INTAKE_STALE');
   const job=this.data().jobs[snapshot.id],state=this.data().cases[snapshot.customer],c=this.caseFor(snapshot.customer),source=this.rawSource(snapshot.customer,snapshot.mediaId);
-  if(!job||!state||!c||!source||job.caseId!==snapshot.caseId||c.id!==snapshot.caseId||state.generation!==snapshot.generation||job.generation!==snapshot.generation||state.caseSignature!==snapshot.signature||visaCaseSignature(c)!==snapshot.signature||job.policy!==snapshot.policy||job.policy!==this.policyFingerprint||state.policy!==this.policyFingerprint||snapshot.sourceSha256&&source.checksum&&source.checksum!==snapshot.sourceSha256)throw finite('DOCUMENT_INTAKE_STALE');return {job,state,c,source};
+  if(!job||!state||!c||!source||job.caseId!==snapshot.caseId||c.id!==snapshot.caseId||state.generation!==snapshot.generation||job.generation!==snapshot.generation||state.caseSignature!==snapshot.signature||visaCaseSignature(c)!==snapshot.signature||job.policy!==snapshot.policy||job.policy!==this.policyFingerprint||state.policy!==this.policyFingerprint||snapshot.sourceSha256&&source.checksum&&source.checksum!==snapshot.sourceSha256)throw finite('DOCUMENT_INTAKE_STALE');if(job.manualRereadKey&&this.blockReason(snapshot.customer))throw finite('DOCUMENT_REREAD_PAUSED');return {job,state,c,source};
  }
  sourceBytes(snapshot){this.guard(snapshot);const file=this.mediaStore.read(snapshot.mediaId,{customer:snapshot.customer});const actual=hash(file.bytes);if(snapshot.sourceSha256&&actual!==snapshot.sourceSha256){file.bytes.fill(0);throw finite('DOCUMENT_INTAKE_STALE');}const source=this.rawSource(snapshot.customer,snapshot.mediaId);if(source?.checksum&&actual!==source.checksum){file.bytes.fill(0);throw finite('DOCUMENT_INTAKE_STALE');}return {...file,sha256:actual};}
  async pageBytes(file,page,guard){
@@ -120,15 +158,19 @@ class VisaDocumentIntake{
      if(this.pageCount(job.customer,job.caseId)>=MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});this.guard(snap);const pageSha=hash(normalized.bytes);
      const cached=Object.values(this.data().jobs).flatMap(other=>other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy?Object.values(other.pages||{}):[]).find(result=>result.sourceSha256===file.sha256&&result.page===page&&result.sha256===pageSha);
      if(cached){this.commit(()=>{this.guard(snap);this.data().jobs[snap.id].pages[page]={...clone(cached),mediaId:snap.mediaId};});continue;}
-     const attempts=job.pageAttempts[page]||0;if(attempts>=MAX_ATTEMPTS)throw finite('DOCUMENT_OCR_RETRY_LIMIT');
-     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.activePage=page;current.pageAttempts[page]=attempts+1;current.updatedAt=this.now();});
+     const manual=job.manualRereadKey&&this.data().cases[job.customer].manualRereads?.[job.manualRereadKey],attempts=manual?.policy===job.policy?manual.pageAttempts?.[page]||0:job.pageAttempts[page]||0;if(attempts>=MAX_ATTEMPTS)throw finite('DOCUMENT_OCR_RETRY_LIMIT');
+     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.activePage=page;current.pageAttempts[page]=attempts+1;const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy){shared.pageAttempts||={};shared.pageAttempts[page]=attempts+1;}current.updatedAt=this.now();});
      const extraction=validateDocumentExtraction(await this.vision.extract({bytes:normalized.bytes,mimeType:normalized.mimeType,guard:()=>this.guard(snap)}));this.guard(snap);
      this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.pages[page]={mediaId:snap.mediaId,page,sha256:pageSha,sourceSha256:file.sha256,extraction};delete current.activePage;current.updatedAt=this.now();});
     }finally{if(normalized?.bytes&&normalized.bytes!==image?.bytes)normalized.bytes.fill(0);image?.bytes?.fill(0);}
    }
    this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];if(!Object.keys(current.pages).length)throw finite('DOCUMENT_READ_FAILED');current.status='ready';current.issues=[];delete current.activePage;delete current.nextAttemptAt;current.updatedAt=this.now();});
   }catch(error){
-   try{this.guard(snap);this.commit(()=>{const current=this.data().jobs[snap.id];const retryable=error?.retryable===true&&(current.pageAttempts[current.activePage]||0)<MAX_ATTEMPTS;if(retryable){current.status='retry';current.nextAttemptAt=this.now()+Math.max(5000,Math.min(300000,Number(error.retryAfterMs)||5000));current.issues=[reason('DOCUMENT_PROVIDER_UNAVAILABLE')];}else{current.status='failed';current.issues=[reason(error?.code==='DOCUMENT_PAGE_LIMIT'?'DOCUMENT_PAGE_LIMIT':error?.code==='PDF_PAGE_COUNT_UNSUPPORTED'?'DOCUMENT_PDF_UNSUPPORTED':error?.code==='DOCUMENT_INTAKE_STALE'?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_READ_FAILED')];}current.updatedAt=this.now();});}catch{}
+   if(error?.code==='DOCUMENT_REREAD_PAUSED'){
+    const current=this.data().jobs[snap.id],state=this.data().cases[snap.customer],c=this.caseFor(snap.customer);
+    if(!this.stopped&&this.epoch===snap.epoch&&current?.manualRereadKey&&current.caseId===snap.caseId&&c?.id===snap.caseId&&state?.generation===snap.generation&&state.caseSignature===snap.signature&&visaCaseSignature(c)===snap.signature){try{this.commit(()=>{const paused=this.data().jobs[snap.id];paused.status='failed';paused.pages={};paused.issues=[reason('DOCUMENT_APPLY_PAUSED')];delete paused.activePage;delete paused.nextAttemptAt;paused.updatedAt=this.now();});}catch{}}return;
+   }
+   try{this.guard(snap);this.commit(()=>{const current=this.data().jobs[snap.id];const retryable=error?.retryable===true&&(current.pageAttempts[current.activePage]||0)<MAX_ATTEMPTS;if(retryable){current.status='retry';current.nextAttemptAt=this.now()+Math.max(5000,Math.min(300000,Number(error.retryAfterMs)||5000));current.issues=[reason('DOCUMENT_PROVIDER_UNAVAILABLE')];}else{current.status='failed';current.issues=error?.code==='DOCUMENT_VISION_SCHEMA_INVALID'&&error.schemaSection==='fields'&&error.fieldName==='emiratesId'&&error.schemaIssue==='value_format'?[reason('DOCUMENT_FIELD_INVALID','emiratesId')]:[reason(error?.code==='DOCUMENT_PAGE_LIMIT'?'DOCUMENT_PAGE_LIMIT':error?.code==='PDF_PAGE_COUNT_UNSUPPORTED'?'DOCUMENT_PDF_UNSUPPORTED':error?.code==='DOCUMENT_INTAKE_STALE'?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_READ_FAILED')];}current.updatedAt=this.now();});}catch{}
   }finally{file?.bytes?.fill(0);}
  }
  async loadReference(customer,ref,guard){
@@ -235,7 +277,7 @@ class VisaDocumentIntake{
  }
  summary(customer){
   const state=validCustomer(customer)?this.data().cases[customer]:null,waiting=!state&&Object.values(this.data().jobs).some(job=>job.customer===customer&&job.status==='waiting_case');
-  return {enabled:this.enabled(),configured:this.configured(),status:!this.enabled()?'disabled':state?.status||(waiting?'waiting_case':'not_started'),...(state?{caseId:state.caseId,caseSignature:state.caseSignature,generation:state.generation,awaitingPayment:state.awaitingPayment===true,resultFingerprint:state.resultFingerprint||null,updatedAt:state.updatedAt,applicants:state.applicants.map(app=>({applicantIndex:app.applicantIndex,evidenceId:app.id,status:app.status,awaitingPayment:state.awaitingPayment===true,identityReady:app.identityReady===true,clientFieldsRequired:clone(app.clientFieldsRequired||[]),fields:clone(app.fields),documents:clone(app.documents),issues:clone(app.issues||[]),evidence:clone(app.evidence)})),issues:clone(state.issues||[])}:{updatedAt:null,applicants:[],issues:waiting?[reason('DOCUMENT_WAITING_CASE')]:[]})};
+  return {enabled:this.enabled(),configured:this.configured(),status:!this.enabled()?'disabled':state?.status||(waiting?'waiting_case':'not_started'),...(state?{caseId:state.caseId,caseSignature:state.caseSignature,generation:state.generation,awaitingPayment:state.awaitingPayment===true,resultFingerprint:state.resultFingerprint||null,updatedAt:state.updatedAt,rereadSources:this.rereadSources(customer,state),applicants:state.applicants.map(app=>({applicantIndex:app.applicantIndex,evidenceId:app.id,status:app.status,awaitingPayment:state.awaitingPayment===true,identityReady:app.identityReady===true,clientFieldsRequired:clone(app.clientFieldsRequired||[]),fields:clone(app.fields),documents:clone(app.documents),issues:clone(app.issues||[]),evidence:clone(app.evidence)})),issues:clone(state.issues||[])}:{updatedAt:null,applicants:[],issues:waiting?[reason('DOCUMENT_WAITING_CASE')]:[]})};
  }
  status(){return {enabled:this.enabled(),configured:this.configured(),running:this.busy,cases:Object.keys(this.data().cases).length,queued:Object.values(this.data().jobs).filter(job=>activeStatus(job.status)).length};}
 }

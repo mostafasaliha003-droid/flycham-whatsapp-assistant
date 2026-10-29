@@ -84,3 +84,47 @@ test('compatible V3 migration reuses legible checkpoints and rereads only a supp
  for(const job of Object.values(f.worker.data().jobs)){job.policy=COMPATIBLE_PREVIOUS_POLICIES[0];for(const page of Object.values(job.pages))if(page.extraction.kind==='portrait')page.extraction.readable=false;}
  f.worker.recover();await f.processAll();assert.equal(f.worker.summary(CUSTOMER).status,'ready');assert.equal(f.counts().visionCalls,reads+1,'legible passport and identity pages must not be sent to Google again');
 });
+
+test('explicit saved-original reread invalidates every exact-SHA duplicate and reads that source once without replaying other images',async()=>{
+ const f=await setup(),source=f.add(1,0),duplicate=f.add(2,0);f.add(3,0);const different=f.add(4,1);await f.processAll();assert.equal(f.counts().visionCalls,2);
+ const state=f.worker.data().cases[CUSTOMER],generation=state.generation,before=structuredClone(f.c),differentJob=Object.values(f.worker.data().jobs).find(job=>job.mediaId===different),unchanged=structuredClone(differentJob.pages);
+ for(const job of Object.values(f.worker.data().jobs).filter(job=>job.sourceSha256===f.records[source].checksum)){job.pages[1].extraction.fields.passportNumber.value='N123456789';job.pages[1].extraction.fields.issueDate={value:null,visible:false,confidence:0};}
+ const binding=f.worker.summary(CUSTOMER).rereadSources.find(item=>item.mediaId===source);assert.equal(binding.allowed,true);
+ const result=f.worker.rereadSource(CUSTOMER,{caseId:binding.caseId,mediaId:source,sourceSha256:binding.sourceSha256,generation:binding.generation});assert.equal(result.queued,true);assert.equal(f.counts().visionCalls,2);assert.equal(state.generation,generation+1);assert.deepEqual(state.documents,[]);assert.deepEqual(state.applicants,[]);assert.deepEqual(differentJob.pages,unchanged);assert.deepEqual(f.c,before);
+ assert.equal(Object.values(state.manualRereads).length,1);assert.equal(Object.values(state.manualRereads)[0].affectedSources,3);
+ await f.processAll();assert.equal(f.counts().visionCalls,3);for(const job of Object.values(f.worker.data().jobs).filter(job=>job.sourceSha256===binding.sourceSha256)){assert.equal(job.pages[1].extraction.fields.passportNumber.value,FIELDS.passportNumber);assert.equal(job.pages[1].extraction.fields.issueDate.value,FIELDS.issueDate);}
+ assert.equal(Object.values(f.worker.data().jobs).filter(job=>job.sourceSha256===binding.sourceSha256).reduce((sum,job)=>sum+(job.pageAttempts[1]||0),0),1);
+ const duplicateBinding=f.worker.summary(CUSTOMER).rereadSources.find(item=>item.mediaId===duplicate);assert.equal(duplicateBinding.allowed,false);assert.equal(duplicateBinding.reason,'DOCUMENT_REREAD_ALREADY_REQUESTED');assert.throws(()=>f.worker.rereadSource(CUSTOMER,duplicateBinding),{code:'DOCUMENT_REREAD_ALREADY_REQUESTED'});
+ const restarted=new VisaDocumentIntake({store:f.store,mediaStore:f.media,vision:f.vision,raad:f.raad,fulfilment:f.fulfilment,env:{RAAD_DOCUMENT_OCR_ENABLED:'true'},now:()=>NOW,lock:f.lock});await restarted.tick();assert.equal(f.counts().visionCalls,3);assert.throws(()=>restarted.rereadSource(CUSTOMER,duplicateBinding),{code:'DOCUMENT_REREAD_ALREADY_REQUESTED'});assert.deepEqual(f.c,before);
+});
+
+test('saved-original reread rejects stale case, generation, checksum, foreign and derived sources before mutation',async()=>{
+ const f=await setup(),source=f.add(1,0),foreign=f.add(2,1,{customer:OTHER}),derived=f.add(3,2,{purpose:'raad_portal_upload'});await f.processAll();const b=f.worker.summary(CUSTOMER).rereadSources.find(item=>item.mediaId===source),before=structuredClone(f.worker.data());
+ for(const [patch,code]of [[{caseId:'old-case'},'DOCUMENT_REREAD_STALE'],[{generation:b.generation+1},'DOCUMENT_REREAD_STALE'],[{sourceSha256:'f'.repeat(64)},'DOCUMENT_REREAD_SOURCE_CHANGED'],[{mediaId:foreign},'DOCUMENT_REREAD_SOURCE_CHANGED'],[{mediaId:derived},'DOCUMENT_REREAD_SOURCE_CHANGED'],[{generation:'1'},'DOCUMENT_REREAD_INVALID']])assert.throws(()=>f.worker.rereadSource(CUSTOMER,{...b,...patch}),{code});
+ assert.deepEqual(f.worker.data(),before);assert.equal(f.counts().visionCalls,1);f.bytes.set(source,Buffer.from('changed saved bytes'));assert.throws(()=>f.worker.rereadSource(CUSTOMER,b),{code:'DOCUMENT_REREAD_SOURCE_CHANGED'});assert.deepEqual(f.worker.data(),before);
+});
+
+test('manual reread is refused during human ownership and stops before another provider call if ownership changes after queueing',async()=>{
+ const f=await setup(),source=f.add(1,0);await f.processAll();const binding=f.worker.summary(CUSTOMER).rereadSources[0];f.fulfilment.blocked=()=> 'HUMAN_OWNERSHIP';assert.throws(()=>f.worker.rereadSource(CUSTOMER,binding),{code:'DOCUMENT_REREAD_PAUSED'});f.fulfilment.blocked=()=>null;f.worker.rereadSource(CUSTOMER,binding);f.fulfilment.blocked=()=> 'HUMAN_OWNERSHIP';await f.worker.tick();assert.equal(f.counts().visionCalls,1);const job=Object.values(f.worker.data().jobs).find(job=>job.mediaId===source);assert.equal(job.status,'failed');assert.deepEqual(job.pages,{});assert.equal(job.issues[0].code,'DOCUMENT_APPLY_PAUSED');
+});
+
+test('human ownership during the explicit provider reread discards the response without confirming or staging facts',async()=>{
+ const f=await setup(),source=f.add(1,0);await f.processAll();let enter,resume;const entered=new Promise(resolve=>{enter=resolve;}),waiting=new Promise(resolve=>{resume=resolve;}),original=f.vision.extract.bind(f.vision);f.vision.extract=async input=>{const result=await original(input);enter();await waiting;return result;};f.worker.rereadSource(CUSTOMER,f.worker.summary(CUSTOMER).rereadSources[0]);const running=f.worker.tick();await entered;f.fulfilment.blocked=()=> 'HUMAN_OWNERSHIP';resume();await running;const job=Object.values(f.worker.data().jobs).find(job=>job.mediaId===source);assert.equal(job.status,'failed');assert.deepEqual(job.pages,{});assert.equal(f.counts().visionCalls,2);assert.equal(f.counts().applies,0);assert.equal(f.counts().stages,0);
+});
+
+test('a manual source reread has one durable request per policy and only two fresh transport attempts',async()=>{
+ const f=await setup({extract:async()=>{throw Object.assign(Error('private provider details'),{code:'DOCUMENT_VISION_NETWORK',retryable:true,retryAfterMs:5000});}});f.add(1,0);await f.worker.tick();f.setTime(NOW+5001);await f.worker.tick();assert.equal(f.counts().visionCalls,2);const binding=f.worker.summary(CUSTOMER).rereadSources[0];f.worker.rereadSource(CUSTOMER,binding);await f.worker.tick();await f.worker.tick();assert.equal(f.counts().visionCalls,3);f.setTime(NOW+10002);await f.worker.tick();assert.equal(f.counts().visionCalls,4);f.setTime(NOW+100000);await f.worker.tick();assert.equal(f.counts().visionCalls,4);assert.equal(f.worker.summary(CUSTOMER).rereadSources[0].reason,'DOCUMENT_REREAD_ALREADY_REQUESTED');assert(!JSON.stringify(f.worker.data()).includes('private provider details'));
+});
+
+test('invalid Emirates ID schema evidence produces a specific fixed issue without retaining the invalid number or provider details',async()=>{
+ for(const [fieldName,expected]of [['emiratesId','DOCUMENT_FIELD_INVALID'],['passportNumber','DOCUMENT_READ_FAILED']]){const f=await setup({extract:async()=>{throw Object.assign(Error('PRIVATE_PROVIDER_DETAIL_INVALID_DIGITS'),{code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName,schemaIssue:'value_format',raw:'PRIVATE_RAW'});}});f.add(1,0);await f.worker.tick();const job=Object.values(f.worker.data().jobs)[0];assert.equal(job.status,'failed');assert.equal(job.issues[0].code,expected);assert.equal(job.issues[0].field,fieldName==='emiratesId'?'emiratesId':'documents');assert.equal(f.counts().visionCalls,1);await f.worker.tick();assert.equal(f.counts().visionCalls,1);assert(!JSON.stringify(f.worker.data()).includes('PRIVATE_'));}
+});
+
+test('exact-SHA duplicate uploads share the two-attempt manual reread budget even when the provider fails',async()=>{
+ const f=await setup(),source=f.add(1,0);f.add(2,0);f.add(3,0);await f.processAll();assert.equal(f.counts().visionCalls,1);const original=f.vision.extract.bind(f.vision);f.vision.extract=async input=>{await original(input);throw Object.assign(Error('private transport response'),{code:'DOCUMENT_VISION_NETWORK',retryable:true,retryAfterMs:5000});};const binding=f.worker.summary(CUSTOMER).rereadSources.find(item=>item.mediaId===source);f.worker.rereadSource(CUSTOMER,binding);
+ for(let n=0;n<8;n++){f.setTime(NOW+n*5001);await f.worker.tick();}assert.equal(f.counts().visionCalls,3);const state=f.worker.data().cases[CUSTOMER];assert.equal(Object.values(state.manualRereads)[0].pageAttempts[1],2);assert(Object.values(f.worker.data().jobs).every(job=>job.status==='failed'));assert(!JSON.stringify(state).includes('private transport response'));
+});
+
+test('reread source choices are newest-first with only bounded document kinds and original receipt timestamps',async()=>{
+ const f=await setup();const passport=f.add(1,0),residence=f.add(2,1);await f.processAll();const rows=f.worker.summary(CUSTOMER).rereadSources;assert.deepEqual(rows.map(row=>row.mediaId),[residence,passport]);assert.deepEqual(rows.map(row=>row.kind),['uae_id_front','passport']);assert.deepEqual(rows.map(row=>row.receivedAt),[f.records[residence].receivedAt,f.records[passport].receivedAt]);assert.deepEqual(rows[1].kinds,['passport']);assert(rows.every(row=>!Object.hasOwn(row,'fields')&&!Object.hasOwn(row,'extraction')));
+});

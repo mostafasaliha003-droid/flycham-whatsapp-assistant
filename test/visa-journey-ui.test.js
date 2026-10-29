@@ -187,3 +187,35 @@ test('reading completed before accountant approval shows a payment wait chip wit
   await h.ui.openCase('971500000001'); const section = h.descendants(h.activeDialog()).find(node => node.className === 'vj-document-review'), applicants = h.descendants(section).filter(node => node.className === 'vj-document-applicant');
   assert.match(applicants[0].textContent,/القراءة والمطابقة مكتملة/); assert.match(applicants[0].textContent,/بانتظار اعتماد الدفعة/); assert.doesNotMatch(applicants[1].textContent,/بانتظار اعتماد الدفعة/); assert.equal(h.descendants(section).some(node => node.tagName === 'button'),false); assert.doesNotMatch(section.textContent,/جاهز للبوابة|الدفعة معتمدة/);
 });
+
+test('saved-original reread is explicit, binds only the authoritative current source, and prevents duplicate clicks', async () => {
+  const binding = {caseId:'visa-example',mediaId:'original-passport',sourceSha256:'a'.repeat(64),generation:7}, review = {enabled:true,configured:true,status:'needs_review',caseId:binding.caseId,generation:binding.generation,rereadSources:[{...binding,allowed:true}],applicants:[],issues:[]};
+  let finish;
+  const h = harness({item:{media:[{id:binding.mediaId,filename:'passport.jpg',mimeType:'image/jpeg'}],documentReview:review},approve:async()=>{await new Promise(resolve=>{finish=resolve;});review.status='processing';review.rereadSources[0].allowed=false;return {ok:true};}});
+  await h.ui.openCase('971500000001');
+  const section=h.descendants(h.activeDialog()).find(node=>node.className==='vj-document-review'), action=h.descendants(section).find(node=>node.tagName==='button'&&node.textContent==='إعادة قراءة الأصل المحفوظ');
+  assert(action);assert.equal(h.requests.some(request=>request.method==='POST'),false);assert.match(section.textContent,/passport.jpg/);assert.match(section.textContent,/خدمة القراءة المهيأة/);assert.match(section.textContent,/لا يؤكد الهوية أو الدفعة أو موافقة العميل/);
+  const pending=action.onclick();action.click();await action.onclick();
+  assert.equal(action.disabled,true);let posts=h.requests.filter(request=>request.method==='POST');assert.equal(posts.length,1);assert.equal(posts[0].path,'visa-workflow/971500000001/reread-document');assert.deepEqual(JSON.parse(JSON.stringify(posts[0].payload)),binding);assert.deepEqual(JSON.parse(JSON.stringify(posts[0].headers)),{});assert.deepEqual(Object.keys(posts[0].payload).sort(),['caseId','generation','mediaId','sourceSha256']);
+  finish();await pending;await h.tick();
+  assert.equal(h.requests.filter(request=>request.method==='GET').length,2);assert.match(section.textContent,/جارٍ قراءة المستندات ومطابقتها/);assert.equal(h.descendants(section).find(node=>node.tagName==='button'&&node.textContent==='إعادة قراءة الأصل المحفوظ').disabled,true);assert.equal(h.mediaCalls.length,0);
+});
+
+test('reread controls require a current original and never infer a source checksum from media', async () => {
+  const base={caseId:'visa-example',mediaId:'original-passport',sourceSha256:'b'.repeat(64),generation:2,allowed:true};
+  for(const options of [{source:{...base,caseId:'old-case'}},{source:{...base,generation:1}},{source:{...base,sourceSha256:undefined}},{source:base,purpose:'raad_portal_upload'},{source:base,customer:'971500000099'},{source:undefined}]){
+    const h=harness({item:{media:[{id:base.mediaId,mimeType:'image/jpeg',checksum:base.sourceSha256,purpose:options.purpose,customer:options.customer}],documentReview:{enabled:true,configured:true,status:'ready',caseId:base.caseId,generation:2,rereadSources:options.source?[options.source]:[],applicants:[],issues:[]}}});
+    await h.ui.openCase('971500000001');assert.equal(h.descendants(h.activeDialog()).some(node=>node.tagName==='button'&&node.textContent==='إعادة قراءة الأصل المحفوظ'),false);assert.equal(h.requests.some(request=>request.method==='POST'),false);
+  }
+  const h=harness({item:{media:[{id:base.mediaId,mimeType:'image/jpeg'}],documentReview:{enabled:true,configured:true,status:'ready',caseId:base.caseId,generation:2,rereadSources:[{...base,allowed:false}],applicants:[],issues:[]}}});await h.ui.openCase('971500000001');const action=h.find('button','إعادة قراءة الأصل المحفوظ');assert.equal(action.disabled,true);action.click();await h.tick();assert.equal(h.requests.some(request=>request.method==='POST'),false);
+});
+
+test('a delayed reread response after logout cannot fetch or redraw a private case', async()=>{
+  let finish;const binding={caseId:'visa-example',mediaId:'original',sourceSha256:'c'.repeat(64),generation:1,allowed:true},h=harness({item:{media:[{id:'original',mimeType:'application/pdf'}],documentReview:{enabled:true,configured:true,status:'ready',caseId:binding.caseId,generation:1,rereadSources:[binding],applicants:[],issues:[]}},approve:()=>new Promise(resolve=>{finish=resolve;})});
+  await h.ui.openCase('971500000001');const pending=h.find('button','إعادة قراءة الأصل المحفوظ').onclick();await h.tick();h.ui.reset();finish({ok:true});await pending;await h.tick();assert.equal(h.requests.length,2);assert.equal(h.activeDialog(),undefined);assert.equal(h.toasts.length,0);assert.equal(h.root.textContent,'');
+});
+
+test('reread rows distinguish identically named originals by finite document kinds, received time and index',async()=>{
+  const binding={caseId:'visa-example',sourceSha256:'d'.repeat(64),generation:1,allowed:true},h=harness({item:{media:[{id:'older',filename:'visa-document.jpg',mimeType:'application/pdf'},{id:'latest',filename:'visa-document.jpg',mimeType:'image/jpeg'}],documentReview:{enabled:true,configured:true,status:'ready',caseId:binding.caseId,generation:1,rereadSources:[{...binding,mediaId:'latest',kind:'uae_id_front',kinds:['uae_id_front','uae_id_front','untrusted raw text'],receivedAt:'2026-10-29T11:20:00Z'},{...binding,mediaId:'older',kind:'passport',kinds:['passport','uae_id_back'],receivedAt:'2026-10-28T09:00:00Z'}],applicants:[],issues:[]}}});
+  await h.ui.openCase('971500000001');const rows=h.descendants(h.activeDialog()).filter(node=>node.className==='vj-document-reread-source');assert.equal(rows.length,2);assert.match(rows[0].textContent,/المرفق الأصلي 2 · الهوية الإماراتية · الوجه الأمامي/);assert.match(rows[1].textContent,/المرفق الأصلي 1 · الجواز، الهوية الإماراتية · الوجه الخلفي/);assert.match(rows[0].textContent,/وصل /);assert.notEqual(rows[0].children[1].textContent,rows[1].children[1].textContent);assert.doesNotMatch(rows.map(row=>row.textContent).join(' '),/untrusted raw text/);assert.equal(h.requests.some(request=>request.method==='POST'),false);
+});

@@ -399,3 +399,93 @@ test('same physical image with contradictory trusted OCR or MRZ remains a blocki
  const p=passport(),copy=passport({},IDS.passport2);copy.extraction.mrzLines=mrz({passportNumber:'X12345678'});const mrzConflict=run([p,copy,front()]);assert.equal(mrzConflict.complete,false);assert.ok(codes(mrzConflict).includes('SOURCE_CONFLICT'));
  const rotated=passport({},IDS.passport2);rotated.extraction.rotation=90;assert.ok(codes(run([p,rotated,front()])).includes('SOURCE_CONFLICT'));
 });
+
+test('separately labelled father can be absent from MRZ given names while exact printed identity and DOB match the UAE ID',()=>{
+ for(const withFullName of [false,true]){
+  const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT',...(withFullName?{latinFullName:'SYNTHETIC PARENT EXAMPLE'}:{})});
+  const result=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]),person=result.applicants[0];
+  assert.equal(result.complete,true);assert.equal(person.evidence.passportMrzChecked,true);assert.equal(person.evidence.matchedResidence,true);
+  assert.equal(person.fields.latinFirstName,'SYNTHETIC');assert.equal(person.fields.latinFatherName,'PARENT');assert.equal(person.fields.latinGrandfatherName,undefined);assert.equal(person.fields.latinFullName,undefined);
+ }
+});
+
+test('new printed-patronymic name evidence requires exact DOB and never ignores unrelated names or nationality conflicts',()=>{
+ const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT'});
+ for(const patch of [{latinFullName:'SYNTHETIC OTHER EXAMPLE'},{latinFullName:'SYNTHETIK PARENT EXAMPLE'},{birthDate:'1991-01-15'},{nationalityCode:'SYR'}]){
+  const result=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE',...patch})]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);
+ }
+ const id=front({latinFullName:'SYNTHETIC PARENT EXAMPLE',passportNumber:'N12345678'});delete id.extraction.fields.birthDate;
+ assert.equal(run([p,id]).applicants[0].identityReady,false,'passport number alone does not authorize a newly added patronymic name variant without the exact DOB');
+});
+
+test('unprinted or uncertain father names are never inferred to make an ID name match',()=>{
+ for(const uncertain of [false,true]){
+  const p=passport({latinFirstName:'SYNTHETIC'});if(uncertain)p.extraction.fields.latinFatherName=field('PARENT',0.97);
+  const result=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.latinFatherName,undefined);
+ }
+ const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT',latinFullName:'SYNTHETIC OTHER EXAMPLE'});
+ const result=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(result.complete,false);assert.ok(result.applicants[0].issues.some(issue=>issue.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&issue.field==='latinFullName'));
+});
+
+test('printed patronymic name agreement cannot repair invalid Emirates ID digits or an appended passport check digit',()=>{
+ const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT'}),id=front({latinFullName:'SYNTHETIC PARENT EXAMPLE',emiratesId:'78419901234567'});
+ const person=run([p,id]).applicants[0];assert.equal(person.evidence.passportMrzChecked,true);assert.equal(person.evidence.matchedResidence,true);assert.equal(person.identityReady,false);
+ assert.ok(person.issues.some(issue=>issue.code==='DOCUMENT_FIELD_INVALID'&&issue.field==='emiratesId'));
+ const wrong=structuredClone(p);wrong.extraction.fields.passportNumber=field(p.extraction.fields.passportNumber.value+p.extraction.mrzLines[1][9]);
+ const result=run([wrong,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.passportNumber,wrong.extraction.fields.passportNumber.value);assert.ok(result.applicants[0].issues.some(issue=>issue.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&issue.field==='passportNumber'));
+});
+
+function withCheckedNationalOptional(document,raw='00123456789<<<'){
+ const copy=structuredClone(document),line=copy.extraction.mrzLines[1];assert.equal(raw.length,14);
+ const second=line.slice(0,28)+raw+digit(raw);copy.extraction.mrzLines[1]=second+digit(second.slice(0,10)+second.slice(13,20)+second.slice(21,43));return copy;
+}
+function nationalDateCase(){
+ const p=withCheckedNationalOptional(passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT',expiryDate:'2031-09-11'}));delete p.extraction.fields.expiryDate;
+ const datePage=document(IDS.passport2,'passport',{passportNationalNumber:'001-23456789',printedPassportExpiry:'11/09/2031'});datePage.sha256='b'.repeat(64);
+ return{p,datePage,id:front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})};
+}
+
+test('exact printed national number anchors a date-only passport page and full-year printed expiry resolves checked YYMMDD',()=>{
+ const {p,datePage,id}=nationalDateCase(),result=run([datePage,id,p]),person=result.applicants[0];assert.equal(result.complete,true);assert.equal(person.fields.expiryDate,'2031-09-11');assert.equal(person.evidence.passportMrzChecked,true);
+ assert.deepEqual(person.documents.passportParts.map(ref=>ref.mediaId),[IDS.passport,IDS.passport2]);
+ const evidence=person.evidence.fieldSources.expiryDate[0];assert.equal(evidence.mediaId,IDS.passport2);assert.equal(evidence.evidenceField,'printedPassportExpiry');assert.equal(evidence.corroboratedBy.mediaId,IDS.passport);
+ assert.equal(person.fields.passportNationalNumber,undefined);assert.equal(person.fields.printedPassportExpiry,undefined);assert.equal(JSON.stringify(result).includes('00123456789'),false);
+ assert.deepEqual(run([p,id,datePage]),result);
+});
+
+test('national optional-data anchoring needs the entire explicitly printed number and preserves leading zeros',()=>{
+ for(const value of [undefined,'001-23456780','0123456789','123456789','001/23456789','001234567890','23456789']){
+  const {p,datePage,id}=nationalDateCase();if(value===undefined)delete datePage.extraction.fields.passportNationalNumber;else datePage.extraction.fields.passportNationalNumber=field(value);
+  const result=run([p,datePage,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);assert.equal(result.applicants[0].documents.passportParts,undefined);assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+ }
+ const f=nationalDateCase();f.datePage.extraction.fields.passportNationalNumber.confidence=0.979;assert.equal(run([f.p,f.datePage,f.id]).applicants[0].fields.expiryDate,undefined);
+});
+
+test('all five TD3 checks and complete layout are mandatory before optional data can anchor another page',()=>{
+ for(const offset of [9,19,27,42,43]){
+  const {p,datePage,id}=nationalDateCase(),line=p.extraction.mrzLines[1];p.extraction.mrzLines[1]=line.slice(0,offset)+(Number(line[offset])+1)%10+line.slice(offset+1);
+  const result=run([p,datePage,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);assert.equal(result.applicants[0].documents.passportParts,undefined);
+ }
+ const {p,datePage,id}=nationalDateCase();p.extraction.mrzLines[1]=p.extraction.mrzLines[1].slice(0,43);const result=run([p,datePage,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);
+});
+
+test('checked optional data alone does not create a national field or infer the expiry century',()=>{
+ const {p,id}=nationalDateCase();const result=run([p,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.expiryDate,undefined);assert.equal(result.applicants[0].fields.passportNationalNumber,undefined);
+ const f=nationalDateCase();f.datePage.extraction.fields.printedPassportExpiry=field('11/09/31');const invalid=run([f.p,f.datePage,f.id]);assert.equal(invalid.complete,false);assert.equal(invalid.applicants[0].fields.expiryDate,undefined);
+ const explicit=nationalDateCase();explicit.datePage.extraction.fields.printedPassportExpiry=field('11/09/1931');const past=run([explicit.p,explicit.datePage,explicit.id]);assert.equal(past.complete,false);assert.equal(past.applicants[0].fields.expiryDate,'1931-09-11');assert.ok(codes(past).includes('PASSPORT_VALIDITY'));
+});
+
+test('unmatched printed expiry and conflicting government expiry remain blockers rather than being overwritten',()=>{
+ const f=nationalDateCase();f.datePage.extraction.fields.printedPassportExpiry=field('12/09/2031');const mismatch=run([f.p,f.datePage,f.id]);assert.equal(mismatch.complete,false);assert.equal(mismatch.applicants[0].fields.expiryDate,undefined);assert.ok(mismatch.applicants[0].issues.some(issue=>issue.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&issue.field==='expiryDate'));
+ const p=withCheckedNationalOptional(passport({expiryDate:'2031-09-11',printedPassportExpiry:'12/09/2031'}));const direct=run([p,front()]);assert.equal(direct.complete,false);assert.equal(direct.applicants[0].fields.expiryDate,'2031-09-11');assert.ok(direct.applicants[0].issues.some(issue=>issue.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&issue.field==='expiryDate'));
+});
+
+test('a printed expiry on the same checked passport page needs no separate-page number anchor',()=>{
+ const p=passport({expiryDate:'2031-09-11',printedPassportExpiry:'11/09/2031'});delete p.extraction.fields.expiryDate;
+ const result=run([p,front()]);assert.equal(result.complete,true);assert.equal(result.applicants[0].fields.expiryDate,'2031-09-11');assert.equal(result.applicants[0].evidence.fieldSources.expiryDate[0].mediaId,IDS.passport);
+});
+
+test('source conflicts on explicit national-number evidence cannot be discarded to make an anchored dossier ready',()=>{
+ const {p,datePage,id}=nationalDateCase(),copy=structuredClone(datePage);copy.mediaId=IDS.portrait;copy.extraction.fields.passportNationalNumber=field('001-23456780');
+ const result=run([p,datePage,copy,id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.ok([...codes(result),...result.issues.map(issue=>issue.code)].includes('SOURCE_CONFLICT'));
+});
