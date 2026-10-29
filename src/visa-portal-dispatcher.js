@@ -55,6 +55,17 @@ class VisaPortalDispatcher{
   else if(['failed','blocked','cancelled','lease_lost'].includes(state.stage)){await this.cancelOwned(job.id);run.phase='blocked';this.fulfilment.releaseJob(job.id,{leaseToken:run.leaseToken,state:'portal_review_required'});this.block(job,state.blocker?.code||'PORTAL_REVIEW_REQUIRED');}
   this.store.save();
  }
+ async recoverStoppedLogin(){
+  for(const job of Object.values(this.fulfilment.data().jobs)){
+   const run=this.store.data.visaPortalRuns[job.id];
+   if(job.state!=='portal_review_required'||job.blockedReason!=='PILOT_UNAVAILABLE'||!run||run.phase!=='blocked'||run.lastStage!=='login'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.loginRecoveryAttempts||0)>=1)continue;
+   const previous=job.state;job.state='ready';let dossier;
+   try{const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete)continue;dossier=this.dossier(job,proof);}catch{continue;}finally{job.state=previous;}
+   if(!dossier?.ready)continue;
+   try{const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob===true)continue;await this.cancelOwned(job.id);}catch{continue;}
+   job.state='ready';job.loginRecoveryAttempts=(job.loginRecoveryAttempts||0)+1;delete job.blockedReason;run.phase='retry_ready';this.store.save();
+  }
+ }
  async recoverMissingPreflight(){
   for(const job of Object.values(this.fulfilment.data().jobs)){
    const run=this.store.data.visaPortalRuns[job.id];
@@ -74,6 +85,7 @@ class VisaPortalDispatcher{
  async tick(){if(this.busy||this.env.RAAD_VISA_AUTOMATION_ENABLED!=='true')return;this.busy=true;try{
   this.diagnose();
   await this.recoverMissingPreflight();
+  await this.recoverStoppedLogin();
   await this.flushMessages();
   for(const job of Object.values(this.fulfilment.data().jobs)){
    if(!['queued','ready'].includes(job.state))continue;
