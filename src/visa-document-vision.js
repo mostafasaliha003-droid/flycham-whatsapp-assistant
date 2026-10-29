@@ -6,18 +6,19 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 const {parseTD3MRZ} = require('./raad-document-validation');
 const {parseTD1MRZ} = require('./visa-id-mrz');
+const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR_CODES} = require('./visa-mrz-vision');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v9';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v10';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
-const WIRE_PROJECTION_POLICY = 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-checked-ascii-mrz-whitespace-v4';
+const WIRE_PROJECTION_POLICY = 'typed-visible-passport-number-and-independent-checked-mrz-v5';
 // Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
 // Preserve completed V7/V8 failures/unreadable outcomes for an explicit bounded
 // retry, never a rollout replay. Readable successful evidence remains reusable.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -25,7 +26,7 @@ const TIMEOUT_MS = 60000;
 const DOCUMENT_FIELD_NAMES = Object.freeze([
   'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'latinFullName',
   'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'arabicFullName',
-  'passportNumber', 'passportNationalNumber', 'passportType', 'nationalityCode', 'issuingCountryCode',
+  'passportNumber', 'visiblePassportNumber', 'passportNationalNumber', 'passportType', 'nationalityCode', 'issuingCountryCode',
   'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate', 'emiratesId', 'residenceExpiry',
   'printedPassportExpiry', 'printedResidenceExpiry'
 ]);
@@ -44,7 +45,7 @@ const PROMPT = [
   'For a standalone portrait, readable is true when the photo itself is visibly usable for visual review; no text or identity fields are needed. Use readable false when that image itself is unusable or obscured. This is not a biometric or official photograph-acceptance decision.',
   'For unrelated content return kind other, readable false, empty fields, empty mrzLines, and null portraitBox.',
   'rotation is the clockwise correction needed to make the page upright: exactly 0, 90, 180, or 270.',
-  'The only allowed field names are: ' + DOCUMENT_FIELD_NAMES.join(', ') + '.',
+  'The only allowed field names are: ' + DOCUMENT_FIELD_NAMES.filter(name => name !== 'passportNumber').join(', ') + '.',
   'fields is sparse: include a field ONLY when its nonempty value is clearly visible. Each included field is exactly {"value":string,"confidence":number-from-0-to-1,"visible":true}.',
   'Every included field, including emiratesId, must use that three-key object. A bare string or number is invalid even if its transcription is correct. Do not put confidence or visible outside the field object.',
   'Completely omit every unknown, absent, ambiguous, hidden, or empty field. Especially omit father and grandfather names unless separately and explicitly printed. Do not emit null slots, empty strings, placeholders, or metadata for an absent field; the application will leave omitted fields blank.',
@@ -58,22 +59,23 @@ const PROMPT = [
   'A numerical date with a full four-digit year must not acquire a guessed day/month order. Use a clearly printed order or a uniquely possible real calendar interpretation; if both day/month interpretations are different valid dates and no format is visibly printed, omit that field. Do not assume order from the country, language, document template, or expected validity period.',
   'birthDate is date of birth, issueDate is passport date of issue, expiryDate is passport expiry, residenceExpiry is the explicitly printed UAE identity/residence expiry. Never substitute a different date.',
   'If an explicitly labelled passport expiry is clearly printed as an ambiguous numerical slash date with a full four-digit year, preserve its exact raw text as printedPassportExpiry with its own value/confidence/visible wrapper and omit expiryDate. On a UAE ID front or back use printedResidenceExpiry for an equivalently ambiguous labelled residence expiry and omit residenceExpiry. These are private evidence fields, never application answers; do not infer their order or use one date to invent another. Omit them when the labelled expiry itself is not clearly visible.',
-  'Copy passportNumber exactly as printed. For emiratesId copy the visible 15 digits, optionally retaining printed hyphens. sex is M, F, or X only when explicitly visible. passportType is ordinary, diplomatic, service, or special only when that type is explicitly labelled. If the printed type is solely the marker P, completely omit passportType; never return P as passportType and never map P to ordinary. Never infer passportType solely from an MRZ.',
+  'On a passport, visiblePassportNumber is only the exact value beside a separately printed Passport No or Passport Number label outside the MRZ. Never use an Issue No, National number, application reference or MRZ characters for visiblePassportNumber. Omit it when that separate printed label or value is not fully legible. Never emit the legacy passportNumber field; the application derives the document number from the independently checked MRZ. For emiratesId copy the visible 15 digits, optionally retaining printed hyphens. sex is M, F, or X only when explicitly visible. passportType is ordinary, diplomatic, service, or special only when that type is explicitly labelled. If the printed type is solely the marker P, completely omit passportType; never return P as passportType and never map P to ordinary. Never infer passportType solely from an MRZ.',
   'passportNationalNumber is private linking evidence, never an application field. On a passport page only, copy a separately and explicitly labelled National number or الرقم الوطني value, using its exact numeric digits and printed simple space/hyphen separators. Preserve every leading zero. Do not substitute passportNumber, emiratesId, a date, file number or application reference. If no such label is clearly printed, omit passportNationalNumber; never construct it from MRZ optional data.',
   'Distinguish the labelled visual passport number from the separate TD3 MRZ check digit. In a standard TD3 second line, characters 1 through 9 are the document-number zone and character 10 is its separate check digit, not an extra passport-number digit. Preserve the complete MRZ lines exactly. A genuinely longer labelled visual number must not be truncated to nine characters. Never strip, append, replace, or repair a character in either value to force agreement; omit an uncertain visual passportNumber instead of constructing one from MRZ.',
-  'mrzLines are the exact visible machine-readable lines using A-Z, 0-9 and <, at most three lines and 44 characters per line. Do not repair or invent check digits or ambiguous O/0, I/1, B/8, < characters. If any line is unclear leave mrzLines empty.',
+  'For a passport return mrzLines as an empty array: a separate narrow reader will transcribe the two lines. Do not interpret or copy any MRZ number into a visual field.',
+  'For a UAE ID only, mrzLines are the exact visible machine-readable lines using A-Z, 0-9 and <, at most three lines and 44 characters per line. Do not repair or invent check digits or ambiguous O/0, I/1, B/8, < characters. If any line is unclear leave mrzLines empty.',
   'portraitBox, if a single printed identification portrait has a clear exact boundary on a passport or UAE identity card, is exactly {"x":number,"y":number,"width":number,"height":number,"confidence":number}. Coordinates and dimensions are fractions of the supplied image in its current orientation, between 0 and 1, with positive width and height entirely inside it.',
   'Do not crop, alter, identify, compare faces, assess age, health, ethnicity, or any biometric trait. Locate only the document portrait rectangle. Return portraitBox null when its boundary is uncertain, there are multiple portraits, the image is a standalone portrait, or no printed portrait is present.',
   'For a standalone portrait return kind portrait and empty fields and mrzLines. No personal, medical, marital, religion, or immigration-history inference is permitted.',
   'Confidence is uncertainty about the exact transcription, not a guarantee. A plausible format, matching checksum, or desire to complete the application must not raise transcription confidence. If unreadable, report uncertainty rather than guessing.',
   'The following are complete valid JSON shape examples using invented values, not data from the supplied image. Never copy an example value or confidence into the output; read only the supplied pixels and assess each field independently.',
   'Example for a partially readable UAE ID back with a visible ID number: {"version":1,"kind":"uae_id_back","readable":true,"rotation":0,"fields":{"emiratesId":{"value":"784-1990-1234567-1","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
-  'Example for a partial passport with a visible number and only a P type marker, with no complete MRZ: {"version":1,"kind":"passport","readable":true,"rotation":0,"fields":{"passportNumber":{"value":"ZT1234567","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
+  'Example for a partial passport with a visible number and only a P type marker, with no complete MRZ: {"version":1,"kind":"passport","readable":true,"rotation":0,"fields":{"visiblePassportNumber":{"value":"ZT1234567","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
   'Example for a visibly usable standalone portrait without text: {"version":1,"kind":"portrait","readable":true,"rotation":0,"fields":{},"mrzLines":[],"portraitBox":null}'
 ].join(' ');
-const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, wireProjection: WIRE_PROJECTION_POLICY, model: MODEL, prompt: PROMPT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
+const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, wireProjection: WIRE_PROJECTION_POLICY, model: MODEL, prompt: PROMPT, focusedMrzPolicy: MRZ_POLICY_FINGERPRINT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
 const RETRYABLE_CODES = Object.freeze(['DOCUMENT_VISION_BUSY', 'DOCUMENT_VISION_COOLDOWN', 'DOCUMENT_VISION_RATE_LIMITED', 'DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 'DOCUMENT_VISION_TIMEOUT', 'DOCUMENT_VISION_NETWORK']);
-const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT']);
+const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT', ...MRZ_VISION_ERROR_CODES]);
 const SCHEMA_SECTIONS = Object.freeze(['root', 'fields', 'mrzLines', 'portraitBox']);
 const SCHEMA_ISSUES = Object.freeze(['root_shape', 'root_value', 'field_shape', 'null_metadata', 'field_metadata', 'value_type', 'value_format', 'mrz_format', 'portrait_bounds']);
 
@@ -122,7 +124,8 @@ function validateDocumentExtraction(value) {
       // Discard only this known ambiguous marker; preserve all other facts.
       if (name === 'passportType' && field.value === 'P') { fields[name] = {value: null, confidence: 0, visible: false}; continue; }
       if (name === 'passportType' && !['ordinary', 'diplomatic', 'service', 'special'].includes(field.value)) return invalid('fields', name, 'value_format');
-      if (name === 'passportNumber' && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name, 'value_format');
+      if (['passportNumber', 'visiblePassportNumber'].includes(name) && !/^[A-Za-z0-9]{1,20}$/.test(field.value)) return invalid('fields', name, 'value_format');
+      if (name === 'visiblePassportNumber' && value.kind !== 'passport') return invalid('fields', name, 'value_format');
       if (name === 'passportNationalNumber' && (value.kind !== 'passport' || field.value.length > 40 || !/^\d+(?:[ -]\d+)*$/.test(field.value) || field.value.replace(/[ -]/g, '').length > 20)) return invalid('fields', name, 'value_format');
       if (name === 'emiratesId' && !/^(?:\d{15}|\d{3}-\d{4}-\d{7}-\d)$/.test(field.value)) return invalid('fields', name, 'value_format');
       if (name === 'printedPassportExpiry' && (value.kind !== 'passport' || slashDateCandidates(field.value).length === 0)) return invalid('fields', name, 'value_format');
@@ -247,7 +250,7 @@ function projectWireEvidence(value) {
   return result;
 }
 
-function parseDocumentOutput(output) {
+function parseDocumentOutput(output, {deferPassportMrz = false} = {}) {
   if (typeof output !== 'string') throw failure('DOCUMENT_VISION_INVALID_JSON');
   if (Buffer.byteLength(output, 'utf8') > MAX_RESPONSE_BYTES) throw failure('DOCUMENT_VISION_RESPONSE_TOO_LARGE');
   let text = output.trim();
@@ -257,7 +260,12 @@ function parseDocumentOutput(output) {
     text = fence[1].trim();
   }
   let value; try { value = JSON.parse(text); } catch { throw failure('DOCUMENT_VISION_INVALID_JSON'); }
-  return validateDocumentExtraction(projectWireEvidence(value));
+  const projected = projectWireEvidence(value);
+  // A full-page model's malformed, bounded MRZ transcription is unknown. Its
+  // independent visual fields still undergo the unchanged strict validator;
+  // the dedicated reader must read the source pixels before MRZ can be used.
+  if (deferPassportMrz && plain(projected) && projected.kind === 'passport' && Array.isArray(projected.mrzLines) && projected.mrzLines.length <= 3 && projected.mrzLines.every(line => typeof line === 'string' && line.length <= 256) && projected.mrzLines.some(line => !/^[A-Z0-9<]{1,44}$/.test(line))) projected.mrzLines = [];
+  return validateDocumentExtraction(projected);
 }
 
 function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.now} = {}) {
@@ -267,7 +275,7 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
   const ready = () => enabled() && configured() && !busy && now() >= cooldownUntil;
   const status = () => ({enabled: enabled(), configured: configured(), model: MODEL, ready: ready(), busy, ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
   const guardNow = async guard => { try { if (typeof guard !== 'function' || await guard() === false) throw Error(); } catch { throw failure('DOCUMENT_VISION_STALE'); } };
-  async function extract({bytes, mimeType, guard} = {}) {
+  async function perform({bytes, mimeType, guard} = {}, focused = false) {
     if (!enabled()) throw failure('DOCUMENT_VISION_DISABLED');
     if (env.RAAD_DOCUMENT_OCR_MODEL && env.RAAD_DOCUMENT_OCR_MODEL !== MODEL) throw failure('DOCUMENT_VISION_MODEL_NOT_ALLOWED');
     if (!configured()) throw failure('DOCUMENT_VISION_NOT_CONFIGURED');
@@ -275,8 +283,9 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     if (now() < cooldownUntil) throw failure('DOCUMENT_VISION_COOLDOWN', cooldownUntil - now());
     busy = true;
     try {
-      await guardNow(guard); await validateImage(bytes, mimeType); await guardNow(guard);
-      const request = {systemInstruction: {parts: [{text: PROMPT}]}, contents: [{role: 'user', parts: [{inlineData: {mimeType, data: bytes.toString('base64')}}, {text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], generationConfig: {temperature: 0, maxOutputTokens: 4096, thinkingConfig: {thinkingLevel: 'minimal'}}};
+      await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
+      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {systemInstruction: {parts: [{text: PROMPT}]}, contents: [{role: 'user', parts: [{inlineData: {mimeType, data: bytes.toString('base64')}}, {text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], generationConfig: {temperature: 0, maxOutputTokens: 4096, thinkingConfig: {thinkingLevel: 'minimal'}}};
+      await guardNow(guard);
       let response;
       try { response = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent', {method: 'POST', headers: {'x-goog-api-key': env.GEMINI_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(request)}); }
       catch (error) { throw failure(['TimeoutError', 'AbortError'].includes(error?.name) ? 'DOCUMENT_VISION_TIMEOUT' : 'DOCUMENT_VISION_NETWORK'); }
@@ -296,10 +305,10 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
       const visibleParts = candidate.content.parts.filter(part => part?.thought !== true);
       if (!visibleParts.length || visibleParts.some(part => !plain(part) || typeof part.text !== 'string' || Object.keys(part).some(key => !['text', 'thought', 'thoughtSignature'].includes(key)))) throw failure('DOCUMENT_VISION_INCOMPLETE');
       const output = visibleParts.map(part => part.text).join('');
-      const result = parseDocumentOutput(output); await guardNow(guard); return result;
+      const result = focused ? parseMrzOutput(output) : parseDocumentOutput(output, {deferPassportMrz: true}); await guardNow(guard); return result;
     } finally { busy = false; }
   }
-  return {extract, ready, status};
+  return {extract: input => perform(input, false), extractMrz: input => perform(input, true), ready, status};
 }
 
 module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, ABSTENTION_POLICY, WIRE_PROJECTION_POLICY, POLICY_FINGERPRINT, COMPATIBLE_PREVIOUS_POLICIES, COMPATIBLE_COMPLETED_FAILURE_POLICIES, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, SCHEMA_ISSUES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};

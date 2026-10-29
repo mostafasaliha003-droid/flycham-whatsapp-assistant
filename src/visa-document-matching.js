@@ -6,7 +6,7 @@ const {parseTD1MRZ, matchesPrintedEmiratesId, resolvePrintedDate} = require('./v
 const THRESHOLD = 0.98;
 const KINDS = new Set(['passport', 'uae_id_front', 'uae_id_back', 'portrait', 'other']);
 const PASSPORT_FIELDS = Object.freeze(['latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'passportNumber', 'passportType', 'nationalityCode', 'issuingCountryCode', 'birthDate', 'birthPlace', 'sex', 'issueDate', 'expiryDate']);
-const ALL_FIELDS = new Set([...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName', 'passportNationalNumber', 'printedPassportExpiry', 'printedResidenceExpiry', 'emiratesId', 'residenceExpiry']);
+const ALL_FIELDS = new Set([...PASSPORT_FIELDS, 'latinFullName', 'arabicFullName', 'visiblePassportNumber', 'passportNationalNumber', 'printedPassportExpiry', 'printedResidenceExpiry', 'emiratesId', 'residenceExpiry']);
 const DOCUMENT_FIELDS = new Set([...PASSPORT_FIELDS, 'emiratesId', 'residenceExpiry']);
 const IDENTITY_FIELDS = ['passportNumber', 'birthDate', 'nationalityCode', 'sex'];
 const MRZ_FIELDS = ['passportNumber', 'nationalityCode', 'issuingCountryCode', 'birthDate', 'expiryDate', 'sex'];
@@ -55,7 +55,7 @@ function normalizedValue(field, value) {
   const result = value.normalize('NFKC').trim();
   if (!result || result.length > 200 || /[\u0000-\u001f\u007f-\u009f]/u.test(result)) return null;
   if (field === 'emiratesId') return digits(result).replace(/[ -]/g, '');
-  if (field === 'passportNumber') return result.toUpperCase();
+  if (['passportNumber','visiblePassportNumber'].includes(field)) return result.toUpperCase();
   if (['nationalityCode', 'issuingCountryCode'].includes(field)) return result.toUpperCase() === 'D<<' ? 'DEU' : result.toUpperCase();
   if (field === 'sex') { const values = {male:'M',female:'F',unspecified:'X',m:'M',f:'F',x:'X'}, key = result.toLowerCase(); return Object.hasOwn(values,key) ? values[key] : result; }
   return result;
@@ -145,6 +145,15 @@ function readDocument(document) {
     if (value === null) { parsed.invalidFields.push(field); continue; }
     parsed.fields[field] = value;
   }
+  if(parsed.kind==='passport'){
+    // Keep literal visual/legacy observations separate from the number parsed
+    // from fixed TD3 positions. A new read cannot relabel a cached mismatch.
+    parsed.passportNumberObservations=['passportNumber','visiblePassportNumber'].filter(field=>Object.hasOwn(parsed.fields,field)).map(field=>({...ref(parsed),evidenceField:field,value:extraction.fields[field].value,confidence:extraction.fields[field].confidence}));
+    if(!parsed.fields.passportNumber&&parsed.fields.visiblePassportNumber){
+      parsed.fields.passportNumber=parsed.fields.visiblePassportNumber;
+      parsed.fieldProvenance={passportNumber:[{...ref(parsed),evidenceField:'visiblePassportNumber',confidence:extraction.fields.visiblePassportNumber.confidence,method:'visible_unconfirmed'}]};
+    }
+  }
   if (typeof document.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(document.sourceSha256)) parsed.sourceSha256 = document.sourceSha256;
   return parsed;
 }
@@ -153,7 +162,7 @@ function validationIssues(fields, referenceDate, entryDate, allowed) {
   return validateApplicant({...fields, entryDate: date}, {referenceDate}).issues.filter(item => allowed.has(item.field)).map(item => issue(item.code === 'required' || item.code === 'invalid_date' && !fields[item.field] ? 'DOCUMENT_FIELD_REQUIRED' : item.code === 'insufficient_passport_validity' ? 'PASSPORT_VALIDITY' : item.code === 'insufficient_residence_validity' ? 'RESIDENCE_VALIDITY' : 'DOCUMENT_FIELD_INVALID', item.field));
 }
 function inspectPassport(document, referenceDate) {
-  const fields = document.fields, issues = [...document.issues];
+  const fields = {...document.fields}, fieldProvenance={...document.fieldProvenance}, issues = [...document.issues];
   const mrzLines = document.extraction?.mrzLines;
   let mrzChecked = false, mrzIdentity = null, optionalDigits = null, checkedMrzDates = null;
   if (!Array.isArray(mrzLines) || mrzLines.length !== 2) issues.push(issue('PASSPORT_MRZ_REQUIRED', 'mrz'));
@@ -166,7 +175,15 @@ function inspectPassport(document, referenceDate) {
       issues.push(issue(ambiguous ? 'PASSPORT_MRZ_DATE_AMBIGUOUS' : 'PASSPORT_MRZ_INVALID', 'mrz'));
     }
     let mismatch = false;
-    for (const field of MRZ_FIELDS) if (fields[field] && parsed.fields?.[field] !== null && parsed.fields?.[field] !== undefined && !equivalent(field, fields[field], parsed.fields[field])) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', field)); }
+    for (const field of MRZ_FIELDS.filter(field=>field!=='passportNumber')) if (fields[field] && parsed.fields?.[field] !== null && parsed.fields?.[field] !== undefined && !equivalent(field, fields[field], parsed.fields[field])) { mismatch = true; issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH', field)); }
+    const observedNumbers=document.passportNumberObservations||[];
+    if(observedNumbers.some(observed=>parsed.fields?.passportNumber&&!equivalent('passportNumber',observed.value,parsed.fields.passportNumber))){mismatch=true;issues.push(issue('PASSPORT_VIZ_MRZ_MISMATCH','passportNumber'));}
+    if(structurallyCheckedTD3(parsed)){
+      fields.passportNumber=parsed.fields.passportNumber;
+      // Check-digit validation is deterministic evidence, not an OCR confidence
+      // estimate. Keep the literal VIZ observation above even when it disagrees.
+      fieldProvenance.passportNumber=[{...ref(document),evidenceField:'mrzLines',method:'td3_document_number_checked',checks:['documentNumber','birthDate','expiryDate','optionalData','composite']}];
+    }
     const labelledGiven=normalizedName(fields.latinFirstName);
     const given = normalizedName([fields.latinFirstName, fields.latinFatherName, fields.latinGrandfatherName].filter(Boolean).join(' '));
     const mrzGiven = normalizedName(parsed.fields?.latinNames?.givenNames);
@@ -185,8 +202,8 @@ function inspectPassport(document, referenceDate) {
       mrzIdentity = {...Object.fromEntries(MRZ_FIELDS.map(field => [field, parsed.fields[field]])), latinFullName:mrzFull};
     }
   }
-  for (const field of document.invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
-  return {...document, issues, mrzChecked, mrzIdentity, checkedOptionalDigits:optionalDigits, checkedMrzDates};
+  for (const field of document.invalidFields) if (DOCUMENT_FIELDS.has(field)||field==='visiblePassportNumber') issues.push(issue('DOCUMENT_FIELD_INVALID',field==='visiblePassportNumber'?'passportNumber':field));
+  return {...document, fields, fieldProvenance, issues, mrzChecked, mrzIdentity, checkedOptionalDigits:optionalDigits, checkedMrzDates};
 }
 function conflictsWithCase(document, known) {
   const issues = [];
@@ -207,7 +224,7 @@ function addSources(result, document, acceptedFields, method) {
     if (!Object.hasOwn(document.fields, field)) continue;
     result.evidence.fieldSources[field] ||= [];
     const sources = document.fieldProvenance?.[field] || [{...ref(document), confidence: document.extraction.fields[field].confidence}];
-    result.evidence.fieldSources[field].push(...sources.map(source => ({...source, method})));
+    result.evidence.fieldSources[field].push(...sources.map(source => ({...source, method:source.method||method})));
   }
 }
 
@@ -302,14 +319,16 @@ function deduplicateDocuments(documents) {
     for (const document of group) {
       for (const [field,value] of Object.entries(document.fields)) {
         if (Object.hasOwn(fields,field)) { if (!equivalent(field,fields[field],value)) issues.push(issue('SOURCE_CONFLICT',field)); }
-        else { fields[field]=value; fieldProvenance[field]=[{...ref(document),confidence:document.extraction.fields[field].confidence}]; }
+        else { fields[field]=value; fieldProvenance[field]=document.fieldProvenance?.[field]||[{...ref(document),confidence:document.extraction.fields[field].confidence}]; }
       }
       if (document.extraction.rotation !== primary.extraction.rotation) issues.push(issue('SOURCE_CONFLICT','rotation'));
       if (document.extraction.mrzLines.length && primary.extraction.mrzLines.length && JSON.stringify(document.extraction.mrzLines) !== JSON.stringify(primary.extraction.mrzLines)) issues.push(issue('SOURCE_CONFLICT','mrz'));
       const box=document.extraction.portraitBox,chosenBox=primary.extraction.portraitBox;
       if (box && chosenBox && ['x','y','width','height'].some(key => box[key] !== chosenBox[key])) issues.push(issue('SOURCE_CONFLICT','portraitBox'));
     }
-    return {...primary,fields,fieldProvenance,issues:uniqueIssues(issues),invalidFields:[...new Set(group.flatMap(document=>document.invalidFields))],lowConfidence:[...new Set(group.flatMap(document=>document.lowConfidence))]};
+    const passportNumberObservations=group.flatMap(document=>document.passportNumberObservations||[]);
+    if(group.length>1&&new Set(passportNumberObservations.map(observed=>normalizedValue('passportNumber',observed.value))).size>1)issues.push(issue('SOURCE_CONFLICT','passportNumber'));
+    return {...primary,fields,fieldProvenance,passportNumberObservations,issues:uniqueIssues(issues),invalidFields:[...new Set(group.flatMap(document=>document.invalidFields))],lowConfidence:[...new Set(group.flatMap(document=>document.lowConfidence))]};
   }).sort(compareReference);
 }
 function hasStrongVisualIdentity(document) {
@@ -369,6 +388,10 @@ function passportGroups(documents, referenceDate) {
     for (const document of checked) issues.push(...document.issues);
     for (const field of invalidFields) if (DOCUMENT_FIELDS.has(field)) issues.push(issue('DOCUMENT_FIELD_INVALID', field));
     const primary = checked.find(part => part.mrzChecked) || checked[0];
+    if(fields.passportNumber&&!primary.fieldProvenance?.passportNumber){
+      const source=parts.find(part=>part.fields.passportNumber&&equivalent('passportNumber',part.fields.passportNumber,fields.passportNumber));
+      if(source)primary.fieldProvenance={...primary.fieldProvenance,passportNumber:source.fieldProvenance?.passportNumber||[{...ref(source),confidence:source.extraction.fields.passportNumber.confidence}]};
+    }
     if (checked.some(part => part.mrzIdentity && primary.mrzIdentity && [...MRZ_FIELDS, 'latinFullName'].some(field => part.mrzIdentity[field] && primary.mrzIdentity[field] && !equivalent(field, part.mrzIdentity[field], primary.mrzIdentity[field])))) issues.push(issue('MULTIPLE_PASSPORTS', 'mrz'));
     if (parts.length > 2) issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));
     const ordered = [parts.find(part => part.mediaId === primary.mediaId && part.page === primary.page), ...parts.filter(part => part.mediaId !== primary.mediaId || part.page !== primary.page)];
@@ -421,7 +444,9 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (document.parts.length > 1) result.documents.passportParts = document.parts.slice(0,2).map(ref);
     for (const part of document.parts.slice(2)) unassign(part, 'MULTIPLE_PASSPORTS');
     for (const field of PASSPORT_FIELDS) if (Object.hasOwn(document.fields, field)) result.fields[field] = document.fields[field];
-    for (const part of document.parts) addSources(result, part, PASSPORT_FIELDS, document.mrzChecked ? 'visible_and_mrz_checked' : 'visible_unconfirmed');
+    result.evidence.passportNumberObservations=document.parts.flatMap(part=>part.passportNumberObservations||[]);
+    for (const part of document.parts) addSources(result, part, PASSPORT_FIELDS.filter(field=>field!=='passportNumber'), document.mrzChecked ? 'visible_and_mrz_checked' : 'visible_unconfirmed');
+    addSources(result,document,['passportNumber'],'visible_unconfirmed');
   }
   const identities = distinct.filter(document => document.kind === 'uae_id_front' || document.kind === 'uae_id_back').sort((a,b) => Number(a.kind === 'uae_id_back') - Number(b.kind === 'uae_id_back') || compareReference(a,b));
   const pending = new Set(identities);

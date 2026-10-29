@@ -33,6 +33,66 @@ test('dedicated reader uses actual pixels with pinned Gemma and no conversation 
   for (const forbidden of ['UNTRUSTED_CAPTION', 'UNTRUSTED_HISTORY', 'UNTRUSTED_INSTRUCTION', 'unused-openai-key', 'unused-cline-key']) assert.equal(options.body.includes(forbidden), false);
 });
 
+test('typed passport number is a separate literal visual observation and never drops a tenth digit', async () => {
+  const value = page({fields:{visiblePassportNumber:field('1234567890')}});
+  assert.deepEqual(validateDocumentExtraction(value).fields.visiblePassportNumber, field('1234567890'));
+  assert.throws(() => validateDocumentExtraction({...value,kind:'uae_id_front'}), {code:'DOCUMENT_VISION_SCHEMA_INVALID',fieldName:'visiblePassportNumber'});
+  const f = await setup({payload:envelope(value)}); assert.deepEqual(await f.extract(),value);
+  const prompt = JSON.parse(f.calls[0].options.body).systemInstruction.parts[0].text;
+  assert.match(prompt,/Never emit the legacy passportNumber field/);
+  assert.match(prompt,/separately printed Passport No or Passport Number label/);
+  assert.match(prompt,/For a passport return mrzLines as an empty array/);
+});
+
+test('full-page reader preserves strictly valid visual facts when a bounded MRZ transcription needs independent reading', async () => {
+  const bad = page({mrzLines:['PN SYR PRIVATE TRANSCRIPTION', 'not-a-valid-line']});
+  assert.throws(() => parseDocumentOutput(JSON.stringify(bad)), {code:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'mrzLines'});
+  const f = await setup({payload:envelope(bad)}), result = await f.extract();
+  assert.deepEqual(result.fields,bad.fields); assert.deepEqual(result.mrzLines,[]);
+  for (const mrzLines of [{lines:[]},Array(4).fill('ABC'),['A'.repeat(257)]]) {
+    const invalid = await setup({payload:envelope({...bad,mrzLines})});
+    await assert.rejects(invalid.extract(),{code:'DOCUMENT_VISION_SCHEMA_INVALID'});
+  }
+  const invalidFields = await setup({payload:envelope({...bad,fields:{sex:field('UNKNOWN')}})});
+  await assert.rejects(invalidFields.extract(),{code:'DOCUMENT_VISION_SCHEMA_INVALID',fieldName:'sex'});
+});
+
+test('focused MRZ reader shares the pinned transport and accepts only the independent five-check result', async () => {
+  const f = await setup({payload:envelope({version:1,lines:ICAO_TD3})});
+  const result = await f.adapter.extractMrz({bytes:f.bytes,mimeType:'image/png',guard:()=>true,prompt:'PRIVATE_CALLER_INSTRUCTION'});
+  assert.deepEqual(result.mrzLines,ICAO_TD3); assert.equal(Object.keys(result.checks).length,5);
+  assert.ok(Object.values(result.checks).every(value=>value===true));
+  const body = JSON.parse(f.calls[0].options.body);
+  assert.equal(body.generationConfig.maxOutputTokens,512);
+  assert.equal(body.contents[0].parts[0].inlineData.data,f.bytes.toString('base64'));
+  assert.match(body.systemInstruction.parts[0].text,/Transcribe only the two TD3/);
+  assert.equal(f.calls[0].options.body.includes('PRIVATE_CALLER_INSTRUCTION'),false);
+  assert.equal(Object.hasOwn(result,'fields'),false);
+});
+
+test('focused and full-page readings cannot send concurrently and share rate-limit cooldown', async () => {
+  let release, entered; const started=new Promise(resolve=>{entered=resolve;}), held=new Promise(resolve=>{release=resolve;});
+  const f=await setup({fetchImpl:async()=>{entered();await held;return response(envelope({version:1,lines:ICAO_TD3}));}});
+  const reading=f.adapter.extractMrz({bytes:f.bytes,mimeType:'image/png',guard:()=>true});await started;
+  await assert.rejects(f.extract(),{code:'DOCUMENT_VISION_BUSY'});assert.equal(f.calls.length,1);
+  release();await reading;assert.equal(f.adapter.ready(),true);
+  let first=true;const g=await setup({fetchImpl:async()=>{if(first){first=false;return new Response('PRIVATE_PROVIDER_BODY',{status:429});}return response(envelope(page()));}});
+  await assert.rejects(g.adapter.extractMrz({bytes:g.bytes,mimeType:'image/png',guard:()=>true}),{code:'DOCUMENT_VISION_RATE_LIMITED'});
+  await assert.rejects(g.extract(),{code:'DOCUMENT_VISION_COOLDOWN'});assert.equal(g.calls.length,1);
+  g.advance(60001);await g.extract();assert.equal(g.calls.length,2);
+});
+
+test('focused reader checks ownership before upload and after response and never repairs a bad check digit', async () => {
+  const f=await setup();let checks=0;
+  await assert.rejects(f.adapter.extractMrz({bytes:f.bytes,mimeType:'image/png',guard:()=>++checks<3}),{code:'DOCUMENT_VISION_STALE'});assert.equal(f.calls.length,0);
+  let fresh=true;const g=await setup({fetchImpl:async()=>{fresh=false;return response(envelope({version:1,lines:ICAO_TD3}));}});
+  await assert.rejects(g.adapter.extractMrz({bytes:g.bytes,mimeType:'image/png',guard:()=>fresh}),{code:'DOCUMENT_VISION_STALE'});
+  const lines=[ICAO_TD3[0],ICAO_TD3[1].slice(0,43)+(ICAO_TD3[1][43]==='0'?'1':'0')];
+  const h=await setup({payload:envelope({version:1,lines})});
+  await assert.rejects(h.adapter.extractMrz({bytes:h.bytes,mimeType:'image/png',guard:()=>true}),{code:'MRZ_VISION_CHECKS_FAILED'});
+  assert.equal(h.calls.length,1);assert.equal(h.adapter.ready(),true);
+});
+
 test('configuration and status never reveal credentials or call another provider', async () => {
   for (const [config, code] of [[{RAAD_DOCUMENT_OCR_ENABLED: 'false'}, 'DOCUMENT_VISION_DISABLED'], [{GEMINI_API_KEY: ''}, 'DOCUMENT_VISION_NOT_CONFIGURED'], [{RAAD_DOCUMENT_OCR_MODEL: 'gemini-paid-untrusted'}, 'DOCUMENT_VISION_MODEL_NOT_ALLOWED']]) {
     const f = await setup({config}); await assert.rejects(f.extract(), {code});
@@ -40,12 +100,12 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v9');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v10');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
-  assert.equal(WIRE_PROJECTION_POLICY, 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-checked-ascii-mrz-whitespace-v4');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
+  assert.equal(WIRE_PROJECTION_POLICY, 'typed-visible-passport-number-and-independent-checked-mrz-v5');
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
-  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
+  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
   assert.equal(Object.isFrozen(COMPATIBLE_COMPLETED_FAILURE_POLICIES), true);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
