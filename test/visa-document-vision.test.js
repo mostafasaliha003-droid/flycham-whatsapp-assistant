@@ -40,12 +40,12 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v8');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v9');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
-  assert.equal(WIRE_PROJECTION_POLICY, 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-outside-portrait-v3');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207']);
+  assert.equal(WIRE_PROJECTION_POLICY, 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-checked-ascii-mrz-whitespace-v4');
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
-  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207']);
+  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
   assert.equal(Object.isFrozen(COMPATIBLE_COMPLETED_FAILURE_POLICIES), true);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
@@ -170,6 +170,9 @@ test('instructions contain complete valid wrapped examples and distinct readable
   assert.match(prompt, /Father Name, Father's Name, or اسم الأب label is direct evidence/);
   assert.match(prompt, /matching checksum, or desire to complete the application must not raise transcription confidence/);
   assert.match(prompt, /passportNationalNumber is private linking evidence, never an application field/);
+  assert.match(prompt, /exactly visible TD3 second-line characters 11 through 13/);
+  assert.match(prompt, /without a separate visual nationality label/);
+  assert.match(prompt, /do not reconstruct any other application date or name field from MRZ-only evidence/);
   const examples = prompt.split('Example for ').slice(1).map(part => JSON.parse(part.slice(part.indexOf(': ') + 2).trim()));
   assert.equal(examples.length, 3);
   for (const example of examples) assert.deepEqual(validateDocumentExtraction(example), example);
@@ -377,6 +380,69 @@ test('MRZ and portrait rectangles are bounded evidence, never repaired or treate
   ]) assert.throws(() => validateDocumentExtraction(page({portraitBox})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   assert.throws(() => validateDocumentExtraction(page({kind: 'portrait', fields: {}, portraitBox: {x: 0, y: 0, width: 1, height: 1, confidence: 1}})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
   assert.throws(() => validateDocumentExtraction(page({kind: 'portrait'})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID'});
+});
+
+const ICAO_TD3 = ['P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<', 'L898902C36UTO7408122F1204159ZE184226B<<<<<10'];
+const ICAO_TD1 = ['I<UTOD231458907<<<<<<<<<<<<<<<', '7408122F1204159UTO<<<<<<<<<<<6', 'ERIKSSON<<ANNA<MARIA<<<<<<<<<<'];
+const spacedMrz = lines => lines.map(line => ' \t\r\n' + line.match(/.{1,5}/g).join(' \t') + '\n\v\f ');
+function alteredMrz(lines, line, position, replacement) { const result = [...lines]; result[line] = result[line].slice(0, position) + replacement + result[line].slice(position + 1); return result; }
+
+test('wire-only MRZ whitespace normalization preserves complete checked ICAO TD3 and TD1 characters without populating facts', () => {
+  const {parseTD3MRZ} = require('../src/raad-document-validation'), {parseTD1MRZ} = require('../src/visa-id-mrz');
+  assert.equal(Object.values(parseTD3MRZ(ICAO_TD3, {referenceDate: '2000-12-31'}).checks).every(check => check.ok), true);
+  assert.equal(parseTD1MRZ(ICAO_TD1).ok, true);
+  for (const [kind, exact] of [['passport', ICAO_TD3], ['uae_id_front', ICAO_TD1], ['uae_id_back', ICAO_TD1]]) {
+    const wire = page({kind, fields: {}, mrzLines: spacedMrz(exact)}), before = structuredClone(wire);
+    assert.throws(() => validateDocumentExtraction(wire), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'});
+    const result = parseDocumentOutput(JSON.stringify(wire));
+    assert.deepEqual(wire, before); assert.deepEqual(result.mrzLines, exact);
+    assert.deepEqual(result.fields, {}, 'normalization does not copy MRZ dates, nationality, names or identity numbers');
+    assert.equal(result.kind, kind); assert.equal(result.readable, true);
+    assert.deepEqual(validateDocumentExtraction(result), result);
+    const wrapped = {...wire, fields: {nationalityCode: field('UTO', 0.61)}};
+    assert.deepEqual(parseDocumentOutput(JSON.stringify(wrapped)).fields.nationalityCode, wrapped.fields.nationalityCode, 'formatting cannot increase confidence');
+  }
+});
+
+test('MRZ wire whitespace normalization requires every checksum and complete structural validation without character repair', () => {
+  const candidates = [];
+  for (const position of [9, 19, 27, 42, 43]) {
+    const changed = String((Number(ICAO_TD3[1][position]) + 1) % 10);
+    candidates.push(['passport', alteredMrz(ICAO_TD3, 1, position, changed)]);
+  }
+  for (const [line, position] of [[0, 14], [1, 6], [1, 14], [1, 29]]) {
+    const changed = String((Number(ICAO_TD1[line][position]) + 1) % 10);
+    candidates.push(['uae_id_back', alteredMrz(ICAO_TD1, line, position, changed)]);
+  }
+  candidates.push(
+    ['passport', [ICAO_TD3[0].slice(1), ICAO_TD3[1]]],
+    ['passport', [ICAO_TD3[0] + '<', ICAO_TD3[1]]],
+    ['passport', alteredMrz(ICAO_TD3, 1, 23, 'O')],
+    ['passport', alteredMrz(ICAO_TD3, 0, 3, '1')], // bad issuer, unchanged checks
+    ['passport', alteredMrz(ICAO_TD3, 0, 7, '1')], // bad name, unchanged checks
+    ['uae_id_back', alteredMrz(ICAO_TD1, 1, 10, 'O')],
+    ['uae_id_back', alteredMrz(ICAO_TD1, 0, 3, '1')], // bad issuer, unchanged checks
+    ['uae_id_back', [ICAO_TD1[0].slice(1), ...ICAO_TD1.slice(1)]]
+  );
+  for (const [kind, lines] of candidates) assert.throws(() => parseDocumentOutput(JSON.stringify(page({kind, fields: {}, mrzLines: spacedMrz(lines)}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'});
+});
+
+test('MRZ wire normalization rejects non-ASCII spacing, glyph replacement, case folding, wrong line counts and unbounded strings', () => {
+  const raw = spacedMrz(ICAO_TD3);
+  const invalid = [
+    [raw[0].replace('<', '\uff1c'), raw[1]],
+    [raw[0].replace(' ', '\u00a0'), raw[1]],
+    raw.map(line => line.toLowerCase()),
+    [' '.repeat(256) + ICAO_TD3[0], raw[1]],
+    [...raw, raw[0]], [raw[0]], raw.join('\n'), [123, raw[1]]
+  ];
+  for (const mrzLines of invalid) assert.throws(() => parseDocumentOutput(JSON.stringify(page({fields: {}, mrzLines}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'});
+  assert.throws(() => parseDocumentOutput(JSON.stringify(page({kind: 'uae_id_back', fields: {}, mrzLines: raw}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'});
+  assert.throws(() => parseDocumentOutput(JSON.stringify(page({kind: 'passport', fields: {}, mrzLines: spacedMrz(ICAO_TD1)}))), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'});
+  const partial = page({fields: {}, mrzLines: ['P<UTO', 'ABC']});
+  assert.deepEqual(validateDocumentExtraction(partial), partial, 'existing strict contract permits bounded partial MRZ evidence');
+  assert.deepEqual(parseDocumentOutput(JSON.stringify(partial)), partial);
+  assert.throws(() => parseDocumentOutput(JSON.stringify({...partial, mrzLines: [' P<UTO ', '\tABC\n']})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'}, 'formatting cannot turn incomplete evidence into a complete checked MRZ');
 });
 
 test('thinking, function calls, blocked and truncated provider output never become document facts', async () => {

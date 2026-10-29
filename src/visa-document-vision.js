@@ -4,18 +4,20 @@
 // caller, URL, arbitrary instruction, or provider error is sent or retained.
 const sharp = require('sharp');
 const {createHash} = require('node:crypto');
+const {parseTD3MRZ} = require('./raad-document-validation');
+const {parseTD1MRZ} = require('./visa-id-mrz');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v8';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v9';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
-const WIRE_PROJECTION_POLICY = 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-outside-portrait-v3';
-// Successfully validated, readable evidence from V3/V4/V5/V6/V7 remains equally strict.
+const WIRE_PROJECTION_POLICY = 'known-bare-field-abstention-unique-calendar-date-printed-expiry-evidence-checked-ascii-mrz-whitespace-v4';
+// Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207']);
-// V8 changes no extraction instruction or accepted fact. Retain completed V7
-// failures/unreadable outcomes for an explicit bounded retry, never a rollout replay.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
+// Preserve completed V7/V8 failures/unreadable outcomes for an explicit bounded
+// retry, never a rollout replay. Readable successful evidence remains reusable.
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -51,6 +53,7 @@ const PROMPT = [
   'A clearly legible, separately printed Father Name, Father\'s Name, or اسم الأب label is direct evidence for latinFatherName or arabicFatherName: copy that labelled value exactly, without inventing other name components. MRZ secondary identifiers are not labels for father or grandfather names; never split MRZ given names to populate those fields. An absent or unclear separate label means omit the optional field.',
   'For UAE identity cards a whole printed name belongs in latinFullName or arabicFullName; do not guess how it splits. Keep nationality distinct from the issuing country and residence country.',
   'Use ISO 3166-1 alpha-3 uppercase for a clearly visible, explicitly labelled nationality or issuing country. Never use the issuer to infer nationality.',
+  'One explicit nationality source is the exactly visible TD3 second-line characters 11 through 13 (counting from 1): these three characters may be transcribed into nationalityCode with their own value/confidence/visible wrapper even without a separate visual nationality label. This zone is distinct from the issuer in first-line characters 3 through 5. Do not infer nationality from the issuer, and do not reconstruct any other application date or name field from MRZ-only evidence.',
   'Dates: return YYYY-MM-DD only if day, month, and full four-digit year are unambiguous on the visible document. Never infer a century or a date from age, nationality, an MRZ two-digit year, today, or another field.',
   'A numerical date with a full four-digit year must not acquire a guessed day/month order. Use a clearly printed order or a uniquely possible real calendar interpretation; if both day/month interpretations are different valid dates and no format is visibly printed, omit that field. Do not assume order from the country, language, document template, or expected validity period.',
   'birthDate is date of birth, issueDate is passport date of issue, expiryDate is passport expiry, residenceExpiry is the explicitly printed UAE identity/residence expiry. Never substitute a different date.',
@@ -191,6 +194,23 @@ function slashDateCandidates(text) {
 function projectWireEvidence(value) {
   if (!plain(value)) return value;
   const result = {...value};
+  const expectedLength = value.kind === 'passport' ? 44 : ['uae_id_front', 'uae_id_back'].includes(value.kind) ? 30 : null;
+  const expectedCount = expectedLength === 44 ? 2 : expectedLength === 30 ? 3 : null;
+  const rawLines = value.mrzLines;
+  if (expectedLength && Array.isArray(rawLines) && rawLines.length === expectedCount && rawLines.every(line => typeof line === 'string' && line.length <= 256 && /^[A-Z0-9<\x09-\x0d\x20]+$/.test(line))) {
+    // Formatting only: remove ASCII whitespace, never any document character.
+    // Validate the entire exact layout and every independent check before the
+    // internal strict schema can see these lines. No substitutions or repair.
+    const lines = rawLines.map(line => line.replace(/[\x09-\x0d\x20]/g, ''));
+    if (lines.every(line => line.length === expectedLength)) {
+      // This fixed reference permits structural calendar checks without using
+      // today's century. No parsed date or other MRZ fact is copied out here.
+      const parsed = expectedLength === 44 ? parseTD3MRZ(lines, {referenceDate: '2000-12-31'}) : parseTD1MRZ(lines);
+      const allChecks = Object.keys(parsed.checks).length === (expectedLength === 44 ? 5 : 4) && Object.values(parsed.checks).every(check => check.ok === true);
+      const valid = expectedLength === 44 ? parsed.format === 'TD3' && parsed.issues.every(issue => issue.code === 'ambiguous_century') : parsed.ok === true && parsed.format === 'TD1';
+      if (allChecks && valid) result.mrzLines = lines;
+    }
+  }
   const unknown = () => ({value: null, confidence: 0, visible: false});
   if (plain(value.fields)) {
     result.fields = {...value.fields};
