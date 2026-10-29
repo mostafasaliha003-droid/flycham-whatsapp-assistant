@@ -31,6 +31,9 @@ const {inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApp
 const LOGIN='https://visa.mofa.gov.sa/Account/Loginindividuals';
 const SEL={username:'#myform #UserName',password:'#myform #Password',captcha:'#myform #Captcha',image:'#myform #imgCaptcha',submit:'#myform #btnSubmit'};
 const TTL=12*60*1000;
+
+function pilotFailureDiagnostic(operation,error,stage){const operations=new Set(['start','auto-login','status','current','close','login-page']);const codes=new Set(['LOGIN_PAGE_UNAVAILABLE','SUBMIT_UNAVAILABLE','SESSION_UNAVAILABLE','SESSION_EXISTS','START_LIMIT','FORM_UNAVAILABLE','INPUT_INVALID','ACCOUNT_PAGE_UNAVAILABLE','BUSY','CLEANUP_UNCONFIRMED']);return {operation:operations.has(operation)?operation:'other',code:codes.has(error?.code)?error.code:codes.has(error?.message)?error.message:'PILOT_UNCONFIRMED',errorType:['Error','TimeoutError','TypeError','ReferenceError'].includes(error?.name)?error.name:'unconfirmed',stage:['starting','awaiting_input','authenticated','browser_launch','context','navigation','form'].includes(stage)?stage:'unconfirmed'};}
+
 function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captchaFetch=fetch,productionFlow,productionLeaseFetch=fetch}={}) {
  const key=env.RAAD_PILOT_KEY||'',origin=env.RAAD_PILOT_ORIGIN||'';
  if(key.length<43||!/^https:\/\/[^/]+$/.test(origin))throw Error('PILOT_CONFIGURATION_REQUIRED');
@@ -51,12 +54,12 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
   const browser=await launch({headless:true,args:['--no-sandbox']});if(owner)owner.pendingBrowser=browser;if(owner&&(owner.cancelled||productionReservation!==owner)){if(await boundedClose(browser))owner.pendingBrowser=null;throw Error('SESSION_UNAVAILABLE');}
   const j={id:crypto.randomBytes(24).toString('hex'),browser,page:null,controller:new AbortController(),captchaImages:new Set(),stage:'starting',expires:now()+TTL,productionOwner:owner?.token||null};job=j;if(owner)owner.pendingBrowser=null;
   j.timer=setTimeout(()=>{void close();},TTL);j.timer.unref?.();
-  try{const context=await browser.newContext();
+  let loginStep='context';try{const context=await browser.newContext();
    await context.route('**/*',route=>{const request=route.request(),u=new URL(request.url());if((request.isNavigationRequest()||!['GET','HEAD'].includes(request.method()))&&u.origin!=='https://visa.mofa.gov.sa'){j.networkDiagnostics?.recordRouteAbort(request);return route.abort();}return route.continue();});
-   j.page=await context.newPage();if(typeof j.page.on==='function')j.page.on('framenavigated',frame=>{if(frame===j.page.mainFrame())j.applicationSmsCodeEntered=false;});j.networkDiagnostics=createNetworkDiagnostics(j.page);j.otpRequirementObserver=createOtpRequirementObserver(j.page);j.smsDestinationObserver=createSmsDestinationObserver(j.page);await j.page.goto(LOGIN,{waitUntil:'domcontentloaded',timeout:45000});await guard(j);
-   for(const selector of Object.values(SEL)){const l=j.page.locator(selector);if(await l.count()!==1||!await l.isVisible())throw Error('FORM_UNAVAILABLE');}
+   j.page=await context.newPage();if(typeof j.page.on==='function')j.page.on('framenavigated',frame=>{if(frame===j.page.mainFrame())j.applicationSmsCodeEntered=false;});j.networkDiagnostics=createNetworkDiagnostics(j.page);j.otpRequirementObserver=createOtpRequirementObserver(j.page);j.smsDestinationObserver=createSmsDestinationObserver(j.page);loginStep='navigation';await j.page.goto(LOGIN,{waitUntil:'domcontentloaded',timeout:45000});await guard(j);
+   loginStep='form';for(const selector of Object.values(SEL)){const l=j.page.locator(selector);if(await l.count()!==1||!await l.isVisible())throw Error('FORM_UNAVAILABLE');}
    j.stage='awaiting_input';return {sessionId:j.id,stage:j.stage,expiresAt:j.expires,credentialsFromEnvironment:credentialConfig(env).configured,automaticOtp:automaticOtp(j),automaticCaptcha:automaticCaptcha(j),captchaAutomationAvailable:captchaAutomationAvailable()};
-  }catch{await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
+  }catch(error){console.info('[RAAD_PILOT_DIAGNOSTIC] '+JSON.stringify(pilotFailureDiagnostic('login-page',error,loginStep)));await close();throw Error('LOGIN_PAGE_UNAVAILABLE');}
  }
  async function start(ownerToken){const owner=productionReservation&&productionReservation.token===ownerToken?productionReservation:null;if(productionReservation&&!owner)throw Error('BUSY');const operation=startSession(owner);if(owner)owner.starting=operation;try{return await operation;}finally{if(owner&&owner.starting===operation)owner.starting=null;}}
  const productionTokenMatches=value=>{if(!productionReservation||typeof value!=='string')return false;const expected=Buffer.from(productionReservation.token),received=Buffer.from(value);return expected.length===received.length&&crypto.timingSafeEqual(expected,received);};
@@ -205,10 +208,10 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
      }
     }
    }
-  }catch{reply(res,503,{error:'PILOT_UNAVAILABLE'});}finally{busy=false;}
+  }catch(error){console.info('[RAAD_PILOT_DIAGNOSTIC] '+JSON.stringify(pilotFailureDiagnostic(url.pathname.slice(5),error,job?.stage||'browser_launch')));reply(res,503,{error:'PILOT_UNAVAILABLE'});}finally{busy=false;}
  });
  server.requestTimeout=15000;server.headersTimeout=10000;
  return {server,close,productionWorker,async shutdown(){shutting=true;await productionWorker.shutdown();await close();server.close();}};
 }
 if(require.main===module){const {chromium}=require('playwright');const pilot=createPilot({launch:options=>chromium.launch(options)});pilot.server.listen(process.env.PORT||10000,'0.0.0.0',async()=>{if(process.env.RAAD_PILOT_STARTUP_CHECK!=='true')return;let id;const outcome={pageReady:false,imageLoaded:false,closed:false};try{const base='http://127.0.0.1:'+pilot.server.address().port;const call=(action,data)=>fetch(base+'/api/'+action,{method:'POST',headers:{Authorization:'Bearer '+process.env.RAAD_PILOT_KEY,Origin:process.env.RAAD_PILOT_ORIGIN,'Content-Type':'application/json'},body:JSON.stringify(data||{}),signal:AbortSignal.timeout(60000)});const started=await call('start');if(!started.ok)throw Error();const result=await started.json();id=result.sessionId;outcome.pageReady=result.stage==='awaiting_input';const image=await call('image',{sessionId:id});const bytes=Buffer.from(await image.arrayBuffer());outcome.imageLoaded=image.ok&&image.headers.get('content-type')==='image/png'&&bytes.length>8&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));const stop=await call('close',{sessionId:id});outcome.closed=stop.ok&&(await stop.json()).closed===true;}catch{await pilot.close();}console.log('RAAD_STARTUP_CHECK '+JSON.stringify(outcome));});process.on('SIGTERM',()=>{void pilot.shutdown();setTimeout(()=>process.exit(0),5000).unref();});}
-module.exports={createPilot};
+module.exports={createPilot,pilotFailureDiagnostic};
