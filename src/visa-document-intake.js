@@ -15,7 +15,7 @@ const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
 // Changing matching/preparation reuses the existing OCR page checkpoints.
 // It must not silently send all existing originals to the provider again.
-const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v6';
+const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v7';
 const clone=value=>structuredClone(value);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value===undefined?null:value;}
@@ -42,9 +42,9 @@ const originals=record=>record&&!record.purpose&&(['image/jpeg','image/png','ima
 function dubaiDate(at){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(at));return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');}
 const activeStatus=status=>['queued','running','retry','waiting_case'].includes(status);
 class VisaDocumentIntake{
- constructor({store,mediaStore,vision,mrzVision=null,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,prepareDocument=prepareDocumentImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
+ constructor({store,mediaStore,vision,mrzVision=null,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},report=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,prepareDocument=prepareDocumentImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
   if(!store?.data||typeof store.save!=='function'||!mediaStore?.read||!vision?.extract)throw finite('DOCUMENT_INTAKE_CONFIGURATION_REQUIRED');
-  Object.assign(this,{store,mediaStore,vision,mrzVision,raad,fulfilment,inbox,env,now,onUpdate,lock,rasterize,prepare,prepareResidence,prepareDocument,reconcile,policyFingerprint});
+  Object.assign(this,{store,mediaStore,vision,mrzVision,raad,fulfilment,inbox,env,now,onUpdate,report,lock,rasterize,prepare,prepareResidence,prepareDocument,reconcile,policyFingerprint});
   if(!store.data.visaDocumentIntake)store.data.visaDocumentIntake={version:1,cases:{},jobs:{}};
   if(store.data.visaDocumentIntake.version!==1)throw finite('DOCUMENT_INTAKE_STATE_UNSUPPORTED');
   this.started=false;this.stopped=false;this.busy=false;this.epoch=0;this.timer=null;this.scheduled=false;this.unsubscribe=null;
@@ -56,6 +56,18 @@ class VisaDocumentIntake{
  available(){try{return this.enabled()&&this.vision.ready?.()===true;}catch{return false;}}
  commit(change){const previous=clone(this.data());try{const result=change();this.store.save();return result;}catch{this.store.data.visaDocumentIntake=previous;throw finite('DOCUMENT_INTAKE_STATE_FAILED');}}
  notify(customer){try{this.onUpdate(customer,this.summary(customer));}catch{}}
+ reportBindingReview(customer,c,documents,matched){
+  if(!Array.isArray(matched.unassigned)||!matched.unassigned.length)return;
+  try{
+   const listed=typeof this.mediaStore.list==='function'?this.mediaStore.list(customer):Object.values(this.mediaStore.records||this.store.data.visaMedia||{}).filter(file=>file.customer===customer&&file.expiresAt>this.now()).sort((a,b)=>b.receivedAt-a.receivedAt).slice(0,50);
+   const originals=listed.filter(file=>typeof file?.id==='string'&&!file.purpose&&!file.derived&&!file.isDerived&&!file.sourceIds?.length&&(!file.customer||file.customer===customer)&&!['unavailable','failed','expired','application_copy'].includes(file.status)&&/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(file.mimeType||''));
+   const allowedReasons=new Set(['DOCUMENT_UNASSIGNED','DOCUMENT_UNREADABLE','INVALID_EXTRACTION','SOURCE_CONFLICT','MULTIPLE_PASSPORTS']),kinds=new Set(['passport','uae_id_front','uae_id_back','portrait','other']),references=[];
+   for(const ref of matched.unassigned){if(references.length>=10)break;const ordinal=originals.findIndex(file=>file.id===ref?.mediaId)+1,document=documents.find(item=>item.mediaId===ref?.mediaId&&item.page===ref.page&&item.sha256===ref.sha256);if(!ordinal||!document||!Number.isInteger(ref.page)||ref.page<1||ref.page>10)continue;const extraction=document.extraction||{},fields=DOCUMENT_FIELD_NAMES.filter(name=>Object.hasOwn(extraction.fields||{},name)&&extraction.fields[name]?.visible===true).slice(0,20).map(name=>{const confidence=extraction.fields[name]?.confidence;return {name,...(typeof confidence==='number'&&Number.isFinite(confidence)&&confidence>=0&&confidence<=1?{confidence}:{})};});
+    references.push({ordinal,page:ref.page,kind:kinds.has(extraction.kind)?extraction.kind:'other',readable:extraction.readable===true,fields,mrzLineLengths:Array.isArray(extraction.mrzLines)?extraction.mrzLines.slice(0,3).map(line=>typeof line==='string'?Math.min(256,line.length):0):[],reason:allowedReasons.has(ref.reason)?ref.reason:'DOCUMENT_UNASSIGNED'});
+   }
+   this.report('DOCUMENT_BINDING_REVIEW',{caseHash:hash(c.id).slice(0,12),references});
+  }catch{}
+ }
  retirePolicies(){
   const affected=new Set();let changed=false;
   // Reuse strictly validated completed evidence. A diagnostics-only policy also
@@ -273,8 +285,9 @@ class VisaDocumentIntake{
   const blocked=this.blockReason(customer);
   const fingerprint=digest({signature,generation,preparationPolicy:PREPARATION_POLICY,documents,sourceIssues,pending,limit:state.limitExceeded===true});if(!force&&state.inputFingerprint===fingerprint)return false;
   const people=Number.isInteger(c.applicantCount)&&c.applicantCount>0&&c.applicantCount<=30?Array.from({length:c.applicantCount},(_,index)=>c.applicants?.[index]||{}):[];
-  const matched=this.reconcile({documents,applicants:people,referenceDate:dubaiDate(this.now())}),previous=state.applicants||[];
+  const inputChanged=state.inputFingerprint!==fingerprint,matched=this.reconcile({documents,applicants:people,referenceDate:dubaiDate(this.now())}),previous=state.applicants||[];
   this.commit(()=>{guard();state=this.data().cases[customer];state.documents=clone(documents);state.inputFingerprint=fingerprint;state.status=pending?'processing':'needs_review';state.updatedAt=this.now();state.issues=clone([...(matched.issues||[]),...sourceIssues,...(state.limitExceeded?[reason('DOCUMENT_SOURCE_LIMIT')]:[])]);});
+  if(inputChanged)this.reportBindingReview(customer,c,documents,matched);
   const snapshots=[];for(const applicant of matched.applicants||[]){
    const extractionDigest=extractionDigestFor(documents,applicant),old=previous.find(item=>item.applicantIndex===applicant.applicantIndex&&item.extractionDigest===extractionDigest);
    const item={id:old?.id||randomUUID(),applicantIndex:applicant.applicantIndex,status:'needs_review',identityReady:applicant.identityReady===true||applicant.status==='ready',clientFieldsRequired:clone(applicant.clientFieldsRequired||[]),fields:clone(applicant.fields||{}),documents:{passport:null,residence:null,photo:null},sourceManifest:jobs.filter(job=>SHA.test(job.sourceSha256||'')).map(job=>({mediaId:job.mediaId,sha256:job.sourceSha256})).sort((a,b)=>a.mediaId.localeCompare(b.mediaId)),preparedManifest:[],evidence:clone(applicant.evidence),issues:clone(applicant.issues||[]),extractionDigest};
