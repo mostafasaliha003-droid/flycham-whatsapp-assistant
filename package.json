@@ -5,6 +5,7 @@
   "description": "Independent WhatsApp intake assistant for Fly Cham fare requests. Quote-only MVP.",
   "type": "commonjs",
   "scripts": {
+    "postinstall": "node scripts/install-mrz-model.js",
     "start": "node src/server.js",
     "test": "node --test"
   },
@@ -14,6 +15,7 @@
   "dependencies": {
     "playwright": "1.64.0",
     "qrcode": "^1.5.4",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "tesseract.js": "7.0.0"
   }
 }

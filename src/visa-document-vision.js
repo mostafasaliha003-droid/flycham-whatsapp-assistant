@@ -7,18 +7,19 @@ const {createHash} = require('node:crypto');
 const {parseTD3MRZ} = require('./raad-document-validation');
 const {parseTD1MRZ} = require('./visa-id-mrz');
 const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR_CODES} = require('./visa-mrz-vision');
+const {OPTICAL_POLICY_FINGERPRINT,MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v10';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v11';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
 const WIRE_PROJECTION_POLICY = 'typed-visible-passport-number-and-independent-checked-mrz-v5';
 // Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
-// Preserve completed V7/V8 failures/unreadable outcomes for an explicit bounded
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d']);
+// Preserve completed V7/V8/V9/V10 failures/unreadable outcomes for an explicit bounded
 // retry, never a rollout replay. Readable successful evidence remains reusable.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb']);
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -73,9 +74,9 @@ const PROMPT = [
   'Example for a partial passport with a visible number and only a P type marker, with no complete MRZ: {"version":1,"kind":"passport","readable":true,"rotation":0,"fields":{"visiblePassportNumber":{"value":"ZT1234567","confidence":0.99,"visible":true}},"mrzLines":[],"portraitBox":null}',
   'Example for a visibly usable standalone portrait without text: {"version":1,"kind":"portrait","readable":true,"rotation":0,"fields":{},"mrzLines":[],"portraitBox":null}'
 ].join(' ');
-const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, wireProjection: WIRE_PROJECTION_POLICY, model: MODEL, prompt: PROMPT, focusedMrzPolicy: MRZ_POLICY_FINGERPRINT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
+const POLICY_FINGERPRINT = createHash('sha256').update(JSON.stringify({policy: DOCUMENT_VISION_POLICY, parsing: PARSING_POLICY, abstention: ABSTENTION_POLICY, wireProjection: WIRE_PROJECTION_POLICY, model: MODEL, prompt: PROMPT, focusedMrzPolicy: OPTICAL_POLICY_FINGERPRINT, focusedMrzMode:'local_optical_only', legacyMrzPolicy:MRZ_POLICY_FINGERPRINT, fields: DOCUMENT_FIELD_NAMES, imageLimit: MAX_IMAGE_BYTES, responseLimit: MAX_RESPONSE_BYTES})).digest('hex');
 const RETRYABLE_CODES = Object.freeze(['DOCUMENT_VISION_BUSY', 'DOCUMENT_VISION_COOLDOWN', 'DOCUMENT_VISION_RATE_LIMITED', 'DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 'DOCUMENT_VISION_TIMEOUT', 'DOCUMENT_VISION_NETWORK']);
-const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT', ...MRZ_VISION_ERROR_CODES]);
+const DOCUMENT_VISION_ERROR_CODES = Object.freeze([...RETRYABLE_CODES, 'DOCUMENT_VISION_DISABLED', 'DOCUMENT_VISION_NOT_CONFIGURED', 'DOCUMENT_VISION_MODEL_NOT_ALLOWED', 'DOCUMENT_VISION_STALE', 'DOCUMENT_VISION_INVALID_IMAGE', 'DOCUMENT_VISION_INCOMPLETE', 'DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON', 'DOCUMENT_VISION_SCHEMA_INVALID', 'DOCUMENT_VISION_INVALID_OUTPUT', ...MRZ_VISION_ERROR_CODES, ...MRZ_OPTICAL_ERROR_CODES]);
 const SCHEMA_SECTIONS = Object.freeze(['root', 'fields', 'mrzLines', 'portraitBox']);
 const SCHEMA_ISSUES = Object.freeze(['root_shape', 'root_value', 'field_shape', 'null_metadata', 'field_metadata', 'value_type', 'value_format', 'mrz_format', 'portrait_bounds']);
 
