@@ -2,6 +2,7 @@
 const {createHash}=require('node:crypto');
 const {validateApplicant}=require('./raad-document-validation');
 const {requiredQuestions}=require('./visa-client-questions');
+const PREFLIGHT_CLIENT_FIELDS=Object.freeze(['latinFatherName','arabicFirstName','arabicFatherName','arabicFamilyName']);
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 class VisaPortalDispatcher{
  constructor({fulfilment,raad,mediaStore,store,documentIntake,notificationReadiness,ownerNotificationReady,env=process.env,fetchImpl=fetch,now=Date.now}){Object.assign(this,{fulfilment,raad,mediaStore,store,documentIntake,notificationReadiness,ownerNotificationReady,env,fetchImpl,now});store.data.visaPortalRuns||={};this.busy=false;this.recovered=false;this.reportedDiagnostics=new Map();}
@@ -32,6 +33,8 @@ class VisaPortalDispatcher{
   const draft=this.dossier(job,proof),draftFingerprint=draft.fingerprint;
   if(!draft.ready){this.block(job,draft.blockedReason||'DOCUMENTS_REVIEW_REQUIRED');return;}
   const fields=draft.fields;
+  const missingNames=PREFLIGHT_CLIENT_FIELDS.filter(key=>fields[key]===undefined||fields[key]===null||fields[key]==='');
+  if(missingNames.length){this.fulfilment.askQuestions(job.id,{fields:missingNames});delete job.blockedReason;this.store.save();return;}
   const contact={...draft.defaults,...fields};if(!contact.entryDate)fields.entryDate=contact.proposedEntryDate;
   const validation=validateApplicant(fields);if(validation.issues.length){const missing=validation.issues.map(i=>i.field).filter(f=>{try{return requiredQuestions(fields,{requestedFields:[f]}).length>0;}catch{return false;}});if(missing.length){this.fulfilment.askQuestions(job.id,{fields:[...new Set(missing)]});return;}this.block(job,'DOCUMENT_DATA_REVIEW_REQUIRED');return;}
   const documents=[];for(const [kind,role]of [['passport','passport'],['residence','residence'],['photo','portrait']]){const id=draft.documents?.[kind]?.mediaId;if(!id){this.block(job,'DOCUMENTS_REQUIRED');return;}const {metadata,bytes}=this.mediaStore.read(id,{customer:job.customer});if(!['image/png','image/jpeg'].includes(metadata.mimeType)||bytes.length>1000000){this.block(job,'DOCUMENT_PREPARATION_REQUIRED');return;}documents.push({role,mimeType:metadata.mimeType,data:bytes.toString('base64'),sha256:digest(bytes)});}
@@ -52,9 +55,25 @@ class VisaPortalDispatcher{
   else if(['failed','blocked','cancelled','lease_lost'].includes(state.stage)){await this.cancelOwned(job.id);run.phase='blocked';this.fulfilment.releaseJob(job.id,{leaseToken:run.leaseToken,state:'portal_review_required'});this.block(job,state.blocker?.code||'PORTAL_REVIEW_REQUIRED');}
   this.store.save();
  }
+ async recoverMissingPreflight(){
+  for(const job of Object.values(this.fulfilment.data().jobs)){
+   const run=this.store.data.visaPortalRuns[job.id];
+   if(job.state!=='portal_review_required'||job.blockedReason!=='MISSING_FIELD'||!run||run.phase!=='blocked'||run.lastStage!=='preflight'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease)continue;
+   // A blocked preflight has not opened the government session. Verify remote
+   // owned-browser cleanup again before asking only the missing name facts.
+   const oldState=job.state;job.state='ready';let draft;
+   try{const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete)continue;draft=this.dossier(job,proof);}catch{continue;}finally{job.state=oldState;}
+   if(!draft?.ready)continue;
+   const fields=PREFLIGHT_CLIENT_FIELDS.filter(key=>draft.fields[key]===undefined||draft.fields[key]===null||draft.fields[key]==='');if(!fields.length)continue;
+   try{await this.cancelOwned(job.id);}catch{continue;}
+   job.state='ready';
+   try{this.fulfilment.askQuestions(job.id,{fields});run.phase='followup';delete job.blockedReason;this.store.save();}catch{job.state=oldState;}
+  }
+ }
  diagnose(){for(const job of Object.values(this.fulfilment.data().jobs)){if(!job.blockedReason)continue;const finite=value=>typeof value==='string'&&/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(value)?value:'unconfirmed';const run=this.store.data.visaPortalRuns[job.id];const row={caseHash:digest(String(job.caseId||'')).slice(0,12),state:finite(job.state),code:finite(job.blockedReason),runPhase:finite(run?.phase),portalStage:finite(run?.lastStage),saved:job.portalSaved===true,hasReference:!!job.applicationReference};const signature=JSON.stringify(row);if(this.reportedDiagnostics.get(job.id)===signature)continue;this.reportedDiagnostics.set(job.id,signature);console.info('[VISA_PORTAL_DIAGNOSTIC] '+signature);}}
  async tick(){if(this.busy||this.env.RAAD_VISA_AUTOMATION_ENABLED!=='true')return;this.busy=true;try{
   this.diagnose();
+  await this.recoverMissingPreflight();
   await this.flushMessages();
   for(const job of Object.values(this.fulfilment.data().jobs)){
    if(!['queued','ready'].includes(job.state))continue;
