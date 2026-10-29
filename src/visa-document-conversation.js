@@ -1,4 +1,5 @@
 'use strict';
+const {paymentReceiptFollowup}=require('./visa-payment-followup');
 
 const P = require('./saudi-visa-policy');
 const {normalize} = P;
@@ -182,7 +183,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         : 'تمام، ابعتهن هون لما تجهز، وأنا معك ومنكمل على نفس الطلب.'};
       let reply = preparationCopy(summary, received);
       const documentsPresent = ['ready','needs_confirmation'].includes(summary?.status) && ['passport','residence','photo'].every(kind => hasPrepared(summary,kind));
-      if (documentsPresent) return {...result, reply};
+      if (documentsPresent) return {...result, reply:[reply,paymentReceiptFollowup(store,customer,summary)].filter(Boolean).join('\n\n')};
       const recentlyOffered = Number.isFinite(previous?.uploadOfferedAt) && now() - previous.uploadOfferedAt <= CONTEXT_MS;
       if (recentlyOffered) reply += received.exists ? '\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط الرفع اللي أرسلته قبل شوي.' : '\nفيك تستخدم رابط الرفع اللي أرسلته قبل شوي، أو تبعت الصور هون.';
       else if (typeof createUploadLink === 'function') {
@@ -219,7 +220,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         } catch { return {...result, reply: 'إرسال النسخة ما تأكد بعد. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})}; }
       }
     }
-    return {...result, reply: statusReply(summary, {...request, hasAttachments})};
+    return {...result, reply: [statusReply(summary, {...request, hasAttachments}),request.intent==='status'?paymentReceiptFollowup(store,customer,summary):''].filter(Boolean).join('\n\n')};
   }};
 }
 

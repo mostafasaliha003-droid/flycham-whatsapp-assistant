@@ -311,3 +311,10 @@ test('an incoming message during delivery queue wait returns a known unsent noti
   assert.equal(effects, 0); assert.equal(f.service.data().items[item.key].state, 'pending'); assert.equal(f.service.data().items[item.key].failure, 'BATCH_SETTLING');
   f.advance(12000); await f.service.flush(); assert.equal(effects, 1); assert.equal(f.service.data().items[item.key].state, 'accepted');
 });
+
+test('receipt arrival invalidates the queued receipt request and subsequent notice does not ask again',async()=>{
+ const f=fixture(),old=f.service.update(CUSTOMER);assert.match(old.payload.text,/بعد التحويل ابعت إيصال التحويل/);
+ f.store.data.visaFulfilment={cases:{[CUSTOMER]:{caseId:f.c.id,receipts:{saved:{caseId:f.c.id}}}}};
+ assert.equal(f.service.current(old),false);const next=f.service.update(CUSTOMER);assert.notEqual(next.key,old.key);assert.doesNotMatch(next.payload.text,/بعد التحويل ابعت إيصال التحويل/);
+ await f.service.flush(CUSTOMER);assert.equal(f.dispatched.length,1);assert.doesNotMatch(f.dispatched[0].payload.text,/بعد التحويل ابعت إيصال التحويل/);
+});

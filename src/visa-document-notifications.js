@@ -1,4 +1,5 @@
 'use strict';
+const {paymentReceiptFollowup}=require('./visa-payment-followup');
 
 const {createHash} = require('node:crypto');
 const {visaCaseSignature} = require('./visa-case-signature');
@@ -133,8 +134,9 @@ class VisaDocumentNotifications {
     // delivery bookkeeping, not a new document-reading result. Match intake's
     // fingerprint while retaining every identity/evidence/manifest field.
     const applicants = raw.applicants.map(({applied, stagedJobs, ...applicant}) => applicant);
+    const receiptFollowup=paymentReceiptFollowup(this.store,customer,{...summary,status:raw.status});
     const binding = {customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, resultDigest: digest({documents: raw.documents, applicants, issues: issues.map(issue => ({code: issue?.code, field: issue?.field}))}), sources, policy: this.documentIntake.policyFingerprint || null};
-    return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint}), binding, bindingFingerprint: digest(binding), text: copyFor(raw.status, issues), expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
+    return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, receiptFollowup}), binding, bindingFingerprint: digest(binding), text: [copyFor(raw.status, issues),receiptFollowup].filter(Boolean).join('\n\n'), expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
   }
   // A source/result fingerprint binds evidence, but does not describe a new
   // customer-facing update: five new file IDs can produce the exact same copy.
