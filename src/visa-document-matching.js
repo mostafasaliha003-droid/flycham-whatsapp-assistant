@@ -412,11 +412,43 @@ function projectPrintedPassportDates(parts) {
 }
 function consistentPartValue(field,first,second){
   if(field==='passportNationalNumber')return Boolean(nationalDigits(first)&&nationalDigits(first)===nationalDigits(second));
-  if(field==='printedPassportExpiry'){
+  if(field==='printedPassportExpiry'||field==='printedResidenceExpiry'){
     const numeric=value=>{const match=value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);return match?[Number(match[1]),Number(match[2]),match[3]].join('/'):value;};
     return numeric(first)===numeric(second);
   }
   return equivalent(field,first,second);
+}
+function selectResidencePreparation(result,documents,passport){
+  if(result.issues.some(item=>['SOURCE_CONFLICT','DOCUMENT_IDENTITY_MISMATCH','RESIDENCE_CONFLICT','RESIDENCE_MRZ_INVALID','CASE_DATA_MISMATCH','DOCUMENT_FIELD_INVALID'].includes(item.code)))return;
+  const fronts=documents.filter(document=>document.kind==='uae_id_front'),groups=new Map(),selected=[],duplicates=[];
+  for(const document of documents){
+    if(document.kind!=='uae_id_back'){selected.push(document);continue;}
+    const proofs=fronts.map(front=>checkedResidencePair(passport,front,document)).filter(Boolean);
+    if(proofs.length!==1){selected.push(document);continue;}
+    const front=proofs[0].front,key=JSON.stringify({mrzLines:document.extraction.mrzLines,front:ref(front)});
+    if(!groups.has(key))groups.set(key,{front,parts:[]});groups.get(key).parts.push(document);
+  }
+  for(const {front,parts}of groups.values()){
+    if(parts.length===1){selected.push(parts[0]);continue;}
+    const union={};let consistent=parts.every(part=>part.extraction.rotation===parts[0].extraction.rotation);
+    for(const part of parts)for(const [field,value]of Object.entries(part.fields)){
+      if(Object.hasOwn(union,field)&&!consistentPartValue(field,union[field],value))consistent=false;
+      else union[field]=value;
+    }
+    // An actual uploaded image must cover every accepted government fact and
+    // any printed expiry witness. Complementary OCR fragments cannot invent a
+    // complete back image, even when their exact checked TD1 lines agree.
+    const critical=[...DOCUMENT_FIELDS,'printedResidenceExpiry'].filter(field=>Object.hasOwn(union,field));
+    const covering=consistent?parts.filter(part=>critical.every(field=>Object.hasOwn(part.fields,field)&&consistentPartValue(field,part.fields[field],union[field]))).sort(compareReference):[];
+    if(!covering.length){selected.push(...parts);continue;}
+    const representative=covering[0];selected.push(representative);
+    for(const source of parts.filter(part=>part!==representative).sort(compareReference))duplicates.push({representative:ref(representative),source:ref(source),front:ref(front),method:'exact_checked_td1_same_paired_identity_and_visible_values'});
+  }
+  if(!duplicates.length)return;
+  // Only preparation references are reduced. Every original remains in the
+  // intake manifest, matching evidence and pair links for integrity checks.
+  result.documents.residence=selected.map(ref);
+  result.evidence.residenceLogicalDuplicates=duplicates.sort((a,b)=>compareReference(a.source,b.source));
 }
 function selectPassportPreparation(parts){
   const groups=new Map(),selected=[],duplicates=[],issues=[];
@@ -579,7 +611,11 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
     if (possible.length === 1) output.applicants[possible[0]].issues.push(issue('DOCUMENT_IDENTITY_MISMATCH', 'residence'));
     unassign(document);
   }
-  for(const [index,passport]of passportFor)projectPrintedResidenceDates(output.applicants[index],identities.filter(document=>assignments.get(document)===index),passport,known[index]);
+  for(const [index,passport]of passportFor){
+    const documents=identities.filter(document=>assignments.get(document)===index),result=output.applicants[index];
+    projectPrintedResidenceDates(result,documents,passport,known[index]);
+    selectResidencePreparation(result,documents,passport);
+  }
   const portraits = distinct.filter(document => document.kind === 'portrait');
   for (const document of portraits) {
     if (applicants.length === 1 && portraits.length === 1) { output.applicants[0].documents.photo = ref(document); output.applicants[0].issues.push(...document.issues); assignments.set(document, 0); }

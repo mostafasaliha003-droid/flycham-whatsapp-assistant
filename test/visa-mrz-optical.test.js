@@ -11,6 +11,8 @@ const {createOpticalMrz, createIsolatedWorker, verifyPinnedModel, OPTICAL_POLICY
 const {MODEL_BYTES} = require('../scripts/install-mrz-model');
 
 const ICAO = ['P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<', 'L898902C36UTO7408122F1204159ZE184226B<<<<<10'];
+// Independent fictional Utopia vector: ICAO Doc 9303 Part 5, Appendix A.
+const ICAO_TD1 = ['I<UTOD231458907<<<<<<<<<<<<<<<', '7408122F1204159UTO<<<<<<<<<<<6', 'ERIKSSON<<ANNA<MARIA<<<<<<<<<<'];
 const text = lines => lines.join('\n');
 const image = () => sharp({create: {width: 1000, height: 400, channels: 3, background: '#c0c0c0'}}).png().toBuffer();
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -57,6 +59,64 @@ test('one independently checked reading suffices; two valid conflicting readings
   const conflict = fixture({reads: [text(ICAO), text(other)]});
   await assert.rejects(conflict.adapter.extract({bytes, mimeType: 'image/png', guard: () => true}), {code: 'MRZ_OPTICAL_DISAGREEMENT'});
   assert.equal(conflict.calls.terminated, 1); assert.equal(conflict.adapter.ready(), true);
+});
+
+test('explicit TD1 uses its own generic crop and preserves the independently checked three-line vector without facts or century inference', async () => {
+  const width = 1000, height = 450, raw = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const color = y < 150 ? [255, 0, 0] : x < 50 || x >= 950 ? [0, 0, 255] : [0, 255, 0];
+    const index = (y * width + x) * 3; raw[index] = color[0]; raw[index + 1] = color[1]; raw[index + 2] = color[2];
+  }
+  const bytes = await sharp(raw, {raw: {width, height, channels: 3}}).png().toBuffer();
+  const f = fixture({reads: [text(ICAO_TD1), '\r\n\t' + ICAO_TD1.join(' \r\n\r\n') + '\t\n']});
+  const result = await f.adapter.extract({bytes, mimeType: 'image/png', format: 'TD1', guard: () => true});
+  assert.deepEqual(result, {version: 1, mrzLines: ICAO_TD1, checks: {documentNumber: true, birthDate: true, expiryDate: true, composite: true}});
+  assert.deepEqual(Object.keys(result).sort(), ['checks', 'mrzLines', 'version']);
+  assert.equal(result.fields, undefined); assert.equal(result.confidence, undefined);
+  assert.equal(f.calls.created.length, 1); assert.equal(f.calls.recognized.length, 2); assert.equal(f.calls.terminated, 1);
+  const cropped = await sharp(f.calls.copies[0]).raw().toBuffer({resolveWithObject: true});
+  assert.deepEqual([cropped.info.width, cropped.info.height], [900, 300]);
+  const gray = await sharp({create: {width: 1, height: 1, channels: 3, background: '#00ff00'}}).greyscale().raw().toBuffer();
+  assert.equal(cropped.data.every(value => value === gray[0]), true, 'only the fixed bottom two-thirds and inner 90% are retained');
+  assert.equal(f.calls.recognized.every(read => read.bytes.every(value => value === 0)), true);
+});
+
+test('TD1 cannot cross the explicit format boundary and unsupported format names never start a worker', async () => {
+  const bytes = await image(), f = fixture();
+  assert.equal(Object.isFrozen(f.adapter.supports), true);
+  for (const format of ['TD1', 'TD3']) assert.equal(f.adapter.supports(format), true);
+  for (const format of [undefined, null, 'td1', 'TD2', '', '__proto__', 'constructor', {}, ['TD1']]) assert.equal(f.adapter.supports(format), false);
+  for (const format of [null, 'td1', 'TD2', '__proto__', 'constructor', {}]) await assert.rejects(f.adapter.extract({bytes, mimeType: 'image/png', format, guard: () => true}), {code: 'MRZ_OPTICAL_INVALID_IMAGE'});
+  assert.equal(f.calls.created.length, 0);
+  for (const [format, lines] of [['TD1', ICAO], ['TD3', ICAO_TD1], [undefined, ICAO_TD1]]) {
+    const other = fixture({reads: [text(lines), text(lines)]});
+    await assert.rejects(other.adapter.extract({bytes, mimeType: 'image/png', format, guard: () => true}), {code: 'MRZ_OPTICAL_READ_FAILED'});
+    assert.equal(other.calls.terminated, 1);
+  }
+});
+
+test('TD1 independently rejects all four bad check digits and leaves missing, unsupported and substituted glyphs unrepaired', async () => {
+  const bytes = await image(), candidates = [];
+  const altered = (row, position, replacement) => { const lines = [...ICAO_TD1]; lines[row] = lines[row].slice(0, position) + replacement + lines[row].slice(position + 1); return lines; };
+  for (const [row, position] of [[0, 14], [1, 6], [1, 14], [1, 29]]) candidates.push(altered(row, position, String((Number(ICAO_TD1[row][position]) + 1) % 10)));
+  candidates.push(
+    ICAO_TD1.slice(0, 2), [ICAO_TD1[0], ICAO_TD1[1], ICAO_TD1[2] + '<'],
+    altered(1, 0, 'O'), altered(2, 0, '3'), altered(2, 0, '\u0415'),
+    [ICAO_TD1[0].slice(0, 8) + ' ' + ICAO_TD1[0].slice(8), ...ICAO_TD1.slice(1)],
+    ICAO_TD1.map(line => line.toLowerCase()), ICAO_TD1.map(line => line.replaceAll('<', '\u2039'))
+  );
+  for (const lines of candidates) {
+    const f = fixture({reads: [text(lines), text(lines)]});
+    await assert.rejects(f.adapter.extract({bytes, mimeType: 'image/png', format: 'TD1', guard: () => true}), {code: 'MRZ_OPTICAL_READ_FAILED'});
+    assert.equal(f.calls.recognized.length, 2); assert.equal(f.calls.terminated, 1); assert.equal(f.adapter.ready(), true);
+  }
+});
+
+test('two complete, checked TD1 readings with different unprotected names fail closed', async () => {
+  const other = [...ICAO_TD1]; other[2] = 'A' + other[2].slice(1);
+  const f = fixture({reads: [text(ICAO_TD1), text(other)]});
+  await assert.rejects(f.adapter.extract({bytes: await image(), mimeType: 'image/png', format: 'TD1', guard: () => true}), {code: 'MRZ_OPTICAL_DISAGREEMENT'});
+  assert.equal(f.calls.terminated, 1); assert.equal(f.adapter.ready(), true);
 });
 
 test('interior spaces, wrong checksums and substituted glyphs cannot be fixed by the optical adapter', async () => {

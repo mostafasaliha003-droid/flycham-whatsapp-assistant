@@ -10,16 +10,16 @@ const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR
 const {OPTICAL_POLICY_FINGERPRINT,MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
 
 const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v14';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v16';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
 const WIRE_PROJECTION_POLICY = 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6';
 // Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
 // Preserve completed V7/V8/V9/V10/V11 failures/unreadable outcomes for an explicit bounded
 // retry, never a rollout replay. Readable successful evidence remains reusable.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045']);
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;

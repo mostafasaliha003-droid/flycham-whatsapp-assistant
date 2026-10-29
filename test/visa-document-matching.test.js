@@ -633,8 +633,7 @@ test('identical unverified MRZ strings are not sufficient to coalesce main image
  const result=run([f.p,f.copy,f.datePage,f.id]);assert.equal(result.complete,false);assert.equal(result.applicants[0].evidence.passportLogicalDuplicates,undefined);
 });
 
-function residencePairTd1({birth='900115',expiry='270430',eid='784190012345673',sex='F',nationality='EGY',name='EXAMPLE<<SYNTHETIC<PARENT'}={}){
- const number='X12345678';
+function residencePairTd1({number='X12345678',birth='900115',expiry='270430',eid='784190012345673',sex='F',nationality='EGY',name='EXAMPLE<<SYNTHETIC<PARENT'}={}){
  const first='I<ARE'+number+digit(number)+eid;
  const body=birth+digit(birth)+sex+expiry+digit(expiry)+nationality+'<'.repeat(11);
  return[first,body+digit(first.slice(5)+body.slice(0,7)+body.slice(8,15)+body.slice(18,29)),name.padEnd(30,'<')];
@@ -718,5 +717,68 @@ test('an exact-ID comparison cannot hide a contradictory partial name without a 
   const documents=[f.p,f.id,f.back],before=structuredClone(documents),result=run(documents),person=result.applicants[0];
   assert.equal(result.complete,false,name);assert.equal(person.identityReady,false);assert.ok(person.issues.some(item=>item.code==='DOCUMENT_IDENTITY_MISMATCH'&&item.field===name));assert.equal(person.evidence.residencePairLinks,undefined);assert.deepEqual(documents,before);
   f.back.extraction.fields[name]=field(value);const consistent=run(documents);assert.equal(consistent.complete,true,name+' can be an explicit consistent partial observation');assert.equal(f.back.extraction.fields.birthDate,undefined);assert.equal(f.back.extraction.fields.latinFullName,undefined);
+ }
+});
+
+function logicalResidenceBackCase(){
+ const f=residencePairCase({printedBackId:false,printedBackName:false,frontBirth:false});
+ delete f.p.extraction.fields.passportType;delete f.p.extraction.fields.issueDate;
+ delete f.id.extraction.fields.residenceExpiry;f.id.extraction.fields.printedResidenceExpiry=field('30/04/2027');
+ const copies=[IDS.front2,IDS.portrait].map((mediaId,index)=>{
+  const copy=structuredClone(f.back);copy.mediaId=mediaId;copy.sha256=String(index+3).repeat(64);copy.extraction.fields.emiratesId=field('784190012345673',0.95);return copy;
+ });
+ return {...f,copies,documents:[f.p,f.id,f.back,...copies]};
+}
+
+test('three different-byte back images with exact checked TD1 and one strict printed-front identity select one actual back',()=>{
+ const f=logicalResidenceBackCase(),before=structuredClone(f.documents),result=run(f.documents),person=result.applicants[0];
+ assert.equal(person.identityReady,true,JSON.stringify(person.issues));assert.equal(person.status,'needs_confirmation');assert.deepEqual(person.clientFieldsRequired,['passportType','issueDate']);assert.equal(result.unassigned.length,0);
+ assert.deepEqual(person.documents.residence.map(source=>source.mediaId),[IDS.front,IDS.back]);assert.equal(person.fields.residenceExpiry,'2027-04-30');
+ assert.equal(person.evidence.residenceLogicalDuplicates.length,2);assert.deepEqual(new Set(person.evidence.residenceLogicalDuplicates.map(item=>item.source.mediaId)),new Set(f.copies.map(copy=>copy.mediaId)));
+ assert.ok(person.evidence.residenceLogicalDuplicates.every(item=>item.front.mediaId===IDS.front&&item.representative.mediaId===IDS.back&&item.method==='exact_checked_td1_same_paired_identity_and_visible_values'));
+ assert.deepEqual(new Set(person.evidence.residencePairLinks.map(item=>item.source.mediaId)),new Set([IDS.back,...f.copies.map(copy=>copy.mediaId)]));
+ assert.ok(person.evidence.fieldSources.emiratesId.every(source=>source.mediaId===IDS.front));assert.ok(person.evidence.fieldSources.birthDate.every(source=>source.mediaId===IDS.passport));
+ assert.deepEqual(f.documents,before);assert.deepEqual(run([...f.documents].reverse()),result);
+});
+
+test('logical back selection chooses an actual image covering the government union rather than highest confidence or latest ID',()=>{
+ const f=logicalResidenceBackCase();f.back.extraction.fields.sex=field('F');f.copies[0].extraction.fields.nationalityCode=field('EGY');
+ f.copies[1].extraction.fields.sex=field('F',0.98);f.copies[1].extraction.fields.nationalityCode=field('EGY',0.98);
+ const result=run(f.documents),person=result.applicants[0];assert.equal(person.identityReady,true);assert.deepEqual(person.documents.residence.map(source=>source.mediaId),[IDS.front,f.copies[1].mediaId]);
+ assert.ok(person.evidence.residenceLogicalDuplicates.every(item=>item.representative.mediaId===f.copies[1].mediaId));
+});
+
+test('complementary back facts without a covering real image never become a synthetic complete upload',()=>{
+ const f=logicalResidenceBackCase();f.back.extraction.fields.sex=field('F');f.copies[0].extraction.fields.nationalityCode=field('EGY');
+ const person=run(f.documents).applicants[0];assert.equal(person.identityReady,false);assert.equal(person.documents.residence.length,4);assert.ok(person.issues.some(item=>item.code==='RESIDENCE_CONFLICT'));assert.equal(person.evidence.residenceLogicalDuplicates,undefined);
+});
+
+test('logical back selection retains trusted contradictions in names, ID, full DOB, sex, nationality, expiry and rotation',()=>{
+ for(const mutate of [
+  f=>{f.copies[0].extraction.fields.latinFullName=field('SYNTHETIC OTHER EXAMPLE');},
+  f=>{f.copies[0].extraction.fields.emiratesId=field('784190012345674');},
+  f=>{f.copies[0].extraction.fields.birthDate=field('1890-01-15');},
+  f=>{f.copies[0].extraction.fields.sex=field('M');},
+  f=>{f.copies[0].extraction.fields.nationalityCode=field('SYR');},
+  f=>{f.copies[0].extraction.fields.residenceExpiry=field('2028-04-30');},
+  f=>{f.copies[0].extraction.fields.printedResidenceExpiry=field('01/05/2027');},
+  f=>{f.copies[0].extraction.rotation=90;},
+ ]){
+  const f=logicalResidenceBackCase();mutate(f);const before=structuredClone(f.documents),result=run(f.documents),person=result.applicants[0];
+  assert.equal(result.complete,false,mutate.toString());assert.ok(!person.identityReady||result.unassigned.length>0,mutate.toString());assert.deepEqual(f.documents,before);
+  assert.ok(person.documents.residence.some(source=>source.mediaId===f.copies[0].mediaId)||result.unassigned.some(source=>source.mediaId===f.copies[0].mediaId),'A contradictory source must remain explicit or unassigned');
+ }
+});
+
+test('different or invalid TD1 transcriptions cannot disappear as logical copies even with the same printed ID',()=>{
+ for(const mutate of [
+  f=>{f.copies[0].extraction.mrzLines=residencePairTd1({expiry:'280430'});},
+  f=>{f.copies[0].extraction.mrzLines=residencePairTd1({number:'X12345679'});},
+  f=>{const first=f.copies[0].extraction.mrzLines[0];f.copies[0].extraction.mrzLines[0]=first.slice(0,14)+(Number(first[14])+1)%10+first.slice(15);},
+  f=>{f.copies[0].extraction.mrzLines[2]+='<';},
+  f=>{f.copies[0].extraction.mrzLines=[];},
+ ]){
+  const f=logicalResidenceBackCase();f.copies[0].extraction.fields.emiratesId=field('784190012345673');mutate(f);const result=run(f.documents),person=result.applicants[0];
+  assert.equal(person.identityReady,false);assert.ok(person.documents.residence.some(source=>source.mediaId===f.copies[0].mediaId)||result.unassigned.some(source=>source.mediaId===f.copies[0].mediaId));assert.equal((person.evidence.residenceLogicalDuplicates||[]).some(item=>item.source.mediaId===f.copies[0].mediaId),false);
  }
 });
