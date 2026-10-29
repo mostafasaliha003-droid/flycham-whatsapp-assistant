@@ -54,7 +54,7 @@ const ISSUE_TEXT = Object.freeze({
 function copyFor(status, issues) {
   const prefix = 'معك إسماعيل من الرمال. ';
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
-  if (status === 'needs_confirmation') return prefix + 'قرأت المستندات وطابقت بياناتها المتاحة. بقيت خانات أساسية غير ظاهرة سنطلب منك تأكيدها أثناء استكمال الطلب، ولن نملأها بالتخمين. يبدأ رعد بعد تأكيدك واعتماد الدفعة من المحاسب.';
+  if (status === 'needs_confirmation') return prefix + 'المستندات محفوظة ومترابطة بملفك. نراجع الخانات المستندية من الصفحات الموجودة والتوضيحات السابقة، ولن نملأها بالتخمين. لا داعي لإعادة إرسال الصور. يبقى استكمال الطلب مرتبطًا باعتماد الدفعة من المحاسب.';
   const unconfirmedEmiratesId = issues.some(issue => ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId');
   const specific = unconfirmedEmiratesId ? ['لم يتأكد رقم الهوية آليًا؛ سيقارنه القسم بالنسخة الأصلية المحفوظة قبل طلب أي صورة إضافية.'] : [];
   const general = issues.filter(issue => !(unconfirmedEmiratesId && ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId'));

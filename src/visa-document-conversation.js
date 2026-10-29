@@ -103,7 +103,7 @@ function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
   if (summary.status === 'ready') return kind && hasPrepared(summary, kind)
     ? `النسخة المجهزة من ${KINDS[kind]} موجودة بملفك.`
     : 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة، والنسخ المجهزة موجودة بملفك.';
-  if (summary.status === 'needs_confirmation') return 'قرأت المستندات وطابقت بياناتها المتاحة. بقيت بيانات أساسية غير ظاهرة رح نطلب منك تأكيدها، والخانات الاختيارية غير الظاهرة بتبقى فارغة.';
+  if (summary.status === 'needs_confirmation') return 'المستندات محفوظة ومترابطة بملفك. منكمل مراجعة الخانات المستندية من الصفحات الموجودة والتوضيحات السابقة، وما في داعي تعيد الصور.';
   const issues = [...(Array.isArray(summary.issues) ? summary.issues : []), ...(Array.isArray(summary.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
   const lines = [...new Set(issues.map(issue => ISSUE_COPY[issue?.code]).filter(Boolean))].slice(0, 2);
   return lines.length ? lines.join('\n') : 'تجهيز المستندات يحتاج مطابقة من الفريق قبل المتابعة. إذا في صورة ناقصة أو غير واضحة رح نحددها إلك.';
@@ -181,6 +181,8 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         ? 'تمام، المرفقات اللي وصلت محفوظة ضمن ملفك. ابعت أي جزء باقي هون، ومنكمل على نفس الطلب.'
         : 'تمام، ابعتهن هون لما تجهز، وأنا معك ومنكمل على نفس الطلب.'};
       let reply = preparationCopy(summary, received);
+      const documentsPresent = ['ready','needs_confirmation'].includes(summary?.status) && ['passport','residence','photo'].every(kind => hasPrepared(summary,kind));
+      if (documentsPresent) return {...result, reply};
       const recentlyOffered = Number.isFinite(previous?.uploadOfferedAt) && now() - previous.uploadOfferedAt <= CONTEXT_MS;
       if (recentlyOffered) reply += received.exists ? '\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط الرفع اللي أرسلته قبل شوي.' : '\nفيك تستخدم رابط الرفع اللي أرسلته قبل شوي، أو تبعت الصور هون.';
       else if (typeof createUploadLink === 'function') {

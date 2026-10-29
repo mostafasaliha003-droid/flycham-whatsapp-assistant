@@ -163,3 +163,10 @@ test('proactive upload failure keeps the useful next step without invented URLs 
  const result=await make({status:'not_started',caseId:'case-one',applicants:[],issues:[]},{store:{data:{visaCases:{[CUSTOMER]:current}},save(){}},createUploadLink:async()=>{throw Error('PRIVATE_PROVIDER_ERROR');}}).handle(CUSTOMER,'كيف بقدم شو ابعتلك');
  assert.match(result.reply,/صفحة بيانات الجواز/);assert.match(result.reply,/الهوية الإماراتية/);assert.doesNotMatch(result.reply,/http|PRIVATE|غير قادر|700/);
 });
+
+ test('matched existing documents continue internally without asking customer to teach staff or reopening uploads',async()=>{
+ const c={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}],paymentStatus:'unverified'};c.quote=P.calculateQuote(c);
+ const before=structuredClone(c),store={data:{visaCases:{[CUSTOMER]:c},visaMedia:{original:{id:'original',customer:CUSTOMER,type:'image',mimeType:'image/jpeg',receivedAt:2,expiresAt:9999999999999}}},save(){}},summary={...ready(),status:'needs_confirmation'};let links=0;
+ const result=await make(summary,{store,createUploadLink:async()=>{links++;throw Error('must not open upload');}}).handle(CUSTOMER,'بدي قدم فيزا');
+ assert.equal(result.handled,true);assert.equal(links,0);assert.match(result.reply,/الصفحات الموجودة والتوضيحات السابقة/);assert.doesNotMatch(result.reply,/رح نطلب منك تأكيدها|https:|رابط الرفع|تم تقديم|تم استلام دفعتك/);assert.deepEqual(c,before);
+ });
