@@ -130,8 +130,14 @@ function loginDiagnosticEvidence(state={}){
  const signals={};for(const key of ['officialHost','mainDocument','loginRoute','logoutPresent','myApplicationsPresent','logoutVisible','applicationsVisible','loginControlsVisible','otpPresent','accountUiVerified'])if(typeof state.accountSignals?.[key]==='boolean')signals[key]=state.accountSignals[key];
  const menuReasons=new Set(['ALREADY_INSPECTED','UNAVAILABLE','UNTRUSTED_PAGE','ALREADY_ATTEMPTED','TOGGLE_UNAVAILABLE','ALREADY_EXPANDED','FOCUS_UNCONFIRMED','EXPANDED','ACTIVATION_DISPATCHED','INTERACTION_UNCONFIRMED']);
  const network={};for(const key of ['relevantResponses','relevantFailures','crossOriginNonGetAttempted','crossOriginNonGetFailed','crossOriginNonGetRouteAborted','crossOriginNavigationRouteAborted','crossOriginRouteAbortedTotal','crossOriginRouteAbortedOther']){const value=state.networkDiagnostics?.counts?.[key];if(Number.isSafeInteger(value)&&value>=0&&value<=1000000)network[key]=value;}
- const census={};for(const key of ['observed','ambiguous'])if(typeof state.menuInspection?.census?.[key]==='boolean')census[key]=state.menuInspection.census[key];for(const key of ['logoutControls','observedToggles','associatedVisibleSafeToggles','legacyAssociations','bs5Associations','ariaAssociations']){const value=state.menuInspection?.census?.[key];if(Number.isSafeInteger(value)&&value>=0&&value<=32)census[key]=value;}
+ const census={};for(const key of ['observed','ambiguous','rejectionCensusObserved'])if(typeof state.menuInspection?.census?.[key]==='boolean')census[key]=state.menuInspection.census[key];for(const key of ['logoutControls','observedToggles','associatedVisibleSafeToggles','legacyAssociations','bs5Associations','ariaAssociations','associatedTogglesBeforeSafety','associatedVisibleToggles','visibleMarkedToggles','enabledMarkedToggles','rejectedInlineAction','rejectedFormAncestor','rejectedFormOwner','rejectedTagOrType','rejectedHref','rejectedLogout','visibleDropdownToggles','visibleHeaderLoginToggles','visibleDesktopHeaderToggles','visibleMobileHeaderToggles','logoutAnchors','logoutButtons','logoutInputs','logoutDirectTargets','logoutInheritedTargets']){const value=state.menuInspection?.census?.[key];if(Number.isSafeInteger(value)&&value>=0&&value<=32)census[key]=value;}
  return {signals,...(Object.keys(census).length?{menuCensus:census}:{}),...(typeof state.menuInspection?.opened==='boolean'?{menuOpened:state.menuInspection.opened}:{}),...(menuReasons.has(state.menuInspection?.reason)?{menuReason:state.menuInspection.reason}:{}),...(Object.keys(network).length?{network}:{}),...(typeof state.canVerify==='boolean'?{canVerify:state.canVerify}:{})};
+}
+function loginPageEvidence(inspection){
+ if(!inspection||typeof inspection.path!=='string')return {observed:false};
+ const path=inspection.path,pageKind=/^\/SmartForm\/?$/.test(path)?'applications':path==='/'||/^\/Home(?:\/Index)?\/?$/i.test(path)?'home':/^\/Account\/Login(?:individuals)?\/?$/i.test(path)?'login':/^\/Account\//i.test(path)?'account_other':'other';
+ const links=Array.isArray(inspection.links)?inspection.links:[];
+ return {observed:true,pageKind,visibleControls:Math.min(Array.isArray(inspection.controls)?inspection.controls.length:0,100),visibleButtons:Math.min(Array.isArray(inspection.buttons)?inspection.buttons.length:0,100),applicationsLink:links.some(link=>/^\/SmartForm\/?$/.test(link?.path||'')),newApplicationLink:links.some(link=>link?.path==='/SmartForm/TraditionalApp'),loginLink:links.some(link=>/^\/Account\/Login(?:individuals)?\/?$/i.test(link?.path||''))};
 }
 async function loginGovernmentAccount(ctx){
  const {record:r,api:rawApi,wait}=ctx;r.phase='login';let otpSubmitted=false,lastStage='unconfirmed',lastEvidence={},lastMenuInspection=null;
@@ -155,7 +161,8 @@ async function loginGovernmentAccount(ctx){
   if(state.stage==='verification_unconfirmed')throw finite('LOGIN_EMAIL_OTP_UNCONFIRMED');
   if(state.stage==='no_session')throw finite('LOGIN_SESSION_LOST');
  }
- console.info('[RAAD_LOGIN_FINAL] '+JSON.stringify({otpSubmitted,...lastEvidence}));
+ let pageEvidence={observed:false};try{const inspected=await rawApi('inspect-page',{},false);pageEvidence=loginPageEvidence(inspected?.inspection);}catch{}
+ console.info('[RAAD_LOGIN_FINAL] '+JSON.stringify({otpSubmitted,...lastEvidence,pageEvidence}));
  throw finite(otpSubmitted?'LOGIN_EMAIL_OTP_UNCONFIRMED':lastStage==='result_unverified'?'LOGIN_ACCOUNT_UI_UNCONFIRMED':'LOGIN_UNCONFIRMED');
 }
 
@@ -210,4 +217,4 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=chooseCheapest(await inspect());await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);await wait(1000);state=await locate();}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
