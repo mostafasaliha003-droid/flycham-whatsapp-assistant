@@ -218,7 +218,7 @@
       const summary = $('success-files'); summary.replaceChildren();
       for (const role of ROLES) { const count = session.files.filter(file => file.role === role).length; if (count) summary.append(element('span', '', LABELS[role] + ' · ' + count.toLocaleString('ar-AE'))); }
       const link = $('whatsapp-link'); link.hidden = !session.whatsappUrl;
-      if (session.whatsappUrl) { link.href = session.whatsappUrl; $('return-copy').textContent = 'تفتح العودة محادثتك؛ يمكنك إرسال رسالة المتابعة هناك.'; }
+      if (session.whatsappUrl) { link.href = session.whatsappUrl; $('return-copy').textContent = 'تفتح العودة محادثتك مع رسالة «تم رفع المستندات». أرسلها هناك للمتابعة.'; }
       $('success-heading').focus();
       for (const item of items) revoke(item);
       if (clock) window.clearInterval(clock);

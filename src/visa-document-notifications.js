@@ -7,6 +7,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const COMPLETED = new Set(['ready', 'needs_confirmation', 'needs_review']);
 const IDENTITY = new Set(['passport', 'uae_id_front', 'uae_id_back']);
 const RETENTION_MS = 30 * 86400000, MAX_ITEMS = 2000, MAX_SOURCES = 100;
+const QUIET_MS = 12000, SEMANTIC_WINDOW_MS = 10 * 60000;
 const clone = value => structuredClone(value);
 const phone = value => typeof value === 'string' && /^\+?[1-9]\d{7,14}$/.test(value) ? value.replace(/^\+/, '') : null;
 const original = value => value && !value.purpose && (value.type === 'image' && ['image/jpeg', 'image/png', 'image/webp'].includes(value.mimeType) || value.type === 'document' && value.mimeType === 'application/pdf');
@@ -21,11 +22,11 @@ const ISSUE_TEXT = Object.freeze({
   DOCUMENT_UNREADABLE: 'يرجى إعادة تصوير المستند كاملًا وبوضوح، دون قص أو انعكاس.',
   INVALID_EXTRACTION: 'يرجى إعادة إرسال صورة واضحة وكاملة للمستند الذي تعذرت قراءته.',
   DOCUMENT_READ_FAILED: 'تعذرت قراءة أحد المستندات؛ يرجى إعادة إرساله بصورة أوضح.',
-  PASSPORT_MISSING: 'يرجى إرسال صفحة بيانات الجواز كاملة وبوضوح.',
+  PASSPORT_MISSING: 'لم تتأكد قراءة صفحة بيانات الجواز من المرفقات بعد؛ نحتاج توضيحها فقط قبل المتابعة.',
   PASSPORT_MRZ_REQUIRED: 'يرجى إظهار السطرين أسفل صفحة بيانات الجواز بوضوح في الصورة.',
   PASSPORT_MRZ_INVALID: 'يرجى إعادة تصوير صفحة بيانات الجواز مع السطرين أسفلها بوضوح.',
   PASSPORT_MRZ_DATE_AMBIGUOUS: 'تاريخ في الجواز غير واضح بالكامل؛ سيطابقه القسم قبل المتابعة.',
-  RESIDENCE_MISSING: 'يرجى إرسال صور الهوية الإماراتية أو الإقامة من الجهتين بوضوح.',
+  RESIDENCE_MISSING: 'لم تكتمل مطابقة صور الهوية أو الإقامة مع الجواز بعد؛ المرفقات محفوظة بملفك.',
   DOCUMENT_PORTRAIT_REQUIRED: 'الصورة الشخصية داخل المستند غير كافية للتجهيز؛ يرجى إرسال صورة شخصية واضحة.',
   DOCUMENT_IMAGE_UNSUITABLE: 'يرجى إرسال صورة أوضح وبحجمها الأصلي للمستند.',
   DOCUMENT_PDF_UNSUPPORTED: 'تعذر تجهيز ملف PDF؛ يرجى إرسال صفحات المستند المطلوبة كصور واضحة.',
@@ -37,7 +38,7 @@ const ISSUE_TEXT = Object.freeze({
   PASSPORT_VIZ_MRZ_MISMATCH: 'توجد قراءة غير متطابقة داخل صفحة الجواز؛ سيطابقها القسم قبل المتابعة.',
   RESIDENCE_CONFLICT: 'ظهرت بيانات مختلفة بين صور الهوية أو الإقامة؛ سيطابقها القسم قبل المتابعة.',
   MULTIPLE_PASSPORTS: 'وصل أكثر من جواز مختلف؛ يرجى تحديد الجواز الحالي المطلوب استخدامه.',
-  DOCUMENT_UNASSIGNED: 'تعذر ربط بعض المستندات بصاحبها؛ سيطابقها القسم دون التخمين.',
+  DOCUMENT_UNASSIGNED: 'بقي ربط بعض الصور بصاحب الطلب؛ سيطابقها القسم من المرفقات المحفوظة.',
   APPLICANT_REQUIRED: 'يلزم تحديد صاحب كل مستند وعدد المتقدمين قبل استكمال المطابقة.',
   DOCUMENT_FIELD_REQUIRED: 'توجد بيانات أساسية غير ظاهرة بوضوح؛ سيطابق القسم المستند قبل المتابعة.',
   DOCUMENT_FIELD_INVALID: 'توجد بيانات أساسية تحتاج إلى توضيح من المستند قبل المتابعة.',
@@ -54,13 +55,13 @@ function copyFor(status, issues) {
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
   if (status === 'needs_confirmation') return prefix + 'قرأت المستندات وطابقت بياناتها المتاحة. بقيت خانات أساسية غير ظاهرة سنطلب منك تأكيدها أثناء استكمال الطلب، ولن نملأها بالتخمين. يبدأ رعد بعد تأكيدك واعتماد الدفعة من المحاسب.';
   const lines = [...new Set(issues.map(issue => ISSUE_TEXT[issue?.code]).filter(Boolean))].slice(0, 3);
-  return prefix + 'راجعت قراءة المستندات، وتوجد نقاط تحتاج استكمالًا قبل المتابعة:\n' + (lines.length ? lines.map(line => '• ' + line).join('\n') : 'سيطابق القسم المستندات قبل استكمال الطلب، دون تخمين البيانات الناقصة.');
+  return 'وصلت المرفقات وحفظتها بملفك. بقيت نقاط لم تتأكد قراءتها أو مطابقتها بعد:\n' + (lines.length ? lines.map(line => '• ' + line).join('\n') : 'سيطابق القسم المستندات قبل استكمال الطلب، دون تخمين البيانات الناقصة.');
 }
 
 class VisaDocumentNotifications {
-  constructor({store, documentIntake, inbox, send, now = Date.now} = {}) {
-    if (!store?.data || typeof store.save !== 'function' || typeof documentIntake?.summary !== 'function' || typeof send !== 'function') throw error('DOCUMENT_NOTICE_CONFIGURATION_REQUIRED');
-    Object.assign(this, {store, documentIntake, inbox, send, now});
+  constructor({store, documentIntake, inbox, send, now = Date.now, isInboundBusy = () => false, quietMs = QUIET_MS} = {}) {
+    if (!store?.data || typeof store.save !== 'function' || typeof documentIntake?.summary !== 'function' || typeof send !== 'function' || typeof isInboundBusy !== 'function' || !Number.isSafeInteger(quietMs) || quietMs < 0 || quietMs > 60000) throw error('DOCUMENT_NOTICE_CONFIGURATION_REQUIRED');
+    Object.assign(this, {store, documentIntake, inbox, send, now, isInboundBusy, quietMs});
     store.data.visaDocumentNotifications ||= {items: {}};
     if (!store.data.visaDocumentNotifications.items || Array.isArray(store.data.visaDocumentNotifications.items)) throw error('DOCUMENT_NOTICE_STATE_INVALID');
     this.locks = new Map(); this.recipientLocks = new Map();
@@ -127,6 +128,30 @@ class VisaDocumentNotifications {
     const binding = {customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, resultDigest: digest({documents: raw.documents, applicants, issues: issues.map(issue => ({code: issue?.code, field: issue?.field}))}), sources, policy: this.documentIntake.policyFingerprint || null};
     return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint}), binding, bindingFingerprint: digest(binding), text: copyFor(raw.status, issues), expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
   }
+  // A source/result fingerprint binds evidence, but does not describe a new
+  // customer-facing update: five new file IDs can produce the exact same copy.
+  semanticKey(item) {
+    if (!item?.binding || typeof item.payload?.text !== 'string') return null;
+    return digest({customer: item.customer, caseId: item.binding.caseId, caseSignature: item.binding.caseSignature, text: item.payload.text});
+  }
+  duplicate(item) {
+    const semanticKey = this.semanticKey(item); if (!semanticKey) return false;
+    return Object.values(this.data().items).some(previous => {
+      if (previous.key === item.key || previous.kind !== 'document_review' || !['sending', 'accepted', 'uncertain'].includes(previous.state) || previous.expiresAt <= this.now() || this.semanticKey(previous) !== semanticKey) return false;
+      // An unknown provider outcome never becomes permission to repeat the
+      // same notice under a new evidence fingerprint or after a restart.
+      if (previous.state !== 'accepted') return true;
+      const at = previous.acceptedAt ?? previous.dispatchStartedAt ?? previous.updatedAt ?? previous.createdAt;
+      return Number.isFinite(at) && at <= this.now() && this.now() - at < SEMANTIC_WINDOW_MS;
+    });
+  }
+  settled(item) {
+    try {
+      if (this.isInboundBusy(item.customer) !== false) return false;
+      const at = Math.max(this.inbound(item.customer).at || 0, ...(item.binding?.sources || []).map(source => source.receivedAt));
+      return Number.isFinite(at) && at >= 0 && this.now() >= at + this.quietMs;
+    } catch { return false; }
+  }
   current(item) { if (!item || item.kind !== 'document_review' || item.expiresAt <= this.now()) return false; const snapshot = this.snapshot(item.customer); return snapshot !== null && snapshot.key === item.key && snapshot.bindingFingerprint === item.bindingFingerprint && item.payload?.type === 'text' && item.payload.text === snapshot.text; }
   update(customer) {
     this.prune();
@@ -169,8 +194,12 @@ class VisaDocumentNotifications {
     let item = this.data().items[key]; if (!item || item.state !== 'pending') return item ? clone(item) : null;
     if (!this.current(item)) return this.commit(() => { item.state = 'cancelled'; item.failure = 'SUPERSEDED'; item.updatedAt = this.now(); return item; });
     if (this.blocked(item.customer)) return this.commit(() => { this.pause(item, 'AUTOMATION_PAUSED'); return item; });
-    this.commit(() => { item.state = 'sending'; item.attempts++; item.updatedAt = this.now(); });
-    const guard = () => { const current = this.data().items[key]; if (!current || current.state !== 'sending' || !this.current(current)) throw error('DOCUMENT_NOTICE_STALE', true); if (this.blocked(current.customer)) throw error('DOCUMENT_NOTICE_PAUSED', true); return true; };
+    if (this.duplicate(item)) return this.commit(() => { item.state = 'cancelled'; item.failure = 'DUPLICATE_FEEDBACK'; item.updatedAt = this.now(); return item; });
+    // Keep a known unsent notice pending while the customer's file batch and
+    // receipt reply finish. A periodic flush can resume it without a new inbound.
+    if (!this.settled(item)) return clone(item);
+    this.commit(() => { item.state = 'sending'; item.attempts++; item.dispatchStartedAt = this.now(); item.updatedAt = this.now(); });
+    const guard = () => { const current = this.data().items[key]; if (!current || current.state !== 'sending' || !this.current(current)) throw error('DOCUMENT_NOTICE_STALE', true); if (this.blocked(current.customer)) throw error('DOCUMENT_NOTICE_PAUSED', true); if (this.duplicate(current)) throw error('DOCUMENT_NOTICE_DUPLICATE', true); if (!this.settled(current)) throw error('DOCUMENT_NOTICE_SETTLING', true); return true; };
     let result;
     try {
       guard(); result = await this.send(item.customer, clone(item.payload), guard, {kind: 'document_review', customer: item.customer, id: item.key, caseId: item.binding.caseId});
@@ -180,11 +209,11 @@ class VisaDocumentNotifications {
       }
       if (!messageId(acceptedId)) throw Error('DOCUMENT_NOTICE_INVALID_ACCEPTANCE');
       let superseded = false; try { guard(); } catch { superseded = true; }
-      return this.commit(() => { item = this.data().items[key]; item.state = 'accepted'; item.messageId = acceptedId; item.updatedAt = this.now(); if (superseded) item.supersededAfterDispatch = true; return item; });
+      return this.commit(() => { item = this.data().items[key]; item.state = 'accepted'; item.messageId = acceptedId; item.acceptedAt = this.now(); item.updatedAt = this.now(); if (superseded) item.supersededAfterDispatch = true; return item; });
     } catch (failure) {
       if (this.data().items[key]?.state !== 'sending') return this.quarantine(key);
       if (failure?.notDispatched === true) {
-        try { return this.commit(() => { item = this.data().items[key]; if (!this.current(item)) { item.state = 'cancelled'; item.failure = 'SUPERSEDED'; item.updatedAt = this.now(); } else this.pause(item, this.blocked(item.customer) ? 'AUTOMATION_PAUSED' : 'DELIVERY_PAUSED'); return item; }); } catch { return this.quarantine(key); }
+        try { return this.commit(() => { item = this.data().items[key]; if (!this.current(item)) { item.state = 'cancelled'; item.failure = 'SUPERSEDED'; item.updatedAt = this.now(); } else if (this.duplicate(item)) { item.state = 'cancelled'; item.failure = 'DUPLICATE_FEEDBACK'; item.updatedAt = this.now(); } else if (!this.blocked(item.customer) && !this.settled(item)) { item.state = 'pending'; item.failure = 'BATCH_SETTLING'; item.updatedAt = this.now(); } else this.pause(item, this.blocked(item.customer) ? 'AUTOMATION_PAUSED' : 'DELIVERY_PAUSED'); return item; }); } catch { return this.quarantine(key); }
       }
       return this.quarantine(key);
     }

@@ -165,25 +165,61 @@ function addSources(result, document, acceptedFields, method) {
   for (const field of acceptedFields) {
     if (!Object.hasOwn(document.fields, field)) continue;
     result.evidence.fieldSources[field] ||= [];
-    result.evidence.fieldSources[field].push({...ref(document), confidence: document.extraction.fields[field].confidence, method});
+    const sources = document.fieldProvenance?.[field] || [{...ref(document), confidence: document.extraction.fields[field].confidence}];
+    result.evidence.fieldSources[field].push(...sources.map(source => ({...source, method})));
   }
 }
 
-// Exact duplicate uploads carry no extra page evidence. A raw-file digest must
+// Repeated physical uploads carry no extra page evidence. A raw-file digest must
 // include the PDF page number; pages from one PDF are distinct documents.
 function compareReference(first, second) {
   return first.mediaId.localeCompare(second.mediaId) || first.page - second.page || first.sha256.localeCompare(second.sha256);
 }
+function samePhysicalPage(first, second) {
+  return first.kind === second.kind && (first.sha256 === second.sha256 || first.sourceSha256 && first.sourceSha256 === second.sourceSha256 && first.page === second.page);
+}
+function duplicatePriority(first, second) {
+  return Number(second.extraction.mrzLines.length === 2) - Number(first.extraction.mrzLines.length === 2)
+    || Number(second.mrzChecked === true) - Number(first.mrzChecked === true)
+    || Number(Boolean(second.extraction.portraitBox)) - Number(Boolean(first.extraction.portraitBox))
+    || Object.keys(second.fields).length - Object.keys(first.fields).length || compareReference(first,second);
+}
 function deduplicateDocuments(documents) {
-  const pixels = new Set(), originals = new Set(), result = [];
+  const groups = [];
   for (const document of [...documents].sort(compareReference)) {
-    const extraction = extractionKey(document.extraction);
-    const pixelKey = document.sha256 + ':' + extraction;
-    const originalKey = document.sourceSha256 ? document.sourceSha256 + ':' + document.page + ':' + extraction : null;
-    if (pixels.has(pixelKey) || originalKey && originals.has(originalKey)) continue;
-    pixels.add(pixelKey); if (originalKey) originals.add(originalKey); result.push(document);
+    const linked = groups.filter(group => group.some(other => samePhysicalPage(document,other)));
+    if (!linked.length) groups.push([document]);
+    else {
+      linked[0].push(document);
+      for (const group of linked.slice(1)) { linked[0].push(...group); groups.splice(groups.indexOf(group),1); }
+    }
   }
-  return result;
+  return groups.map(group => {
+    group.sort(duplicatePriority);
+    const primary = group[0], fields = {}, fieldProvenance = {}, issues = group.flatMap(document => document.issues);
+    // Identical physical pixels are the anchor, not model confidence or arrival
+    // order. Abstentions and confidence-only differences do not add a page.
+    // Retain every trusted contradiction as a blocker; never latest-value-wins.
+    for (const document of group) {
+      for (const [field,value] of Object.entries(document.fields)) {
+        if (Object.hasOwn(fields,field)) { if (!equivalent(field,fields[field],value)) issues.push(issue('SOURCE_CONFLICT',field)); }
+        else { fields[field]=value; fieldProvenance[field]=[{...ref(document),confidence:document.extraction.fields[field].confidence}]; }
+      }
+      if (document.extraction.rotation !== primary.extraction.rotation) issues.push(issue('SOURCE_CONFLICT','rotation'));
+      if (document.extraction.mrzLines.length && primary.extraction.mrzLines.length && JSON.stringify(document.extraction.mrzLines) !== JSON.stringify(primary.extraction.mrzLines)) issues.push(issue('SOURCE_CONFLICT','mrz'));
+      const box=document.extraction.portraitBox,chosenBox=primary.extraction.portraitBox;
+      if (box && chosenBox && ['x','y','width','height'].some(key => box[key] !== chosenBox[key])) issues.push(issue('SOURCE_CONFLICT','portraitBox'));
+    }
+    return {...primary,fields,fieldProvenance,issues:uniqueIssues(issues),invalidFields:[...new Set(group.flatMap(document=>document.invalidFields))],lowConfidence:[...new Set(group.flatMap(document=>document.lowConfidence))]};
+  }).sort(compareReference);
+}
+function hasStrongVisualIdentity(document) {
+  const fields=document.fields;
+  return /^[A-Z0-9]{1,20}$/.test(fields.passportNumber || '') && realDate(fields.birthDate)
+    && ['latinFirstName','latinFamilyName'].every(field => typeof fields[field] === 'string' && /^[\p{Script=Latin}\p{M} .'-]+$/u.test(fields[field]) && normalizedName(fields[field]));
+}
+function hasPassportIdentityAnchor(document) {
+  return Boolean(document.fields.passportNumber || document.extraction.mrzLines.length || fullName(document.fields) && document.fields.birthDate);
 }
 function passportGroups(documents, referenceDate) {
   // Strong identity edges may reveal a contradiction; keep that contradiction
@@ -247,10 +283,14 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   // still fail the final group inspection.
   const passports = passportGroups(distinct.filter(document => document.kind === 'passport').map(document => ({...document, issues:document.issues.filter(item => !['PASSPORT_MRZ_REQUIRED','PASSPORT_MRZ_INVALID','PASSPORT_MRZ_DATE_AMBIGUOUS','PASSPORT_VIZ_MRZ_MISMATCH','DOCUMENT_FIELD_INVALID'].includes(item.code))})), referenceDate);
   const known = applicants.map(knownFields), assignments = new Map(), passportFor = new Map();
+  const strongPassports=passports.filter(hasStrongVisualIdentity);
+  const uniqueVisualPassport=strongPassports.length===1&&passports.every(document=>document===strongPassports[0]||!hasPassportIdentityAnchor(document))?strongPassports[0]:null;
   for (const document of passports) {
     let candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.passportNumber && document.fields.passportNumber && fields.passportNumber === document.fields.passportNumber).map(item => item.index);
     if (!candidates.length) candidates = known.map((fields, index) => ({fields, index})).filter(({fields}) => fields.birthDate && document.fields.birthDate && fields.birthDate === document.fields.birthDate && fullName(fields) && fullName(fields) === fullName(identityFields(document))).map(item => item.index);
-    if (!candidates.length && applicants.length === 1 && passports.length === 1) candidates = [0];
+    // An unanchored dates-only page must not erase the one identifiable main
+    // passport. Keep it unassigned; its dates cannot complete the main page.
+    if (!candidates.length && applicants.length === 1 && (passports.length === 1 || document === uniqueVisualPassport)) candidates = [0];
     if (candidates.length !== 1) { document.parts.forEach(part => unassign(part)); continue; }
     const index = candidates[0], result = output.applicants[index];
     result.issues.push(...document.issues, ...conflictsWithCase(document, known[index]));
@@ -274,7 +314,7 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
       const index = candidates[0], result = output.applicants[index], passport = passportFor.get(index);
       pending.delete(document); changed = true; assignments.set(document, index);
       result.documents.residence.push(ref(document));
-      result.issues.push(...identityConflicts(identityFields(passport), document.fields), ...conflictsWithCase({fields:Object.fromEntries(Object.entries(document.fields).filter(([field]) => field !== 'expiryDate' && field !== 'issueDate' && field !== 'issuingCountryCode'))}, known[index]));
+      result.issues.push(...document.issues, ...identityConflicts(identityFields(passport), document.fields), ...conflictsWithCase({fields:Object.fromEntries(Object.entries(document.fields).filter(([field]) => field !== 'expiryDate' && field !== 'issueDate' && field !== 'issuingCountryCode'))}, known[index]));
       for (const field of ['emiratesId', 'residenceExpiry']) if (document.fields[field]) {
         if (result.fields[field] && !equivalent(field, result.fields[field], document.fields[field])) result.issues.push(issue('RESIDENCE_CONFLICT', field));
         else result.fields[field] = document.fields[field];
@@ -290,7 +330,7 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   }
   const portraits = distinct.filter(document => document.kind === 'portrait');
   for (const document of portraits) {
-    if (applicants.length === 1 && portraits.length === 1) { output.applicants[0].documents.photo = ref(document); assignments.set(document, 0); }
+    if (applicants.length === 1 && portraits.length === 1) { output.applicants[0].documents.photo = ref(document); output.applicants[0].issues.push(...document.issues); assignments.set(document, 0); }
     else unassign(document);
   }
   for (const result of output.applicants) {

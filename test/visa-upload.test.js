@@ -22,8 +22,17 @@ async function image(){return sharp({create:{width:1200,height:800,channels:3,ba
 test('link credential lives only in fragment and hash at rest; public session reveals no case/customer identity',async t=>{
  const{store,service}=setup(t),link=service.createLink(customer),credential=token(link),serialized=JSON.stringify(store.data.visaUpload);
  assert.match(credential,/^[A-Za-z0-9_-]{43}$/);assert.equal(new URL(link.url).pathname,'/documents');assert.equal(serialized.includes(credential),false);assert.match(Object.values(store.data.visaUpload.sessions)[0].tokenHash,/^[a-f0-9]{64}$/);
- const r=await request(service,credential);assert.equal(r.status,200);assert.equal(r.body.state,'open');assert.equal(r.body.maxBytes,MAX_BYTES);assert.deepEqual(r.body.limits,{passport:2,residence:2,photo:1});assert.equal(r.body.whatsappUrl,'https://wa.me/971500000003');assert.match(r.headers['Cache-Control'],/no-store/);
+ const r=await request(service,credential);assert.equal(r.status,200);assert.equal(r.body.state,'open');assert.equal(r.body.maxBytes,MAX_BYTES);assert.deepEqual(r.body.limits,{passport:2,residence:2,photo:1});assert.equal(r.body.whatsappUrl,'https://wa.me/971500000003?text='+encodeURIComponent('تم رفع المستندات'));assert.match(r.headers['Cache-Control'],/no-store/);
  assert.equal(JSON.stringify(r.body).includes(customer),false);assert.equal(JSON.stringify(r.body).includes(store.data.visaCases[customer].id),false);assert.equal((await request(service,'x'.repeat(43))).status,401);
+});
+test('WhatsApp return uses only the normalized configured business number and fixed ordinary follow-up text',()=>{
+ for(const number of ['97142895778','+97142895778']){
+  const store={data:{},save(){}},service=new VisaUploadService({store,mediaStore:{durable:true},inbox:{isHumanOwned:()=>false},env:{RENDER_EXTERNAL_URL:base,RAAD_DOCUMENT_UPLOAD_WHATSAPP_NUMBER:number}});
+  const url=new URL(service.whatsappUrl);assert.equal(url.origin,'https://wa.me');assert.equal(url.pathname,'/97142895778');assert.deepEqual([...url.searchParams],[['text','تم رفع المستندات']]);assert.equal(url.hash,'');assert.equal(url.username,'');assert.equal(url.password,'');assert.equal(service.whatsappUrl,'https://wa.me/97142895778?text='+encodeURIComponent('تم رفع المستندات'));
+ }
+ for(const number of ['97142895778?text=other','https://evil.test','97142895778#secret','+971 4 289 5778']){
+  const service=new VisaUploadService({store:{data:{},save(){}},mediaStore:{durable:true},inbox:{isHumanOwned:()=>false},env:{RENDER_EXTERNAL_URL:base,RAAD_DOCUMENT_UPLOAD_WHATSAPP_NUMBER:number}});assert.equal(service.whatsappUrl,null);
+ }
 });
 test('encrypted staging excludes files from originals until explicit completion; complete callback only receives exact owned files',async t=>{
  const{media,service,store,dir,completed}=setup(t),credential=token(service.createLink(customer)),bytes=await image(),r=await request(service,credential,{route:'/files',method:'POST',bytes});

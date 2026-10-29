@@ -5,6 +5,7 @@ const {visaCaseSignature}=require('./visa-case-signature');
 const {MAX_BYTES}=require('./visa-media');
 const TOKEN=/^[A-Za-z0-9_-]{43}$/,UUID=/^[a-f0-9-]{36}$/,KEY=/^[A-Za-z0-9_-]{8,100}$/;
 const LIMITS=Object.freeze({passport:2,residence:2,photo:1}),TTL=2*3600000;
+const RETURN_TEXT='تم رفع المستندات';
 const MIME=new Set(['image/jpeg','image/png','image/webp','application/pdf']);
 const STATUS={UPLOAD_UNAUTHORIZED:401,UPLOAD_EXPIRED:410,UPLOAD_STALE:409,UPLOAD_PAUSED:409,UPLOAD_SEALED:409,UPLOAD_LIMIT:409,UPLOAD_CONFLICT:409,UPLOAD_EMPTY:409,UPLOAD_NOT_FOUND:404,UPLOAD_INVALID:400,UPLOAD_TYPE_INVALID:400,UPLOAD_CONTENT_INVALID:400,UPLOAD_TOO_LARGE:413,UPLOAD_BUSY:429,UPLOAD_STORAGE_UNAVAILABLE:503,UPLOAD_UNAVAILABLE:503,UPLOAD_ORIGIN_INVALID:403};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -22,7 +23,10 @@ class VisaUploadService{
  constructor({store,mediaStore,documentIntake,inbox,env=process.env,now=Date.now,onComplete=()=>{},whatsappNumber}={}){
   if(!store?.data||typeof store.save!=='function'||!mediaStore||typeof inbox?.isHumanOwned!=='function'||typeof onComplete!=='function')throw Error('UPLOAD_CONFIG_INVALID');
   Object.assign(this,{store,mediaStore,documentIntake,inbox,env,now,onComplete});this.origin=originFor(env);this.locks=new Map();
-  const n=whatsappNumber||env.RAAD_DOCUMENT_UPLOAD_WHATSAPP_NUMBER;this.whatsappUrl=typeof n==='string'&&/^\+?[1-9]\d{6,14}$/.test(n)?'https://wa.me/'+n.replace(/^\+/,''):null;
+  // Open the configured business chat with an ordinary follow-up drafted.
+  // The customer still presses Send in WhatsApp; no case data or link token
+  // enters the return URL, and this text never supplies application consent.
+  const n=whatsappNumber||env.RAAD_DOCUMENT_UPLOAD_WHATSAPP_NUMBER;this.whatsappUrl=typeof n==='string'&&/^\+?[1-9]\d{6,14}$/.test(n)?'https://wa.me/'+n.replace(/^\+/,'')+'?text='+encodeURIComponent(RETURN_TEXT):null;
   store.data.visaUpload||={version:1,sessions:{}};if(store.data.visaUpload.version!==1||!store.data.visaUpload.sessions)throw Error('UPLOAD_CONFIG_INVALID');
  }
  get data(){return this.store.data.visaUpload;}

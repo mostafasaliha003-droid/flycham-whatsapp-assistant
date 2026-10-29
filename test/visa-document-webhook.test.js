@@ -37,7 +37,7 @@ async function images() {
 }
 const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {status, headers: {'content-type': 'application/json'}});
 
-test('signed document uploads traverse encrypted media, real Gemma adapter, matcher, preparation and private dashboard while unpaid', {timeout: 30000}, async () => {
+test('signed document uploads traverse encrypted media, real Gemma adapter, matcher, preparation and private dashboard while unpaid', {timeout: 45000}, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'visa-document-webhook-')), file = path.join(directory, 'state.enc'), sourceImages = await images();
   Object.assign(process.env, {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: STATE_KEY, WHATSAPP_APP_SECRET: SECRET, ASSISTANT_ADMIN_KEY: ADMIN, WHATSAPP_ACCESS_TOKEN: TOKEN, WHATSAPP_PHONE_NUMBER_ID: '123456789', WHATSAPP_GRAPH_API_VERSION: 'v23.0', DRY_RUN: 'false', SAUDI_VISA_ENABLED: 'true', RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: GEMMA_KEY, ASSISTANT_AI_PROVIDER: 'disabled', CLINE_API_KEY: '', OPENAI_API_KEY: '', ASSISTANT_DEBOUNCE_MS: '0', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', AIR_ARABIA_QUOTE_QUEUE_ENABLED: 'false', FLYCHAM_PORTAL_ENABLED: 'false', RAAD_VISA_AUTOMATION_ENABLED: 'false', RAAD_BROWSER_WORKER_URL: '', RAAD_JOB_BRIDGE_KEY: 'synthetic-document-bridge-key-xxxxxxxxxxxxxxxx', SAUDI_VISA_WABA_ID: '', RAAD_OTP_REQUEST_TEMPLATE: '', RAAD_VISA_PAYMENT_TEMPLATE: '', RAAD_APPLICATION_PHONE: '+' + CUSTOMER, RAAD_CONTACT_EMAIL: 'synthetic@example.test', RAAD_INSURANCE_PHONE: '+' + CUSTOMER, RAAD_POSTAL_CODE: '00000'});
   const {AssistantState} = require('../src/assistant-state');
@@ -86,7 +86,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
   });
   const upload = id => call('/webhooks/whatsapp', {method: 'POST', signed: true, data: {entry: [{changes: [{field: 'messages', value: {contacts: [{wa_id: CUSTOMER, profile: {name: 'Synthetic Customer'}}], messages: [{id: 'synthetic-document-inbound-' + (++sequence), from: CUSTOMER, timestamp: String(Math.floor(Date.now() / 1000)), type: 'image', image: {id, mime_type: 'image/png'}}]}}]}]}});
   const waitFor = async (condition, label) => {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + 30000;
     while (Date.now() < deadline) { const value = await condition(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 20)); }
     const data = readState(); assert.fail(label + ': ' + JSON.stringify({rejectedRequests, visionCount, cases: data.visaDocumentIntake?.cases, jobs: Object.values(data.visaDocumentIntake?.jobs || {}).map(job => ({status: job.status, issues: job.issues, pageCount: Object.keys(job.pages || {}).length}))}));
   };

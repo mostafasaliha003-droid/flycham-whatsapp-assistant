@@ -1,14 +1,18 @@
 'use strict';
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {createVisaDocumentConversation,detectDocumentIntent,statusReply}=require('../src/visa-document-conversation');
+const {createVisaDocumentConversation,detectDocumentIntent,detectDocumentStep,statusReply}=require('../src/visa-document-conversation');
+const P=require('../src/saudi-visa-policy');
+const {SaudiVisaEngine}=require('../src/saudi-visa-engine');
+const {visaCaseSignature}=require('../src/visa-case-signature');
 const CUSTOMER='15550004444';
 const ready=()=>({caseId:'case-one',status:'ready',applicants:[{applicantIndex:0,documents:{passport:'prepared-passport',residence:'prepared-residence',photo:'prepared-photo'}}],issues:[]});
 const make=(summary,options={})=>createVisaDocumentConversation({documentIntake:{summary:()=>summary},...options});
 
 test('document actions distinguish kind and ignore ordinary visa, insurance and requirements messages',()=>{
  for(const [text,intent,kind]of [['ادمج صور الهوية','merge','residence'],['اجمع صورتين الجواز بصورة واحدة','merge','passport'],['حسن جودة صورة الجواز','enhance','passport'],['وضحلي صورتي الشخصية','enhance','photo'],['ابعثلي نسخة الهوية المجهزة','send_prepared','residence'],['send me my passport image','send_prepared','passport'],['هل قرأت الصور؟','status',null],['ارسل رابط رفع المستندات','upload_link',null]])assert.deepEqual(detectDocumentIntent(text),{intent,kind},text);
- for(const text of ['بدي قدم فيزا','شو المستندات المطلوبة؟','شو جودة الصورة المطلوبة؟','رابط الدفع','ارسل رابط التأمين','ادمج الاسعار','عدل رقم جوازي','لا تدمج صور الجواز','بدي ابعت صورة جوازي'])assert.equal(detectDocumentIntent(text),null,text);
+ for(const text of ['شو جودة الصورة المطلوبة؟','رابط الدفع','ارسل رابط التأمين','ادمج الاسعار','عدل رقم جوازي','لا تدمج صور الجواز','بدي ابعت صورة جوازي'])assert.equal(detectDocumentIntent(text),null,text);
+ for(const text of ['بدي قدم فيزا','شو المستندات المطلوبة؟'])assert.deepEqual(detectDocumentIntent(text),{intent:'prepare_application',kind:null},text);
  assert.deepEqual(detectDocumentIntent('ادمجهم',{hasAttachments:true}),{intent:'merge',kind:null});assert.equal(detectDocumentIntent('ادمجهم'),null);
   for(const text of ['تم رفع المستندات','تم ارسال الاوراق','رفعت الصور'])assert.deepEqual(detectDocumentIntent(text),{intent:'status',kind:null});assert.equal(detectDocumentIntent('تم'),null);
 });
@@ -74,7 +78,7 @@ test('photo turn establishes minimal role context and a following pronoun preser
  const result=await app.handle(CUSTOMER,'حسنها',{requestId:'wamid.followup'});
  assert.equal(result.handled,true);assert.equal(result.preview,true);assert.match(result.reply,/نسخة للمعاينة/);assert.doesNotMatch(result.reply,/نهائي|تم التقديم|تمت المطابقة/);
  assert.deepEqual(calls,[[CUSTOMER,{kind:'residence',intent:'enhance',requestId:'wamid.followup'}]]);
- const state=store.data.serviceSessions[CUSTOMER].documentConversation;assert.deepEqual(Object.keys(state).sort(),['caseId','pendingIntent','lastKind','expiresAt'].sort());assert.equal(state.lastKind,'residence');assert.equal(state.pendingIntent,null);assert.equal(store.data.serviceSessions[CUSTOMER].service,'saudi_visa');
+ const state=store.data.serviceSessions[CUSTOMER].documentConversation;assert.deepEqual(Object.keys(state).sort(),['caseId','pendingIntent','lastKind','expiresAt','uploadOfferedAt'].sort());assert.equal(state.lastKind,'residence');assert.equal(state.pendingIntent,null);assert.equal(store.data.serviceSessions[CUSTOMER].service,'saudi_visa');
  assert.doesNotMatch(JSON.stringify(state),/صورة|wamid|preview/);
 });
 test('generic merge question persists its pending role across factory restart and exact role answer resumes actual latest inbound',async()=>{
@@ -116,4 +120,46 @@ test('unknown or failing preview result retains truthful exception copy instead 
  for(const sendPrepared of [async()=>({reason:'delivery_uncertain'}),async()=>{throw Error('PRIVATE_ERROR');}]){
   const result=await make(summary,{sendPrepared}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});assert.match(result.reply,/إرسال النسخة ما تأكد/);assert.match(result.reply,/بقيت صورة صفحة بيانات الجواز/);assert.doesNotMatch(result.reply,/أرسلت|موجودة|PRIVATE_ERROR/);
  }
+});
+test('actual apply/how-to/will-send sequence offers one private link and never repeats known quote or rotates the opened link',async()=>{
+ let at=1000000,links=0;const store={data:{},save(){}},engine=new SaudiVisaEngine({store,now:()=>at,env:{},privateConfig:{banks:[]}});
+ const initial=await engine.handle(CUSTOMER,'سوري جواز عادي لحالي');assert.match(initial.reply,/700/);const before=structuredClone(engine.getCase(CUSTOMER)),signature=visaCaseSignature(before);
+ const summary={status:'not_started',caseId:before.id,applicants:[],issues:[]},conversation=createVisaDocumentConversation({store,now:()=>at,documentIntake:{summary:()=>summary},createUploadLink:async()=>({url:'https://remal.example.test/documents#private-'+(++links)})});
+ const replies=[];
+ for(const text of ['هلا، بدي قدم فيزا السعودية لو سمحت','كيف بقدم شو ابعتلك','طيب رح ابعتلك']){
+  const c=engine.getCase(CUSTOMER),result=await conversation.handle(CUSTOMER,text,{requestId:'wamid-'+replies.length});assert.equal(result.handled,true,text);replies.push(result.reply);engine.recordDocumentTurn(CUSTOMER,text,result.reply,{caseId:c.id,expectedRevision:c.revision});at+=1000;
+ }
+ assert.match(replies[0],/صفحة بيانات الجواز/);assert.match(replies[0],/وجهي الهوية الإماراتية/);assert.match(replies[0],/https:\/\/remal\.example\.test/);
+ assert.match(replies[1],/رابط الرفع اللي أرسلته قبل شوي/);assert.doesNotMatch(replies[1],/https:/);assert.match(replies[2],/^تمام، ابعتهن هون/);assert.ok(replies[2].length<160);assert.equal(links,1);
+ assert.doesNotMatch(replies.join('\n'),/700|650|إجمالي رسوم|عرض تأشيرات|تم تأكيد.*دفعتك|تم تقديم الطلب/);assert.equal(visaCaseSignature(engine.getCase(CUSTOMER)),signature);assert.deepEqual(engine.getCase(CUSTOMER).quote,before.quote);assert.equal(engine.getCase(CUSTOMER).paymentStatus,'unverified');
+ const context=store.data.serviceSessions[CUSTOMER].documentConversation;assert.equal(context.caseId,before.id);assert.ok(Number.isFinite(context.uploadOfferedAt));assert.doesNotMatch(JSON.stringify(context),/https|private-|token|الجواز/);
+ const fresh=await conversation.handle(CUSTOMER,'ارسل رابط رفع جديد');assert.match(fresh.reply,/https:/);assert.equal(links,2);
+});
+test('existing five original attachments are acknowledged once without requesting all files again or calling unassigned pages missing',async()=>{
+ const stamp=1000000,current={id:'case-one',createdAt:stamp-1000,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}],paymentStatus:'unverified'};current.quote=P.calculateQuote(current);
+ const source=(id,patch={})=>({id,customer:CUSTOMER,type:'image',mimeType:'image/jpeg',receivedAt:stamp-500,expiresAt:stamp+100000,...patch});
+ const media=Object.fromEntries(Array.from({length:5},(_,index)=>['source-'+index,source('source-'+index)]));
+ Object.assign(media,{derived:source('derived',{purpose:'visa_client_preview'}),staged:source('staged',{purpose:'visa_upload_staged'}),old:source('old',{receivedAt:stamp-2000}),expired:source('expired',{expiresAt:stamp-1}),receipt:source('receipt'),other:source('other',{customer:'15550005555'})});
+ const store={data:{visaCases:{[CUSTOMER]:current},visaMedia:media,visaFulfilment:{cases:{[CUSTOMER]:{receipts:{receipt:{}}}}}},save(){}},summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'},{code:'DOCUMENT_UNASSIGNED'}]};
+ const result=await make(summary,{store,now:()=>stamp,createUploadLink:async()=>({url:'https://remal.example.test/documents#bound'})}).handle(CUSTOMER,'كيف بقدم شو ابعتلك');
+ assert.match(result.reply,/وصلتني 5 مرفقات/);assert.match(result.reply,/نربط كل مستند بصاحبه/);assert.match(result.reply,/ما في داعي تعيد الصور كلها/);assert.doesNotMatch(result.reply,/بقيت صورة صفحة بيانات الجواز|للبداية ابعت|وجهي الهوية/);assert.match(result.reply,/إذا بدك تضيف صورة ناقصة/);
+});
+test('qualified will-send variants are short and never create upload capabilities',async()=>{
+ const current={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality:'مصر',documentType:'passport'}]};current.quote=P.calculateQuote(current);let links=0;
+ const store={data:{visaCases:{[CUSTOMER]:current}},save(){}},conversation=make({caseId:'case-one',status:'not_started',applicants:[],issues:[]},{store,createUploadLink:async()=>{links++;return {url:'https://remal.example.test/documents#should-not-create'};}});
+ for(const text of ['طيب رح ابعتلك','تمام رح ابعت','ابعتلك الاوراق']){assert.equal(detectDocumentStep(text),'will_send');const result=await conversation.handle(CUSTOMER,text);assert.equal(result.handled,true);assert.match(result.reply,/^تمام/);assert.ok(result.reply.length<160);assert.doesNotMatch(result.reply,/http|700|الجواز|الإماراتية/);}
+ assert.equal(links,0);
+});
+test('qualification, original-document products, fees and personal answers remain outside proactive upload',async()=>{
+ for(const nationality of ['فلسطين','أفغانستان']){
+  const current={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality,documentType:'passport'}]};current.quote=P.calculateQuote(current);let links=0;
+  const result=await make({caseId:'case-one',status:'not_started',applicants:[],issues:[]},{store:{data:{visaCases:{[CUSTOMER]:current}},save(){}},createUploadLink:async()=>{links++;}}).handle(CUSTOMER,'بدي قدم فيزا');assert.deepEqual(result,{handled:false});assert.equal(links,0);
+ }
+ for(const text of ['كيف بقدم وقديش السعر','شو ابعتلك للتأمين','شو ابعتلك عن حالتي الصحية','بدي قدم وبعتلي حسابك البنكي'])assert.equal(detectDocumentStep(text),null,text);
+ let links=0;const unqualified=await make({status:'not_started',applicants:[],issues:[]},{createUploadLink:async()=>{links++;}}).handle(CUSTOMER,'بدي قدم فيزا');assert.deepEqual(unqualified,{handled:false});assert.equal(links,0);
+});
+test('proactive upload failure keeps the useful next step without invented URLs or external error details',async()=>{
+ const current={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}]};current.quote=P.calculateQuote(current);
+ const result=await make({status:'not_started',caseId:'case-one',applicants:[],issues:[]},{store:{data:{visaCases:{[CUSTOMER]:current}},save(){}},createUploadLink:async()=>{throw Error('PRIVATE_PROVIDER_ERROR');}}).handle(CUSTOMER,'كيف بقدم شو ابعتلك');
+ assert.match(result.reply,/صفحة بيانات الجواز/);assert.match(result.reply,/الهوية الإماراتية/);assert.doesNotMatch(result.reply,/http|PRIVATE|غير قادر|700/);
 });

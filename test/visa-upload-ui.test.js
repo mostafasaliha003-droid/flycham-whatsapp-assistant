@@ -91,6 +91,8 @@ test('single-role upload stays in its slot, reports actual save and completes be
   assert.equal(h.nodes['success-view'].hidden, false);
   assert.equal(h.nodes['whatsapp-link'].hidden, false);
   assert.equal(h.nodes['whatsapp-link'].href, h.saved().whatsappUrl);
+  assert.equal(new URL(h.nodes['whatsapp-link'].href).searchParams.get('text'), 'تم رفع المستندات');
+  assert.match(h.nodes['return-copy'].textContent, /رسالة «تم رفع المستندات». أرسلها هناك/);
   assert.equal(h.revoked.length, 2);
   assert.equal(h.requests.some(value => /payment|portal|consent/.test(value.path)), false);
 });

@@ -184,6 +184,17 @@ test('visa erasure clears upload capabilities and prepared-delivery records for 
  const e=make({store:{data:{},save(){}}});await e.handle('a','سوري جواز عادي لحالي');e.store.data.visaUpload={sessions:{one:{customer:'a'},two:{customer:'b'}}};e.store.data.visaPreparedDeliveries={items:{one:{customer:'a'},two:{customer:'b'}}};
  e.delete('a');assert.deepEqual(e.store.data.visaUpload.sessions,{two:{customer:'b'}});assert.deepEqual(e.store.data.visaPreparedDeliveries.items,{two:{customer:'b'}});
 });
+test('known quote is not repeated for actual apply/how-to/will-send followups while direct price remains available',async()=>{
+ const e=make(),initial=await e.handle('a','سوري جواز عادي لحالي');assert.match(initial.reply,/700/);const signature=visaCaseSignature(e.getCase('a'));
+ const apply=await e.handle('a','هلا، بدي قدم فيزا السعودية لو سمحت');assert.match(apply.reply,/نسخة جواز|صور المستندات|جواز/);assert.doesNotMatch(apply.reply,/700|إجمالي رسوم/);
+ const how=await e.handle('a','كيف بقدم شو ابعتلك');assert.match(how.reply,/جواز|الهوية/);assert.doesNotMatch(how.reply,/700|إجمالي رسوم/);
+ const future=await e.handle('a','طيب رح ابعتلك');assert.match(future.reply,/^تمام، ابعتهن هون/);assert.doesNotMatch(future.reply,/700|جواز|إجمالي رسوم/);
+ const acknowledged=await e.handle('a','اوكي');assert.doesNotMatch(acknowledged.reply,/700|إجمالي رسوم/);assert.equal(visaCaseSignature(e.getCase('a')),signature);
+ const price=await e.handle('a','شو السعر؟');assert.match(price.reply,/700/);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(e.getCase('a').submissionStatus,'not_submitted');
+});
+test('how-to apply colloquial variant preserves original-document Umrah requirements',async()=>{
+ const e=make();await e.handle('a','فلسطيني جواز عادي لحالي');const r=await e.handle('a','كيف بقدم شو ابعتلك');assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.doesNotMatch(r.reply,/850|إجمالي رسوم/);
+});
 
 test('document utility turns record the actual answer without replacing the subject, quote or document stage',async()=>{
  const engine=make();await engine.handle('document-customer','انا سوري ومعي جواز عادي شخص واحد');const c=engine.getCase('document-customer');c.stage='documents_pending_review';const before=structuredClone(c),reply='عم جهّز صور الهوية ضمن نفس ملفك.';

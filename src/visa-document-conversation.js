@@ -1,6 +1,7 @@
 'use strict';
 
-const {normalize} = require('./saudi-visa-policy');
+const P = require('./saudi-visa-policy');
+const {normalize} = P;
 const KINDS = Object.freeze({passport: 'الجواز', residence: 'الهوية أو الإقامة', photo: 'الصورة الشخصية'});
 const CONTEXT_MS = 15 * 60 * 1000;
 const IMAGE_INTENTS = new Set(['merge', 'enhance', 'send_prepared']);
@@ -21,6 +22,15 @@ const ISSUE_COPY = Object.freeze({
   DOCUMENT_IMAGE_UNSUITABLE: 'إحدى الصور تحتاج نسخة أوضح بحجمها الأصلي.'
 });
 const documentWords = /صور(?:ه|تين)?|الصور|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
+function detectDocumentStep(text) {
+  const value = normalize(typeof text === 'string' ? text.slice(0, 12000) : '').replace(/\s+/g, ' ');
+  // These requests belong to the financial, medical or personal-answer flows.
+  if (/حساب|ايبان|بنك|دفع|تحويل|ايصال|سعر|قديش|بكم|رسوم|تامين|صحي|صحه|طبي|متزوج|اجتماعي|ترحيل|حرمان|ابعاد/.test(value)) return null;
+  if (/^(?:(?:طيب|تمام|اوكي|حاضر|ماشي|ان شاء الله|هلق)\s*[،,]?\s*)*(?:(?:رح|راح|سوف)\s+(?:ابعت|ابعث|ارسل)(?:لك|الكم|ها|هم|هن)?|(?:ابعتلك|ابعثلك|ارسللك)\s+(?:الاوراق|المستندات|الصور))(?:\s+(?:الاوراق|المستندات|الصور|الجواز|الهويه|هلق|الان|بعد شوي|قريبا|لو سمحت))*[.!؟? ]*$/.test(value)) return 'will_send';
+  if (/كيف\s+(?:بقدم|اقدم|بدي\s+(?:قدم|اقدم))|شو\s+(?:ابعت|ابعث|ارسل)(?:لك|الكم)?|شو\s+بدك\s+(?:ابعت|ابعث|ارسل)|شو\s+(?:الاوراق|المستندات|الصور)(?:\s+المطلوب[هه]?)?|(?:الاوراق|المستندات)\s+المطلوب[هه]?|طريقه\s+التقديم/.test(value)) return 'requirements';
+  if (/(?:بدي|حابب|اريد)\s+(?:اقدم|قدم)(?:\s|$)|جاهز\s+(?:للتقديم|اقدم)|خلينا\s+(?:نقدم|نبلش)|\bi (?:want|would like) to apply\b/.test(value)) return 'apply';
+  return null;
+}
 function requestedKind(text) {
   const kinds = [];
   if (/جواز|\bpassport\b/i.test(text)) kinds.push('passport');
@@ -39,6 +49,8 @@ function detectDocumentIntent(text, {hasAttachments = false, hasDocumentContext 
   const value = normalize(typeof text === 'string' ? text.slice(0, 12000) : '').replace(/\s+/g, ' ');
   if (!value) return null;
   const document = documentWords.test(value), kind = requestedKind(value);
+  const step = detectDocumentStep(value);
+  if (step) return {intent: step === 'will_send' ? 'will_send' : 'prepare_application', kind: null};
   if (/تم\s+(?:رفع|ارسال|ارفاق)\s+(?:الصور|المستندات|الاوراق)|رفعت\s+(?:الصور|المستندات|الاوراق)/.test(value)) return {intent: 'status', kind};
   const link = /رابط|لينك|\blink\b/.test(value), upload = /رفع|ارفاق|ارفع|ارفق|تحميل المستند|\bupload\b|\battach\b/.test(value);
   // A payment/insurance link is not the document upload page.
@@ -61,6 +73,26 @@ function snapshot(documentIntake, customer) {
 }
 function hasPrepared(summary, kind) {
   return Boolean(kind && Array.isArray(summary?.applicants) && summary.applicants.some(applicant => typeof applicant?.documents?.[kind] === 'string' && applicant.documents[kind].length > 0));
+}
+function receivedDocuments(store, customer, summary, now) {
+  const current = store?.data?.visaCases?.[customer];
+  if (current && Number.isFinite(current.createdAt) && (!summary?.caseId || summary.caseId === current.id)) {
+    const receipts = store.data.visaFulfilment?.cases?.[customer]?.receipts || {};
+    const count = Object.values(store.data.visaMedia || {}).filter(item => item?.customer === customer && !item.purpose && !Object.hasOwn(receipts, item.id) && item.receivedAt >= current.createdAt && item.expiresAt > now && (item.type === 'image' && ['image/jpeg', 'image/png', 'image/webp'].includes(item.mimeType) || item.type === 'document' && item.mimeType === 'application/pdf')).length;
+    return {count, exists: count > 0};
+  }
+  if (Number.isSafeInteger(summary?.sourceCount) && summary.sourceCount >= 0 && summary.sourceCount <= 1000) return {count: summary.sourceCount, exists: summary.sourceCount > 0};
+  return {count: null, exists: Array.isArray(summary?.applicants) && summary.applicants.some(applicant => Object.values(applicant?.documents || {}).some(value => typeof value === 'string' && value.length > 0))};
+}
+function receivedCopy(received) {
+  return received.count === 1 ? 'وصلني مرفق واحد ضمن ملفك.' : received.count > 1 ? `وصلتني ${received.count} مرفقات ضمن ملفك.` : 'المستندات الموجودة محفوظة ضمن ملفك.';
+}
+function preparationCopy(summary, received) {
+  if (!received.exists) return 'للبداية ابعت صفحة بيانات الجواز كاملة، وجهي الهوية الإماراتية، وصورة شخصية واضحة بخلفية بيضاء. الصور أو PDF مناسبين، وإذا المستند صفحتين ابعتهن سوا.';
+  const issues = [...(Array.isArray(summary?.issues) ? summary.issues : []), ...(Array.isArray(summary?.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
+  if (issues.some(issue => ['DOCUMENT_UNASSIGNED', 'APPLICANT_REQUIRED', 'MULTIPLE_PASSPORTS'].includes(issue?.code))) return receivedCopy(received) + ' بقي نربط كل مستند بصاحبه ونطابق البيانات قبل المتابعة. ما في داعي تعيد الصور كلها.';
+  if (!summary || ['not_started', 'waiting_case', 'disabled'].includes(summary.status)) return receivedCopy(received) + ' منكمل مراجعتها، وإذا بقي جزء ناقص رح نحدده إلك. ما في داعي تعيد الصور كلها.';
+  return receivedCopy(received) + ' ' + statusReply(summary);
 }
 function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
   if (!summary || ['disabled', 'not_started', 'waiting_case'].includes(summary.status)) return hasAttachments
@@ -106,13 +138,14 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
   const context = (customer, summary) => {
     const value = stored(customer), currentCase = caseId(summary, customer), stamp = now();
     if (!value) return null;
-    if (!currentCase || value.caseId !== currentCase || !Number.isFinite(value.expiresAt) || value.expiresAt <= stamp || value.expiresAt > stamp + CONTEXT_MS || value.pendingIntent !== null && !IMAGE_INTENTS.has(value.pendingIntent) || value.lastKind !== null && !Object.hasOwn(KINDS, value.lastKind)) { clear(customer); return null; }
+    if (!currentCase || value.caseId !== currentCase || !Number.isFinite(value.expiresAt) || value.expiresAt <= stamp || value.expiresAt > stamp + CONTEXT_MS || value.pendingIntent !== null && !IMAGE_INTENTS.has(value.pendingIntent) || value.lastKind !== null && !Object.hasOwn(KINDS, value.lastKind) || value.uploadOfferedAt != null && (!Number.isFinite(value.uploadOfferedAt) || value.uploadOfferedAt > stamp)) { clear(customer); return null; }
     return value;
   };
-  const remember = (customer, summary, {pendingIntent = null, lastKind = null} = {}) => {
+  const remember = (customer, summary, {pendingIntent = null, lastKind = null, uploadOfferedAt} = {}) => {
     const currentCase = caseId(summary, customer);
     if (!currentCase) return;
-    const value = {caseId: currentCase, pendingIntent, lastKind, expiresAt: now() + CONTEXT_MS};
+    const old = context(customer, summary);
+    const value = {caseId: currentCase, pendingIntent, lastKind, expiresAt: now() + CONTEXT_MS, uploadOfferedAt: uploadOfferedAt === undefined ? old?.uploadOfferedAt ?? null : uploadOfferedAt};
     if (store?.data) {
       store.data.serviceSessions ||= {};
       store.data.serviceSessions[customer] ||= {};
@@ -123,10 +156,12 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
   return {async handle(customer, text, {hasAttachments = false, requestId} = {}) {
     const direct = detectDocumentIntent(text, {hasAttachments});
     const possibleContextual = detectDocumentIntent(text, {hasAttachments, hasDocumentContext: true}), roleAnswer = shortKind(text);
-    if (!direct && !possibleContextual && !roleAnswer && !hasAttachments) { clear(customer); return {handled: false}; }
+    const linkFollowup = stored(customer)?.uploadOfferedAt != null && /رابط|لينك|\blink\b/.test(normalize(text || '')) && !/دفع|تامين|حساب|بنك/.test(normalize(text || ''));
+    if (!direct && !possibleContextual && !roleAnswer && !hasAttachments && !linkFollowup) { clear(customer); return {handled: false}; }
     const summary = snapshot(documentIntake, customer), previous = context(customer, summary);
     const hasDocumentContext = Boolean(caseId(summary, customer) && (previous || ['processing', 'queued', 'running', 'retry', 'ready', 'needs_confirmation', 'needs_review'].includes(summary?.status)));
     let request = direct || (hasDocumentContext ? possibleContextual : null);
+    if (!request && linkFollowup && previous?.uploadOfferedAt != null) request = {intent: 'upload_link', kind: null};
     if (!request && roleAnswer && previous?.pendingIntent) request = {intent: previous.pendingIntent, kind: roleAnswer};
     if (!request) {
       if (hasAttachments) remember(customer, summary, {lastKind: requestedKind(normalize(text || ''))});
@@ -135,12 +170,33 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     }
     if (!request.kind && previous?.lastKind && pronounReference(normalize(text || '').replace(/\s+/g, ' '))) request = {...request, kind: previous.lastKind};
     const result = {handled: true, intent: request.intent, kind: request.kind};
+    if (['prepare_application', 'will_send'].includes(request.intent)) {
+      const currentCase = store?.data?.visaCases?.[customer], received = receivedDocuments(store, customer, summary, now());
+      const products = currentCase?.applicants?.map(person => P.productFor(person)) || [];
+      // Qualification and original-document routes remain with the visa engine.
+      // A request to proceed never authorizes a different product or a payment.
+      if (!currentCase?.quote?.rows?.length || currentCase.quote.requiresReview || !products.length || products.some(product => !product.code.startsWith('tourist'))) return {handled: false};
+      remember(customer, summary);
+      if (request.intent === 'will_send') return {...result, reply: received.exists
+        ? 'تمام، المرفقات اللي وصلت محفوظة ضمن ملفك. ابعت أي جزء باقي هون، ومنكمل على نفس الطلب.'
+        : 'تمام، ابعتهن هون لما تجهز، وأنا معك ومنكمل على نفس الطلب.'};
+      let reply = preparationCopy(summary, received);
+      const recentlyOffered = Number.isFinite(previous?.uploadOfferedAt) && now() - previous.uploadOfferedAt <= CONTEXT_MS;
+      if (recentlyOffered) reply += received.exists ? '\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط الرفع اللي أرسلته قبل شوي.' : '\nفيك تستخدم رابط الرفع اللي أرسلته قبل شوي، أو تبعت الصور هون.';
+      else if (typeof createUploadLink === 'function') {
+        try {
+          const url = uploadUrl(await createUploadLink(customer, {kind: null}));
+          if (url) { remember(customer, summary, {uploadOfferedAt: now()}); reply += (received.exists ? '\n\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط ملفك الخاص:' : '\n\nوفيك ترفعهم من رابط ملفك الخاص بدل إرسالهم على واتساب:') + '\n' + url + '\nبعد ما تخلص اضغط «تم» وارجع لهالمحادثة.'; }
+        } catch {}
+      }
+      return {...result, reply};
+    }
     remember(customer, summary, {pendingIntent: IMAGE_INTENTS.has(request.intent) && !request.kind ? request.intent : null, lastKind: request.kind || previous?.lastKind || null});
     if (request.intent === 'upload_link') {
       if (typeof createUploadLink === 'function') {
         try {
           const url = uploadUrl(await createUploadLink(customer, {kind: request.kind}));
-          if (url) return {...result, reply: 'ارفع الجواز والهوية والصورة الشخصية من هالرابط الخاص بملفك:\n' + url + '\n\nبعد ما تخلص اضغط «تم» أو ارجع لهالمحادثة، ومنكمل من نفس النقطة.'};
+          if (url) { remember(customer, summary, {lastKind: request.kind, uploadOfferedAt: now()}); return {...result, reply: 'ارفع الجواز والهوية والصورة الشخصية من هالرابط الخاص بملفك:\n' + url + '\n\nبعد ما تخلص اضغط «تم» أو ارجع لهالمحادثة، ومنكمل من نفس النقطة.'}; }
         } catch {}
       }
       return {...result, reply: 'فيك تبعت الصور أو PDF هون بنفس المحادثة. ابعت صفحات الجواز ووجهي الهوية والصورة الشخصية، ومنربطهم بملفك.'};
@@ -165,4 +221,4 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
   }};
 }
 
-module.exports = {createVisaDocumentConversation, detectDocumentIntent, statusReply};
+module.exports = {createVisaDocumentConversation, detectDocumentIntent, detectDocumentStep, statusReply};

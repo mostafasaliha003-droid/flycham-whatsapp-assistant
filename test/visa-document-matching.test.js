@@ -153,13 +153,15 @@ test('a back page without an identity link is never assigned merely because ther
 
 test('conflicting residence IDs or expiry dates remain conflicts, never latest-value wins', () => {
   for(const patch of [{emiratesId:'784190012345674'},{residenceExpiry:'2028-01-01'}]){
-    const result=run([passport(),front(),front(patch,IDS.back)]); assert.equal(result.complete,false); assert.ok(codes(result).includes('RESIDENCE_CONFLICT'));
+    const extra=front(patch,IDS.back);extra.sha256='b'.repeat(64);
+    const result=run([passport(),front(),extra]); assert.equal(result.complete,false); assert.ok(codes(result).includes('RESIDENCE_CONFLICT'));
   }
 });
 
 test('multiple applicants map independently by exact identities rather than arrival order', () => {
   const p=passport(),second={latinFirstName:'SECOND PERSON',latinFamilyName:'EXAMPLE',passportNumber:'N12345679',birthDate:'1985-03-12'};
   const p2=passport(second,IDS.passport2),id2=front({latinFullName:'SECOND PERSON EXAMPLE',birthDate:'1985-03-12',emiratesId:'784198512345673'},IDS.front2);
+  p2.sha256='b'.repeat(64);id2.sha256='c'.repeat(64);
   const people=[{passportNumber:'N12345678'},{passportNumber:'N12345679'}];
   const first=run([id2,p2,front(),p],people),reverse=run([p,front(),p2,id2],people);
   assert.equal(first.complete,true); assert.equal(reverse.complete,true);
@@ -187,7 +189,8 @@ test('duplicate identical sources are idempotent while changed hashes or contrad
 
 test('the same identity on duplicate passport images can be recognized, but different passports need selection', () => {
   assert.equal(run([passport(),passport({},IDS.passport2),front()]).complete,true);
-  const result=run([passport(),passport({passportNumber:'N12345679'},IDS.passport2),front()]); assert.equal(result.complete,false); assert.ok(codes(result).includes('MULTIPLE_PASSPORTS'));
+  const other=passport({passportNumber:'N12345679'},IDS.passport2);other.sha256='b'.repeat(64);
+  const result=run([passport(),other,front()]); assert.equal(result.complete,false); assert.ok(codes(result).includes('MULTIPLE_PASSPORTS'));
 });
 
 test('calendar-month validity boundaries use the existing policy, not guessed day counts', () => {
@@ -323,4 +326,76 @@ test('different people cannot merge through arrival order and exact full name al
   const p=passport(),supplement=document(IDS.passport2,'passport',{latinFullName:'SYNTHETIC PERSON EXAMPLE',birthDate:'1991-01-15',issueDate:'2020-01-01'}); supplement.sha256='b'.repeat(64);
   const result=run([supplement,p,front()],[{passportNumber:'N12345678'}]); assert.equal(result.complete,false); assert.equal(result.applicants[0].documents.passportParts,undefined);
   assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+});
+
+test('an unanchored dates-only page leaves a unique main passport and matched ID visible without importing its dates',()=>{
+ const p=passport();p.extraction.mrzLines=[];for(const field of ['issueDate','expiryDate','birthPlace'])delete p.extraction.fields[field];
+ const supplement=document(IDS.passport2,'passport',{issueDate:'2020-01-01',expiryDate:'2031-01-01',birthPlace:'Example City'});supplement.sha256='b'.repeat(64);
+ const id=front(),photo=document(IDS.portrait,'portrait',{}),result=run([supplement,id,photo,p]),person=result.applicants[0];
+ assert.equal(result.complete,false);assert.equal(person.status,'needs_review');assert.equal(person.identityReady,false);assert.equal(person.evidence.passportMrzChecked,false);
+ assert.equal(person.fields.passportNumber,'N12345678');assert.equal(person.fields.latinFirstName,'SYNTHETIC PERSON');assert.equal(person.fields.birthDate,'1990-01-15');
+ for(const key of ['issueDate','expiryDate','birthPlace'])assert.equal(Object.hasOwn(person.fields,key),false,key);
+ assert.equal(person.fields.emiratesId,'784190012345673');assert.equal(person.documents.passport.mediaId,IDS.passport);assert.deepEqual(person.documents.residence.map(ref=>ref.mediaId),[IDS.front]);assert.equal(person.documents.photo.mediaId,IDS.portrait);
+ assert.deepEqual(result.unassigned.map(ref=>ref.mediaId),[IDS.passport2]);assert.ok(result.issues.some(issue=>issue.code==='DOCUMENT_UNASSIGNED'));
+ assert.ok(person.issues.some(issue=>issue.code==='PASSPORT_MRZ_REQUIRED'));assert.equal(person.documents.passportParts,undefined);
+ assert.deepEqual(run([p,photo,id,supplement]),result);
+});
+
+test('a complete checked passport remains separately usable while an unidentified page still requires review',()=>{
+ const supplement=document(IDS.passport2,'passport',{issueDate:'2021-01-01'});supplement.sha256='b'.repeat(64);
+ const result=run([supplement,passport(),front()]),person=result.applicants[0];
+ assert.equal(result.complete,false);assert.equal(person.identityReady,true);assert.equal(person.fields.issueDate,'2020-01-01');assert.equal(person.documents.passportParts,undefined);
+ assert.ok(result.unassigned.some(ref=>ref.mediaId===IDS.passport2));
+});
+
+test('a sole-applicant fallback never chooses between different identifiable passports or people',()=>{
+ for(const fields of [
+  {passportNumber:'X12345678'},
+  {latinFullName:'SECOND PERSON EXAMPLE',birthDate:'1985-03-12'},
+ ]){
+  const extra=document(IDS.passport2,'passport',fields);extra.sha256='b'.repeat(64);
+  const result=run([extra,passport(),front()]);assert.equal(result.complete,false);assert.equal(result.applicants[0].documents.passport,null);assert.equal(result.applicants[0].identityReady,false);
+ }
+ // A name without a passport number and real birth date is insufficient for
+ // selecting the main page among other unassigned pages.
+ const weak=passport();delete weak.extraction.fields.birthDate;weak.extraction.mrzLines=[];
+ const dates=document(IDS.passport2,'passport',{issueDate:'2020-01-01'});dates.sha256='b'.repeat(64);
+ const result=run([weak,dates,front()]);assert.equal(result.applicants[0].documents.passport,null);assert.equal(result.complete,false);
+});
+
+test('same-pixel reuploads with abstentions and confidence differences are one page with exact field provenance',()=>{
+ const p=passport(),copy=passport({},IDS.passport2);delete p.extraction.fields.birthPlace;delete copy.extraction.fields.issueDate;
+ for(const evidence of Object.values(copy.extraction.fields))evidence.confidence=0.99;
+ const id=front(),idCopy=front({},IDS.front2);delete id.extraction.fields.residenceExpiry;idCopy.extraction.fields.residenceExpiry.confidence=0.99;
+ const result=run([copy,idCopy,p,id]),person=result.applicants[0];assert.equal(result.complete,true);assert.equal(person.documents.passportParts,undefined);assert.equal(person.documents.residence.length,1);
+ assert.equal(person.fields.birthPlace,'Example City');assert.equal(person.fields.issueDate,'2020-01-01');assert.equal(person.evidence.fieldSources.birthPlace.length,1);assert.equal(person.evidence.fieldSources.birthPlace[0].mediaId,IDS.passport2);
+ assert.equal(person.evidence.fieldSources.issueDate[0].mediaId,IDS.passport);assert.equal(person.evidence.fieldSources.residenceExpiry[0].mediaId,IDS.front2);
+ assert.deepEqual(run([id,p,idCopy,copy]),result);
+});
+
+test('ten original uploads with duplicate OCR variations retain the main facts and do not invent a page anchor',()=>{
+ const p=passport();p.extraction.mrzLines=[];delete p.extraction.fields.issueDate;delete p.extraction.fields.expiryDate;
+ const dates=document(IDS.passport2,'passport',{issueDate:'2020-01-01',expiryDate:'2031-01-01'});dates.sha256='b'.repeat(64);
+ const id=front();delete id.extraction.fields.residenceExpiry;
+ const back=document(IDS.back,'uae_id_back',{emiratesId:'784190012345673',residenceExpiry:'2027-04-30'});back.sha256='c'.repeat(64);
+ const photo=document(IDS.portrait,'portrait',{});photo.sha256='d'.repeat(64);
+ const originals=[p,dates,id,back,photo],copies=originals.map((document,index)=>{const copy=structuredClone(document);copy.mediaId='22345678-1234-4321-abcd-12345678900'+index;for(const evidence of Object.values(copy.extraction.fields))evidence.confidence=0.99;return copy;});
+ delete copies[0].extraction.fields.birthPlace;
+ const result=run([...copies,...originals]),person=result.applicants[0];assert.equal(person.fields.passportNumber,'N12345678');assert.equal(person.fields.latinFamilyName,'EXAMPLE');assert.equal(person.fields.emiratesId,'784190012345673');assert.equal(person.fields.residenceExpiry,'2027-04-30');
+ assert.equal(person.documents.residence.length,2);assert.equal(person.documents.photo.mediaId,IDS.portrait);assert.equal(person.documents.passportParts,undefined);assert.equal(person.fields.expiryDate,undefined);assert.equal(person.fields.issueDate,undefined);assert.equal(person.identityReady,false);assert.equal(result.unassigned.length,1);
+});
+
+test('a raw-file/page digest also deduplicates consistent OCR variations without collapsing other PDF pages',()=>{
+ const p=passport(),copy=passport({},IDS.passport2);p.sourceSha256='e'.repeat(64);copy.sourceSha256=p.sourceSha256;copy.sha256='b'.repeat(64);delete copy.extraction.fields.birthPlace;
+ const supplement=document(IDS.passport,'passport',{passportNumber:'N12345678',issueDate:'2020-01-01'});supplement.sourceSha256=p.sourceSha256;supplement.page=2;supplement.sha256='c'.repeat(64);
+ const result=run([copy,supplement,front(),p]);assert.equal(result.complete,true);assert.deepEqual(result.applicants[0].documents.passportParts.map(ref=>ref.page),[1,2]);
+});
+
+test('same physical image with contradictory trusted OCR or MRZ remains a blocking conflict',()=>{
+ for(const kind of ['passport','residence'])for(const patch of kind==='passport'?[{passportNumber:'X12345678'},{expiryDate:'2032-01-01'}]:[{emiratesId:'784190012345674'},{residenceExpiry:'2028-01-01'}]){
+  const first=kind==='passport'?passport():front(),copy=kind==='passport'?passport(patch,IDS.passport2):front(patch,IDS.front2);
+  const result=run(kind==='passport'?[first,copy,front()]:[passport(),first,copy]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.ok(codes(result).includes('SOURCE_CONFLICT'));
+ }
+ const p=passport(),copy=passport({},IDS.passport2);copy.extraction.mrzLines=mrz({passportNumber:'X12345678'});const mrzConflict=run([p,copy,front()]);assert.equal(mrzConflict.complete,false);assert.ok(codes(mrzConflict).includes('SOURCE_CONFLICT'));
+ const rotated=passport({},IDS.passport2);rotated.extraction.rotation=90;assert.ok(codes(run([p,rotated,front()])).includes('SOURCE_CONFLICT'));
 });

@@ -25,3 +25,13 @@ Customer image previews are separate from government dossier evidence. A request
 ## Verification
 
 Synthetic tests cover signed WhatsApp link creation, private binary upload, encrypted staged storage, idempotent completion, actual intake queueing, captions and bank questions, relative context, bounded composition, two-page source verification, image ownership, delivery uncertainty and data erasure. Browser checks cover 320, 390, 768 and 1440 pixel layouts, five uploads and completion. Real provider diagnostics report only document kind, field counts and fixed schema error codes; raw model output and document values are not logged.
+
+## Reply review — 2026-10-29
+
+A reproduced three-turn conversation (`بدي قدم فيزا السعودية`, `كيف بقدم شو ابعتلك`, `طيب رح ابعتلك`) now advances through document preparation instead of repeating the quote. For a qualified tourist case, Ismail offers the private upload link once, preserves that link during immediate follow-up questions, and acknowledges an intention to send documents briefly. Exact price requests and changed applicant facts still use the pricing policy; unsupported routes are not redirected into this tourist flow.
+
+Document notices wait until the inbound batch and receipt reply finish, then require twelve seconds of quiet. A semantic case/copy guard prevents the same notice from being sent under each new file fingerprint. Accepted duplicates are suppressed for ten minutes; an uncertain delivery is never replayed automatically. A received image whose reading or ownership is unresolved is described as received but unconfirmed, rather than absent.
+
+An unanchored supplementary passport page no longer hides the unique identifiable main page for a sole applicant. Its facts remain separate and unassigned; critical identity, MRZ, validity and client-confirmation requirements are unchanged. Consistent repeated-image readings preserve per-field provenance, while genuine text, MRZ or orientation conflicts remain review blockers. The preparation policy upgrade reuses existing OCR checkpoints.
+
+The WhatsApp return button opens the configured business chat with the fixed draft `تم رفع المستندات`. The customer presses Send; opening the link is not a payment, declaration or application consent.
