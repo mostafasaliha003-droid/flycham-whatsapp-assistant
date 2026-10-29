@@ -746,3 +746,11 @@ test('document staging cannot overwrite conflicting client facts or run during a
   const unconfigured = await machineFactsFixture(); unconfigured.service.canAutomate = undefined;
   throwsCode(() => unconfigured.service.stageDocumentFacts(unconfigured.jobId, {evidenceId: unconfigured.ids.evidence}), 'VISA_DOCUMENT_AUTOMATION_PAUSED');
 });
+
+test('assisted staff document gaps skip duplicate document questions while health still requires the client and tampering pauses delivery',async()=>{
+ const f=await machineFactsFixture({missing:['passportType','issueDate']}),before=structuredClone(f.c);
+ f.raad.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2020-01-01',maritalStatus:'single',health:{hospitalizedOrEmergency:false,accidentDisability:false,congenitalCondition:false}},confirm:true});const applied=f.raad.applyMachineDossier(CUSTOMER,{applicantIndex:0,expectedRevision:1,expectedCaseSignature:visaCaseSignature(f.c),evidenceId:f.ids.evidence});assert.equal(applied.staffReviewRequired,true);
+ f.service.stageDocumentFacts(f.jobId,{fields:f.applicant.fields,evidenceId:f.ids.evidence});assert.equal(f.service.stageDraftDocumentSupplement(f.jobId).ok,true);assert.equal(f.service.stageDraftDocumentSupplement(f.jobId).duplicate,true);
+ const asked=f.service.askQuestions(f.jobId);assert.ok(!asked.questions.some(q=>['passportType','issueDate','latinFirstName','birthPlace','sex'].includes(q.field)));assert.ok(asked.questions.some(q=>q.field==='health.hospitalizedOrEmergency'));assert.ok(asked.questions.some(q=>q.field==='maritalStatus'));assert.equal(f.service.job(f.jobId).stagedFields.health,undefined);assert.equal(f.service.job(f.jobId).stagedFields.maritalStatus,undefined);assert.equal(f.service.job(f.jobId).answerConfirmation,undefined);assert.equal(f.raad.get(CUSTOMER).review.complete,false);assert.deepEqual(f.c,before);
+ const raw=f.store.data.raadApplications[CUSTOMER].applicants[0];raw.revision++;raw.review.reviewedAt=f.options.now();assert.doesNotThrow(()=>f.service.assertDocumentFactsCurrent(f.service.job(f.jobId)));assert.equal(f.service.getConfirmedFields(f.jobId).complete,false);raw.fields.issueDate='2020-02-01';assert.throws(()=>f.service.assertDocumentFactsCurrent(f.service.job(f.jobId)),{code:'VISA_DOCUMENT_EVIDENCE_STALE'});
+});
