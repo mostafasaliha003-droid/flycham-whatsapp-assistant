@@ -6,7 +6,7 @@ const {visaCaseSignature,currentVisaEvidence}=require('./visa-case-signature');
 const {preparePortalImage,prepareResidenceImage,prepareDocumentImage}=require('./raad-attachments');
 const {rasterizePdf}=require('./raad-pdf');
 const {reconcileDocumentEvidence}=require('./visa-document-matching');
-const {validateDocumentExtraction,POLICY_FINGERPRINT,COMPATIBLE_PREVIOUS_POLICIES}=require('./visa-document-vision');
+const {validateDocumentExtraction,POLICY_FINGERPRINT,COMPATIBLE_PREVIOUS_POLICIES,COMPATIBLE_COMPLETED_FAILURE_POLICIES=[],DOCUMENT_VISION_ERROR_CODES,DOCUMENT_FIELD_NAMES,SCHEMA_SECTIONS,SCHEMA_ISSUES,RETRYABLE_CODES}=require('./visa-document-vision');
 const sharedLock=require('./raad-preparation-lock');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
@@ -20,6 +20,16 @@ const digest=value=>hash(JSON.stringify(canonical(value)));
 function extractionDigestFor(documents,matched){return digest({documents,applicantIndex:matched.applicantIndex,fields:matched.fields,matchedDocuments:matched.documents,evidence:matched.evidence});}
 const reason=(code,field='documents')=>({code,field,message:({DOCUMENT_OCR_INTERRUPTED:'انقطعت قراءة أحد المرفقات؛ يلزم مراجعتها قبل اعتماد البيانات.',DOCUMENT_SOURCE_LIMIT:'تجاوز عدد المرفقات حد القراءة الآلية؛ يلزم مراجعة القسم.',DOCUMENT_SOURCE_CHANGED:'تغير أحد المرفقات أثناء المعالجة.',DOCUMENT_PDF_UNSUPPORTED:'ملف PDF غير مدعوم؛ الحد الأقصى عشر صفحات واضحة.',DOCUMENT_PAGE_LIMIT:'تجاوز مجموع صفحات المرفقات حد المئة صفحة؛ يلزم مراجعة القسم.',DOCUMENT_PORTRAIT_REQUIRED:'يلزم صورة شخصية واضحة أو صورة جواز تتضمن صورة شخصية قابلة للاقتصاص دون تكبير.',DOCUMENT_IMAGE_UNSUITABLE:'تعذر تجهيز صورة واضحة ضمن الحجم المطلوب.',DOCUMENT_APPLY_PAUSED:'قراءة المستندات محفوظة، لكن اعتمادها متوقف حتى انتهاء مراجعة القسم.',DOCUMENT_APPLY_UNCONFIRMED:'لم يتم تأكيد إدراج قراءة المستندات في ملف رعد.',DOCUMENT_READ_FAILED:'تعذرت قراءة المستند آلياً؛ يلزم مراجعة القسم أو إرساله بوضوح أكبر.',DOCUMENT_FIELD_INVALID:'رقم الهوية الإماراتية في القراءة غير صالح؛ يلزم مراجعة صورة الأصل أو التحقق من الرقم الصحيح دون تخمين.',DOCUMENT_PROVIDER_UNAVAILABLE:'خدمة قراءة المستندات غير متاحة حالياً.',DOCUMENT_SOURCE_UNAVAILABLE:'أحد المرفقات لم يعد متاحاً.',DOCUMENT_WAITING_CASE:'بانتظار إنشاء ملف التأشيرة لربط المرفق الصحيح.'})[code]||'تحتاج المستندات إلى مراجعة قبل المتابعة.'});
 const finite=code=>Object.assign(Error(code),{code});
+const MANUAL_OUTPUT_RETRY_CODES=new Set(['DOCUMENT_VISION_INVALID_JSON','DOCUMENT_VISION_SCHEMA_INVALID','DOCUMENT_VISION_INVALID_OUTPUT','DOCUMENT_VISION_INCOMPLETE']);
+const FAILURE_LABELS={DOCUMENT_VISION_INVALID_JSON:'تعذر تحليل صيغة نتيجة القراءة.',DOCUMENT_VISION_SCHEMA_INVALID:'نتيجة القراءة لا تطابق الصيغة المطلوبة.',DOCUMENT_VISION_INVALID_OUTPUT:'محتوى نتيجة القراءة غير صالح.',DOCUMENT_VISION_INCOMPLETE:'نتيجة القراءة غير مكتملة.',DOCUMENT_VISION_INVALID_IMAGE:'الصورة غير صالحة لخدمة القراءة.',DOCUMENT_VISION_RESPONSE_TOO_LARGE:'تجاوزت نتيجة القراءة الحجم المسموح.',DOCUMENT_VISION_DISABLED:'خدمة القراءة غير مفعلة.',DOCUMENT_VISION_NOT_CONFIGURED:'إعداد خدمة القراءة غير مكتمل.',DOCUMENT_VISION_MODEL_NOT_ALLOWED:'نموذج القراءة غير مسموح.',DOCUMENT_VISION_STALE:'تغيرت الحالة أثناء القراءة.',DOCUMENT_VISION_PROVIDER_UNAVAILABLE:'خدمة القراءة غير متاحة.',DOCUMENT_VISION_NETWORK:'تعذر الاتصال بخدمة القراءة.',DOCUMENT_VISION_TIMEOUT:'انتهت مهلة خدمة القراءة.',DOCUMENT_VISION_RATE_LIMITED:'بلغت خدمة القراءة حد الطلبات.',DOCUMENT_VISION_COOLDOWN:'خدمة القراءة في فترة انتظار.',DOCUMENT_VISION_BUSY:'خدمة القراءة مشغولة.'};
+const SECTION_LABELS={root:'بنية النتيجة',fields:'البيانات المقروءة',mrzLines:'المنطقة الآلية للجواز',portraitBox:'حدود الصورة الشخصية'};
+const ISSUE_LABELS={root_shape:'بنية غير مطابقة',root_value:'قيمة غير مقبولة',field_shape:'بنية المعلومة غير مطابقة',null_metadata:'وصف المعلومة غير المقروءة غير مطابق',field_metadata:'وصف الثقة أو الظهور غير مطابق',value_type:'نوع القيمة غير مطابق',value_format:'صيغة القيمة غير صالحة',mrz_format:'صيغة المنطقة الآلية غير صالحة',portrait_bounds:'حدود الصورة الشخصية غير صالحة'};
+const FIELD_LABELS={latinFirstName:'الاسم الأول باللاتينية',latinFamilyName:'اسم العائلة باللاتينية',latinFatherName:'اسم الأب باللاتينية',latinGrandfatherName:'اسم الجد باللاتينية',latinFullName:'الاسم الكامل باللاتينية',arabicFirstName:'الاسم الأول بالعربية',arabicFatherName:'اسم الأب بالعربية',arabicGrandfatherName:'اسم الجد بالعربية',arabicFamilyName:'اسم العائلة بالعربية',arabicFullName:'الاسم الكامل بالعربية',passportNumber:'رقم الجواز',passportNationalNumber:'الرقم الوطني المطبوع بالجواز',passportType:'نوع الجواز',nationalityCode:'الجنسية',issuingCountryCode:'دولة إصدار الجواز',birthDate:'تاريخ الميلاد',birthPlace:'مكان الميلاد',sex:'الجنس',issueDate:'تاريخ الإصدار',expiryDate:'تاريخ انتهاء الجواز',emiratesId:'الهوية الإماراتية',residenceExpiry:'تاريخ انتهاء الإقامة',printedPassportExpiry:'انتهاء الجواز المطبوع',printedResidenceExpiry:'انتهاء الإقامة المطبوع'};
+function failureReason(error,code='DOCUMENT_READ_FAILED',field='documents'){
+ const issue=reason(code,field);if(!DOCUMENT_VISION_ERROR_CODES.includes(error?.code))return issue;
+ issue.failureCode=error.code;if(SCHEMA_SECTIONS.includes(error.schemaSection)){issue.schemaSection=error.schemaSection;if(error.schemaSection==='fields'&&DOCUMENT_FIELD_NAMES.includes(error.fieldName))issue.fieldName=error.fieldName;if(SCHEMA_ISSUES.includes(error.schemaIssue))issue.schemaIssue=error.schemaIssue;}
+ issue.message=[issue.message,FAILURE_LABELS[issue.failureCode],SECTION_LABELS[issue.schemaSection],FIELD_LABELS[issue.fieldName],ISSUE_LABELS[issue.schemaIssue]].filter(Boolean).join(' · ');return issue;
+}
 const originals=record=>record&&!record.purpose&&(['image/jpeg','image/png','image/webp'].includes(record.mimeType)&&record.type==='image'||record.mimeType==='application/pdf'&&record.type==='document');
 function dubaiDate(at){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(at));return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');}
 const activeStatus=status=>['queued','running','retry','waiting_case'].includes(status);
@@ -40,12 +50,12 @@ class VisaDocumentIntake{
  notify(customer){try{this.onUpdate(customer,this.summary(customer));}catch{}}
  retirePolicies(){
   const affected=new Set();let changed=false;
-  // This compatible prompt update changes formatting/readability instructions,
-  // not the allowed facts. Reuse completed legible pages after strict validation;
-  // only failed or unreadable supported pages need another bounded reading.
+  // Reuse strictly validated completed evidence. A diagnostics-only policy also
+  // retains terminal failures/unreadable outcomes: a rollout must not replay them.
   if(this.policyFingerprint===POLICY_FINGERPRINT)for(const job of Object.values(this.data().jobs)){
-   if(!COMPATIBLE_PREVIOUS_POLICIES.includes(job.policy)||job.status!=='ready'||!Object.keys(job.pages||{}).length)continue;
-   try{const source=this.rawSource(job.customer,job.mediaId);if(!source||source.checksum!==job.sourceSha256)continue;const pages=Object.values(job.pages);if(pages.some(page=>{const valid=validateDocumentExtraction(page.extraction);return valid.readable!==true&&valid.kind!=='other';}))continue;job.policy=this.policyFingerprint;changed=true;}catch{}
+   const keepCompleted=COMPATIBLE_COMPLETED_FAILURE_POLICIES.includes(job.policy);
+   if(!COMPATIBLE_PREVIOUS_POLICIES.includes(job.policy)||!(job.status==='ready'&&Object.keys(job.pages||{}).length||keepCompleted&&job.status==='failed'))continue;
+   let sourceBound=false;try{const source=this.rawSource(job.customer,job.mediaId),c=this.caseFor(job.customer),state=this.data().cases[job.customer];if(!source||source.checksum!==job.sourceSha256||!c||job.caseId!==c.id||job.caseSignature!==visaCaseSignature(c)||!state||state.caseId!==c.id||job.generation!==state.generation)continue;sourceBound=true;const pages=Object.values(job.pages||{});if(pages.some(page=>{const valid=validateDocumentExtraction(page.extraction);return !keepCompleted&&valid.readable!==true&&valid.kind!=='other';}))continue;job.policy=this.policyFingerprint;changed=true;}catch(error){if(keepCompleted&&sourceBound){job.policy=this.policyFingerprint;job.status='failed';job.pages={};job.issues=[failureReason(error)];changed=true;}}
   }
   for(const [customer,state]of Object.entries(this.data().cases))if(state.policy!==this.policyFingerprint)affected.add(customer);
   for(const job of Object.values(this.data().jobs)){
@@ -143,7 +153,7 @@ class VisaDocumentIntake{
  }
  pageCount(customer,caseId){return Object.values(this.data().jobs).filter(job=>job.customer===customer&&job.caseId===caseId&&job.policy===this.policyFingerprint&&job.status!=='stale').reduce((sum,job)=>sum+Object.keys(job.pages||{}).length,0);}
  async process(job){
-  let snap=this.snapshot(job),file;
+  let snap=this.snapshot(job),file,failedPage;
   try{
    file=this.sourceBytes(snap);snap.sourceSha256=file.sha256;
    this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.sourceSha256=file.sha256;job.status='running';job.updatedAt=this.now();});
@@ -152,16 +162,16 @@ class VisaDocumentIntake{
    const duplicate=Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&other.sourceSha256===file.sha256&&other.status==='ready');
    if(duplicate){if(this.pageCount(job.customer,job.caseId)-Object.keys(job.pages||{}).length+Object.keys(duplicate.pages).length>MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.pages=Object.fromEntries(Object.entries(duplicate.pages).map(([page,value])=>[page,{...clone(value),mediaId:job.mediaId}]));job.status='ready';job.updatedAt=this.now();});return;}
    for(let page=1;page<=10;page++){
-    this.guard(snap);job=this.data().jobs[snap.id];if(job.pages[page])continue;
+    this.guard(snap);job=this.data().jobs[snap.id];if(job.pages[page])continue;failedPage=page;
     let image,normalized;try{image=await this.pageBytes(file,page,()=>this.guard(snap));this.guard(snap);}catch(error){if(page>1&&error?.code==='PDF_INVALID')break;if(page>1&&error?.code==='DOCUMENT_NO_PAGE')break;throw error;}
     try{
      if(this.pageCount(job.customer,job.caseId)>=MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});this.guard(snap);const pageSha=hash(normalized.bytes);
      const cached=Object.values(this.data().jobs).flatMap(other=>other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy?Object.values(other.pages||{}):[]).find(result=>result.sourceSha256===file.sha256&&result.page===page&&result.sha256===pageSha);
      if(cached){this.commit(()=>{this.guard(snap);this.data().jobs[snap.id].pages[page]={...clone(cached),mediaId:snap.mediaId};});continue;}
-     const manual=job.manualRereadKey&&this.data().cases[job.customer].manualRereads?.[job.manualRereadKey],attempts=manual?.policy===job.policy?manual.pageAttempts?.[page]||0:job.pageAttempts[page]||0;if(attempts>=MAX_ATTEMPTS)throw finite('DOCUMENT_OCR_RETRY_LIMIT');
+     const manual=job.manualRereadKey&&this.data().cases[job.customer].manualRereads?.[job.manualRereadKey],attempts=manual?.policy===job.policy?manual.pageAttempts?.[page]||0:job.pageAttempts[page]||0;if(attempts>=MAX_ATTEMPTS||manual?.policy===job.policy&&manual.pageFailures?.[page]?.terminal)throw finite('DOCUMENT_OCR_RETRY_LIMIT');
      this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.activePage=page;current.pageAttempts[page]=attempts+1;const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy){shared.pageAttempts||={};shared.pageAttempts[page]=attempts+1;}current.updatedAt=this.now();});
      const extraction=validateDocumentExtraction(await this.vision.extract({bytes:normalized.bytes,mimeType:normalized.mimeType,guard:()=>this.guard(snap)}));this.guard(snap);
-     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.pages[page]={mediaId:snap.mediaId,page,sha256:pageSha,sourceSha256:file.sha256,extraction};delete current.activePage;current.updatedAt=this.now();});
+     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.pages[page]={mediaId:snap.mediaId,page,sha256:pageSha,sourceSha256:file.sha256,extraction};const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy&&shared.pageFailures)delete shared.pageFailures[page];delete current.activePage;current.updatedAt=this.now();});
     }finally{if(normalized?.bytes&&normalized.bytes!==image?.bytes)normalized.bytes.fill(0);image?.bytes?.fill(0);}
    }
    this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];if(!Object.keys(current.pages).length)throw finite('DOCUMENT_READ_FAILED');current.status='ready';current.issues=[];delete current.activePage;delete current.nextAttemptAt;current.updatedAt=this.now();});
@@ -170,7 +180,13 @@ class VisaDocumentIntake{
     const current=this.data().jobs[snap.id],state=this.data().cases[snap.customer],c=this.caseFor(snap.customer);
     if(!this.stopped&&this.epoch===snap.epoch&&current?.manualRereadKey&&current.caseId===snap.caseId&&c?.id===snap.caseId&&state?.generation===snap.generation&&state.caseSignature===snap.signature&&visaCaseSignature(c)===snap.signature){try{this.commit(()=>{const paused=this.data().jobs[snap.id];paused.status='failed';paused.pages={};paused.issues=[reason('DOCUMENT_APPLY_PAUSED')];delete paused.activePage;delete paused.nextAttemptAt;paused.updatedAt=this.now();});}catch{}}return;
    }
-   try{this.guard(snap);this.commit(()=>{const current=this.data().jobs[snap.id];const retryable=error?.retryable===true&&(current.pageAttempts[current.activePage]||0)<MAX_ATTEMPTS;if(retryable){current.status='retry';current.nextAttemptAt=this.now()+Math.max(5000,Math.min(300000,Number(error.retryAfterMs)||5000));current.issues=[reason('DOCUMENT_PROVIDER_UNAVAILABLE')];}else{current.status='failed';current.issues=error?.code==='DOCUMENT_VISION_SCHEMA_INVALID'&&error.schemaSection==='fields'&&error.fieldName==='emiratesId'&&error.schemaIssue==='value_format'?[reason('DOCUMENT_FIELD_INVALID','emiratesId')]:[reason(error?.code==='DOCUMENT_PAGE_LIMIT'?'DOCUMENT_PAGE_LIMIT':error?.code==='PDF_PAGE_COUNT_UNSUPPORTED'?'DOCUMENT_PDF_UNSUPPORTED':error?.code==='DOCUMENT_INTAKE_STALE'?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_READ_FAILED')];}current.updatedAt=this.now();});}catch{}
+   try{this.guard(snap);this.commit(()=>{const current=this.data().jobs[snap.id],shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey],manual=shared?.policy===current.policy,attempts=manual?shared.pageAttempts?.[failedPage]||0:current.pageAttempts[current.activePage]||0;
+    const outputRetry=manual&&MANUAL_OUTPUT_RETRY_CODES.has(error?.code),transportRetry=error?.retryable===true&&RETRYABLE_CODES.includes(error?.code)&&(!manual||error.code!=='DOCUMENT_VISION_PROVIDER_UNAVAILABLE'),retryable=(outputRetry||transportRetry)&&attempts<MAX_ATTEMPTS;
+    const inherited=manual&&error?.code==='DOCUMENT_OCR_RETRY_LIMIT'&&shared.pageFailures?.[failedPage]?.issue;
+    const eid=error?.code==='DOCUMENT_VISION_SCHEMA_INVALID'&&error.schemaSection==='fields'&&error.fieldName==='emiratesId'&&error.schemaIssue==='value_format';
+    const issue=inherited?clone(inherited):failureReason(error,eid?'DOCUMENT_FIELD_INVALID':retryable&&!outputRetry?'DOCUMENT_PROVIDER_UNAVAILABLE':error?.code==='DOCUMENT_PAGE_LIMIT'?'DOCUMENT_PAGE_LIMIT':error?.code==='PDF_PAGE_COUNT_UNSUPPORTED'?'DOCUMENT_PDF_UNSUPPORTED':error?.code==='DOCUMENT_INTAKE_STALE'?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_READ_FAILED',eid?'emiratesId':'documents');
+    if(retryable){current.status='retry';current.nextAttemptAt=this.now()+Math.max(5000,Math.min(300000,Number(error.retryAfterMs)||5000));}else{current.status='failed';delete current.nextAttemptAt;}current.issues=[issue];
+    if(manual&&Number.isSafeInteger(failedPage)&&failedPage>=1&&failedPage<=10){shared.pageFailures||={};shared.pageFailures[failedPage]={issue:clone(issue),terminal:!retryable};}current.updatedAt=this.now();});}catch{}
   }finally{file?.bytes?.fill(0);}
  }
  async loadReference(customer,ref,guard){

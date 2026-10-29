@@ -20,8 +20,8 @@ const error = (code, notDispatched = false) => Object.assign(Error(code), {code,
 // extracted names, identifiers, dates and arbitrary issue messages never enter it.
 const ISSUE_TEXT = Object.freeze({
   DOCUMENT_UNREADABLE: 'يرجى إعادة تصوير المستند كاملًا وبوضوح، دون قص أو انعكاس.',
-  INVALID_EXTRACTION: 'يرجى إعادة إرسال صورة واضحة وكاملة للمستند الذي تعذرت قراءته.',
-  DOCUMENT_READ_FAILED: 'تعذرت قراءة أحد المستندات؛ يرجى إعادة إرساله بصورة أوضح.',
+  INVALID_EXTRACTION: 'لم تتأكد نتيجة قراءة أحد المستندات؛ سيراجع القسم النسخة المحفوظة أولًا.',
+  DOCUMENT_READ_FAILED: 'تعذرت قراءة أحد المستندات آليًا؛ نسخته محفوظة لمراجعة القسم.',
   PASSPORT_MISSING: 'لم تتأكد قراءة صفحة بيانات الجواز من المرفقات بعد؛ نحتاج توضيحها فقط قبل المتابعة.',
   PASSPORT_MRZ_REQUIRED: 'يرجى إظهار السطرين أسفل صفحة بيانات الجواز بوضوح في الصورة.',
   PASSPORT_MRZ_INVALID: 'لم تتأكد مطابقة قراءة السطرين أسفل الجواز؛ سيعيد القسم فحص الصورة المحفوظة قبل طلب بديل.',
@@ -56,7 +56,7 @@ function copyFor(status, issues) {
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
   if (status === 'needs_confirmation') return prefix + 'قرأت المستندات وطابقت بياناتها المتاحة. بقيت خانات أساسية غير ظاهرة سنطلب منك تأكيدها أثناء استكمال الطلب، ولن نملأها بالتخمين. يبدأ رعد بعد تأكيدك واعتماد الدفعة من المحاسب.';
   const unconfirmedEmiratesId = issues.some(issue => ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId');
-  const specific = unconfirmedEmiratesId ? ['لم يتأكد رقم الهوية كاملًا؛ صيغة الهوية الإماراتية تتكون من 15 خانة. يرجى إرسال نسخة أصلية واضحة للبطاقة للتحقق من الرقم فقط.'] : [];
+  const specific = unconfirmedEmiratesId ? ['لم يتأكد رقم الهوية آليًا؛ سيقارنه القسم بالنسخة الأصلية المحفوظة قبل طلب أي صورة إضافية.'] : [];
   const general = issues.filter(issue => !(unconfirmedEmiratesId && ['DOCUMENT_FIELD_INVALID', 'DOCUMENT_FIELD_REQUIRED'].includes(issue?.code) && issue?.field === 'emiratesId'));
   const lines = [...new Set([...specific, ...general.map(issue => ISSUE_TEXT[issue?.code]).filter(Boolean)])].slice(0, 3);
   return 'وصلت المرفقات وحفظتها بملفك. بقيت نقاط لم تتأكد قراءتها أو مطابقتها بعد:\n' + (lines.length ? lines.map(line => '• ' + line).join('\n') : 'سيطابق القسم المستندات قبل استكمال الطلب، دون تخمين البيانات الناقصة.');
@@ -103,6 +103,10 @@ class VisaDocumentNotifications {
     const c = this.store.data.visaCases?.[customer], raw = this.store.data.visaDocumentIntake?.cases?.[customer];
     let summary; try { summary = this.documentIntake.summary(customer); } catch { return null; }
     if (!c || !raw || !summary || summary.enabled !== true || !COMPLETED.has(raw.status) || summary.status !== raw.status || typeof c.id !== 'string' || !Number.isFinite(c.createdAt) || raw.caseId !== c.id || summary.caseId !== c.id || !Number.isInteger(raw.generation) || raw.generation < 1 || summary.generation !== raw.generation || !SHA.test(raw.resultFingerprint || '') || summary.resultFingerprint !== raw.resultFingerprint) return null;
+    // An employee's internal reread is not a fresh customer request. Hold its
+    // intermediate results until the customer actually contacts us again.
+    const manualAt = Math.max(0, ...Object.values(raw.manualRereads || {}).filter(item => Number.isFinite(item?.requestedAt) && Number.isSafeInteger(item?.generation) && item.generation <= raw.generation).map(item => item.requestedAt));
+    if (manualAt && (!Number.isFinite(this.inbound(customer).at) || this.inbound(customer).at <= manualAt)) return null;
     const signature = visaCaseSignature(c);
     if (raw.caseSignature !== signature || summary.caseSignature !== signature || !Array.isArray(raw.documents) || raw.documents.length > 100 || !raw.documents.some(document => IDENTITY.has(document?.extraction?.kind))) return null;
     const referenced = new Set(raw.documents.map(document => document?.mediaId));

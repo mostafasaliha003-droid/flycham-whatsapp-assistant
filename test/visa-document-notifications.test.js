@@ -63,7 +63,7 @@ test('invalid Emirates ID feedback identifies the field before generic gaps with
   f.raw.issues = [{code:'DOCUMENT_UNASSIGNED'}, {code:'PASSPORT_MRZ_INVALID'}, {code:'DOCUMENT_FIELD_REQUIRED'}, {code:'DOCUMENT_FIELD_INVALID', field:'emiratesId', message:'PRIVATE_ID_READING'}];
   const item = f.service.update(CUSTOMER); await f.service.flush();
   const lines = item.payload.text.split('\n');
-  assert.match(lines[1], /رقم الهوية.*15 خانة/);
+  assert.match(lines[1], /رقم الهوية.*المحفوظة قبل طلب أي صورة إضافية/);
   assert.equal((item.payload.text.match(/•/g) || []).length, 3);
   assert.doesNotMatch(item.payload.text, /PRIVATE_ID_READING|784199012345671|إعادة تصوير صفحة بيانات الجواز/);
   assert.equal(f.c.paymentStatus, 'unverified');
@@ -84,6 +84,19 @@ test('stable completion is idempotent across repeated updates, flushes and resta
   assert.equal(f.saves(), saves); await f.service.flush(); await f.service.flush();
   const restarted = new VisaDocumentNotifications(f.options); restarted.update(CUSTOMER); await restarted.flush();
   assert.equal(f.count(), 1); assert.equal(Object.keys(f.store.data.visaDocumentNotifications.items).length, 1);
+});
+
+test('internal employee rereads stay silent until a newer real customer inbound', async () => {
+  const f = fixture({status:'needs_review'});
+  f.raw.manualRereads = {synthetic:{generation:1,requestedAt:NOW}};
+  assert.equal(f.service.update(CUSTOMER), null); await f.service.flush(); assert.equal(f.count(),0);
+  f.raw.generation = 2; f.raw.resultFingerprint = 'e'.repeat(64);
+  f.store.data.visaDocumentIntake.jobs['synthetic-job'].generation = 2;
+  const restarted = new VisaDocumentNotifications(f.options);
+  assert.equal(restarted.update(CUSTOMER), null); await restarted.flush(); assert.equal(f.count(),0);
+  f.advance(1000); f.inbound();
+  assert.ok(restarted.update(CUSTOMER)); await restarted.flush(); assert.equal(f.count(),1);
+  assert.equal(f.c.paymentStatus,'unverified');
 });
 
 test('metadata-only dossier application and job staging preserve the pending document notice binding', async () => {
