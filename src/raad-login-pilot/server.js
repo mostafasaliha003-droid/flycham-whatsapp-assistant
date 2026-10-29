@@ -149,10 +149,10 @@ function createPilot({env=process.env,launch,now=Date.now,otpFetch=fetch,captcha
       if(j.verificationStatus!=='submitted')throw Error('LOGIN_NOT_SUBMITTED');
       const otp=await findVerificationControls(j.page);const structure=await getVerificationDiagnostics(j.page);const codeStillVisible=Array.isArray(structure.fields)&&structure.fields.some(field=>field.type!=='submit'&&(field.verificationLabel||field.otpAutocomplete));const before=await getAccountSignals(j.page,Boolean(otp)||codeStillVisible);
       if(otp||codeStillVisible||before.loginControlsVisible||before.loginRoute||!before.officialHost||!before.mainDocument)throw Error('ACCOUNT_PAGE_UNAVAILABLE');
-      let result={opened:false,reason:'ALREADY_INSPECTED',signals:before};
-      if(!j.accountMenuInspected&&!before.accountUiVerified){result=await openAccountMenu(j.page);if(result.attempted===true||result.opened===true)j.accountMenuInspected=true;}
+      let result={opened:false,reason:'ALREADY_INSPECTED',signals:before,census:j.accountMenuCensus||{observed:false}};
+      if(!j.accountMenuInspected&&!before.accountUiVerified){result=await openAccountMenu(j.page);if(result.census)j.accountMenuCensus=result.census;if(result.attempted===true||result.opened===true)j.accountMenuInspected=true;}
       j.accountSignals=result.signals;j.stage=result.signals.accountUiVerified?'authenticated':'result_unverified';
-      reply(res,200,{sessionId:j.id,stage:j.stage,canVerify:false,authenticated:j.stage==='authenticated',expiresAt:j.expires,accountSignals:j.accountSignals,menuInspection:{opened:result.opened===true,reason:result.reason}});
+      reply(res,200,{sessionId:j.id,stage:j.stage,canVerify:false,authenticated:j.stage==='authenticated',expiresAt:j.expires,accountSignals:j.accountSignals,menuInspection:{opened:result.opened===true,reason:result.reason,census:result.census}});
      }
      else if(url.pathname==='/api/image'){if(j.stage!=='awaiting_input')throw Error('INVALID_STAGE');reply(res,200,await captureCaptcha(j.page),'image/png');}
      else if(url.pathname==='/api/refresh-captcha'){
