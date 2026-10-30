@@ -226,7 +226,7 @@ class VisaFulfilment {
       const count = approvedCase.applicantCount;
       if (!Number.isSafeInteger(count) || count < 1 || count > 30 || approvedCase.applicants?.length !== count) fail('VISA_APPLICANTS_INCOMPLETE');
       const jobs = Array.from({length: count}, (_, applicantIndex) => {
-        const job = {id: randomUUID(), customer, caseId: approvedCase.id, caseSignature: signature, caseRevision: approval.caseRevision, approvalId: approval.id, applicantIndex, revision: 1, state: 'queued', paymentNoticeId: notification.id, confirmedFields: {}, questions: {}, createdAt: this.now(), updatedAt: this.now()};
+        const job = {id: randomUUID(), customer, caseId: approvedCase.id, caseSignature: signature, caseRevision: approval.caseRevision, approvalId: approval.id, applicantIndex, revision: 1, state: 'queued', paymentNoticeId: notification.id, routingRequiredFields: ['transport','arrivalPort'], confirmedFields: {}, questions: {}, createdAt: this.now(), updatedAt: this.now()};
         this.data().jobs[job.id] = job; return job;
       });
       this.audit('payment_confirmed', {customer, approvalId: approval.id, receiptId, actor: approval.actor, amount, reference});
@@ -417,8 +417,25 @@ class VisaFulfilment {
     const fingerprint=hash(fields),draftFingerprint=hash({fields:Object.fromEntries(Object.entries(draft.fields||{}).filter(([field])=>DOCUMENT_FACT_SET.has(field))),documents:draft.documents}),prior=job.staffDocumentSupplement;if(prior?.fingerprint===fingerprint&&prior.draftFingerprint===draftFingerprint)return {ok:true,duplicate:true};
     return this.commit(()=>{job.stagedFields={...clone(job.confirmedFields),...clone(job.stagedFields||{}),...clone(fields)};job.staffDocumentSupplement={draftJobId:draft.jobId,draftRevision:draft.revision,draftFingerprint,fields:clone(fields),fingerprint};this.audit('staff_document_supplement_staged',{customer:job.customer,jobId,evidenceId:job.documentFacts.evidenceId,fields:Object.keys(fields)});return {ok:true,duplicate:false};});
   }
+  stageStaffAnswers(jobId) {
+    const job=this.guardJob(jobId);
+    if(!['queued','ready'].includes(job.state)||this.data().lease) return false;
+    const collected=Object.values(this.store.data.visaStaffQuestions?.sessions||{}).filter(s=>s.jobId===job.id&&s.customer===job.customer&&s.caseSignature===job.caseSignature&&s.jobRevision===job.revision&&s.state==='answered'&&typeof s.answerMessageId==='string'&&s.answerMessageId.length>0&&s.answerMessageId.length<=500);
+    const known=clone(job.confirmedFields),accepted=[];
+    for(const s of collected){
+      try{validateAnswer(s.field,fieldAt(job.confirmedFields,s.field));continue;}catch{}
+      try{const value=validateAnswer(s.field,s.answer);if(accepted.includes(s.field)&&JSON.stringify(fieldAt(known,s.field))!==JSON.stringify(value))fail('VISA_STAFF_ANSWER_CONFLICT');setField(known,s.field,value);accepted.push(s.field);}catch(error){if(error.code==='VISA_STAFF_ANSWER_CONFLICT')throw error;}
+    }
+    if(!accepted.length)return false;
+    const missing=[...new Set([...this.missingClientFields(job,known),...requiredQuestions(known,{requestedFields:['transport','arrivalPort']})])];
+    this.commit(()=>{job.stagedFields=known;delete job.answerConfirmation;job.revision++;job.questions={};job.questionRevision=(job.questionRevision||0)+1;
+      if(missing.length){job.state='needs_followup';job.followupFields=missing;}else this.queueAnswerSummary(job,known);
+      this.audit('staff_client_answers_staged',{customer:job.customer,jobId:job.id,fields:[...new Set(accepted)]});return {ok:true};});
+    if(missing.length)this.askQuestions(jobId,{fields:missing});
+    return true;
+  }
   missingClientFields(job, fields) {
-    return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: job.documentRequiredFields || []})])];
+    return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: [...(job.documentRequiredFields || []), ...(job.routingRequiredFields || [])]})])];
   }
   stageDocumentFacts(jobId, {fields, evidenceId} = {}) {
     const job = this.guardJob(jobId);
@@ -467,6 +484,9 @@ class VisaFulfilment {
     const requested = [];
     for (const field of candidates) {
       const definition = QUESTION_CATALOG[field];
+      // Preserve an already confirmed answer across rounds. An explicit
+      // applicant correction clears staged facts and remains a separate path.
+      if (job.state!=='needs_followup') {try{validateAnswer(field,fieldAt(job.confirmedFields,field));continue;}catch{}}
       if (!definition) fail('VISA_QUESTION_UNKNOWN', 400);
       const dependency = definition.dependsOn;
       // Ask a controlling choice before its conditional free-text details.

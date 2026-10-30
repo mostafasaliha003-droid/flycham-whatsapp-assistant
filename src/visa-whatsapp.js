@@ -13,6 +13,7 @@ const OTP_TEMPLATE_BODY = 'تحديث مهمة متابعة طلب تأشيرة 
 const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
 const TEMPLATE_REJECTION_CODES = new Set(['ABUSIVE_CONTENT', 'PROMOTIONAL', 'SCAM', 'INCORRECT_CATEGORY', 'TAG_CONTENT_MISMATCH', 'INVALID_FORMAT', 'CATEGORY_NOT_AVAILABLE', 'NONE']);
 const FIELD_LABELS = Object.freeze({
+  transport:'وسيلة الوصول',arrivalPort:'منفذ الوصول',arrivalPortDetails:'تفاصيل منفذ الوصول',applicationPhone:'جوال تحقق الطلب',contactEmail:'البريد الإلكتروني',insurancePhone:'جوال التأمين',postalCode:'الرمز البريدي',city:'مدينة التواصل',postOfficeBox:'صندوق البريد',
   maritalStatus: 'الحالة الاجتماعية', previousNationality: 'جنسية سابقة', previousNationalityDetails: 'تفاصيل الجنسية السابقة',
   travelledLastFiveYears: 'سفر خلال خمس سنوات', travelHistory: 'تفاصيل السفر', performUmrah: 'نية أداء العمرة', gccResident: 'إقامة خليجية سارية',
   priorGccDeportation: 'إبعاد أو ترحيل سابق', priorGccRuleViolation: 'منع دخول أو مخالفة سابقة',
@@ -146,7 +147,7 @@ function renderSummary(payload) {
     let value;
     if (typeof entry.value === 'boolean') value = entry.value ? 'نعم' : 'لا';
     else if (typeof entry.value === 'string') {
-      value = string(entry.value, 1500, {multiline: false});
+      value = entry.field==='saudiAddress'&&entry.value==='not_specified'?'غير محدد':string(entry.value, 1500, {multiline: false});
       if (definition?.type === 'choice') {
         const option = definition.options.find(item => item.value === entry.value);
         if (!option) throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');

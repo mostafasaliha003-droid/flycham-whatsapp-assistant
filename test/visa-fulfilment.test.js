@@ -242,7 +242,7 @@ test('restart interrupts browser lease/OTP and preserves uncertain message state
 test('saved application requires Return, no payment, exact customer PDF, and sends honest request-copy caption', async () => {
   const f = fixture(), result = await f.activate(), asked = f.service.askQuestions(result.jobs[0].id);
   for (const question of asked.questions) {
-    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
+    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
     else f.service.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : question.field === 'birthPlace' ? 'Example City' : 'Example Hotel, Riyadh'});
   }
   f.service.confirmAnswers({sender: CUSTOMER, token: f.service.job(result.jobs[0].id).summary.token, confirm: true});
@@ -671,7 +671,7 @@ async function machineFactsFixture({missing = []} = {}) {
 function answerRemainingMachineQuestions(f) {
   const asked = f.service.askQuestions(f.jobId);
   for (const question of asked.questions) {
-    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : question.field === 'passportType' ? 'ordinary' : 'no'});
+    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : question.field === 'passportType' ? 'ordinary' : 'no'});
     else f.service.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'issueDate' ? '2020-01-01' : question.field === 'birthPlace' ? 'Example City' : question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : 'Example Hotel, Riyadh'});
   }
   return asked;
@@ -774,4 +774,13 @@ test('assisted portal rejects absent consent, changed draft facts, extra facts, 
  (f,p)=>{delete f.service.job(f.jobId).staffDocumentSupplement;},
  (f,p)=>{f.c.paymentStatus='unverified';}
  ]){const f=await confirmedAssistedFixture(),proof=f.service.getConfirmedFields(f.jobId);mutate(f,proof);assert.equal(f.raad.portalDossier(CUSTOMER,{clientProof:proof}).ready,false);}
+});
+
+test('confirmed nested answers survive later question rounds without another prompt',async()=>{
+ const f=fixture(),result=await f.activate(),id=result.jobs[0].id;
+ const first=f.service.askQuestions(id,{fields:['health.hospitalizedOrEmergency']});
+ f.service.answerQuestion({sender:CUSTOMER,token:first.questions[0].token,option:'yes'});
+ f.service.confirmAnswers({sender:CUSTOMER,token:f.service.job(id).summary.token,confirm:true,messageId:'synthetic-confirmation'});
+ const repeated=f.service.askQuestions(id,{fields:['health.hospitalizedOrEmergency']});
+ assert.equal(repeated.questions.length,0);assert.equal(f.service.job(id).confirmedFields.health.hospitalizedOrEmergency,true);
 });
