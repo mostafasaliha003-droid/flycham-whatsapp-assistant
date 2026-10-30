@@ -14,7 +14,7 @@ Changes:
 
 Validation:
 220 selected main/operations/domain/dispatcher tests passed. Includes 24 operations UI tests, synthetic native WhatsApp payloads and employee-route authorization. Full application integration/CI has not run in this partial checkout.
-46 selected browser/SMS/date tests passed; all tests use synthetic responses or local loopback. No live provider/portal dispatch.
+47 selected browser/SMS/date tests passed; all tests use synthetic responses or local loopback. No live provider/portal dispatch.
 src/server.js syntax checked.
 
 Deployment blockers:
