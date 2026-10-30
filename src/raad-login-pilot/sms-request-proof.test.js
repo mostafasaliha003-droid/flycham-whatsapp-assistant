@@ -89,3 +89,14 @@ test('missing response contract blocks before observers or an SMS action can sta
 test('a stopped proof cannot be armed or reopen listeners',()=>{
  const f=fixture();f.proof.stop();assert.throws(()=>f.proof.arm({expectedPhone:'500000123',expectedDialCode:'971'}),/ALREADY_ATTEMPTED/);assert.equal(f.page.listenerCount('response'),0);
 });
+
+test('unconfigured verifier is an explicit pre-dispatch refusal and sanitized failure details retain evidence',()=>{
+ const {createSmsRequestProof,smsFailureDetails}=require('./sms-request-proof');let listeners=0;
+ const proof=createSmsRequestProof({on(){listeners++;},off(){}});
+ let caught;try{proof.arm({expectedPhone:'+971500000001',expectedDialCode:'971'});}catch(e){caught=e;}
+ assert.equal(caught.code,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');assert.equal(caught.notDispatched,true);assert.equal(listeners,0);
+ const response=smsFailureDetails(caught,{proof,dispatchState:'not_dispatched'});
+ assert.equal(response.reason,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');assert.equal(response.smsDispatchState,'not_dispatched');assert.equal(response.smsRequest.requestObserved,false);
+ const after=smsFailureDetails({code:'APPLICATION_SMS_ACTIVATION_UNCONFIRMED'},{proof:{snapshot:()=>({requestObserved:true,destinationMatch:'matched',responseObserved:true,responseClass:'4xx',acceptance:'rejected',phone:'PRIVATE_PHONE',otp:'PRIVATE_OTP'})},dispatchState:'uncertain'});
+ assert.equal(after.smsRequest.requestObserved,true);assert.equal(after.smsRequest.acceptance,'rejected');assert.equal(after.smsDispatchState,'uncertain');assert.equal(JSON.stringify(after).includes('PRIVATE'),false);
+});

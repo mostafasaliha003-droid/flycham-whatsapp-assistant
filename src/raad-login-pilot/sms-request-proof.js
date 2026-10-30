@@ -54,7 +54,7 @@ function createSmsRequestProof(page,{verifyResponse,timeoutMs=8000}={}){
  }
  function arm(input){
   if(used||done)throw Error('APPLICATION_SMS_ALREADY_ATTEMPTED');used=true;
-  if(typeof verifyResponse!=='function')throw Error('APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');
+  if(typeof verifyResponse!=='function')throw Object.assign(Error('APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED'),{code:'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED',notDispatched:true});
   if(!page||typeof page.on!=='function'||typeof page.off!=='function')return false;
   if(!destination.arm(input))return false;
   armed=true;for(const [event,handler]of [['request',request],['response',response],['requestfailed',failed]])page.on(event,handler);
@@ -82,4 +82,8 @@ function confirmSmsRequest(record,result){
  // Accepted means portal acceptance under the verified contract, never delivery.
  return true;
 }
-module.exports={createSmsRequestProof,cleanSmsRequestEvidence,confirmSmsRequest};
+function smsFailureDetails(error,{proof,dispatchState}={}){
+ let snapshot;try{snapshot=proof?.snapshot?.();}catch{}
+ return {error:'APPLICATION_SMS_UNCONFIRMED',reason:typeof error?.code==='string'&&/^(?:APPLICATION_SMS_|PORTAL_SMS_)[A-Z_]{1,70}$/.test(error.code)?error.code:'UNCONFIRMED',smsRequest:cleanSmsRequestEvidence(error?.smsRequest||snapshot),smsDispatchState:['not_dispatched','dispatched','uncertain'].includes(dispatchState)?dispatchState:'uncertain'};
+}
+module.exports={createSmsRequestProof,cleanSmsRequestEvidence,confirmSmsRequest,smsFailureDetails};

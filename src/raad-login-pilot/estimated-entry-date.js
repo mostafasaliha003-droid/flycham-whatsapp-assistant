@@ -9,13 +9,18 @@ function cleanEntryDateProvenance(value){
  if(value.source!=='office_estimate'||Object.keys(value).length!==3||value.offsetDays!==15)fail('ENTRY_DATE_PROVENANCE_INVALID');
  estimate(value.referenceDate);return {source:'office_estimate',referenceDate:value.referenceDate,offsetDays:15};
 }
-function verifyExpectedEntryDate(control,{provenance,date,now=Date.now()}={}){
+function assertEstimatedEntryDateCurrent({provenance,date,now=Date.now(),existingApplicationReference}={}){
  const p=cleanEntryDateProvenance(provenance);if(p?.source!=='office_estimate')return {source:p?.source||'legacy_unverified',estimated:false};
+ if(existingApplicationReference)fail('ESTIMATED_ENTRY_DATE_SAVED_VALUE_UNCONFIRMED');
  if(p.referenceDate!==dubaiDate(now)||date!==estimate(p.referenceDate))fail('ESTIMATED_ENTRY_DATE_STALE');
+ return {source:'office_estimate',estimated:true,referenceDate:p.referenceDate,offsetDays:15};
+}
+function verifyExpectedEntryDate(control,{provenance,date,now=Date.now()}={}){
+ const current=assertEstimatedEntryDateCurrent({provenance,date,now});if(!current.estimated)return current;
  // An identifier alone is insufficient evidence of the official field meaning.
  // Current read-only top-document metadata must also identify an expected date.
- const label=String(control?.label||'').normalize('NFKC').replace(/[\u064b-\u065f\u0670\u0640]/g,'').replace(/\s+/g,' ').trim();
- if(control?.id!=='ExpectedEntryDate'||control.disabled||control.readOnly||!/(?:تاريخ\s+الدخول\s+المتوقع|expected\s+(?:date\s+of\s+entry|entry\s+date))/iu.test(label))fail('ESTIMATED_ENTRY_DATE_FIELD_UNCONFIRMED');
- return {source:'office_estimate',estimated:true,expectedFieldVerified:true,referenceDate:p.referenceDate,offsetDays:15};
+ const label=String(control?.label||'').normalize('NFKC').replace(/[\u064b-\u065f\u0670\u0640]/g,'').replace(/\s+/g,' ').trim().replace(/\s*[*:：]\s*$/u,'');
+ if(control?.id!=='ExpectedEntryDate'||control.disabled||control.readOnly||!/^(?:تاريخ\s+الدخول\s+المتوقع|expected\s+(?:date\s+of\s+entry|entry\s+date))$/iu.test(label))fail('ESTIMATED_ENTRY_DATE_FIELD_UNCONFIRMED');
+ return {...current,expectedFieldVerified:true};
 }
-module.exports={cleanEntryDateProvenance,verifyExpectedEntryDate,estimate,dubaiDate};
+module.exports={cleanEntryDateProvenance,assertEstimatedEntryDateCurrent,verifyExpectedEntryDate,estimate,dubaiDate};

@@ -65,3 +65,24 @@ test('SMS receipt evidence survives challenge expiry and does not include the su
 });
 
 test('confirmed land and sea choices retain their actual portal labels without numeric guessing',()=>{const {transportValues}=require('./production-worker');assert.deepEqual(transportValues('air'),['air','جوا']);assert.deepEqual(transportValues('land'),['land','برا']);assert.deepEqual(transportValues('sea'),['sea','بحرا']);assert.throws(()=>transportValues('unknown'),e=>e.code==='PORTAL_TRANSPORT_UNCONFIRMED');});
+
+test('a stale office estimate stops OTP resume before entering a code',async()=>{
+ const {runGovernmentJob}=require('./production-worker');let calls=0;const provenance={source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15};
+ await assert.rejects(runGovernmentJob({record:{pendingCode:'123456'},manifest:{facts:{entryDate:'2026-11-14'},entryDateProvenance:provenance},api:async()=>{calls++;},now:()=>Date.parse('2026-10-30T20:01:00Z')},{resume:true}),e=>e.code==='ESTIMATED_ENTRY_DATE_STALE');assert.equal(calls,0);
+});
+test('a saved continuation never substitutes a fresh office estimate for an unobserved saved date',async()=>{
+ const {runGovernmentJob}=require('./production-worker');let calls=0;
+ await assert.rejects(runGovernmentJob({record:{},manifest:{facts:{entryDate:'2026-11-14'},entryDateProvenance:{source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15},existingApplicationReference:'E12345678'},api:async()=>{calls++;},now:()=>Date.parse('2026-10-30T10:00:00Z')},{resume:false}),e=>e.code==='ESTIMATED_ENTRY_DATE_SAVED_VALUE_UNCONFIRMED');assert.equal(calls,0);
+});
+test('midnight during CAPTCHA processing blocks Save after OTP without dispatching another code or submission',async()=>{
+ const {runGovernmentJob}=require('./production-worker');let at=Date.parse('2026-10-30T19:59:59Z');const actions=[],record={pendingCode:'123456',expectedDraft:[]};
+ const manifest={facts:{entryDate:'2026-11-14',passportNumber:'X000001'},entryDateProvenance:{source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15}};
+ const api=async(action)=>{actions.push(action);if(action==='inspect-page')return {inspection:{controls:[{id:'ExpectedEntryDate',label:'Expected entry date',disabled:false}],buttons:[{label:'Save',disabled:false}]}};if(action==='enter-application-sms')return {codeEntered:true};if(action==='solve-form-captcha')at=Date.parse('2026-10-30T20:00:01Z');return {};};
+ await assert.rejects(runGovernmentJob({record,manifest,api,now:()=>at,locate:async()=>({path:'/SmartForm/TraditionalApp'})},{resume:true}),e=>e.code==='ESTIMATED_ENTRY_DATE_STALE');
+ assert.equal(record.pendingCode,'');assert.equal(actions.filter(a=>a==='enter-application-sms').length,1);assert.equal(actions.includes('activate-control'),false);assert.equal(actions.includes('request-application-sms'),false);
+});
+test('OTP resume rechecks the current official date label rather than trusting earlier metadata',async()=>{
+ const {runGovernmentJob}=require('./production-worker');const actions=[];
+ await assert.rejects(runGovernmentJob({record:{pendingCode:'123456'},manifest:{facts:{entryDate:'2026-11-14'},entryDateProvenance:{source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15}},api:async action=>{actions.push(action);return {inspection:{controls:[{id:'ExpectedEntryDate',label:'Confirmed booking date'}]}};},now:()=>Date.parse('2026-10-30T10:00:00Z')},{resume:true}),e=>e.code==='ESTIMATED_ENTRY_DATE_FIELD_UNCONFIRMED');
+ assert.deepEqual(actions,['inspect-page']);
+});

@@ -20,3 +20,27 @@ test('bridge status retains sanitized failed SMS evidence after cleanup without 
   assert.equal((await t.call('/internal/raad/jobs/job_http_fake',undefined,'GET','wrong')).status,401);
  }finally{await t.app.shutdown();}
 });
+
+test('private API 409 retains sanitized post-dispatch SMS evidence through the real production bridge without retry',async context=>{
+ const {smsFailureDetails}=require('./sms-request-proof');const originalFetch=globalThis.fetch;let attempts=0;
+ const payload=smsFailureDetails({code:'APPLICATION_SMS_ACTIVATION_UNCONFIRMED'},{dispatchState:'uncertain',proof:{snapshot:()=>({requestObserved:true,destinationMatch:'matched',responseObserved:true,responseClass:'4xx',acceptance:'rejected',phone:'PRIVATE_PHONE',otp:'PRIVATE_OTP',token:'PRIVATE_TOKEN'})}});
+ context.mock.method(globalThis,'fetch',async(url,options)=>{if(new URL(url).pathname==='/api/request-application-sms'){attempts++;return Response.json(payload,{status:409});}return originalFetch(url,options);});
+ const t=await setup(async ctx=>{await ctx.api('request-application-sms',{id:'btnSendOtp'});}),same=input();
+ try{
+  assert.equal((await t.call('/internal/raad/jobs',same)).status,202);const state=await t.state();
+  assert.equal(state.blocker.code,'APPLICATION_SMS_ACTIVATION_UNCONFIRMED');assert.equal(state.smsRequest.requestObserved,true);assert.equal(state.smsRequest.acceptance,'rejected');assert.equal(state.smsDispatchState,'uncertain');
+  assert.equal(state.requiresOtp,false);assert.equal(state.saved,false);assert.equal(state.ownedBrowserClosed,true);assert.equal(JSON.stringify(state).includes('PRIVATE'),false);
+  await t.call('/internal/raad/jobs',same);assert.equal(attempts,1);
+ }finally{await t.app.shutdown();}
+});
+test('private API missing-verifier refusal stays precise and reports that dispatch did not occur',async context=>{
+ const {smsFailureDetails}=require('./sms-request-proof');const originalFetch=globalThis.fetch;let attempts=0;
+ const payload=smsFailureDetails({code:'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED'},{dispatchState:'not_dispatched',proof:{snapshot:()=>({requestObserved:false,destinationMatch:'unknown',responseObserved:false,responseClass:'none',acceptance:'unknown'})}});
+ context.mock.method(globalThis,'fetch',async(url,options)=>{if(new URL(url).pathname==='/api/request-application-sms'){attempts++;return Response.json(payload,{status:409});}return originalFetch(url,options);});
+ const t=await setup(async ctx=>{await ctx.api('request-application-sms',{id:'btnSendOtp'});}),same=input();
+ try{
+  assert.equal((await t.call('/internal/raad/jobs',same)).status,202);const state=await t.state();
+  assert.equal(state.blocker.code,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');assert.equal(state.smsDispatchState,'not_dispatched');assert.equal(state.smsRequest.requestObserved,false);
+  assert.equal(state.requiresOtp,false);await t.call('/internal/raad/jobs',same);assert.equal(attempts,1);
+ }finally{await t.app.shutdown();}
+});
