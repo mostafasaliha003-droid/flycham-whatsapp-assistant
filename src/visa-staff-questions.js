@@ -16,7 +16,7 @@ class VisaStaffQuestions{
  data(){return this.store.data.visaStaffQuestions.sessions;}
  guard(customer,jobId){
   const job=this.fulfilment.job(jobId),c=this.fulfilment.case(customer);
-  if(job.customer!==customer||job.caseId!==c.id||job.caseSignature!==visaCaseSignature(c)||job.state!=='portal_review_required')fail('STAFF_QUESTION_CONTEXT_STALE');
+  if(job.customer!==customer||job.caseId!==c.id||job.caseSignature!==visaCaseSignature(c)||!['portal_review_required','ready'].includes(job.state))fail('STAFF_QUESTION_CONTEXT_STALE');
   const approval=this.fulfilment.data().cases[customer]?.approvals[job.approvalId];
   if(!this.fulfilment.approvalCurrent(customer,approval))fail('VISA_APPROVAL_STALE');
   if(!this.inbox.isOperatorOwned(customer))fail('CLAIM_REQUIRED');
@@ -29,6 +29,10 @@ class VisaStaffQuestions{
   try{validateAnswer(field,at(job.confirmedFields,field));return true;}catch{}
   return Object.values(this.data()).some(s=>s.jobId===job.id&&s.caseSignature===job.caseSignature&&s.state==='answered'&&s.field===field);
  }
+ knownValue(job,field){
+  const answer=Object.values(this.data()).filter(s=>s.jobId===job.id&&s.customer===job.customer&&s.caseSignature===job.caseSignature&&s.jobRevision===job.revision&&s.state==='answered'&&s.field===field).at(-1);
+  return answer?answer.answer:at(job.confirmedFields,field);
+ }
  view(customer,jobId){
   const job=this.fulfilment.job(jobId);if(job.customer!==customer)fail('STAFF_QUESTION_CONTEXT_STALE');
   const sessions=Object.values(this.data()).filter(s=>s.customer===customer&&s.jobId===jobId&&s.caseSignature===job.caseSignature);
@@ -38,7 +42,7 @@ class VisaStaffQuestions{
    confirmedAnswers:Object.entries(QUESTION_CATALOG).flatMap(([field,def])=>{try{const value=validateAnswer(field,at(job.confirmedFields,field));return [{field,prompt:def.prompt,label:def.options?.find(o=>o.value===value)?.label||String(value)}];}catch{return [];}}),
    // Values collected here still need staff review; no automatic application.
    collected:sessions.filter(s=>s.state==='answered').map(s=>({field:s.field,prompt:s.question.prompt,label:s.question.options?.find(o=>o.value===s.answer)?.label||String(s.answer),value:s.answer,answeredAt:s.answeredAt,messageId:s.answerMessageId})),
-   questions:Object.keys(QUESTION_CATALOG).filter(field=>!this.answered(job,field)).map(field=>questionFor(field,{applicantIndex:job.applicantIndex})),
+   questions:Object.keys(QUESTION_CATALOG).filter(field=>!this.answered(job,field)&&(!QUESTION_CATALOG[field].dependsOn||this.knownValue(job,QUESTION_CATALOG[field].dependsOn.field)===QUESTION_CATALOG[field].dependsOn.value)).map(field=>questionFor(field,{applicantIndex:job.applicantIndex})),
    attempts:sessions.map(s=>({id:s.id,field:s.field,state:s.state,createdAt:s.createdAt,messageId:s.messageId||null}))};
  }
  async request(customer,{jobId,field,expectedRevision,expectedCaseSignature,idempotencyKey}={}){
@@ -53,8 +57,8 @@ class VisaStaffQuestions{
   // Do not send an unneeded conditional question, or a new question while the
   // automatic lane still has an unresolved delivery.
   const def=QUESTION_CATALOG[field];if(!def)fail('VISA_QUESTION_UNKNOWN');
-  if(def.dependsOn&&at(job.confirmedFields,def.dependsOn.field)!==def.dependsOn.value)fail('STAFF_QUESTION_DEPENDENCY_REQUIRED');
-  if(Object.values(this.fulfilment.data().outbox).some(x=>x.customer===customer&&['applicant_question','applicant_answer_summary'].includes(x.kind)&&['pending','sending','uncertain'].includes(x.state)))fail('STAFF_QUESTION_AUTOMATIC_PENDING');
+  if(def.dependsOn&&this.knownValue(job,def.dependsOn.field)!==def.dependsOn.value)fail('STAFF_QUESTION_DEPENDENCY_REQUIRED');
+  if(Object.values(this.fulfilment.data().outbox).some(x=>{if(x.customer!==customer||!['applicant_question','applicant_answer_summary'].includes(x.kind))return false;if(['sending','uncertain'].includes(x.state))return true;if(x.state!=='pending')return false;const owner=this.fulfilment.data().jobs[x.jobId];return x.kind==='applicant_question'?owner?.state==='awaiting_answers'&&owner.questions?.[x.payload?.token]?.state==='pending':owner?.state==='awaiting_answer_confirmation'&&owner.summary?.token===x.payload?.token;}))fail('STAFF_QUESTION_AUTOMATIC_PENDING');
   if(this.journal.summary(customer)?.serviceWindowOpen!==true)fail('WINDOW_CLOSED');
   const question=questionFor(field,{applicantIndex:job.applicantIndex}),id=randomUUID();
   const s={id,token:id,customer,jobId,field,idempotencyKey,jobRevision:job.revision,caseSignature:job.caseSignature,question,state:'sending',createdAt:this.now()};

@@ -63,3 +63,15 @@ test('arrival choices use the three directly observed portal modes',async()=>{
  assert.equal(f.service.handleCustomerMessage(f.customer,{id:'answer-mode',visaAnswer:{token:s.token,option:'air'}}).ok,true);
  assert.equal(f.service.view(f.customer,f.job.id).collected[0].value,'air');
 });
+
+test('a collected other-port choice unlocks only its current-job detail and preserves ready state',async()=>{
+ const f=fixture();f.job.state='ready';assert.equal(f.service.view(f.customer,f.job.id).questions.some(q=>q.field==='arrivalPortDetails'),false);
+ const s=await f.request('arrivalPort');assert.equal(f.service.handleCustomerMessage(f.customer,{id:'other-port-answer',visaAnswer:{token:s.token,option:'other'}}).ok,true);
+ assert.equal(f.service.view(f.customer,f.job.id).questions.some(q=>q.field==='arrivalPortDetails'),true);
+ const detail=await f.request('arrivalPortDetails');assert.equal(detail.state,'accepted');
+ assert.equal(f.service.handleCustomerMessage(f.customer,{id:'other-port-detail',text:'Synthetic verified port'}).ok,true);assert.equal(f.job.state,'ready');
+});
+test('a stale collected controller cannot authorize another job revision detail',async()=>{
+ const f=fixture();const s=await f.request('arrivalPort');f.service.handleCustomerMessage(f.customer,{id:'controller-answer',visaAnswer:{token:s.token,option:'other'}});f.job.revision++;
+ await assert.rejects(f.request('arrivalPortDetails'),e=>e.code==='STAFF_QUESTION_DEPENDENCY_REQUIRED');assert.equal(f.sends(),1);
+});

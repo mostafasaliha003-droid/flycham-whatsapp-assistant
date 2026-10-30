@@ -29,7 +29,9 @@ class VisaPortalDispatcher{
  async cancelOwned(id){const result=await this.request('/internal/raad/jobs/'+id+'/cancel',{body:{}});if(result.stage!=='cancelled'||result.ownedBrowserClosed!==true)throw Error('RAAD_CANCEL_UNCONFIRMED');return result;}
  async recover(){if(this.recovered)return;for(const [id,run]of Object.entries(this.store.data.visaPortalRuns)){if(!['starting','running','waiting_otp','uncertain'].includes(run.phase))continue;await this.cancelOwned(id);run.phase='interrupted';this.store.save();}this.recovered=true;}
  async launch(job){
-  const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete||!proof.confirmation?.messageId){this.block(job,'CLIENT_ANSWERS_REQUIRED');return;}
+  if(this.fulfilment.stageStaffAnswers?.(job.id))return;
+  const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete||!proof.confirmation?.messageId){if(proof.confirmation?.messageId&&proof.missing?.length){this.fulfilment.askQuestions(job.id,{fields:proof.missing});delete job.blockedReason;this.store.save();}else this.block(job,'CLIENT_ANSWERS_REQUIRED');return;}
+  const missingRouting=requiredQuestions(proof.fields,{requestedFields:['transport','arrivalPort']});if(missingRouting.length){this.fulfilment.askQuestions(job.id,{fields:missingRouting});delete job.blockedReason;this.store.save();return;}
   const draft=this.dossier(job,proof),draftFingerprint=draft.fingerprint;
   if(!draft.ready){
    const askable=[...new Set((draft.issues||[]).filter(issue=>['REQUIRED','required','invalid_date'].includes(issue.code)).map(issue=>issue.field).filter(field=>field!=='entryDate'&&field!=='saudiAddress'&&(()=>{try{return requiredQuestions(proof.fields,{requestedFields:[field]}).length>0;}catch{return false;}})()))];

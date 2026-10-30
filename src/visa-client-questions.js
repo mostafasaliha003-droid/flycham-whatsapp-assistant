@@ -95,7 +95,7 @@ const REQUIRED_FIELDS = Object.freeze([
   'maritalStatus', 'previousNationality', 'travelledLastFiveYears', 'performUmrah',
   'gccResident', 'priorGccDeportation', 'priorGccRuleViolation',
   'health.hospitalizedOrEmergency', 'health.accidentDisability', 'health.congenitalCondition',
-  'transport', 'arrivalPort', 'saudiAddress', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName'
+  'saudiAddress', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName'
 ]);
 
 function fail(code, field) { throw Object.assign(Error(code), {code, field}); }

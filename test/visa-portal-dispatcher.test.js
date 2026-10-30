@@ -473,3 +473,25 @@ test('another arrival port sends the confirmed detail consistently without chang
  assert.ok(body);assert.equal(body.fields.arrivalPort,name);assert.equal(body.answers.arrivalPort,name);assert.equal(body.answers.arrivalPortDetails,undefined);
  assert.equal(job.confirmedFields.arrivalPort,'other');assert.equal(job.confirmedFields.arrivalPortDetails,name);
 });
+
+test('legacy ready jobs collect newly required routing facts instead of stalling or invalidating old answers',async()=>{
+ for(const legacy of [true,false]){
+ const f=fixture(),[job]=await f.activate();delete job.confirmedFields.transport;delete job.confirmedFields.arrivalPort;if(legacy)delete job.routingRequiredFields;
+ const health=structuredClone(job.confirmedFields.health);await f.dispatcher.launch(job);
+ assert.equal(job.state,'awaiting_answers');assert.deepEqual(Object.values(job.questions).map(q=>q.field),['transport','arrivalPort']);
+ assert.deepEqual(job.confirmedFields.health,health);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
+ }
+});
+test('ready-job staff answers require applicant summary confirmation without asking the same routing choices again',async()=>{
+ const {VisaStaffQuestions}=require('../src/visa-staff-questions');
+ const f=fixture(),[job]=await f.activate();delete job.confirmedFields.transport;delete job.confirmedFields.arrivalPort;f.claim(true);
+ const staff=new VisaStaffQuestions({fulfilment:f.fulfilment,store:f.store,inbox:{isOperatorOwned:()=>true},journal:{summary:()=>({serviceWindowOpen:true})}});
+ for(const [field,option,value]of [['transport','land'],['arrivalPort','other'],['arrivalPortDetails',undefined,'Synthetic confirmed custom port']]){
+ const sent=await staff.request(CUSTOMER,{jobId:job.id,field,expectedRevision:job.revision,expectedCaseSignature:job.caseSignature,idempotencyKey:'synthetic-staff-'+field});
+ assert.equal(sent.state,'accepted');const response=staff.handleCustomerMessage(CUSTOMER,{id:'synthetic-answer-'+field,visaAnswer:{token:sent.token,...(option?{option}:{value})}});assert.equal(response.ok,true);
+ }
+ assert.equal(job.state,'ready');f.claim(false);await f.dispatcher.launch(job);
+ assert.equal(job.state,'awaiting_answer_confirmation');assert.deepEqual(Object.keys(job.questions),[]);
+ assert.equal(job.summary.answers.transport,'land');assert.equal(job.summary.answers.arrivalPortDetails,'Synthetic confirmed custom port');
+ assert.equal(job.confirmedFields.transport,undefined);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
+});
