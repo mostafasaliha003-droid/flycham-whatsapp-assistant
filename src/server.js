@@ -1,4 +1,5 @@
 'use strict';
+const {VisaStaffQuestions}=require('./visa-staff-questions');
 const {aiStatus}=require('./assistant-nlu');
 const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding,redactVisaText}=require('./saudi-visa-nlu');
@@ -105,7 +106,8 @@ visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaSto
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
 const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured(),documentVision,documentIntake:visaDocumentIntake});
-const handleVisaWorkflow=createVisaFulfilmentHttp({fulfilment:visaFulfilment,inbox,journal,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,wake:()=>{visaDocumentIntake.wake();wakeVisa();}});
+const visaStaffQuestions=new VisaStaffQuestions({fulfilment:visaFulfilment,store:assistant.store,inbox,journal});
+const handleVisaWorkflow=createVisaFulfilmentHttp({fulfilment:visaFulfilment,inbox,journal,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,staffQuestions:visaStaffQuestions,wake:()=>{visaDocumentIntake.wake();wakeVisa();}});
 if(visaEnabled())visaDocumentIntake.start();
 
 function orderedDelivery(id,task){const work=(deliveries.get(id)||Promise.resolve()).catch(()=>{}).then(task);deliveries.set(id,work);work.finally(()=>{if(deliveries.get(id)===work)deliveries.delete(id);}).catch(()=>{});return work;}
@@ -331,6 +333,8 @@ async function handleWebhookPost(request, response) {
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
     if(documentFeedbackAllowed(message.from)){visaDocumentNotifications.update(message.from);visaDocumentNotifications.reopen(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));}visaDocumentIntake.wake();
     const reopenedVisa=visaFulfilment.requeuePausedMessages(message.from);
+    const staffAnswer=visaStaffQuestions.handleCustomerMessage(message.from,message);
+    if(staffAnswer.handled)continue;
     if(!inbox.isHumanOwned(message.from)){
       const answered=visaFulfilment.handleCustomerMessage(message.from,message);
       if(answered.handled){if(answered.reply&&(!answered.ok||/اعتمادها/.test(answered.reply)))await sendTextMessage(message.from,answered.reply);wakeVisa();continue;}

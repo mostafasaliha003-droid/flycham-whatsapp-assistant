@@ -467,6 +467,9 @@ class VisaFulfilment {
     const requested = [];
     for (const field of candidates) {
       const definition = QUESTION_CATALOG[field];
+      // Preserve an already confirmed answer across rounds. An explicit
+      // applicant correction clears staged facts and remains a separate path.
+      if (job.state!=='needs_followup') {try{validateAnswer(field,fieldAt(job.confirmedFields,field));continue;}catch{}}
       if (!definition) fail('VISA_QUESTION_UNKNOWN', 400);
       const dependency = definition.dependsOn;
       // Ask a controlling choice before its conditional free-text details.

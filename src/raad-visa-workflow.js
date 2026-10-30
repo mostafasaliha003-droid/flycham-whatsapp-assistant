@@ -17,7 +17,7 @@ const FIELD_ALLOWLIST = Object.freeze([
   'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry',
   'maritalStatus', 'previousNationality', 'previousNationalityDetails',
   'travelledLastFiveYears', 'travelHistory', 'performUmrah', 'saudiAddress',
-  'entryDate', 'transport', 'arrivalPort', 'gccResident', 'health', 'guardian',
+  'entryDate', 'transport', 'arrivalPort', 'arrivalPortDetails', 'gccResident', 'health', 'guardian',
   'priorGccDeportation', 'priorGccRuleViolation',
   'mission', 'residenceCountryCode', 'visitPurpose', 'entries', 'visaValidityDays',
   'applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'city', 'postOfficeBox'
@@ -487,6 +487,9 @@ class RaadVisaWorkflow {
     fields = mergeFields(fields, answers);
     if (!Object.hasOwn(fields, 'entryDate')) fields.entryDate = defaults.proposedEntryDate;
     delete fields.proposedEntryDate;
+    const entryDateProvenance=Object.hasOwn(answers,'entryDate')?{source:'applicant_confirmed'}:Object.hasOwn(job?.fields||{},'entryDate')?{source:'staff_entered'}:{source:'office_estimate',referenceDate:dubaiDate(this.now()),offsetDays:15};
+    if(fields.arrivalPort==='other'&&answers.arrivalPortDetails)fields.arrivalPort=answers.arrivalPortDetails;
+    delete fields.arrivalPortDetails;
     for (const [field, expected] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(fields, field) && !equivalentFact(field, expected, fields[field])) add(field, 'CASE_FACT_MISMATCH', 'This document fact differs from the paid applicant record.');
     for (const [field, expected] of Object.entries(job?.fields || {})) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(answers, field) && !equivalentFact(field, expected, answers[field])) add(field, 'DOCUMENT_DATA_CONFLICT', 'The client answer differs from the verified document fact.');
     const validation = validateApplicant(fields, {referenceDate: dubaiDate(this.now())});
@@ -516,7 +519,7 @@ class RaadVisaWorkflow {
     const uniqueIssues = issues.filter((value, index) => issues.findIndex(other => other.field === value.field && other.code === value.code) === index);
     const ready = uniqueIssues.length === 0;
     const fingerprint = ready ? hash({version: 1, source, customer, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, draftId: job.jobId, draftRevision: job.revision, machineEvidence: dossier?.evidenceFingerprint || null, staffReview: source === 'staff' ? job.review : null, fields, defaults, documents, payment: context.c.staffVerification.payment, clientProof}) : null;
-    return clone({ready, source, fingerprint, fields, defaults, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
+    return clone({ready, source, fingerprint, fields, defaults, entryDateProvenance, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
   }
 
   persist(context, job) {

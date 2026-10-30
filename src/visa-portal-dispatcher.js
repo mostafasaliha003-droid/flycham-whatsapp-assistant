@@ -31,7 +31,11 @@ class VisaPortalDispatcher{
  async launch(job){
   const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete||!proof.confirmation?.messageId){this.block(job,'CLIENT_ANSWERS_REQUIRED');return;}
   const draft=this.dossier(job,proof),draftFingerprint=draft.fingerprint;
-  if(!draft.ready){this.block(job,draft.blockedReason||'DOCUMENTS_REVIEW_REQUIRED');return;}
+  if(!draft.ready){
+   const askable=[...new Set((draft.issues||[]).filter(issue=>['REQUIRED','required','invalid_date'].includes(issue.code)).map(issue=>issue.field).filter(field=>field!=='entryDate'&&field!=='saudiAddress'&&(()=>{try{return requiredQuestions(proof.fields,{requestedFields:[field]}).length>0;}catch{return false;}})()))];
+   if(askable.length){this.fulfilment.askQuestions(job.id,{fields:askable});delete job.blockedReason;this.store.save();return;}
+   this.block(job,draft.blockedReason||'DOCUMENTS_REVIEW_REQUIRED');return;
+  }
   const fields=draft.fields;
   const missingNames=PREFLIGHT_CLIENT_FIELDS.filter(key=>fields[key]===undefined||fields[key]===null||fields[key]==='');
   if(missingNames.length){this.fulfilment.askQuestions(job.id,{fields:missingNames});delete job.blockedReason;this.store.save();return;}
@@ -39,11 +43,11 @@ class VisaPortalDispatcher{
   const validation=validateApplicant(fields);if(validation.issues.length){const missing=validation.issues.map(i=>i.field).filter(f=>{try{return requiredQuestions(fields,{requestedFields:[f]}).length>0;}catch{return false;}});if(missing.length){this.fulfilment.askQuestions(job.id,{fields:[...new Set(missing)]});return;}this.block(job,'DOCUMENT_DATA_REVIEW_REQUIRED');return;}
   const documents=[];for(const [kind,role]of [['passport','passport'],['residence','residence'],['photo','portrait']]){const id=draft.documents?.[kind]?.mediaId;if(!id){this.block(job,'DOCUMENTS_REQUIRED');return;}const {metadata,bytes}=this.mediaStore.read(id,{customer:job.customer});if(!['image/png','image/jpeg'].includes(metadata.mimeType)||bytes.length>1000000){this.block(job,'DOCUMENT_PREPARATION_REQUIRED');return;}documents.push({role,mimeType:metadata.mimeType,data:bytes.toString('base64'),sha256:digest(bytes)});}
   if(typeof this.ownerNotificationReady==='function'){let ready=false;try{ready=await this.ownerNotificationReady()===true;}catch{}if(!ready){this.block(job,'OWNER_NOTIFICATION_NOT_READY');return;}}
-  try{const health=await this.request('/health');if(health.ready!==true){this.block(job,'BROWSER_STARTING');return;}}catch{this.block(job,'BROWSER_STARTING');return;}
+  try{const health=await this.request('/health');if(health.ready!==true){this.block(job,'BROWSER_STARTING');return;}if(draft.entryDateProvenance?.source==='office_estimate'&&health.production?.estimatedEntryDateVerification!==true){this.block(job,'ESTIMATED_ENTRY_DATE_VERIFICATION_REQUIRED');return;}}catch{this.block(job,'BROWSER_STARTING');return;}
   const currentDraft=this.dossier(job,this.fulfilment.getConfirmedFields(job.id));if(!draftFingerprint||!currentDraft.ready||currentDraft.fingerprint!==draftFingerprint){this.block(job,'DOCUMENTS_REVIEW_REQUIRED');return;}
   const {lease}=this.fulfilment.acquireJob(job.id,{workerId:'raad-browser',ttlMs:30*60000});
-  const run={phase:'starting',leaseToken:lease.token,startedAt:this.now(),lastStage:'preflight',draftFingerprint,reviewSource:draft.source};this.store.data.visaPortalRuns[job.id]=run;this.store.save();
-  try{await this.request('/internal/raad/jobs',{body:{jobId:job.id,leaseToken:lease.token,caseId:job.caseId,applicantIndex:job.applicantIndex,caseSignature:job.caseSignature,fields,defaults:draft.defaults,answers:proof.fields,documents,clientConsent:proof.confirmation,...(job.applicationReference?{existingApplicationReference:job.applicationReference}:{})}});run.phase='running';delete job.blockedReason;this.store.save();}
+  const run={phase:'starting',leaseToken:lease.token,startedAt:this.now(),lastStage:'preflight',draftFingerprint,reviewSource:draft.source,entryDateProvenance:draft.entryDateProvenance||null};this.store.data.visaPortalRuns[job.id]=run;this.store.save();
+  try{await this.request('/internal/raad/jobs',{body:{jobId:job.id,leaseToken:lease.token,caseId:job.caseId,applicantIndex:job.applicantIndex,caseSignature:job.caseSignature,fields,defaults:draft.defaults,entryDateProvenance:draft.entryDateProvenance,answers:proof.fields,documents,clientConsent:proof.confirmation,...(job.applicationReference?{existingApplicationReference:job.applicationReference}:{})}});run.phase='running';delete job.blockedReason;this.store.save();}
   catch{run.phase='uncertain';job.state='portal_review_required';this.fulfilment.data().lease.cancelled=true;this.block(job,'PORTAL_START_UNCERTAIN');this.store.save();}
  }
  async poll(job,run){

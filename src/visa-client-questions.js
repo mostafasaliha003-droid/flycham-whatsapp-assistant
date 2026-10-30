@@ -9,6 +9,21 @@ const YES_NO = [
 const choice = (prompt, options = YES_NO) => ({type: 'choice', prompt, options});
 const text = (prompt, maxLength = 200, format = 'text') => ({type: 'text', prompt, maxLength, format});
 const CATALOG = {
+  applicationPhone: text('ما رقم الجوال المعتمد لاستقبال تحقق الطلب؟ اكتبه مع رمز الدولة، دون إرسال رمز التحقق.',25,'internationalPhone'),
+  contactEmail: text('ما البريد الإلكتروني المعتمد للتواصل والتأمين؟',200,'email'),
+  insurancePhone: text('ما رقم الجوال المعتمد للتأمين؟ اكتبه مع رمز الدولة.',25,'internationalPhone'),
+  postalCode: text('ما الرمز البريدي المعتمد لعنوان التواصل؟',20),
+  city: text('ما مدينة عنوان التواصل المعتمد؟',80),
+  postOfficeBox: text('ما صندوق البريد المعتمد لعنوان التواصل؟',20),
+  arrivalPort: choice('ما منفذ الوصول المقصود إلى السعودية؟',[
+    {id:'ruh',label:'مطار الملك خالد',value:'مطار الملك خالد الدولي'},
+    {id:'jed',label:'مطار الملك عبدالعزيز',value:'مطار الملك عبدالعزيز الدولي'},
+    {id:'med',label:'مطار الأمير محمد',value:'مطار الأمير محمد بن عبدالعزيز الدولي'},
+    {id:'dmm',label:'مطار الملك فهد',value:'مطار الملك فهد الدولي'},
+    {id:'other',label:'منفذ آخر',value:'other'}]),
+  arrivalPortDetails:{...text('ما اسم منفذ الوصول الآخر كما هو معتمد؟',200),dependsOn:{field:'arrivalPort',value:'other'}},
+
+  transport: choice('ما وسيلة الوصول المقصودة إلى السعودية؟', [{id:'air',label:'جوًا',value:'air'},{id:'land',label:'برًا',value:'land'},{id:'sea',label:'بحرًا',value:'sea'}]),
   maritalStatus: choice('ما الحالة الاجتماعية الحالية؟', [
     {id: 'single', label: 'أعزب / عزباء', value: 'single'},
     {id: 'married', label: 'متزوج / متزوجة', value: 'married'},
@@ -27,7 +42,7 @@ const CATALOG = {
   'health.hospitalizedOrEmergency': choice('هل هناك حالة تنويم في المستشفى حالياً أو تتلقى علاج الطوارئ؟'),
   'health.accidentDisability': choice('هل تعرضت لحادث أدى إلى إصابتك بعلة أو إعاقة؟'),
   'health.congenitalCondition': choice('هل لديك حالات ضعف أو تشوه خلقي؟'),
-  saudiAddress: text('ما عنوان الإقامة المقصود داخل السعودية؟ اذكر العنوان الفعلي أو اسم الفندق والمدينة بعد تأكيدهما.', 1500),
+  saudiAddress: text('ما عنوان الإقامة داخل السعودية إن كان محددًا؟ إن لم تحدد الإقامة بعد، اكتب «غير محدد». لا نفترض حجز فندق.', 1500),
   birthPlace: text('ما مكان الميلاد كما هو مثبت في جواز السفر؟'),
   sex: choice('ما الجنس المثبت في جواز السفر؟', [
     {id: 'male', label: 'ذكر (M)', value: 'M'},
@@ -80,7 +95,7 @@ const REQUIRED_FIELDS = Object.freeze([
   'maritalStatus', 'previousNationality', 'travelledLastFiveYears', 'performUmrah',
   'gccResident', 'priorGccDeportation', 'priorGccRuleViolation',
   'health.hospitalizedOrEmergency', 'health.accidentDisability', 'health.congenitalCondition',
-  'saudiAddress', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName'
+  'transport', 'arrivalPort', 'saudiAddress', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName'
 ]);
 
 function fail(code, field) { throw Object.assign(Error(code), {code, field}); }
@@ -116,11 +131,14 @@ function validateAnswer(field, value) {
     return option.value;
   }
   if (typeof value !== 'string' || value.length > question.maxLength || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) fail('VISA_ANSWER_INVALID', field);
-  const answer = value.trim();
+  let answer = value.trim();
+  if(field==='saudiAddress'&&/^(?:none|not[_ ]specified|غير محدد|لم تحدد بعد)$/iu.test(answer))return 'not_specified';
   // An unknown answer is a request for clarification, never a usable fact.
   if (!answer || /^(?:unknown|not\s+known|n\/?a|لا\s*[أا]?عرف|لا\s*[أا]دري|غير\s*معروف|غير\s*مؤكد)$/iu.test(answer)) fail('VISA_ANSWER_INVALID', field);
   const valid = {
     text: () => true,
+    internationalPhone: () => /^(?:\+|00)[1-9][0-9 ()-]{7,22}$/.test(answer),
+    email: () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(answer),
     latinName: () => /^[\p{Script=Latin}\p{M} .'-]+$/u.test(answer) && /\p{Script=Latin}/u.test(answer),
     arabicName: () => /^[\p{Script=Arabic}\p{M} .'-]+$/u.test(answer) && /\p{Script=Arabic}/u.test(answer),
     passportNumber: () => /^[A-Z0-9]{1,20}$/i.test(answer),

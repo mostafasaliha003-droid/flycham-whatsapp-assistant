@@ -92,6 +92,7 @@
       list: () => request('visa-workflow?limit=100', 'GET', undefined, auth()),
       detail: id => request('visa-workflow/' + encodeURIComponent(id), 'GET', undefined, auth()),
       approve: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/confirm-payment', 'POST', body, auth()),
+      ask: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/ask-question', 'POST', body, auth()),
       reread: (id, body) => request('visa-workflow/' + encodeURIComponent(id) + '/reread-document', 'POST', body, auth())
     };
     function modal(title, className = '') {
@@ -238,6 +239,36 @@
           const questions = Object.values(a.questions || {}).filter(question => typeof question.prompt === 'string');
           if (questions.length) { const details = n('details', 'vj-questions'), pending = questions.filter(question => question.state !== 'answered').length; details.append(n('summary', '', pending ? pending + ' أسئلة تنتظر إجابة المتقدم' : 'إجابات المتقدم · ' + questions.length + ' أسئلة')); details.append(n('p', 'vj-questions-note', 'إجابات العميل محفوظة كما وردت؛ تظل غير مؤكدة حتى يراجع المتقدم ملخصها.'));
             for (const question of questions) { const q = n('div', 'vj-question'); q.append(n('strong', '', question.prompt)); if (Array.isArray(question.options)) { const choices = n('div', 'vj-question-options'); for (const option of question.options) { const selected = question.state === 'answered' && (option.value === question.answer || option.id === question.answer); choices.append(n('span', selected ? 'selected' : '', (selected ? '✓ ' : '') + option.label)); } q.append(choices); } else q.append(n('p', '', question.state === 'answered' && typeof question.answer === 'string' ? question.answer : 'بانتظار إجابة المتقدم')); details.append(q); } wrap.append(details); }
+          const staff=item.staffQuestions?.find(v=>v.jobId===a.id);
+          if(staff){
+            const section=n('section','vj-staff-questions');
+            section.append(n('h4','','سؤال واحد للعميل'),n('p','muted small','يجمع هذا المسار الإجابة فقط؛ تبقى البوابة متوقفة للمراجعة ولا يبدأ إرسال SMS أو حفظ الطلب.'));
+            const facts=n('details'),factList=n('dl');facts.append(n('summary','','الإجابات المؤكدة السابقة'));
+            for(const answer of staff.confirmedAnswers||[]){factList.append(n('dt','',answer.prompt),n('dd','',answer.label));}
+            facts.append(factList);section.append(facts);
+            for(const answer of staff.collected||[])section.append(n('p','',answer.prompt+' '+answer.label+' · إجابة العميل، بانتظار مراجعة الفريق'));
+            const active=staff.attempts?.findLast(x=>['sending','accepted','uncertain'].includes(x.state));
+            if(active)section.append(n('p','',active.state==='uncertain'?'نتيجة إرسال سابقة غير مؤكدة؛ تحقق منها دون إعادة الإرسال.':active.state==='sending'?'جارٍ إرسال السؤال.':'بانتظار إجابة العميل عن السؤال المرسل.'));
+            if(staff.blockedReason)section.append(n('p','muted small','لا يمكن إرسال سؤال قبل معالجة حالة الملف.'));
+            if(!staff.blockedReason&&!staff.busy){
+              const select=n('select');select.setAttribute('aria-label','سؤال ناقص واحد');const empty=n('option','','اختر سؤالًا ناقصًا');empty.value='';select.append(empty);
+              for(const q of staff.questions||[]){const option=n('option','',q.prompt);option.value=q.field;select.append(option);}
+              const preview=n('div'),feedback=n('p');feedback.setAttribute('role','status');
+              const send=button('إرسال السؤال وحده',null,true);send.disabled=true;
+              select.onchange=()=>{preview.replaceChildren();const q=staff.questions.find(q=>q.field===select.value);send.disabled=!q;if(!q)return;preview.append(n('p','',q.prompt));for(const option of q.options||[])preview.append(badge(option.label));preview.append(n('p','muted small',q.options?.length?'خيارات فعلية قابلة للضغط في واتساب.':'ينتظر إدخالًا نصيًا من العميل.'));};
+              let attempt=null,confirming=false;
+              send.onclick=async()=>{if(!select.value||attempt||confirming)return;const q=staff.questions.find(q=>q.field===select.value);if(!q)return;
+                confirming=true;send.disabled=true;
+                if(!await showMessage('إرسال سؤال للعميل',q.prompt+' سيُرسل إلى نفس محادثة العميل، ثم ننتظر إجابته.')){confirming=false;send.disabled=false;return;}
+                if(epoch!==state.epoch||!dialog.open)return;
+                attempt={jobId:a.id,field:q.field,expectedRevision:staff.jobRevision,expectedCaseSignature:staff.caseSignature,idempotencyKey:crypto.randomUUID()};send.disabled=true;select.disabled=true;
+                try{const result=await adapter.ask(item.customer,attempt);feedback.textContent=result.result?.state==='accepted'?'قُبل إرسال السؤال؛ بانتظار إجابة العميل.':result.result?.state==='not_sent'?'لم يُرسل السؤال. حدّث الملف وراجع السبب قبل إجراء جديد.':'نتيجة الإرسال غير مؤكدة؛ تحقق دون إعادة الإرسال.';}
+                catch{feedback.textContent='لم تتأكد النتيجة. حدّث الملف للتحقق من الحالة، ولا تعِد الإرسال.';}
+              };
+              section.append(select,preview,send,feedback);
+            }
+            wrap.append(section);
+          }
           applicants.append(wrap);
         } body.append(applicants);
         const policy = n('p', 'vj-detail-policy', 'مسار التجهيز: مقارنة عروض التأمين المؤهلة واختيار الأقل تكلفة، تحقق صاحب الحساب عبر قناته الآمنة، ثم حفظ الطلب والرجوع من صفحة الدفع دون سداد رسوم البوابة. نسخة الطلب المحفوظ ليست تأشيرة صادرة.'); body.append(policy);

@@ -15,7 +15,7 @@ const completedState = (job, overrides = {}) => ({jobId: job.id, caseSignature: 
 const jsonResponse = (value, status = 200) => ({ok: status >= 200 && status < 300, status, json: async () => structuredClone(value)});
 function pdfResponse(bytes = PDF, mime = 'application/pdf') { return {ok: true, headers: {get: name => name === 'content-type' ? mime : null}, body: (async function* () { yield bytes; })()}; }
 function applicant() {
-  return {nationalityCode: 'EGY', issuingCountryCode: 'EGY', passportNumber: 'EXAMPLE88', passportType: 'ordinary', issueDate: '2020-01-01', expiryDate: '2100-01-01', birthDate: '1990-04-03', birthPlace: 'Example City', sex: 'M', latinFirstName: 'Ari', latinFatherName:'Example', arabicFirstName:'مثال', arabicFatherName:'مثال', arabicFamilyName:'مثال', latinFamilyName: 'Example', emiratesId: '784199000000001', residenceExpiry: '2100-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}, saudiAddress: 'Example Hotel, Riyadh', transport: 'air', arrivalPort: 'Example Airport', entryDate: '2099-01-01'};
+  return {nationalityCode: 'EGY', issuingCountryCode: 'EGY', passportNumber: 'EXAMPLE88', passportType: 'ordinary', issueDate: '2020-01-01', expiryDate: '2100-01-01', birthDate: '1990-04-03', birthPlace: 'Example City', sex: 'M', latinFirstName: 'Ari', latinFatherName:'Example', arabicFirstName:'مثال', arabicFatherName:'مثال', arabicFamilyName:'مثال', latinFamilyName: 'Example', emiratesId: '784199000000001', residenceExpiry: '2100-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}, saudiAddress: 'Example Hotel, Riyadh', transport: 'air', arrivalPort: 'مطار الملك خالد الدولي', entryDate: '2099-01-01'};
 }
 function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const calls = [], storedCopies = [], sent = [], reads = [];
@@ -50,7 +50,7 @@ function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const confirm = jobId => {
     const questions = fulfilment.askQuestions(jobId).questions;
     for (const question of questions) {
-      if (question.type === 'choice') fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
+      if (question.type === 'choice') fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
       else fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'birthPlace' ? 'Example City' : question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : 'Example Hotel, Riyadh'});
     }
     fulfilment.confirmAnswers({sender: CUSTOMER, token: fulfilment.job(jobId).summary.token, confirm: true, messageId: 'inbound-consent-' + jobId});
@@ -442,4 +442,24 @@ test('protected applications migration never retries an explicit login or OTP re
   const f=fixture(),[job]=await f.activate();job.state='portal_review_required';job.blockedReason=code;job.loginPolicyRecovery='account_menu_diagnostic_v6';f.store.data.visaPortalRuns[job.id]={phase:'blocked',lastStage:'login'};
   await f.dispatcher.recoverStoppedLogin();assert.equal(job.state,'portal_review_required');assert.equal(job.loginPolicyRecovery,'account_menu_diagnostic_v6');assert.equal(f.calls.length,0);
  }
+});
+
+test('missing supported contact facts become questions before portal launch without repeating confirmed answers',async()=>{
+ const f=fixture(),[job]=await f.activate();
+ f.raad.portalDossier=()=>({ready:false,blockedReason:'REQUIRED',issues:[{code:'REQUIRED',field:'applicationPhone'},{code:'REQUIRED',field:'contactEmail'}]});
+ await f.dispatcher.launch(job);
+ assert.deepEqual(Object.values(f.fulfilment.job(job.id).questions).map(q=>q.field),['applicationPhone','contactEmail']);
+ assert.equal(f.calls.some(c=>c.method==='POST'),false);
+});
+test('office-estimated entry date requires worker verification and provenance travels with the job',async()=>{
+ const f=fixture(),[job]=await f.activate(),base=f.dispatcher.dossier.bind(f.dispatcher);
+ const provenance={source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15};
+ f.dispatcher.dossier=(...args)=>({...base(...args),entryDateProvenance:provenance});
+ await f.dispatcher.launch(job);assert.equal(f.fulfilment.job(job.id).blockedReason,'ESTIMATED_ENTRY_DATE_VERIFICATION_REQUIRED');
+ assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
+ const request=f.dispatcher.request.bind(f.dispatcher);
+ f.dispatcher.request=(path,args)=>path==='/health'?Promise.resolve({ready:true,production:{estimatedEntryDateVerification:true}}):request(path,args);
+ await f.dispatcher.launch(job);
+ const posted=f.calls.find(c=>c.path==='/internal/raad/jobs');assert.deepEqual(posted.body.entryDateProvenance,provenance);
+ assert.deepEqual(f.store.data.visaPortalRuns[job.id].entryDateProvenance,provenance);
 });
