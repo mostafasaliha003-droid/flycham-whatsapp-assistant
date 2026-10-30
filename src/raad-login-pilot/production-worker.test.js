@@ -63,3 +63,5 @@ test('SMS receipt evidence survives challenge expiry and does not include the su
  await t.worker.start(manifest());await until(t.worker,'job_fake_1',s=>s.requiresOtp);await new Promise(r=>setTimeout(r,20));
  const expired=t.worker.status('job_fake_1');assert.equal(expired.blocker.code,'OTP_CHALLENGE_EXPIRED');assert.equal(expired.ownedBrowserClosed,true);assert.equal(expired.smsRequest.acceptance,'accepted');
 });
+
+test('confirmed land and sea choices retain their actual portal labels without numeric guessing',()=>{const {transportValues}=require('./production-worker');assert.deepEqual(transportValues('air'),['air','جوا']);assert.deepEqual(transportValues('land'),['land','برا']);assert.deepEqual(transportValues('sea'),['sea','بحرا']);assert.throws(()=>transportValues('unknown'),e=>e.code==='PORTAL_TRANSPORT_UNCONFIRMED');});
