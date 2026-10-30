@@ -17,10 +17,25 @@ function assertEstimatedEntryDateCurrent({provenance,date,now=Date.now(),existin
 }
 function verifyExpectedEntryDate(control,{provenance,date,now=Date.now()}={}){
  const current=assertEstimatedEntryDateCurrent({provenance,date,now});if(!current.estimated)return current;
+ verifyExpectedEntryDateField(control);
+ return {...current,expectedFieldVerified:true};
+}
+function verifyExpectedEntryDateField(control){
  // An identifier alone is insufficient evidence of the official field meaning.
  // Current read-only top-document metadata must also identify an expected date.
  const label=String(control?.label||'').normalize('NFKC').replace(/[\u064b-\u065f\u0670\u0640]/g,'').replace(/\s+/g,' ').trim().replace(/\s*[*:：]\s*$/u,'');
  if(control?.id!=='ExpectedEntryDate'||control.disabled||control.readOnly||!/^(?:تاريخ\s+الدخول\s+المتوقع|expected\s+(?:date\s+of\s+entry|entry\s+date))$/iu.test(label))fail('ESTIMATED_ENTRY_DATE_FIELD_UNCONFIRMED');
- return {...current,expectedFieldVerified:true};
+ return true;
 }
-module.exports={cleanEntryDateProvenance,assertEstimatedEntryDateCurrent,verifyExpectedEntryDate,estimate,dubaiDate};
+function verifiedSubmittedEntryDate(value){
+ if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))fail('SUBMITTED_ENTRY_DATE_UNCONFIRMED');
+ const parsed=new Date(value+'T12:00:00Z');if(!Number.isFinite(+parsed)||parsed.toISOString().slice(0,10)!==value)fail('SUBMITTED_ENTRY_DATE_UNCONFIRMED');return value;
+}
+function insuranceEntryDate(control,{evidence,applicationReference,caseSignature,applicantIndex}={}){
+ // Insurance is a different page. The earlier application field says nothing
+ // about this control's meaning. No +15 computation belongs after Save.
+ verifyExpectedEntryDateField(control);
+ if(!evidence||evidence.source!=='verified_current_run_submission'||evidence.applicationReference!==applicationReference||!/^[A-Z]{0,3}[0-9]{3,20}$/.test(applicationReference||'')||!/^[a-f0-9]{64}$/i.test(caseSignature||'')||evidence.caseSignature!==caseSignature||evidence.applicantIndex!==applicantIndex||!Number.isInteger(applicantIndex)||applicantIndex<0||applicantIndex>30)fail('SAVED_ENTRY_DATE_UNCONFIRMED');
+ return verifiedSubmittedEntryDate(evidence.date);
+}
+module.exports={cleanEntryDateProvenance,assertEstimatedEntryDateCurrent,verifyExpectedEntryDate,verifyExpectedEntryDateField,verifiedSubmittedEntryDate,insuranceEntryDate,estimate,dubaiDate};
