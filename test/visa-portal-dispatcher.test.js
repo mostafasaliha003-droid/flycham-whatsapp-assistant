@@ -463,3 +463,13 @@ test('office-estimated entry date requires worker verification and provenance tr
  const posted=f.calls.find(c=>c.path==='/internal/raad/jobs');assert.deepEqual(posted.body.entryDateProvenance,provenance);
  assert.deepEqual(f.store.data.visaPortalRuns[job.id].entryDateProvenance,provenance);
 });
+
+test('another arrival port sends the confirmed detail consistently without changing original applicant answers',async()=>{
+ const f=fixture(),[job]=await f.activate(),name='Example verified arrival port';
+ job.confirmedFields.arrivalPort='other';job.confirmedFields.arrivalPortDetails=name;
+ f.raad.portalDossier=()=>({ready:true,fingerprint:'custom-port-proof',source:'staff',fields:{...applicant(),arrivalPort:name},defaults:{},documents:f.drafts[0].documents});
+ await f.dispatcher.launch(job);
+ const body=f.calls.find(c=>c.path==='/internal/raad/jobs')?.body;
+ assert.ok(body);assert.equal(body.fields.arrivalPort,name);assert.equal(body.answers.arrivalPort,name);assert.equal(body.answers.arrivalPortDetails,undefined);
+ assert.equal(job.confirmedFields.arrivalPort,'other');assert.equal(job.confirmedFields.arrivalPortDetails,name);
+});

@@ -13,8 +13,8 @@ Changes:
 - Require a browser capability for estimated-date verification. The companion browser patch checks the current ExpectedEntryDate label means an expected entry date, and rejects stale or conversation-day estimates.
 
 Validation:
-220 selected main/operations/domain/dispatcher tests passed. Includes 24 operations UI tests, synthetic native WhatsApp payloads and employee-route authorization. Full application integration/CI has not run in this partial checkout.
-46 selected browser/SMS/date tests passed; all tests use synthetic responses or local loopback. No live provider/portal dispatch.
+221 selected main/operations/domain/dispatcher tests passed. Includes 24 operations UI tests, synthetic native WhatsApp payloads and employee-route authorization. Full application integration/CI has not run in this partial checkout.
+48 selected browser/SMS/date tests passed; all tests use synthetic responses or local loopback. No live provider/portal dispatch.
 src/server.js syntax checked.
 
 Deployment blockers:
@@ -26,3 +26,5 @@ Deployment blockers:
 Coordination:
 No Ahmed/Ismail conversation/model changes are part of this Raad candidate. An independent agent owns message batching/ingress.
 Existing server integration hunk: import VisaStaffQuestions; instantiate after VisaFulfilment; pass staffQuestions to createVisaFulfilmentHttp; call staffQuestions.handleCustomerMessage before the human-owned automatic-handler guard, then continue only if handled. Merge this minimal hunk with the ingress agent's work rather than replacing their server file.
+
+Follow-up integration review resolved the other-port choice into the same confirmed free-text port in fields and bridge answers, without changing the original applicant proof. Browser transport maps air/land/sea to observed labels, without guessing numeric option IDs.

@@ -37,6 +37,11 @@ class VisaPortalDispatcher{
    this.block(job,draft.blockedReason||'DOCUMENTS_REVIEW_REQUIRED');return;
   }
   const fields=draft.fields;
+  const bridgeAnswers=structuredClone(proof.fields);
+  // The original choice and follow-up remain in the confirmed proof. Only
+  // their equivalent resolved port name is sent to the native field manifest.
+  if(bridgeAnswers.arrivalPort==='other'&&typeof bridgeAnswers.arrivalPortDetails==='string'&&bridgeAnswers.arrivalPortDetails.trim())bridgeAnswers.arrivalPort=bridgeAnswers.arrivalPortDetails;
+  delete bridgeAnswers.arrivalPortDetails;
   const missingNames=PREFLIGHT_CLIENT_FIELDS.filter(key=>fields[key]===undefined||fields[key]===null||fields[key]==='');
   if(missingNames.length){this.fulfilment.askQuestions(job.id,{fields:missingNames});delete job.blockedReason;this.store.save();return;}
   const contact={...draft.defaults,...fields};if(!contact.entryDate)fields.entryDate=contact.proposedEntryDate;
@@ -47,7 +52,7 @@ class VisaPortalDispatcher{
   const currentDraft=this.dossier(job,this.fulfilment.getConfirmedFields(job.id));if(!draftFingerprint||!currentDraft.ready||currentDraft.fingerprint!==draftFingerprint){this.block(job,'DOCUMENTS_REVIEW_REQUIRED');return;}
   const {lease}=this.fulfilment.acquireJob(job.id,{workerId:'raad-browser',ttlMs:30*60000});
   const run={phase:'starting',leaseToken:lease.token,startedAt:this.now(),lastStage:'preflight',draftFingerprint,reviewSource:draft.source,entryDateProvenance:draft.entryDateProvenance||null};this.store.data.visaPortalRuns[job.id]=run;this.store.save();
-  try{await this.request('/internal/raad/jobs',{body:{jobId:job.id,leaseToken:lease.token,caseId:job.caseId,applicantIndex:job.applicantIndex,caseSignature:job.caseSignature,fields,defaults:draft.defaults,entryDateProvenance:draft.entryDateProvenance,answers:proof.fields,documents,clientConsent:proof.confirmation,...(job.applicationReference?{existingApplicationReference:job.applicationReference}:{})}});run.phase='running';delete job.blockedReason;this.store.save();}
+  try{await this.request('/internal/raad/jobs',{body:{jobId:job.id,leaseToken:lease.token,caseId:job.caseId,applicantIndex:job.applicantIndex,caseSignature:job.caseSignature,fields,defaults:draft.defaults,entryDateProvenance:draft.entryDateProvenance,answers:bridgeAnswers,documents,clientConsent:proof.confirmation,...(job.applicationReference?{existingApplicationReference:job.applicationReference}:{})}});run.phase='running';delete job.blockedReason;this.store.save();}
   catch{run.phase='uncertain';job.state='portal_review_required';this.fulfilment.data().lease.cancelled=true;this.block(job,'PORTAL_START_UNCERTAIN');this.store.save();}
  }
  async poll(job,run){
