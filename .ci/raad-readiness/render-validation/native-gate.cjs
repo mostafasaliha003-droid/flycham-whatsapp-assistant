@@ -3,6 +3,27 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
+const os = require('node:os');
+const net = require('node:net');
+function verifyLoopbackOnly(readInterfaces = os.networkInterfaces) {
+  const fail = () => { throw Error('RAAD_NATIVE_NETWORK_GUARD_FAILED'); };
+  let found;
+  try { found = readInterfaces(); } catch { return fail(); }
+  if (!found || typeof found !== 'object' || Array.isArray(found)
+      || Object.keys(found).length !== 1 || !Object.hasOwn(found, 'lo')
+      || !Array.isArray(found.lo) || found.lo.length === 0) return fail();
+  for (const item of found.lo) {
+    const address = item?.address, family = net.isIP(typeof address === 'string' ? address : '');
+    const ipv4 = family === 4 && /^127\./.test(address)
+      && ['IPv4', 4].includes(item.family);
+    const ipv6 = family === 6 && ['::1', '0:0:0:0:0:0:0:1'].includes(address)
+      && ['IPv6', 6].includes(item.family);
+    if (item?.internal !== true || (!ipv4 && !ipv6)) return fail();
+  }
+  return {method: 'node_os_networkInterfaces', observedInterfaces: ['lo'],
+    addressCount: found.lo.length, allInternal: true};
+}
+function main() {
 const path = '/tmp/raad-native-proof';
 fs.mkdirSync(path, {recursive: true});
 const expected = ['operator-readiness-tool-and-model-notice', 'model-size-and-hash',
@@ -11,10 +32,7 @@ const expected = ['operator-readiness-tool-and-model-notice', 'model-size-and-ha
   'chromium-local-no-network', 'native-chromium-redirect-fence-before-follow',
   'whatsapp-source-entrypoint-disabled', 'raad-source-entrypoint-disabled'];
 const input = JSON.parse(fs.readFileSync('/validation-input/inputs.json', 'utf8'));
-const interfaces = fs.readdirSync('/sys/class/net').sort();
-if (interfaces.length !== 1 || interfaces[0] !== 'lo') {
-  console.error('RAAD_NATIVE_NETWORK_GUARD_FAILED'); process.exit(1);
-}
+const networkObservation = verifyLoopbackOnly();
 const child = spawn(process.execPath, ['/validation-input/container-preflight.cjs'], {
   cwd: '/app', env: {PATH: process.env.PATH, HOME: '/tmp', TMPDIR: '/tmp',
     LANG: 'C.UTF-8', TZ: 'UTC', NODE_ENV: 'test'}, stdio: ['ignore', 'pipe', 'pipe'], detached: true});
@@ -53,10 +71,15 @@ child.on('close', async code => {
     checks: expected, nativeChecks: expected.length, liveActions: 0,
     functionalCommit: input.functionalCommit, applicationFingerprintSha256: input.applicationFingerprintSha256,
     buildNonce: input.buildNonce, network: 'Dockerfile RUN --network=none',
-    observedInterfaces: interfaces,
+    ...networkObservation,
     runtime: 'derived worker stage before Python tooling installation',
     user: 'root (original worker default)', applicationMount: 'read-only bind from worker stage',
     stdoutEof: true, bytes: raw.length,
     sha256: crypto.createHash('sha256').update(raw).digest('hex')}, null, 2) + '\n');
   console.log('RAAD_NATIVE_GATE_PASSED');
 });
+}
+module.exports = {verifyLoopbackOnly};
+if (require.main === module) {
+  try { main(); } catch { console.error('RAAD_NATIVE_NETWORK_GUARD_FAILED'); process.exitCode = 1; }
+}
