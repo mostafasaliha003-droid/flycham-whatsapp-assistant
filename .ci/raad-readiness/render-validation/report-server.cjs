@@ -12,7 +12,7 @@ const EXPECTED = Object.freeze({
   unitPassed: 2629,
   unitFiles: 208,
   nativeChecks: 12,
-  buildNonce: 'raad-validation-20261031-f019ad0-02',
+  buildNonce: 'raad-validation-20261031-f019ad0-03',
   buildOnly: true,
   releaseReady: false,
   liveActions: 0,

@@ -1672,17 +1672,17 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-f019ad0-02",
+  "buildNonce": "raad-validation-20261031-f019ad0-03",
   "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
   "sourceSnapshotSha256": "5d1395b04bcd58990d8178b0d72e3542a7908e096b8afbbf0febc4b81628fc1b",
   "toolFiles": {
-    "Dockerfile.validation": "bc1fe7b5fb030cf915e38fdc2b237b97c03b2cc50fced1f175a5e6aecc92c6bf",
+    "Dockerfile.validation": "78e0a7d25d899aa6cafd9dba7ff9b29119c7c2cc1053acc395ea7cb7dbfba475",
     "Dockerfile.validation.dockerignore": "851f9ca78e439740d94c02c78826d6158888d41cf755059760f8e6c2a8284c5d",
     "build-gate.py": "ccd87126c301c56ffeedda28c593d19e58c1ca8e7a3742f765f63a45cb5fa6ed",
     "container-preflight.cjs": "88ffb7d2bf033a83bc7e5d93f821fcf7e2a58715baefe77fbd16d99af4ec5335",
-    "native-gate.cjs": "ae8f3483464c84af735e449f86538995cd7773b3158155afdf847c73d8522995",
-    "prepare-inputs.py": "fbf460af655a445982a84bf1a1437912cfd5fbdd3e04ec60e11853a0423f6891",
-    "report-server.cjs": "14a615657fa5b5ef65958b29acb603707af49ca5269118084cd2a84e3873b27b",
+    "native-gate.cjs": "9c117685c0dea681dea5a5f7e3729dc443930f46fb1044b48a4db7ddd13b2d3b",
+    "prepare-inputs.py": "16491c7f61d88b7999ebeeae85d4a1a086c210ede17c6cdd4e1894d3241a4d96",
+    "report-server.cjs": "35d88b8df33d4e5b1a20edd829a771f2d003422df3920a4685e99a7c3e99ce69",
     "test-tools/finalize-results.py": "b59336d7c57369f58e98e99535048ca0415116e8ad2eeb91342e5580f7b7fa6e",
     "test-tools/local-entry.cjs": "433842f44e807a8b03b63f63b6176ad45ec72feb1956b87bc55ee49a2657e084",
     "test-tools/local-http-smoke.cjs": "9c8d43a3c8ae3d49490f98ba349d992b20a28da5d1686e0d60902342767b06fb",

@@ -32,7 +32,7 @@ for cache in (out/'test-tools').rglob('__pycache__'):
 shutil.copyfile(root/'.ci/raad-readiness/container-preflight.cjs', out/'container-preflight.cjs')
 original = (root/'Dockerfile.worker').read_text()
 first, rest = original.split('\n', 1)
-nonce = 'raad-validation-20261031-f019ad0-02'
+nonce = 'raad-validation-20261031-f019ad0-03'
 worker = first + ' AS worker\n' + '# RAAD_CACHE_BEGIN\n' \
     + 'ARG RAAD_VALIDATION_NONCE=' + nonce + '\n' \
     + 'ENV NPM_CONFIG_CACHE=/validation-npm-cache NPM_CONFIG_USERCONFIG=/validation-npm-user.npmrc NPM_CONFIG_GLOBALCONFIG=/validation-npm-global.npmrc\n' \
