@@ -39,9 +39,9 @@ const documentFactsHash = fields => hash(Object.fromEntries(Object.keys(fields).
 // implementation. Its injected adapters must perform their final guard directly
 // before dispatch. The existing encrypted state store owns all durable data.
 class VisaFulfilment {
-  constructor({store, inbox, mediaStore, artifactStore, raad, send, resumeOtp, portal, canAutomate, now = Date.now, env = {}} = {}) {
+  constructor({store, inbox, mediaStore, artifactStore, raad, mrzProfiles = null, send, resumeOtp, portal, canAutomate, now = Date.now, env = {}} = {}) {
     if (!store?.data || typeof store.save !== 'function') fail('VISA_STORE_REQUIRED', 500);
-    Object.assign(this, {store, inbox, mediaStore, artifactStore: artifactStore || mediaStore, raad, send, resumeOtp, canAutomate, now, env});
+    Object.assign(this, {store, inbox, mediaStore, artifactStore: artifactStore || mediaStore, raad, mrzProfiles, send, resumeOtp, canAutomate, now, env});
     this.resumeOtp ||= typeof portal?.resumeOtp === 'function' ? portal.resumeOtp.bind(portal) : null;
     this.messageLocks = new Map();
     this.uncertainMessageIds = new Set(); // Never replay an uncertain dispatch after a store rollback.
@@ -423,7 +423,7 @@ class VisaFulfilment {
     if (!allowed) fail('VISA_DOCUMENT_AUTOMATION_PAUSED');
     const verify = require('./raad-visa-workflow').verifyMachineDossier;
     if (typeof verify !== 'function') fail('VISA_DOCUMENT_VERIFIER_REQUIRED', 503);
-    const dossier = verify({store: this.store, mediaStore: this.mediaStore, customer: job.customer, applicantIndex: job.applicantIndex, expectedCaseSignature: job.caseSignature, evidenceId, now: this.now});
+    const dossier = verify({store: this.store, mediaStore: this.mediaStore, mrzProfiles: this.mrzProfiles, customer: job.customer, applicantIndex: job.applicantIndex, expectedCaseSignature: job.caseSignature, evidenceId, now: this.now});
     if (!dossier?.ready || !/^[a-f0-9]{64}$/.test(dossier.evidenceFingerprint || '') || !object(dossier.fields) || !Object.keys(dossier.fields).length) fail('VISA_DOCUMENT_EVIDENCE_UNVERIFIED');
     const fields = {};
     for (const [field, value] of Object.entries(dossier.fields)) {
