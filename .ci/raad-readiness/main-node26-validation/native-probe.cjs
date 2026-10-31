@@ -12,8 +12,10 @@ const r = createRequire('/app/package.json');
 let sharp;
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const checks = [];
+let activePhase = 'unknown', activeCheck = 'not_started';
 const data = {syntheticOnly: true, liveActions: 0, accuracyClaimed: false};
 async function check(name, operation) {
+  activeCheck = name;
   await operation(); checks.push(name); console.log('PASS ' + name);
 }
 function verifyLoopbackOnly(interfaces = os.networkInterfaces()) {
@@ -48,10 +50,12 @@ function syntheticPdf() {
   pdf += `trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf);
 }
-async function centerColor(bytes, topFraction) {
-  const metadata = await sharp(bytes).metadata();
+async function centerColor(bytes, topFraction, sharpImpl = sharp) {
+  const metadata = await sharpImpl(bytes).metadata();
   const left = Math.floor(metadata.width * 0.4), top = Math.floor(metadata.height * topFraction);
-  const stats = await sharp(bytes).extract({left, top, width: 8, height: 8}).removeAlpha().stats();
+  // stats() observes its original input. Materialize this exact region first.
+  const region = await sharpImpl(bytes).extract({left, top, width: 8, height: 8}).removeAlpha().png().toBuffer();
+  const stats = await sharpImpl(region).stats();
   return stats.channels.slice(0, 3).map(value => value.mean);
 }
 function assertColor(color, expected) {
@@ -169,10 +173,25 @@ async function pdf() {
 }
 async function main() {
   const phase = process.argv[2]; assert.ok(['baseline', 'pdf'].includes(phase));
+  activePhase = phase;
   sharp = r('sharp');
   data.network = verifyLoopbackOnly();
   if (phase === 'baseline') await baseline(); else await pdf();
   console.log(JSON.stringify({status: 'passed', phase, checks, ...data}));
 }
-module.exports = {verifyLoopbackOnly, syntheticPdf, assertColor};
-if (require.main === module) main().catch(() => {console.error('MAIN_NODE26_NATIVE_PROBE_FAILED'); process.exitCode = 1;});
+function failureMetadata(error) {
+  // Preserve actionable private locations without error messages, values or OCR text.
+  const locations = String(error?.stack || '').split('\n').slice(1).flatMap(line => {
+    const match = line.match(/(?:^|[\/])([A-Za-z0-9._-]+\.c?js):(\d+):(\d+)\)?$/);
+    return match ? [{file: match[1], line: Number(match[2]), column: Number(match[3])}] : [];
+  }).slice(0, 8);
+  return {phase: ['baseline', 'pdf'].includes(activePhase) ? activePhase : 'unknown',
+    check: /^[a-z0-9-]{1,90}$/.test(activeCheck) ? activeCheck : 'unknown',
+    errorType: ['AssertionError', 'Error', 'TypeError', 'RangeError'].includes(error?.name) ? error.name : 'Error',
+    locations, responseBodyRetained: false};
+}
+module.exports = {verifyLoopbackOnly, syntheticPdf, assertColor, centerColor, failureMetadata};
+if (require.main === module) main().catch(error => {
+  console.error(JSON.stringify({tag: 'RAAD_MAIN_NODE26_NATIVE_FAILURE', ...failureMetadata(error)}));
+  console.error('MAIN_NODE26_NATIVE_PROBE_FAILED'); process.exitCode = 1;
+});

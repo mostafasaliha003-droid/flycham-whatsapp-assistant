@@ -7,7 +7,7 @@ const EXPECTED = Object.freeze({
   "functionalTree": "d39d02285e78dff1d44b2647997e6281eb756fe1",
   "applicationFingerprintSha256": "aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448",
   "applicationFiles": 418,
-  "buildNonce": "raad-validation-20261031-4b39b9d-05",
+  "buildNonce": "raad-validation-20261031-4b39b9d-06",
   "nodeVersion": "v26.13.0",
   "npmVersion": "11.20.0",
   "debianVersion": "12",

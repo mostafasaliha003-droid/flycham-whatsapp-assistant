@@ -24,7 +24,7 @@ NPM = '/opt/node/lib/node_modules/npm/bin/npm-cli.js'
 COMMIT = '4b39b9d1e93e70147d794a7e9b47a3fc550f41b1'
 TREE = 'd39d02285e78dff1d44b2647997e6281eb756fe1'
 FINGERPRINT = 'aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448'
-NONCE = 'raad-validation-20261031-4b39b9d-05'
+NONCE = 'raad-validation-20261031-4b39b9d-06'
 BASE_DIGEST = 'sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e'
 
 

@@ -1677,21 +1677,21 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-4b39b9d-05",
+  "buildNonce": "raad-validation-20261031-4b39b9d-06",
   "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
   "nodeArchiveSha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
   "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
   "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
   "toolFiles": {
-    "Dockerfile.validation": "42c866dba429ad2ac45e77d816f164df0e54b784784ecbcff5bd50972ee07163",
+    "Dockerfile.validation": "20b7c3fd12179ed9da5f17715d367dc1685f91e0397184242df1972befcd70ca",
     "Dockerfile.validation.dockerignore": "872a6cbd7591b7c9f0a2eb3803076d219469dd5a3fdd4069f96ce0c9ebc144ef",
-    "build-gate.py": "e135d371fb248c4bc37f25bbd1bbf0f4011c86e278fb657c21ece545f3416637",
+    "build-gate.py": "3d419dd437a9c881e3a565ef239fd76287fc1f17fb1998dcb7daf3c2f49bf724",
     "expected-source-manifest.json": "295229c24e980fb03761e57c64666dee38b5db71942cf611b8c27a84470c2999",
     "loopback-network-guard.cjs": "f64b794b2cff41c62e89990049b9992fa04960747e05bfc8da84e89812cf0692",
     "main-native-smoke.cjs": "8ff3daa461f25d4d3b91406916e64611d3d723eed36dfcfaf8df6e8a20d808cb",
     "main-start-preload.cjs": "4d2961af2d0483f836e7608941751dcc50bff8e6a613ca07dab316399c19a775",
-    "native-probe.cjs": "4659b89c569b0007e6813ce46383b868c3f83e81b25e72bd65de2c4ea7171e93",
-    "report-server.cjs": "27da026486d85287a78d8678e944314cf209e9f63f370cbc0cacf016a7795cc3",
+    "native-probe.cjs": "98d9c3c17a7e6f26d7029e85b1c3fd18a69a912679fe09a3534b42cbd7c08212",
+    "report-server.cjs": "fa5045417fff8eb90fb8ae764e4a708e0bf5a842074d02ec9430bad45cfd54ac",
     "target-runtime-provenance.json": "d8635b028f34c514179184bc78751a247a37ec21737eba356410763c6b7f5d4a",
     "verify-main-start.py": "534239eabd6cb84b20be0bc58ffe4c494042ad53c20d39892387b155e7c49de5"
   }
