@@ -6,6 +6,10 @@ const {createHash} = require('node:crypto');
 const {RaadVisaWorkflow, verifyMachineDossier} = require('../src/raad-visa-workflow');
 const {reconcileDocumentEvidence} = require('../src/visa-document-matching');
 const {visaCaseSignature, currentVisaEvidence} = require('../src/visa-case-signature');
+const {VisaFulfilment} = require('../src/visa-fulfilment');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 
 const CUSTOMER = '15550001201', OTHER = '15550001202';
 const NOW = Date.parse('2026-10-28T10:00:00Z');
@@ -251,4 +255,107 @@ test('a revoked profile cannot become accepted between repeated decrypted-media 
 });
 test('a replaced live profile job cannot reuse the captured verification even with the same valid grant',()=>{
  let checks=0;const f=fixture({mrzProfiles:{guard:()=>{if(++checks===2){const jobs=f.store.data.visaDocumentIntake.jobs,key=Object.keys(jobs)[0];jobs[key]=structuredClone(jobs[key]);}return true;}}});bindProfiledPassport(f);assert.equal(f.verify().ready,false);
+});
+
+// Exercise the actual payment-created fulfilment job with the same machine
+// evidence used by Raad. Provider transport is synthetic and never leaves this
+// process; the fixture's pre-existing verified payment is adopted, not repeated.
+async function fulfilmentFixture({mrzProfiles = null, profiled = true} = {}) {
+  const f = fixture({mrzProfiles});
+  if (profiled) bindProfiledPassport(f);
+  let claimed = true, sends = 0;
+  const inbox = {isOperatorOwned: () => claimed, isBlocked: () => false,
+    updateVisa() { assert.fail('already verified payment must not be repeated'); }};
+  const service = new VisaFulfilment({store: f.store, inbox, mediaStore: f.mediaStore,
+    raad: f.workflow, mrzProfiles, canAutomate: () => true, now: () => NOW,
+    send: async (_to, _payload, guard) => {
+      guard(); sends++; return {messages: [{id: 'synthetic-profile-payment-acceptance'}]};
+    }});
+  const receiptId = '35000000-0000-4000-8000-000000000099';
+  f.store.data.visaMedia[receiptId] = {id: receiptId, customer: CUSTOMER,
+    mimeType: 'image/png', size: 20, checksum: sha('synthetic-transfer-receipt'),
+    receivedAt: NOW - 1000, expiresAt: NOW + 86400000};
+  service.receiveReceipt(CUSTOMER, {receiptId});
+  const approved = service.confirmPayment(CUSTOMER, {receiptId, amount: 240,
+    reference: 'BANK-MACHINE-EXAMPLE', actor: {id: 'synthetic-accountant', role: 'accountant'},
+    actualReceived: true, confirm: true, expectedCaseSignature: visaCaseSignature(f.c),
+    idempotencyKey: 'synthetic-profile-approval'});
+  const job = service.job(approved.jobs[0].id);
+  assert.throws(() => service.guardJob(job.id), {code: 'HUMAN_OWNERSHIP'});
+  claimed = false;
+  assert.throws(() => service.guardJob(job.id), {code: 'VISA_PAYMENT_NOTICE_UNCONFIRMED'});
+  assert.equal((await service.dispatchMessage(job.paymentNoticeId)).state, 'accepted');
+  assert.equal(sends, 1); assert.equal(service.guardJob(job.id), job);
+  return {...f, service, job, inbox};
+}
+
+test('fulfilment stages approved profiled facts with the same live guard as Raad and retains idempotency', async () => {
+  let checks = 0, f;
+  const profiles = {guard(_profile, context) {
+    checks++; assert.equal(context.customer, CUSTOMER);
+    assert.equal(context.caseId, f.c.id);
+    assert.equal(context.caseSignature, visaCaseSignature(f.c));
+    assert.equal(context.source, f.store.data.visaMedia[IDS.passportSource]);
+    return true;
+  }};
+  f = await fulfilmentFixture({mrzProfiles: profiles});
+  assert.equal(f.verify().ready, true);
+  const before = structuredClone(f.c), result = f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence});
+  assert.equal(result.ok, true); assert.equal(result.duplicate, false);
+  assert.equal(result.stagedFields.passportNumber, DOC_FIELDS.passportNumber);
+  assert.equal(f.service.assertDocumentFactsCurrent(f.job).evidenceFingerprint, result.documentEvidence.evidenceFingerprint);
+  assert.equal(f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence}).duplicate, true);
+  assert.deepEqual(f.c, before); assert.equal(currentVisaEvidence(f.c).documents, false);
+  assert(checks >= 8);
+});
+
+test('fulfilment rechecks profile approval after staging and stops downstream questions on revocation', async () => {
+  let approved = true;
+  const f = await fulfilmentFixture({mrzProfiles: {guard: () => approved}});
+  f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence});
+  approved = false;
+  const before = JSON.stringify(f.store.data);
+  assert.equal(f.verify().ready, false);
+  assert.throws(() => f.service.assertDocumentFactsCurrent(f.job), {code: 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED'});
+  assert.throws(() => f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence}), {code: 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED'});
+  assert.throws(() => f.service.askQuestions(f.job.id, {fields: ['maritalStatus']}), {code: 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED'});
+  assert.equal(JSON.stringify(f.store.data), before);
+});
+
+for (const [variant, profiles] of [
+  ['missing', null], ['false', {guard: () => false}], ['void', {guard() {}}],
+  ['async', {guard: async () => true}], ['throwing', {guard() { throw Error('synthetic-disabled-profile'); }}]
+]) test(`fulfilment refuses profiled facts with ${variant} approval without mutating the job`, async () => {
+  const f = await fulfilmentFixture({mrzProfiles: profiles}), before = JSON.stringify(f.store.data);
+  assert.equal(f.verify().ready, false);
+  assert.throws(() => f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence}), {code: 'VISA_DOCUMENT_EVIDENCE_UNVERIFIED'});
+  assert.equal(JSON.stringify(f.store.data), before); assert.equal(f.job.documentFacts, undefined);
+});
+
+test('fulfilment preserves legacy unprofiled facts without requiring or invoking a remote guard', async () => {
+  for (const profiles of [null, {guard() { assert.fail('unprofiled evidence must not invoke remote approval'); }}]) {
+    const f = await fulfilmentFixture({mrzProfiles: profiles, profiled: false});
+    assert.equal(f.verify().ready, true);
+    const result = f.service.stageDocumentFacts(f.job.id, {evidenceId: IDS.evidence});
+    assert.equal(result.ok, true); assert.equal(f.service.assertDocumentFactsCurrent(f.job).ready, true);
+  }
+});
+
+test('server composition supplies its shared profile factory to the real fulfilment coordinator', async () => {
+  const profiles = {guard: () => true}, f = await fulfilmentFixture({mrzProfiles: profiles});
+  const source = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8');
+  const initializer = source.split('\n').find(line => line.startsWith('const visaFulfilment=new VisaFulfilment('));
+  assert(initializer, 'current server fulfilment initializer must be present');
+  const unexpected = () => assert.fail('composition check must not send, resume or journal anything');
+  const context = vm.createContext({VisaFulfilment, assistant: {store: f.store},
+    inbox: {isHumanOwned: () => false, isBlocked: () => false}, journal: {}, visaMedia: f.mediaStore,
+    raad: f.workflow, mrzProfiles: profiles, process: {env: {}}, orderedDelivery: unexpected,
+    visaWhatsApp: {send: unexpected}, visaDispatcher: {resumeOtp: unexpected}});
+  vm.runInContext(initializer + '\nthis.composedFulfilment = visaFulfilment;', context);
+  const composed = context.composedFulfilment;
+  assert.equal(composed.mrzProfiles, profiles);
+  // The production initializer uses wall time; this old synthetic dossier has
+  // its own fixed reference date, just like the other coordinator fixtures.
+  composed.now = () => NOW;
+  assert.equal(composed.verifiedDocumentFacts(f.job, IDS.evidence).ready, true);
 });

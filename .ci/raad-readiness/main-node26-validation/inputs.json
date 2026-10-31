@@ -1,8 +1,8 @@
 {
-  "functionalCommit": "2167d5f87fce8f2cf05de1c96e367a8a57ce7402",
-  "functionalTree": "036355159f736467891c29ec6383b928ae4b6d2d",
-  "applicationFingerprintSha256": "5fc02e363543161c53a9bc540d05f7bc3cb824825fb3f5dff92d57f60577e756",
-  "sourceSnapshotSha256": "ca2bf49b8a9e7b898606bf01c10b4d39b52e9d5ac49e6f404b565ebb7e61535f",
+  "functionalCommit": "46963b57c5490afcd2e9da15468cce52234f931a",
+  "functionalTree": "3c67dbdd818448f102395581a8dac32004eca5d2",
+  "applicationFingerprintSha256": "a866c28ea01f64f8fdf90cb58de6953884b570bd3400d61e917eb5e74727ef5d",
+  "sourceSnapshotSha256": "1469392bf035bcb089711075742e9bb447952cef6d5c15da0a665d508ff2efe4",
   "files": {
     ".dockerignore": {
       "bytes": 619,
@@ -857,8 +857,8 @@
       "sha256": "707ffaa27e1763ce0c4b0a8fe36fc51d77f33c10fee9d20c22a3388a6584fee1"
     },
     "src/server.js": {
-      "bytes": 60768,
-      "sha256": "35d431b7133f6dcb5a69c5de912802ecb27fbfdf807d4dc3dbd28680056ea877"
+      "bytes": 60780,
+      "sha256": "3b69e110153ac481fb8f1ecc971a37c522dc220288915b058c614f36380c5776"
     },
     "src/service-menu-delivery.js": {
       "bytes": 865,
@@ -921,8 +921,8 @@
       "sha256": "b89ae8d6433a864e101b62a8935082a7a56effca78040b371890c6677005bc7c"
     },
     "src/visa-fulfilment.js": {
-      "bytes": 74563,
-      "sha256": "072b264169b1498ed29c347ce0f8a29bec5c69655948b858a8775a228279b0bd"
+      "bytes": 74627,
+      "sha256": "8e3dcce755acdf0a52adf09b627d86426d724ddf55a40bc2c1b41dafb066ee07"
     },
     "src/visa-id-mrz.js": {
       "bytes": 5792,
@@ -1397,8 +1397,8 @@
       "sha256": "aa94cb5b01fdc66811af30c73b716b3c6890fd39d2f3e6de0b8e2ed34d021314"
     },
     "test/raad-machine-dossier.test.js": {
-      "bytes": 28575,
-      "sha256": "6c94f44d6cb4a433fb01c5310aa2ea6c43e170498a14a2f518f789a60eb1c6bb"
+      "bytes": 35361,
+      "sha256": "0cb737ea09b416b248380d7456e1023a741815692239c080522e9568db9679fb"
     },
     "test/raad-mofa-preview.test.js": {
       "bytes": 10754,
@@ -1729,24 +1729,24 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-2167d5f-01",
+  "buildNonce": "raad-validation-20261031-v16-46963b5-01",
   "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
   "nodeArchiveSha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
   "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
   "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
   "toolFiles": {
-    "Dockerfile.validation": "1e043bd90b3ba99e29a659357331712d5f3ad68144258eeb66b8910179312126",
+    "Dockerfile.validation": "b161385b53e468d06a55cffb3500be67763d059727f2cbdede5536be4b87565c",
     "Dockerfile.validation.dockerignore": "8222c6098ca87bea41c036cc56fc0267c7eb37e2b8fa82ef26b425a006ab8b36",
-    "build-gate.py": "89e58895f307e0e52db5c22d5cf9acbacba220930104d299eb55abbe38118546",
-    "expected-source-manifest.json": "4520a69ea1321725e65e62315799fc0494a397cb964c84ff9a3dbaf676f23a90",
+    "build-gate.py": "a60306d16c0b4bf43cd5beed5c596fdbab73d0fac1b9c820664dd1d6d9db4a6d",
+    "expected-source-manifest.json": "7a2bcb7b297907f062ef47d404587740ea4b5dfd36251b8b64e54edf405dbbd7",
     "loopback-network-guard.cjs": "53438dae447b08fe1e341b0c1b5d6ab15a7e9576c18cd90bbfabe9abd44d8d0a",
     "main-native-smoke.cjs": "05a7c3c7921fc5af01ad41ceefb544581ee2085c4c0e7f8d6b7cf4fe2116d4de",
     "main-start-preload.cjs": "43ab76f7ab71488e69d93091c1ee645d27b75e5b3205bc154ec54d7144a5e78d",
     "native-probe.cjs": "6a7860d1a544def6798784eb6649be56d90b8c962c386413912bdd9a442c7efc",
-    "report-server.cjs": "28816c704ff65b005af9b280f4334b8e75abceb19e7b7db65c5e9438b3b42e75",
-    "target-runtime-provenance.json": "a7edc4a38c830d3f030d856105e24a6b2fac729bed6b1ff8954e9ed15a5f6637",
+    "report-server.cjs": "d3a593aef0fd7e069d5a26c4bfa47ac6ec70d4c4979f320eea4879a8c845bc45",
+    "target-runtime-provenance.json": "466f28982f825905bbc6ea44b76656928700db8a0983bdf528c9adf101b203f3",
     "verify-main-start.py": "e9f0608aea46ec7ce70ef6ac2b3e9324e8918891b1ecd0f0ad6009b0e74ed299"
   },
   "firstPartyFiles": 445,
-  "sourceFreezeSha256": "dc33bc9ce880ae446729cda9a6232f34b19a9045f9497206cf7c2c1e838536da"
+  "sourceFreezeSha256": "b1eb26e5d25179e1e057e6ce7b6910a02cdea2e1bb6d5dcb12ab80701faabfb2"
 }

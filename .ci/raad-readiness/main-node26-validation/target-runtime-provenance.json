@@ -3,10 +3,10 @@
   "npm": "11.20.0",
   "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
   "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
-  "sourceManifestFunctionalCommit": "2167d5f87fce8f2cf05de1c96e367a8a57ce7402",
-  "sourceManifestFunctionalTree": "036355159f736467891c29ec6383b928ae4b6d2d",
+  "sourceManifestFunctionalCommit": "46963b57c5490afcd2e9da15468cce52234f931a",
+  "sourceManifestFunctionalTree": "3c67dbdd818448f102395581a8dac32004eca5d2",
   "firstPartyFiles": 445,
   "applicationFiles": 431,
-  "applicationFingerprintSha256": "5fc02e363543161c53a9bc540d05f7bc3cb824825fb3f5dff92d57f60577e756",
-  "sourceSnapshotSha256": "ca2bf49b8a9e7b898606bf01c10b4d39b52e9d5ac49e6f404b565ebb7e61535f"
+  "applicationFingerprintSha256": "a866c28ea01f64f8fdf90cb58de6953884b570bd3400d61e917eb5e74727ef5d",
+  "sourceSnapshotSha256": "1469392bf035bcb089711075742e9bb447952cef6d5c15da0a665d508ff2efe4"
 }
