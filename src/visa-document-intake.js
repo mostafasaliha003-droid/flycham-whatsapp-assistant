@@ -49,9 +49,9 @@ const originals=record=>record&&!record.purpose&&(['image/jpeg','image/png','ima
 function dubaiDate(at){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(at));return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');}
 const activeStatus=status=>['queued','running','retry','waiting_case'].includes(status);
 class VisaDocumentIntake{
- constructor({store,mediaStore,vision,mrzVision=null,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},report=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,prepareDocument=prepareDocumentImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
+ constructor({store,mediaStore,vision,mrzVision=null,mrzProfiles=null,raad,fulfilment,inbox,env=process.env,now=Date.now,onUpdate=()=>{},report=()=>{},lock=sharedLock,rasterize=rasterizePdf,prepare=preparePortalImage,prepareResidence=prepareResidenceImage,prepareDocument=prepareDocumentImage,reconcile=reconcileDocumentEvidence,policyFingerprint=POLICY_FINGERPRINT}={}){
   if(!store?.data||typeof store.save!=='function'||!mediaStore?.read||!vision?.extract)throw finite('DOCUMENT_INTAKE_CONFIGURATION_REQUIRED');
-  Object.assign(this,{store,mediaStore,vision,mrzVision,raad,fulfilment,inbox,env,now,onUpdate,report,lock,rasterize,prepare,prepareResidence,prepareDocument,reconcile,policyFingerprint});
+  Object.assign(this,{store,mediaStore,vision,mrzVision,mrzProfiles,raad,fulfilment,inbox,env,now,onUpdate,report,lock,rasterize,prepare,prepareResidence,prepareDocument,reconcile,policyFingerprint});
   if(!store.data.visaDocumentIntake)store.data.visaDocumentIntake={version:1,cases:{},jobs:{}};
   if(store.data.visaDocumentIntake.version!==1)throw finite('DOCUMENT_INTAKE_STATE_UNSUPPORTED');
   this.started=false;this.stopped=false;this.busy=false;this.epoch=0;this.timer=null;this.scheduled=false;this.unsubscribe=null;
@@ -66,9 +66,42 @@ class VisaDocumentIntake{
  reportApplyFailure(customer,phase,error){
   try{const c=this.caseFor(customer);if(!c?.id)return;const phases=new Set(['draft_read','draft_apply','job_stage','unknown']),codes=new Set(['RAAD_MANUAL_DRAFT_PROTECTED','RAAD_REVISION_CONFLICT','RAAD_CASE_SIGNATURE_CONFLICT','RAAD_CASE_ALREADY_PROCESSED','RAAD_HUMAN_OWNERSHIP','RAAD_CUSTOMER_BLOCKED','RAAD_MACHINE_AUTOMATION_PAUSED','RAAD_MACHINE_SOURCE_CONFLICT','RAAD_MACHINE_DOCUMENT_UNAVAILABLE','RAAD_MACHINE_CASE_STALE','RAAD_MACHINE_EVIDENCE_INVALID','RAAD_MACHINE_MATCH_REVIEW_REQUIRED','RAAD_MACHINE_MATCH_CHANGED','RAAD_MACHINE_EXTRACTION_CHANGED','RAAD_MACHINE_SOURCE_INVALID','RAAD_MACHINE_EXTRACTION_INVALID','RAAD_MACHINE_MEDIA_INVALID','VISA_DOCUMENT_EVIDENCE_UNVERIFIED','VISA_DOCUMENT_FIELDS_INVALID','VISA_DOCUMENT_FACT_CONFLICT','VISA_DOCUMENT_STAGE_IN_PROGRESS','VISA_JOB_STALE','DOCUMENT_APPLY_PAUSED','DOCUMENT_APPLY_UNCONFIRMED']);const metadata={caseHash:hash(c.id).slice(0,12),operation:phases.has(phase)?phase:'unknown',code:codes.has(error?.code)?error.code:'OTHER'};if(metadata.code==='RAAD_MANUAL_DRAFT_PROTECTED'&&['reviewed','machine_changed','case_stale','field_conflict','document_conflict'].includes(error?.draftDiagnostic))metadata.detail=error.draftDiagnostic;this.applyFailureReports||=new Set();const key=JSON.stringify(metadata);if(this.applyFailureReports.has(key)||this.applyFailureReports.size>=500)return;this.applyFailureReports.add(key);this.report('DOCUMENT_BINDING_REVIEW',metadata);}catch{}
  }
- localTd1Capable(){try{return typeof this.mrzVision?.extract==='function'&&this.mrzVision.supports?.('TD1')===true&&this.mrzVision.status?.()?.local===true;}catch{return false;}}
- internalMrzCropCapable(format){try{const status=this.mrzVision?.status?.();return typeof this.mrzVision?.extract==='function'&&SHA.test(this.mrzVision.policyFingerprint||'')&&status?.local!==true&&status?.inputPolicy===INTERNAL_MRZ_CROP_INPUT_POLICY&&this.mrzVision.supports?.(format)===true;}catch{return false;}}
- td1FocusCapable(){return this.localTd1Capable()||this.internalMrzCropCapable('TD1');}
+ localTd1Capable(reader=this.mrzVision){try{return typeof reader?.extract==='function'&&reader.supports?.('TD1')===true&&reader.status?.()?.local===true;}catch{return false;}}
+ internalMrzCropCapable(format,reader=this.mrzVision){try{const status=reader?.status?.();return typeof reader?.extract==='function'&&SHA.test(reader.policyFingerprint||'')&&status?.local!==true&&status?.inputPolicy===INTERNAL_MRZ_CROP_INPUT_POLICY&&reader.supports?.(format)===true;}catch{return false;}}
+ td1FocusCapable(reader=this.mrzVision){return this.localTd1Capable(reader)||this.internalMrzCropCapable('TD1',reader);}
+ mrzProfileKey(job){return Object.hasOwn(job,'mrzProfile')?digest(job.mrzProfile):null;}
+ mrzReader(job){
+  if(!Object.hasOwn(job,'mrzProfile'))return this.mrzVision;
+  if(typeof this.mrzProfiles?.resolve!=='function')throw finite('MRZ_PROFILE_UNAVAILABLE');
+  const reader=this.mrzProfiles.resolve(job.mrzProfile);
+  if(typeof reader?.extract!=='function')throw finite('MRZ_PROFILE_UNAVAILABLE');
+  return reader;
+ }
+ guardMrzProfile(snapshot){
+  const context=this.guard(snapshot);
+  if(Object.hasOwn(context.job,'mrzProfile')){
+   if(this.blockReason(snapshot.customer))throw finite('MRZ_PROFILE_APPROVAL_INVALID');
+   if(typeof this.mrzProfiles?.guard!=='function'||this.mrzProfiles.guard(context.job.mrzProfile,{customer:snapshot.customer,caseId:snapshot.caseId,caseSignature:snapshot.signature,source:context.source})!==true)throw finite('MRZ_PROFILE_APPROVAL_INVALID');
+  }
+  return context;
+ }
+ caseMrzApproval(customer,caseId){
+  const state=this.data().cases[customer],entries=[];
+  for(const job of Object.values(this.data().jobs)){
+   if(job.customer!==customer||job.caseId!==caseId||job.policy!==this.policyFingerprint||job.caseSignature!==state?.caseSignature||job.generation!==state?.generation||job.status==='stale'||!Object.hasOwn(job,'mrzProfile'))continue;
+   let approved=false;
+   try{this.guardMrzProfile(this.snapshot(job));approved=Object.values(job.pages||{}).every(page=>page.mrzProfileKey===this.mrzProfileKey(job));}catch{}
+   entries.push({id:job.id,binding:this.mrzProfileKey(job),approved});
+  }
+  entries.sort((a,b)=>a.id.localeCompare(b.id));
+  return {key:entries.length?digest(entries):null,approved:new Set(entries.filter(item=>item.approved).map(item=>item.id)),rejected:entries.filter(item=>!item.approved).map(item=>item.id)};
+ }
+ quarantineProfiledEvidence(customer){
+  const state=this.data().cases[customer];if(!state||!this.caseMrzApproval(customer,state.caseId).rejected.length)return false;
+  const dirty=state.status!=='needs_review'||state.inputFingerprint!==undefined||state.resultFingerprint!==undefined||!(state.issues||[]).some(item=>item.code==='DOCUMENT_STAFF_REVIEW_REQUIRED')||(state.applicants||[]).some(item=>item.status!=='needs_review'||item.identityReady!==false||item.applied!==false);
+  if(dirty)this.commit(()=>{const current=this.data().cases[customer];current.status='needs_review';delete current.inputFingerprint;delete current.resultFingerprint;current.issues=[...(current.issues||[]).filter(item=>item.code!=='DOCUMENT_STAFF_REVIEW_REQUIRED'),reason('DOCUMENT_STAFF_REVIEW_REQUIRED')];for(const item of current.applicants||[]){item.status='needs_review';item.identityReady=false;item.applied=false;}current.updatedAt=this.now();});
+  if(dirty)this.notify(customer);return true;
+ }
  reportBindingReview(customer,c,documents,matched){
   const unassigned=Array.isArray(matched.unassigned)?matched.unassigned:[],conflicts=(Array.isArray(matched.applicants)?matched.applicants:[]).filter(app=>Array.isArray(app.issues)&&app.issues.some(issue=>issue.code==='RESIDENCE_CONFLICT'));if(!unassigned.length&&!conflicts.length)return;
   try{
@@ -139,12 +172,19 @@ class VisaDocumentIntake{
   else if(state.caseSignature!==signature||state.policy!==this.policyFingerprint){state.caseSignature=signature;state.policy=this.policyFingerprint;state.generation++;state.status='processing';state.applicants=[];state.updatedAt=this.now();for(const job of Object.values(this.data().jobs))if(job.customer===customer&&job.caseId===c.id){if(job.policy!==this.policyFingerprint){job.status='stale';job.pages={};continue;}job.caseSignature=signature;job.generation=state.generation;if(job.status==='running'&&job.activePage&&!job.pages?.[job.activePage]){job.status='failed';job.issues=[reason('DOCUMENT_OCR_INTERRUPTED')];}else if(job.status==='running')job.status='queued';}}
   return state;
  }
- enqueue(customer,mediaId){
+ enqueue(customer,mediaId,{mrzConsent}={}){
   if(!this.enabled()||!validCustomer(customer)||typeof mediaId!=='string'||!UUID.test(mediaId))return false;
   const source=this.rawSource(customer,mediaId);if(!source||!this.caseFor(customer)&&this.data().cases[customer])return false;const c=this.caseFor(customer),existing=Object.values(this.data().jobs).find(job=>job.customer===customer&&job.mediaId===mediaId&&job.policy===this.policyFingerprint&&(!c||job.caseId===c.id));if(existing)return false;
   if(c&&source.receivedAt<c.createdAt)return false;if(c&&this.data().cases[customer]?.caseId===c.id&&this.data().cases[customer].limitExceeded)return false;
   this.commit(()=>{const state=c?this.syncCase(customer):null;const count=Object.values(this.data().jobs).filter(job=>job.customer===customer&&(!c?!job.caseId:job.caseId===c.id)&&job.policy===this.policyFingerprint&&job.status!=='stale').length;if(count>=MAX_SOURCES){if(state){state.limitExceeded=true;state.status='needs_review';state.issues=[reason('DOCUMENT_SOURCE_LIMIT')];state.updatedAt=this.now();}return;}
-   const id=randomUUID();this.data().jobs[id]={id,customer,mediaId,caseId:c?.id||null,caseSignature:state?.caseSignature||null,generation:state?.generation||null,pendingFirstCase:!c,policy:this.policyFingerprint,status:c?'queued':'waiting_case',pages:{},pageAttempts:{},issues:[],receivedAt:source.receivedAt,createdAt:this.now(),updatedAt:this.now()};if(state){state.status='processing';state.updatedAt=this.now();}
+   // Only the current explicit upload-completion callback may request a remote
+   // binding. Default enqueue/backfill and waiting-first-case jobs stay local.
+   let mrzProfile;
+   if(c&&mrzConsent!==undefined&&typeof this.mrzProfiles?.bindNewJob==='function'){
+    mrzProfile=this.mrzProfiles.bindNewJob({customer,caseId:c.id,caseSignature:state.caseSignature,source,mrzConsent});
+    if(mrzProfile!==undefined&&mrzProfile!==null&&(typeof mrzProfile!=='object'||Array.isArray(mrzProfile)||![Object.prototype,null].includes(Object.getPrototypeOf(mrzProfile))||typeof mrzProfile.then==='function'))throw finite('MRZ_PROFILE_APPROVAL_INVALID');
+   }
+   const id=randomUUID();this.data().jobs[id]={id,customer,mediaId,caseId:c?.id||null,caseSignature:state?.caseSignature||null,generation:state?.generation||null,pendingFirstCase:!c,policy:this.policyFingerprint,...(mrzProfile?{mrzProfile:clone(mrzProfile)}:{}),status:c?'queued':'waiting_case',pages:{},pageAttempts:{},issues:[],receivedAt:source.receivedAt,createdAt:this.now(),updatedAt:this.now()};if(state){state.status='processing';state.updatedAt=this.now();}
   });this.notify(customer);this.wake();return true;
  }
  rereadBinding(customer,{caseId,mediaId,sourceSha256,generation}={}){
@@ -187,11 +227,11 @@ class VisaDocumentIntake{
  }
  backfill(){if(!this.enabled())return;for(const [customer,c]of Object.entries(this.store.data.visaCases||{})){if(!validCustomer(customer)||!Number.isFinite(c.createdAt))continue;const sources=Object.values(this.mediaStore.records||this.store.data.visaMedia||{}).filter(r=>r.customer===customer&&!this.knownReceipt(customer,r.id)&&originals(r)&&r.expiresAt>this.now()&&r.receivedAt>=c.createdAt).sort((a,b)=>a.receivedAt-b.receivedAt||a.id.localeCompare(b.id)).slice(0,MAX_SOURCES+1);for(const source of sources)this.enqueue(customer,source.id);}}
  bindWaiting(){for(const job of Object.values(this.data().jobs)){if(job.status!=='waiting_case'||job.policy!==this.policyFingerprint)continue;const c=this.caseFor(job.customer);if(!c)continue;const source=this.rawSource(job.customer,job.mediaId);if(!source){job.status='failed';job.issues=[reason('DOCUMENT_SOURCE_UNAVAILABLE')];continue;}const state=this.syncCase(job.customer);job.caseId=c.id;job.caseSignature=state.caseSignature;job.generation=state.generation;job.status='queued';job.updatedAt=this.now();state.status='processing';}}
- snapshot(job){return {id:job.id,customer:job.customer,mediaId:job.mediaId,caseId:job.caseId,signature:job.caseSignature,generation:job.generation,epoch:this.epoch,mediaEpoch:this.mediaStore.epochs?.get(job.customer)||0,policy:job.policy,sourceSha256:job.sourceSha256};}
+ snapshot(job){return {id:job.id,customer:job.customer,mediaId:job.mediaId,caseId:job.caseId,signature:job.caseSignature,generation:job.generation,epoch:this.epoch,mediaEpoch:this.mediaStore.epochs?.get(job.customer)||0,policy:job.policy,sourceSha256:job.sourceSha256,mrzProfileKey:this.mrzProfileKey(job)};}
  guard(snapshot){
   if(this.stopped||this.epoch!==snapshot.epoch||!this.enabled()||(this.mediaStore.epochs?.get(snapshot.customer)||0)!==snapshot.mediaEpoch)throw finite('DOCUMENT_INTAKE_STALE');
   const job=this.data().jobs[snapshot.id],state=this.data().cases[snapshot.customer],c=this.caseFor(snapshot.customer),source=this.rawSource(snapshot.customer,snapshot.mediaId);
-  if(!job||!state||!c||!source||job.caseId!==snapshot.caseId||c.id!==snapshot.caseId||state.generation!==snapshot.generation||job.generation!==snapshot.generation||state.caseSignature!==snapshot.signature||visaCaseSignature(c)!==snapshot.signature||job.policy!==snapshot.policy||job.policy!==this.policyFingerprint||state.policy!==this.policyFingerprint||snapshot.sourceSha256&&source.checksum&&source.checksum!==snapshot.sourceSha256)throw finite('DOCUMENT_INTAKE_STALE');if((job.manualRereadKey||job.mrzFocusOnly)&&this.blockReason(snapshot.customer))throw finite('DOCUMENT_REREAD_PAUSED');return {job,state,c,source};
+  if(!job||!state||!c||!source||job.caseId!==snapshot.caseId||c.id!==snapshot.caseId||state.generation!==snapshot.generation||job.generation!==snapshot.generation||state.caseSignature!==snapshot.signature||visaCaseSignature(c)!==snapshot.signature||job.policy!==snapshot.policy||job.policy!==this.policyFingerprint||state.policy!==this.policyFingerprint||snapshot.sourceSha256&&source.checksum&&source.checksum!==snapshot.sourceSha256||this.mrzProfileKey(job)!==(snapshot.mrzProfileKey??null))throw finite('DOCUMENT_INTAKE_STALE');if((job.manualRereadKey||job.mrzFocusOnly)&&this.blockReason(snapshot.customer))throw finite('DOCUMENT_REREAD_PAUSED');return {job,state,c,source};
  }
  sourceBytes(snapshot){this.guard(snapshot);const file=this.mediaStore.read(snapshot.mediaId,{customer:snapshot.customer});const actual=hash(file.bytes);if(snapshot.sourceSha256&&actual!==snapshot.sourceSha256){file.bytes.fill(0);throw finite('DOCUMENT_INTAKE_STALE');}const source=this.rawSource(snapshot.customer,snapshot.mediaId);if(source?.checksum&&actual!==source.checksum){file.bytes.fill(0);throw finite('DOCUMENT_INTAKE_STALE');}return {...file,sha256:actual};}
  async pageBytes(file,page,guard){
@@ -223,52 +263,53 @@ class VisaDocumentIntake{
   }catch(error){cropped?.fill(0);throw error;}finally{corrected?.fill(0);}
  }
  async focusMrzPage(snap,page,image){
-  const guard=()=>this.guard(snap);guard();let job=this.data().jobs[snap.id],checkpoint=job.pages[page];const format=checkpoint?.extraction?.kind==='passport'?'TD3':checkpoint?.extraction?.kind==='uae_id_back'?'TD1':null;if(!this.mrzVision?.extract||!format)return false;
-  const readerStatus=this.mrzVision.status?.(),localOptical=readerStatus?.local===true,internalMrzCrop=this.internalMrzCropCapable(format);
-  const scope={sourceSha256:snap.sourceSha256,page,format,policy:this.policyFingerprint,mrzPolicy:SHA.test(this.mrzVision.policyFingerprint||'')?this.mrzVision.policyFingerprint:MRZ_POLICY_FINGERPRINT,rereadKey:job.mrzFocusOnly?null:job.manualRereadKey||null,...(localOptical?{inputPolicy:LOCAL_OPTICAL_INPUT_POLICY}:internalMrzCrop?{inputPolicy:INTERNAL_MRZ_CROP_INPUT_POLICY,caseBinding:digest({customer:snap.customer,caseId:snap.caseId,signature:snap.signature,generation:snap.generation}),pageSha256:checkpoint.sha256}:{})},key=digest(scope),state=this.data().cases[snap.customer],record=state.mrzFocusReads?.[key],primaryValid=checkedMrz(checkpoint.extraction.mrzLines,this.now(),format);
-  const priorChecked=Object.values(state.mrzFocusReads||{}).filter(item=>item.sourceSha256===scope.sourceSha256&&item.page===page&&item.format===format&&item.policy===scope.policy&&item.mrzPolicy===scope.mrzPolicy&&item.status==='ready'&&checkedMrz(item.mrzLines,this.now(),format));
-  const finish=(result,issue)=>this.commit(()=>{guard();const current=this.data().jobs[snap.id],saved=current.pages[page];if(result&&!checkedMrz(saved.extraction.mrzLines,this.now(),format))saved.extraction=validateDocumentExtraction({...saved.extraction,mrzLines:result.mrzLines});delete saved.mrzFocusPending;saved.mrzFocusStatus=issue?'needs_review':result?'checked':'original_checked';current.mrzIssues||={};if(issue){current.mrzIssues[page]=clone(issue);saved.mrzIssue=clone(issue);}else{delete current.mrzIssues[page];delete saved.mrzIssue;}});
+  const guard=()=>{this.guardMrzProfile(snap);return true;};guard();let job=this.data().jobs[snap.id],checkpoint=job.pages[page];const reader=this.mrzReader(job);if(snap.mrzProfileKey&&checkpoint?.mrzProfileKey!==snap.mrzProfileKey)throw finite('MRZ_PROFILE_APPROVAL_INVALID');const format=checkpoint?.extraction?.kind==='passport'?'TD3':checkpoint?.extraction?.kind==='uae_id_back'?'TD1':null;if(!reader?.extract||!format)return false;
+  const readerStatus=reader.status?.(),localOptical=readerStatus?.local===true,internalMrzCrop=this.internalMrzCropCapable(format,reader);
+  const scope={sourceSha256:snap.sourceSha256,page,format,policy:this.policyFingerprint,mrzPolicy:SHA.test(reader.policyFingerprint||'')?reader.policyFingerprint:MRZ_POLICY_FINGERPRINT,rereadKey:job.mrzFocusOnly?null:job.manualRereadKey||null,...(snap.mrzProfileKey?{profileBinding:snap.mrzProfileKey}:{}),...(localOptical?{inputPolicy:LOCAL_OPTICAL_INPUT_POLICY}:internalMrzCrop?{inputPolicy:INTERNAL_MRZ_CROP_INPUT_POLICY,caseBinding:digest({customer:snap.customer,caseId:snap.caseId,signature:snap.signature,generation:snap.generation}),pageSha256:checkpoint.sha256}:{})},key=digest(scope),state=this.data().cases[snap.customer],record=state.mrzFocusReads?.[key],primaryValid=checkedMrz(checkpoint.extraction.mrzLines,this.now(),format);
+  const priorChecked=Object.values(state.mrzFocusReads||{}).filter(item=>item.sourceSha256===scope.sourceSha256&&item.page===page&&item.format===format&&item.policy===scope.policy&&item.mrzPolicy===scope.mrzPolicy&&(item.profileBinding??null)===(scope.profileBinding??null)&&item.status==='ready'&&checkedMrz(item.mrzLines,this.now(),format));
+  const finish=(result,issue)=>this.commit(()=>{this.guard(snap);if(!issue)guard();const current=this.data().jobs[snap.id],saved=current.pages[page];if(result&&!checkedMrz(saved.extraction.mrzLines,this.now(),format))saved.extraction=validateDocumentExtraction({...saved.extraction,mrzLines:result.mrzLines});delete saved.mrzFocusPending;saved.mrzFocusStatus=issue?'needs_review':result?'checked':'original_checked';current.mrzIssues||={};if(issue){current.mrzIssues[page]=clone(issue);saved.mrzIssue=clone(issue);}else{delete current.mrzIssues[page];delete saved.mrzIssue;}});
   if(primaryValid){const conflict=priorChecked.some(item=>JSON.stringify(item.mrzLines)!==JSON.stringify(checkpoint.extraction.mrzLines));finish(null,conflict?mrzReason('SOURCE_CONFLICT'):null);return false;}
   if(record&&record.status!=='waiting'){
    if(record.status==='ready'&&checkedMrz(record.mrzLines,this.now(),format)){const conflict=priorChecked.some(item=>JSON.stringify(item.mrzLines)!==JSON.stringify(record.mrzLines));finish(conflict?null:{mrzLines:record.mrzLines},conflict?mrzReason('SOURCE_CONFLICT'):null);}
    else {const issue=record.status==='running'?mrzReason('DOCUMENT_MRZ_INTERRUPTED'):record.issue||mrzReason('DOCUMENT_MRZ_READ_FAILED');this.commit(()=>{guard();const current=this.data().cases[snap.customer].mrzFocusReads[key];current.status='failed';current.issue=clone(issue);});finish(null,issue);}return false;
   }
-  const defer=()=>{this.commit(()=>{guard();const current=this.data().jobs[snap.id];current.status='retry';current.nextAttemptAt=this.now()+Math.max(2000,Math.min(300000,Number(this.mrzVision.status?.()?.retryAfterMs||this.vision.status?.()?.retryAfterMs)||2000));});return true;};
-  const readerReady=()=>{if(this.mrzVision.status?.()?.configured===false)throw finite('MRZ_OPTICAL_MODEL_UNAVAILABLE');return (this.mrzVision.ready?.()??this.vision.ready?.())===true;};
-  let crop;try{if(!localOptical&&readerStatus?.inputPolicy!==undefined&&!internalMrzCrop)throw finite('MRZ_VISION_INVALID_IMAGE');if(format==='TD1'&&!this.td1FocusCapable())throw finite('MRZ_OPTICAL_ENGINE_UNAVAILABLE');if(internalMrzCrop&&(!SHA.test(checkpoint.sha256||'')||checkpoint.mediaId!==snap.mediaId||checkpoint.page!==page||checkpoint.sourceSha256!==snap.sourceSha256))throw finite('MRZ_VISION_INVALID_IMAGE');if(!readerReady())return defer();crop=await this.focusedMrzCrop(image,checkpoint.extraction,guard,{localOptical,...(internalMrzCrop?{inputPolicy:INTERNAL_MRZ_CROP_INPUT_POLICY}:{})});guard();if(!readerReady())return defer();
+  const billingAttemptKey=snap.mrzProfileKey?digest({policy:'production-mrz-source-page-billing-v1',customer:snap.customer,caseId:snap.caseId,sourceSha256:snap.sourceSha256,page,pageSha256:checkpoint.sha256,format,mrzPolicy:reader.policyFingerprint}):undefined;
+  const defer=()=>{this.commit(()=>{guard();const current=this.data().jobs[snap.id];current.status='retry';current.nextAttemptAt=this.now()+Math.max(2000,Math.min(300000,Number(reader.status?.()?.retryAfterMs||this.vision.status?.()?.retryAfterMs)||2000));});return true;};
+  const readerReady=()=>{if(reader.status?.()?.configured===false)throw finite(snap.mrzProfileKey?'MRZ_PROFILE_UNAVAILABLE':'MRZ_OPTICAL_MODEL_UNAVAILABLE');return (reader.ready?.()??this.vision.ready?.())===true;};
+  let crop;try{if(!localOptical&&readerStatus?.inputPolicy!==undefined&&!internalMrzCrop)throw finite('MRZ_VISION_INVALID_IMAGE');if(format==='TD1'&&!this.td1FocusCapable(reader))throw finite('MRZ_OPTICAL_ENGINE_UNAVAILABLE');if(internalMrzCrop&&(!SHA.test(checkpoint.sha256||'')||checkpoint.mediaId!==snap.mediaId||checkpoint.page!==page||checkpoint.sourceSha256!==snap.sourceSha256))throw finite('MRZ_VISION_INVALID_IMAGE');if(!readerReady())return defer();crop=await this.focusedMrzCrop(image,checkpoint.extraction,guard,{localOptical,...(internalMrzCrop?{inputPolicy:INTERNAL_MRZ_CROP_INPUT_POLICY}:{})});guard();if(!readerReady())return defer();
    this.commit(()=>{guard();const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'running',cropSha256:hash(crop.bytes),startedAt:this.now()};});
-   const output=await this.mrzVision.extract({bytes:crop.bytes,mimeType:crop.mimeType,guard,format,...(internalMrzCrop?{attemptKey:key}:{})});guard();
+   const output=await reader.extract({bytes:crop.bytes,mimeType:crop.mimeType,guard,format,...(internalMrzCrop?{attemptKey:key}:{}),...(billingAttemptKey?{billingAttemptKey}:{})});guard();
    if(!output||output.version!==1||!Array.isArray(output.mrzLines)||Object.keys(output).some(name=>!['version','mrzLines','checks'].includes(name)))throw finite('MRZ_VISION_INVALID_OUTPUT');
    const checks=format==='TD1'?['documentNumber','birthDate','expiryDate','composite']:['documentNumber','birthDate','expiryDate','optionalData','composite'],valid=checkedMrz(output.mrzLines,this.now(),format);if(output.mrzLines.length&&(!valid||output.checks&&checks.some(name=>output.checks[name]!==true)))throw finite('MRZ_VISION_CHECKS_FAILED');const conflict=valid&&priorChecked.some(item=>JSON.stringify(item.mrzLines)!==JSON.stringify(output.mrzLines)),issue=conflict?mrzReason('SOURCE_CONFLICT'):valid?null:mrzReason('DOCUMENT_MRZ_UNREADABLE');
    this.commit(()=>{guard();const current=this.data().cases[snap.customer].mrzFocusReads[key];current.status=valid?'ready':'unreadable';if(valid)current.mrzLines=[...output.mrzLines];if(issue)current.issue=clone(issue);current.completedAt=this.now();});finish(valid&&!conflict?output:null,issue);return false;
-  }catch(error){guard();if(['DOCUMENT_VISION_BUSY','DOCUMENT_VISION_COOLDOWN'].includes(error?.code)){this.commit(()=>{guard();const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'waiting'};});return defer();}const issue=mrzReason('DOCUMENT_MRZ_READ_FAILED',error?.code);this.commit(()=>{guard();const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'failed',issue:clone(issue),completedAt:this.now()};});finish(null,issue);return false;
+  }catch(error){this.guard(snap);if(['DOCUMENT_VISION_BUSY','DOCUMENT_VISION_COOLDOWN'].includes(error?.code)){this.commit(()=>{guard();const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'waiting'};});return defer();}const issue=mrzReason('DOCUMENT_MRZ_READ_FAILED',error?.code);this.commit(()=>{this.guard(snap);const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'failed',issue:clone(issue),completedAt:this.now()};});finish(null,issue);return false;
   }finally{crop?.bytes?.fill(0);}
  }
  async process(job){
   let snap=this.snapshot(job),file,failedPage;
   try{
-   file=this.sourceBytes(snap);snap.sourceSha256=file.sha256;
+   file=this.sourceBytes(snap);snap.sourceSha256=file.sha256;this.guardMrzProfile(snap);this.mrzReader(this.data().jobs[snap.id]);
    this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.sourceSha256=file.sha256;job.status='running';job.updatedAt=this.now();});
    // Exact duplicate bytes in this case reuse completed checkpoints. No provider
    // request is repeated merely because WhatsApp assigned another media UUID.
-   const duplicate=!job.mrzFocusOnly&&Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&other.sourceSha256===file.sha256&&other.status==='ready');
-   if(duplicate){if(this.pageCount(job.customer,job.caseId)-Object.keys(job.pages||{}).length+Object.keys(duplicate.pages).length>MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.pages=Object.fromEntries(Object.entries(duplicate.pages).map(([page,value])=>[page,{...clone(value),mediaId:job.mediaId}]));job.status='ready';job.updatedAt=this.now();});return;}
+   const duplicate=!job.mrzFocusOnly&&Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&this.mrzProfileKey(other)===snap.mrzProfileKey&&other.sourceSha256===file.sha256&&other.status==='ready'&&Object.values(other.pages||{}).every(page=>(page.mrzProfileKey??null)===snap.mrzProfileKey));
+   if(duplicate){if(this.pageCount(job.customer,job.caseId)-Object.keys(job.pages||{}).length+Object.keys(duplicate.pages).length>MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');this.commit(()=>{this.guardMrzProfile(snap);job=this.data().jobs[snap.id];job.pages=Object.fromEntries(Object.entries(duplicate.pages).map(([page,value])=>[page,{...clone(value),mediaId:job.mediaId}]));job.status='ready';job.updatedAt=this.now();});return;}
    for(let page=1;page<=10;page++){
     this.guard(snap);job=this.data().jobs[snap.id];if(job.mrzFocusOnly&&!job.pages[page]||job.pages[page]&&!job.pages[page].mrzFocusPending)continue;failedPage=page;
     let image,normalized;try{image=await this.pageBytes(file,page,()=>this.guard(snap));this.guard(snap);}catch(error){if(page>1&&error?.code==='PDF_INVALID')break;if(page>1&&error?.code==='DOCUMENT_NO_PAGE')break;throw error;}
     try{
      if(job.pages[page]?.mrzFocusPending){if(await this.focusMrzPage(snap,page,image))return;continue;}
      if(this.pageCount(job.customer,job.caseId)>=MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});this.guard(snap);const pageSha=hash(normalized.bytes);
-     const cached=Object.values(this.data().jobs).flatMap(other=>other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy?Object.values(other.pages||{}):[]).find(result=>result.sourceSha256===file.sha256&&result.page===page&&result.sha256===pageSha);
-     if(cached){this.commit(()=>{this.guard(snap);this.data().jobs[snap.id].pages[page]={...clone(cached),mediaId:snap.mediaId};});if(cached.mrzFocusPending&&await this.focusMrzPage(snap,page,image))return;continue;}
+     const cached=Object.values(this.data().jobs).flatMap(other=>other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&this.mrzProfileKey(other)===snap.mrzProfileKey?Object.values(other.pages||{}):[]).find(result=>(result.mrzProfileKey??null)===snap.mrzProfileKey&&result.sourceSha256===file.sha256&&result.page===page&&result.sha256===pageSha);
+     if(cached){this.commit(()=>{this.guardMrzProfile(snap);this.data().jobs[snap.id].pages[page]={...clone(cached),mediaId:snap.mediaId};});if(cached.mrzFocusPending&&await this.focusMrzPage(snap,page,image))return;continue;}
      const manual=job.manualRereadKey&&this.data().cases[job.customer].manualRereads?.[job.manualRereadKey],attempts=manual?.policy===job.policy?manual.pageAttempts?.[page]||0:job.pageAttempts[page]||0;if(attempts>=MAX_ATTEMPTS||manual?.policy===job.policy&&manual.pageFailures?.[page]?.terminal)throw finite('DOCUMENT_OCR_RETRY_LIMIT');
      this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.activePage=page;current.pageAttempts[page]=attempts+1;const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy){shared.pageAttempts||={};shared.pageAttempts[page]=attempts+1;}current.updatedAt=this.now();});
-     const extraction=validateDocumentExtraction(await this.vision.extract({bytes:normalized.bytes,mimeType:normalized.mimeType,guard:()=>this.guard(snap)}));this.guard(snap);
-     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.pages[page]={mediaId:snap.mediaId,page,sha256:pageSha,sourceSha256:file.sha256,extraction,...(this.mrzVision?.extract&&(focusedPassportPage(extraction)||extraction.kind==='uae_id_back'&&extraction.readable===true&&this.td1FocusCapable())?{mrzFocusPending:true}:{})};const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy&&shared.pageFailures)delete shared.pageFailures[page];delete current.activePage;current.updatedAt=this.now();});
+     const extraction=validateDocumentExtraction(await this.vision.extract({bytes:normalized.bytes,mimeType:normalized.mimeType,guard:()=>this.guardMrzProfile(snap)}));this.guardMrzProfile(snap);
+     this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];current.pages[page]={mediaId:snap.mediaId,page,sha256:pageSha,sourceSha256:file.sha256,...(snap.mrzProfileKey?{mrzProfileKey:snap.mrzProfileKey}:{}),extraction,...(this.mrzReader(current)?.extract&&(focusedPassportPage(extraction)||extraction.kind==='uae_id_back'&&extraction.readable===true&&this.td1FocusCapable(this.mrzReader(current)))?{mrzFocusPending:true}:{})};const shared=current.manualRereadKey&&this.data().cases[current.customer].manualRereads?.[current.manualRereadKey];if(shared?.policy===current.policy&&shared.pageFailures)delete shared.pageFailures[page];delete current.activePage;current.updatedAt=this.now();});
      if(this.data().jobs[snap.id].pages[page].mrzFocusPending&&await this.focusMrzPage(snap,page,image))return;
     }finally{if(normalized?.bytes&&normalized.bytes!==image?.bytes)normalized.bytes.fill(0);image?.bytes?.fill(0);}
    }
-   this.commit(()=>{this.guard(snap);const current=this.data().jobs[snap.id];if(!Object.keys(current.pages).length)throw finite('DOCUMENT_READ_FAILED');current.status='ready';current.issues=[];delete current.activePage;delete current.nextAttemptAt;current.updatedAt=this.now();});
+   this.commit(()=>{this.guardMrzProfile(snap);const current=this.data().jobs[snap.id];if(!Object.keys(current.pages).length)throw finite('DOCUMENT_READ_FAILED');current.status='ready';current.issues=[];delete current.activePage;delete current.nextAttemptAt;current.updatedAt=this.now();});
   }catch(error){
    if(error?.code==='DOCUMENT_REREAD_PAUSED'){
     const current=this.data().jobs[snap.id],state=this.data().cases[snap.customer],c=this.caseFor(snap.customer);
@@ -285,7 +326,7 @@ class VisaDocumentIntake{
  }
  async loadReference(customer,ref,guard){
   guard();const job=Object.values(this.data().jobs).find(item=>item.customer===customer&&item.policy===this.policyFingerprint&&item.mediaId===ref.mediaId&&item.pages?.[ref.page]?.sha256===ref.sha256&&item.status==='ready');if(!job)throw finite('DOCUMENT_SOURCE_UNAVAILABLE');
-  const snap=this.snapshot(job);let file,image,normalized;try{file=this.sourceBytes(snap);image=await this.pageBytes(file,ref.page,()=>{guard();this.guard(snap);});guard();normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});guard();this.guard(snap);if(hash(normalized.bytes)!==ref.sha256)throw finite('DOCUMENT_SOURCE_CHANGED');const extraction=job.pages[ref.page].extraction;return {bytes:Buffer.from(image.bytes),mimeType:image.mimeType,extraction,sourceId:ref.mediaId};}finally{if(normalized?.bytes&&normalized.bytes!==image?.bytes)normalized.bytes.fill(0);image?.bytes?.fill(0);file?.bytes?.fill(0);}
+  const snap=this.snapshot(job);this.guardMrzProfile(snap);let file,image,normalized;try{file=this.sourceBytes(snap);image=await this.pageBytes(file,ref.page,()=>{guard();this.guardMrzProfile(snap);});guard();normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});guard();this.guardMrzProfile(snap);if(hash(normalized.bytes)!==ref.sha256)throw finite('DOCUMENT_SOURCE_CHANGED');const extraction=job.pages[ref.page].extraction;return {bytes:Buffer.from(image.bytes),mimeType:image.mimeType,extraction,sourceId:ref.mediaId};}finally{if(normalized?.bytes&&normalized.bytes!==image?.bytes)normalized.bytes.fill(0);image?.bytes?.fill(0);file?.bytes?.fill(0);}
  }
  async rotateImage(image){const rotation=image.extraction.rotation;if(!rotation)return {bytes:image.bytes,mimeType:image.mimeType};const bytes=await sharp(image.bytes,{failOn:'warning',limitInputPixels:20000000,sequentialRead:true}).autoOrient().rotate(rotation).flatten({background:'#ffffff'}).toColourspace('srgb').png().toBuffer();return {bytes,mimeType:'image/png'};}
  async portraitCrop(image){
@@ -312,17 +353,18 @@ class VisaDocumentIntake{
    result=await this.prepare(rotated.bytes,{mimeType:rotated.mimeType,kind:'portrait'});guard();prepared=this.storedPrepared(customer,'photo',result,[photo.sourceId],guard);preparedManifest.push(prepared);documents.photo=prepared.mediaId;return {documents,preparedManifest};
   }finally{if(result?.bytes)result.bytes.fill(0);if(rotated?.bytes&&rotated.bytes!==photo?.bytes)rotated.bytes.fill(0);if(photo&&![...passportParts,...residence].some(part=>part.image===photo))photo.bytes.fill(0);for(const part of [...passportParts,...residence]){if(part.corrected.bytes!==part.image.bytes)part.corrected.bytes.fill(0);part.image.bytes.fill(0);}}
  }
- currentCaseGuard(customer,caseId,signature,generation,epoch){
+ currentCaseGuard(customer,caseId,signature,generation,epoch,mrzApprovalKey){
   if(this.stopped||this.epoch!==epoch||!this.enabled())throw finite('DOCUMENT_INTAKE_STALE');const c=this.caseFor(customer),state=this.data().cases[customer];if(!c||!state||state.policy!==this.policyFingerprint||c.id!==caseId||visaCaseSignature(c)!==signature||state.caseSignature!==signature||state.generation!==generation)throw finite('DOCUMENT_INTAKE_STALE');
   for(const job of Object.values(this.data().jobs))if(job.customer===customer&&job.caseId===caseId&&job.status==='ready'){const source=this.rawSource(customer,job.mediaId);if(!source||source.checksum&&source.checksum!==job.sourceSha256)throw finite('DOCUMENT_INTAKE_STALE');}
+  if(mrzApprovalKey!==undefined&&this.caseMrzApproval(customer,caseId).key!==mrzApprovalKey)throw finite('DOCUMENT_INTAKE_STALE');
   return {c,state};
  }
  parentFingerprint(c){return digest({paymentStatus:c.paymentStatus,submissionStatus:c.submissionStatus,verification:c.staffVerification||{},amendment:c.pendingAmendment||null});}
  async reconcileCase(customer,{force=false}={}){
   let state=this.data().cases[customer],c=this.caseFor(customer);if(!state||!c||state.caseId!==c.id)return false;if(state.policy!==this.policyFingerprint||Object.values(this.data().jobs).some(job=>job.customer===customer&&job.caseId===c.id&&job.policy!==this.policyFingerprint&&job.status!=='stale')){this.commit(()=>this.retirePolicies());state=this.data().cases[customer];}const signature=state.caseSignature,generation=state.generation,epoch=this.epoch;
-  const guard=()=>this.currentCaseGuard(customer,c.id,signature,generation,epoch);guard();
+  const approval=this.caseMrzApproval(customer,c.id),guard=()=>this.currentCaseGuard(customer,c.id,signature,generation,epoch,approval.key);guard();
   const jobs=Object.values(this.data().jobs).filter(job=>job.customer===customer&&job.caseId===c.id&&job.caseSignature===signature&&job.generation===generation&&job.policy===this.policyFingerprint&&job.status!=='stale').sort((a,b)=>a.receivedAt-b.receivedAt||a.mediaId.localeCompare(b.mediaId));
-  const documents=jobs.flatMap(job=>Object.values(job.pages||{})).sort((a,b)=>jobs.findIndex(job=>job.mediaId===a.mediaId)-jobs.findIndex(job=>job.mediaId===b.mediaId)||a.page-b.page),pending=jobs.some(job=>activeStatus(job.status)),sourceIssues=jobs.flatMap(job=>[...(job.status==='failed'?job.issues||[reason('DOCUMENT_READ_FAILED')]:[]),...Object.values(job.pages||{}).flatMap(page=>page.mrzIssue?[page.mrzIssue]:[])]);
+  const documents=jobs.filter(job=>!Object.hasOwn(job,'mrzProfile')||approval.approved.has(job.id)).flatMap(job=>Object.values(job.pages||{})).sort((a,b)=>jobs.findIndex(job=>job.mediaId===a.mediaId)-jobs.findIndex(job=>job.mediaId===b.mediaId)||a.page-b.page),pending=jobs.some(job=>activeStatus(job.status)),sourceIssues=jobs.flatMap(job=>[...(Object.hasOwn(job,'mrzProfile')&&!approval.approved.has(job.id)?[reason('DOCUMENT_STAFF_REVIEW_REQUIRED')]:[]),...(job.status==='failed'?job.issues||[reason('DOCUMENT_READ_FAILED')]:[]),...Object.values(job.pages||{}).flatMap(page=>page.mrzIssue?[page.mrzIssue]:[])]);
   const blocked=this.blockReason(customer);
   const fingerprint=digest({signature,generation,preparationPolicy:PREPARATION_POLICY,documents,sourceIssues,pending,limit:state.limitExceeded===true});if(!force&&state.inputFingerprint===fingerprint)return false;
   const people=Number.isInteger(c.applicantCount)&&c.applicantCount>0&&c.applicantCount<=30?Array.from({length:c.applicantCount},(_,index)=>c.applicants?.[index]||{}):[];
@@ -359,12 +401,13 @@ class VisaDocumentIntake{
  }
  async refresh(customer,{applicantIndex}={}){
   if(!this.enabled()||!validCustomer(customer)||this.stopped)return {readyForQuestions:false,status:this.enabled()?'needs_review':'disabled',issues:[reason('DOCUMENT_APPLY_PAUSED')]};
+  try{if(this.quarantineProfiledEvidence(customer))return {...this.summary(customer),readyForQuestions:false};}catch{return {readyForQuestions:false,status:'needs_review',issues:[reason('DOCUMENT_APPLY_UNCONFIRMED')]};}
   if(this.busy)return {...this.summary(customer),readyForQuestions:false};
   let acquired=false,binding=null,phase='unknown';this.busy=true;
   try{
    this.commit(()=>{this.retirePolicies();this.syncCase(customer);});const state=this.data().cases[customer];if(!state||!['ready','needs_confirmation','needs_review'].includes(state.status))return {...this.summary(customer),readyForQuestions:false};const selected=state.applicants.filter(app=>(applicantIndex===undefined||app.applicantIndex===applicantIndex)&&['ready','needs_confirmation'].includes(app.status));if(!selected.length)return {...this.summary(customer),readyForQuestions:false};
    if(this.blockReason(customer)||!this.lock.tryAcquire())return {...this.summary(customer),readyForQuestions:false};acquired=true;
-   const epoch=this.epoch;binding={caseId:state.caseId,signature:state.caseSignature,generation:state.generation,epoch};const guard=()=>this.currentCaseGuard(customer,state.caseId,state.caseSignature,state.generation,epoch);guard();if(!currentVisaEvidence(this.caseFor(customer)).payment)return {...this.summary(customer),readyForQuestions:false};
+   const epoch=this.epoch,approval=this.caseMrzApproval(customer,state.caseId);binding={caseId:state.caseId,signature:state.caseSignature,generation:state.generation,epoch};const guard=()=>this.currentCaseGuard(customer,state.caseId,state.caseSignature,state.generation,epoch,approval.key);guard();if(!currentVisaEvidence(this.caseFor(customer)).payment)return {...this.summary(customer),readyForQuestions:false};
    for(const item of selected){if(!['ready','needs_confirmation'].includes(item.status))return {...this.summary(customer),readyForQuestions:false};guard();if(this.blockReason(customer))throw finite('DOCUMENT_APPLY_PAUSED');phase='draft_read';const draft=this.raad.get(customer,{applicantIndex:item.applicantIndex});phase='draft_apply';const applied=await this.raad.applyMachineDossier(customer,{applicantIndex:item.applicantIndex,expectedRevision:draft.revision,expectedCaseSignature:state.caseSignature,evidenceId:item.id});guard();
     if(applied?.staffReviewRequired)item.staffReviewRequired=true;
     item.applied=true;item.issues=(item.issues||[]).filter(issue=>!['DOCUMENT_APPLY_UNCONFIRMED','DOCUMENT_STAFF_REVIEW_REQUIRED'].includes(issue.code));
@@ -376,6 +419,7 @@ class VisaDocumentIntake{
  }
  async prepareJob(job){
   if(!job||!validCustomer(job.customer))return {readyForQuestions:false,status:'needs_review',issues:[reason('DOCUMENT_APPLY_UNCONFIRMED')]};
+  try{if(this.quarantineProfiledEvidence(job.customer))return {...this.summary(job.customer),readyForQuestions:false};}catch{return {readyForQuestions:false,status:'needs_review',issues:[reason('DOCUMENT_APPLY_UNCONFIRMED')]};}
   try{const draft=this.raad.get(job.customer,{applicantIndex:job.applicantIndex}),c=this.caseFor(job.customer);if(!this.blockReason(job.customer)&&draft?.review?.complete===true&&draft.review.invalidated!==true&&draft.caseId===c?.id&&draft.caseSignature===visaCaseSignature(c))return {readyForQuestions:true,status:'ready',source:'staff',issues:[]};}catch{}
   const result=await this.refresh(job.customer,{applicantIndex:job.applicantIndex});if(!result.readyForQuestions)return result;const current=this.fulfilment?.data?.()?.jobs?.[job.id],state=this.data().cases[job.customer],applicant=state?.applicants?.find(item=>item.applicantIndex===job.applicantIndex);
   return {...result,readyForQuestions:Boolean(current&&current.caseId===state.caseId&&current.caseSignature===state.caseSignature&&applicant?.applied&&applicant.stagedJobs?.[job.id]===applicant.id&&['ready','needs_confirmation'].includes(applicant.status))};
