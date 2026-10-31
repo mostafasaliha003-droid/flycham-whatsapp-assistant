@@ -8,28 +8,29 @@ const {RaadVisaWorkflow}=require('../src/raad-visa-workflow');
 const {visaCaseSignature}=require('../src/visa-case-signature');
 const {createProductionWorker,validateManifest}=require('../src/raad-login-pilot/production-worker');
 const {estimate,dubaiDate}=require('../src/raad-login-pilot/estimated-entry-date');
-const CUSTOMER='971500000001',OWNER='971500000009',KEY='synthetic_bridge_key_'.repeat(3);
+const CUSTOMER='971500000001',OWNER='971507993145',SMS='966591182035',KEY='synthetic_bridge_key_'.repeat(3);
 const IDS={receipt:'10000000-0000-4000-8000-000000000001',passport:'10000000-0000-4000-8000-000000000002',residence:'10000000-0000-4000-8000-000000000003',photo:'10000000-0000-4000-8000-000000000004'};
 const hash=x=>crypto.createHash('sha256').update(x).digest('hex');
 const field=(o,p)=>p.split('.').reduce((v,k)=>v?.[k],o);
 function facts({entryDate,address='Synthetic confirmed address',transport='land',port='Synthetic confirmed land port'}={}){
  return {nationalityCode:'SYR',passportNumber:'TEST0001',passportType:'ordinary',issuingCountryCode:'SYR',issueDate:'2025-01-01',expiryDate:'2030-01-01',birthDate:'1990-04-03',birthPlace:'Synthetic City',sex:'M',latinFirstName:'Synthetic',latinFatherName:'Synthetic',latinFamilyName:'Applicant',arabicFirstName:'تجريبي',arabicFatherName:'تجريبي',arabicFamilyName:'تجريبي',emiratesId:'784199000000001',residenceExpiry:'2028-01-01',maritalStatus:'single',previousNationality:false,travelledLastFiveYears:false,performUmrah:false,gccResident:true,priorGccDeportation:false,priorGccRuleViolation:false,saudiAddress:address,transport,arrivalPort:port,health:{hospitalizedOrEmergency:false,accidentDisability:false,congenitalCondition:false},...(entryDate?{entryDate}:{})};
 }
-function nativeAdapter({port,transport,label='Expected entry date',duplicate=false}={}){
- let path='/SmartForm',closed=0,smsDispatches=0;const calls=[];
+function nativeAdapter({port,transport,label='Expected entry date',duplicate=false,phoneDelay=0,missionLabel='أبو ظبي',tourismValue='10',phonePrefixLabel='Saudi Arabia (00966)'}={}){
+ let path='/SmartForm',closed=0,smsDispatches=0,dateFilled=false,phonePolls=0;const calls=[];
  const select=(id,value,caption=value)=>({id,type:'select',disabled:false,options:[{value,label:caption}]});
  const controls=[
- select('VisaKind','10'),select('NATIONALITY','SYR'),select('ddlResidenceCountry','270'),
+ select('VisaKind',tourismValue,'زيارة سياحية'),select('NATIONALITY','SYR'),select('ddlResidenceCountry','270'),
  select('SOCIAL_STATUS','1','أعزب'),select('Sex','1','ذكر'),select('PASSPORType','1','عادي'),
- select('PASSPORT_ISSUE_PLACE','SYR'),select('EmbassyCode','214','أبو ظبي'),
+ select('PASSPORT_ISSUE_PLACE','SYR'),select('EmbassyCode','214',missionLabel),
  select('COMING_THROUGH','77',{air:'جوا',land:'برا',sea:'بحرا'}[transport]),
  select('ENTRY_POINT','synthetic_port',port),select('TourismEVisaIssuingCountryCode','ARE'),
- select('MobileInfo_MobilePrefix','971','United Arab Emirates (00971)'),
+ select('MobileInfo_MobilePrefix','966',phonePrefixLabel),
+ {id:'MobileInfo_Mobile',type:'text',disabled:false},
  ...['IsVisaEndDateOptional','Endorsement','IsPrivacyPolicyAgreed','terms_and_conditions'].map(id=>({id,type:'checkbox',disabled:false})),
  ...['PassportImageFile','IqamaOrVisaImageFile','PersonalImage'].map(id=>({id,type:'file',disabled:false})),
  {id:'ExpectedEntryDate',type:'text',label,disabled:false}
  ];
- const inspection=()=>({path,controls,buttons:[],links:path==='/SmartForm'?[{path:'/SmartForm/Agreement',label:'إضافة طلب جديد'}]:[]});
+ const inspection=()=>({path,controls:controls.filter(c=>!/^MobileInfo_/.test(c.id)||dateFilled&&++phonePolls>phoneDelay),buttons:[],links:path==='/SmartForm'?[{path:'/SmartForm/Agreement',label:'إضافة طلب جديد'}]:[]});
  return {calls,get closed(){return closed;},get smsDispatches(){return smsDispatches;},
  reserve:async()=> 'synthetic-reservation',close:async()=>{closed++;return true;},release:async()=>{},locate:async()=>({path}),
  call:async(action,data)=>{
@@ -41,7 +42,7 @@ function nativeAdapter({port,transport,label='Expected entry date',duplicate=fal
   if(action==='lookup-applications')return {lookupSupported:true,matchCount:duplicate?2:0,matches:duplicate?[{applicationReference:'E111111'},{applicationReference:'E222222'}]:[]};
   if(action==='open-page'){if(data.path==='/SmartForm/Agreement')path='/SmartForm/TraditionalApp';return {opened:true};}
   if(action==='fill-draft')return {filledCount:1};
-  if(action==='set-dates')return {filledCount:1};
+  if(action==='set-dates'){dateFilled=true;return {filledCount:1};}
   if(action==='upload-documents')return {uploadedCount:1};
   if(action==='inspect-application-sms')return {verification:{buttons:[{id:'btnSendOtp',label:'Send SMS',disabled:false}]}};
   if(action==='request-application-sms'){
@@ -61,6 +62,7 @@ async function fixture(options={}){
  const inbox={isOperatorOwned:()=>claimed,isBlocked:()=>false,updateVisa(customer,input){assert.equal(customer,CUSTOMER);c.staffVerification||={};c.staffVerification.payment={amount:input.amount,reference:input.reference,actor:'synthetic-staff',verifiedAt:at,caseSignature:visaCaseSignature(c)};c.paymentStatus='verified';c.revision++;}};
  const env={RAAD_OTP_OWNER_WHATSAPP:OWNER,RAAD_VISA_AUTOMATION_ENABLED:'true',RAAD_BROWSER_WORKER_URL:'https://synthetic-worker.example.test/',RAAD_JOB_BRIDGE_KEY:KEY,
  RAAD_APPLICATION_PHONE:'+971500000010',RAAD_CONTACT_EMAIL:'application@example.test',RAAD_INSURANCE_PHONE:'+971500000011',RAAD_POSTAL_CODE:'00000',RAAD_CITY:'Synthetic City',RAAD_POST_OFFICE_BOX:'000'};
+ if(options.noApplicationPhone)delete env.RAAD_APPLICATION_PHONE;
  const raad=new RaadVisaWorkflow({store,mediaStore,env,now:()=>at,canAutomate:()=>!claimed});
  const fulfilment=new VisaFulfilment({store,inbox,mediaStore,raad,env,now:()=>at,send:async(to,payload,guard)=>{guard();sends++;return {messageId:'synthetic-outbound-'+sends};}});
  fulfilment.receiveReceipt(CUSTOMER,{receiptId:IDS.receipt});
@@ -91,8 +93,9 @@ async function fixture(options={}){
   const asked=fulfilment.askQuestions(job.id,{fields:['entryDate']});fulfilment.answerQuestion({sender:CUSTOMER,token:asked.questions[0].token,value:options.entryDate});
   fulfilment.confirmAnswers({sender:CUSTOMER,token:job.summary.token,confirm:true,messageId:'synthetic-explicit-date-consent'});
  }
- const adapter=nativeAdapter({port:value.arrivalPort,transport:value.transport,label:options.label,duplicate:options.duplicate});
- const worker=createProductionWorker({env:{RAAD_JOB_BRIDGE_KEY:KEY},adapter,now:()=>at,wait:async()=>{},leaseFetch:async(url,request)=>{
+ const adapter=nativeAdapter({port:value.arrivalPort,transport:value.transport,label:options.label,duplicate:options.duplicate,phoneDelay:options.phoneDelay,missionLabel:options.missionLabel,tourismValue:options.tourismValue,phonePrefixLabel:options.phonePrefixLabel});
+ const supervisorSmsContract={origin:'https://visa.mofa.gov.sa',path:'/SmartForm/TraditionalApp',mobileFieldId:'MobileInfo_Mobile',prefixFieldId:'MobileInfo_MobilePrefix',sourceUrl:'https://visa.mofa.gov.sa/SmartForm/TraditionalApp',evidenceSha256:'a'.repeat(64),verifiedAt:at-1000,expiresAt:at+86400000,role:'office_verification_contact',basis:'user_authorization_and_observed_generic_field',officialRepresentativeStatus:'not_established',authorization:{source:'explicit_user_instruction',declaredRole:'office_license_owner',scope:'saudi_visa_sms',number:SMS},observation:{fieldLabel:'رقم الجوال',actionLabel:'إرسال رمز التحقق',ownership:'not_specified_in_observed_ui',nearbyInstructionText:''}};
+ const worker=createProductionWorker({env:{RAAD_JOB_BRIDGE_KEY:KEY},supervisorSmsContract,adapter,now:()=>at,wait:async()=>{},leaseFetch:async(url,request)=>{
   let current=false;try{fulfilment.guardLease(job.id,request.headers['X-Raad-Lease-Token']);current=true;}catch{}
   return {ok:current,json:async()=>({current})};
  }});
@@ -119,6 +122,7 @@ test('paired candidates accept a real main manifest, resolve a custom port, veri
  assert.equal(state.requiresOtp,false);assert.equal(state.saved,false);assert.equal(f.adapter.smsDispatches,0);assert.equal(f.adapter.closed,1);
  const selected=f.adapter.calls.filter(x=>x.action==='fill-draft').flatMap(x=>x.data.fields).find(x=>x.id==='COMING_THROUGH');
  assert.equal(selected.value,'77');assert.ok(f.adapter.calls.some(x=>x.action==='set-dates'&&x.data.dates[0].id==='ExpectedEntryDate'&&x.data.dates[0].isoDate==='2026-11-14'));
+ const smsPhone=f.adapter.calls.filter(x=>x.action==='fill-draft').flatMap(x=>x.data.fields).find(x=>x.id==='MobileInfo_Mobile');assert.equal(smsPhone.value,SMS.slice(3));assert.notEqual(smsPhone.value,checked.facts.applicationPhone);assert.equal(checked.facts.insurancePhone,'+971500000011');
  await f.dispatcher.poll(f.job,f.store.data.visaPortalRuns[f.job.id]);
  assert.equal(f.job.state,'portal_review_required');assert.equal(f.job.blockedReason,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');
  assert.equal(f.bridge.filter(x=>x.path==='/internal/raad/jobs').length,1);assert.equal(f.c.submissionStatus,'not_submitted');
@@ -155,4 +159,42 @@ test('ambiguous saved-application lookup stops before filling or SMS and never r
 test('calendar estimate handles leap years, month/year boundaries and the Dubai timezone explicitly',()=>{
  for(const [reference,expected]of [['2026-12-25','2027-01-09'],['2028-02-20','2028-03-06'],['2026-01-25','2026-02-09']])assert.equal(estimate(reference),expected);
  assert.equal(dubaiDate(Date.parse('2026-12-31T20:00:00Z')),'2027-01-01');
+});
+
+test('supervisor route needs no applicant SMS phone and does not substitute it into client or insurance facts',async()=>{
+ const f=await fixture({noApplicationPhone:true});await f.dispatcher.launch(f.job);
+ const body=f.bridge.find(x=>x.path==='/internal/raad/jobs')?.body;assert.ok(body);assert.equal(body.fields.applicationPhone,undefined);
+ const state=await f.settle();assert.equal(state.blocker.code,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');
+ const fill=f.adapter.calls.filter(x=>x.action==='fill-draft').flatMap(x=>x.data.fields).find(x=>x.id==='MobileInfo_Mobile');assert.equal(fill.value,SMS.slice(3));
+ assert.equal(Object.values(f.job.questions||{}).some(q=>q.field==='applicationPhone'),false);assert.equal(f.job.confirmedFields.applicationPhone,undefined);assert.equal(body.fields.insurancePhone,'+971500000011');
+});
+
+
+test('actual worker waits for delayed phone section after route fields before filling phone',async()=>{
+ const f=await fixture({phoneDelay:4,tourismValue:'19'});await f.dispatcher.launch(f.job);const state=await f.settle();
+ assert.equal(state.blocker.code,'APPLICATION_SMS_RESPONSE_CONTRACT_UNCONFIGURED');
+ const fields=f.adapter.calls.filter(x=>x.action==='fill-draft').flatMap(x=>x.data.fields);
+ assert.equal(fields.find(x=>x.id==='VisaKind').value,'19');
+ assert.equal(fields.find(x=>x.id==='EmbassyCode').value,'214');
+ assert.ok(fields.findIndex(x=>x.id==='EmbassyCode')<fields.findIndex(x=>x.id==='MobileInfo_Mobile'));
+ assert.equal(f.adapter.smsDispatches,0);
+});
+test('actual worker blocks absent phone section without phone fill, upload or send',async()=>{
+ const f=await fixture({phoneDelay:1000});await f.dispatcher.launch(f.job);assert.equal((await f.settle()).blocker.code,'APPLICATION_SMS_SECTION_UNAVAILABLE');
+ assert.equal(f.adapter.calls.some(x=>x.action==='upload-documents'||x.action==='request-application-sms'||x.action==='fill-draft'&&x.data.fields.some(field=>field.id==='MobileInfo_Mobile')),false);
+});
+test('actual worker never falls back to another mission sharing old numeric value',async()=>{
+ const f=await fixture({missionLabel:'Dubai'});await f.dispatcher.launch(f.job);const state=await f.settle();assert.equal(state.blocker.code,'PORTAL_OPTION_UNCONFIRMED');
+ assert.equal(f.adapter.calls.some(x=>x.action==='fill-draft'&&x.data.fields.some(field=>field.id==='EmbassyCode')),false);
+ assert.equal(f.adapter.smsDispatches,0);
+});
+
+
+test('worker selects Saudi prefix and never falls back to UAE or a misleading country label',async()=>{
+ for(const phonePrefixLabel of ['United Arab Emirates (00971)','Saudi Arabia (00971)','United Arab Emirates (00966)']){
+  const f=await fixture({phonePrefixLabel});await f.dispatcher.launch(f.job);const state=await f.settle();
+  assert.equal(state.blocker.code,'PHONE_PREFIX_UNCONFIRMED');
+  assert.equal(f.adapter.calls.some(x=>x.action==='fill-draft'&&x.data.fields.some(field=>/^MobileInfo_/.test(field.id))),false);
+  assert.equal(f.adapter.smsDispatches,0);
+ }
 });

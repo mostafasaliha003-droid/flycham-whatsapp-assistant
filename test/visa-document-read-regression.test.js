@@ -15,7 +15,9 @@ const P=require('../src/saudi-visa-policy');
 
 const CUSTOMER='15550004701',NOW=Date.parse('2026-10-29T10:00:00Z'),DAY='2026-10-29';
 const IDS={main:'47000000-0000-4000-8000-000000000001',supplement:'47000000-0000-4000-8000-000000000002',front:'47000000-0000-4000-8000-000000000003',back:'47000000-0000-4000-8000-000000000004',portrait:'47000000-0000-4000-8000-000000000005',duplicateMain:'47000000-0000-4000-8000-000000000006',duplicateBack:'47000000-0000-4000-8000-000000000007'};
-const FACTS={latinFirstName:'EXAMPLE',latinFatherName:'PARENT',latinFamilyName:'TESTER',passportNumber:'N01234567',nationalityCode:'SYR',issuingCountryCode:'SYR',birthDate:'1992-06-17',birthPlace:'SYNTHETIC CITY',sex:'M'};
+// This complete visual-zone fixture separately declares the labelled number;
+// the general field is retained for the existing private-linking checks.
+const FACTS={latinFirstName:'EXAMPLE',latinFatherName:'PARENT',latinFamilyName:'TESTER',passportNumber:'N01234567',visiblePassportNumber:'N01234567',nationalityCode:'SYR',issuingCountryCode:'SYR',birthDate:'1992-06-17',birthPlace:'SYNTHETIC CITY',sex:'M'};
 const NATIONAL_NUMBER='00123456789',EID='784199212345671',PASSPORT_EXPIRY='2031-09-11',RESIDENCE_EXPIRY='2029-07-04';
 const sha=value=>crypto.createHash('sha256').update(value).digest('hex');
 const field=(value,confidence=0.999)=>({value,confidence,visible:true});

@@ -1,6 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const m={exports:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../src/visa-whatsapp'),'utf8'),{module:m,exports:m.exports,process,AbortSignal,Buffer,URL,require:n=>n==='sharp'?(()=>{throw Error('unused');}):n==='./graph-api'?{safeGraphFailure:()=> 'FAKE_ERROR'}:n==='./visa-client-questions'?require('../src/visa-client-questions'):require(n)});
+const {createRequire}=require('node:module'),sourcePath=require.resolve('../src/visa-whatsapp'),sourceRequire=createRequire(sourcePath);
+const m={exports:{}};vm.runInNewContext(fs.readFileSync(sourcePath,'utf8'),{module:m,exports:m.exports,process,AbortSignal,Buffer,URL,require:n=>n==='sharp'?(()=>{throw Error('unused');}):n==='./graph-api'?{safeGraphFailure:()=> 'FAKE_ERROR'}:sourceRequire(n)});
 const {questionFor}=require('../src/visa-client-questions');
 test('real WhatsApp adapter renders button, list and text through a fake transport only',async()=>{
  let calls=0;const token='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',customer='15550001001';

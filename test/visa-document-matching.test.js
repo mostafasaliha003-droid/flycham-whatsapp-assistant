@@ -18,7 +18,10 @@ function document(id, kind, fields, options={}) {
   return {mediaId:id,page:1,sha256:'a'.repeat(64),extraction:{version:1,kind,readable:true,rotation:0,fields:Object.fromEntries(Object.entries(fields).map(([key,value]) => [key, field(value)])),mrzLines:[],...options}};
 }
 function passport(values={}, id=IDS.passport) {
-  const fields={latinFirstName:'SYNTHETIC PERSON',latinFamilyName:'EXAMPLE',passportNumber:'N12345678',passportType:'ordinary',nationalityCode:'EGY',issuingCountryCode:'UTO',birthDate:'1990-01-15',birthPlace:'Example City',sex:'F',issueDate:'2020-01-01',expiryDate:'2031-01-01',...values};
+  // This positive semantic fixture declares a separately labelled VIZ number.
+  // Keep the old general observation too, so contradiction tests still prove
+  // that adding typed evidence cannot erase an incompatible legacy value.
+  const fields={latinFirstName:'SYNTHETIC PERSON',latinFamilyName:'EXAMPLE',passportNumber:'N12345678',visiblePassportNumber:values.passportNumber||'N12345678',passportType:'ordinary',nationalityCode:'EGY',issuingCountryCode:'UTO',birthDate:'1990-01-15',birthPlace:'Example City',sex:'F',issueDate:'2020-01-01',expiryDate:'2031-01-01',...values};
   return document(id,'passport',fields,{mrzLines:mrz(fields)});
 }
 function front(values={}, id=IDS.front) { return document(id,'uae_id_front',{latinFullName:'SYNTHETIC PERSON EXAMPLE',birthDate:'1990-01-15',nationalityCode:'EGY',sex:'F',emiratesId:'784-1900-1234567-3',residenceExpiry:'2027-04-30',...values}); }
@@ -302,7 +305,9 @@ test('byte-identical reuploads deduplicate passport and identity pages while dis
   const p=passport(),p2=passport({},IDS.passport2),f=front(),f2=front({},IDS.front2);
   const result=run([p2,f2,p,f]); assert.equal(result.complete,true); assert.equal(result.applicants[0].documents.passportParts,undefined);
   assert.equal(result.applicants[0].documents.residence.length,1); assert.equal(result.applicants[0].documents.residence[0].mediaId,IDS.front);
-  assert.equal(result.applicants[0].evidence.fieldSources.passportNumber.length,1);
+  const numberSources=result.applicants[0].evidence.fieldSources.passportNumber;
+  assert.equal(numberSources.filter(source=>source.method==='td3_document_number_checked').length,1);
+  assert.deepEqual(new Set(numberSources.filter(source=>source.method==='visible_document_number_corroboration').map(source=>source.mediaId)),new Set([IDS.passport,IDS.passport2]));
   p2.sha256='b'.repeat(64); const distinct=run([p,p2,f]); assert.equal(distinct.complete,true); assert.equal(distinct.applicants[0].documents.passportParts,undefined);assert.equal(distinct.applicants[0].evidence.passportLogicalDuplicates.length,1);
 });
 
@@ -497,12 +502,42 @@ test('typed VIZ number and checked TD3 number have separate provenance without f
  assert.equal(person.evidence.passportNumberObservations[0].evidenceField,'visiblePassportNumber');assert.equal(person.evidence.passportNumberObservations[0].value,number);assert.equal(person.evidence.passportNumberObservations[0].confidence,0.99);
 });
 
-test('checked TD3 positions supply the number when no VIZ number is independently readable, without creating other missing facts',()=>{
- const p=passport();delete p.extraction.fields.passportNumber;
- const result=run([p,front()]);assert.equal(result.complete,true);assert.equal(result.applicants[0].fields.passportNumber,'N12345678');assert.deepEqual(result.applicants[0].evidence.passportNumberObservations,[]);assert.equal(Object.hasOwn(result.applicants[0].evidence.fieldSources.passportNumber[0],'confidence'),false);
+test('checked TD3-only numbers remain review evidence when no independently labelled VIZ is readable, without creating other missing facts',()=>{
+ const p=passport();delete p.extraction.fields.passportNumber;delete p.extraction.fields.visiblePassportNumber;
+ const result=run([p,front()]);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.equal(result.applicants[0].status,'needs_review');assert.ok(codes(result).includes('PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED'));assert.equal(result.applicants[0].fields.passportNumber,'N12345678');assert.deepEqual(result.applicants[0].evidence.passportNumberObservations,[]);assert.equal(Object.hasOwn(result.applicants[0].evidence.fieldSources.passportNumber[0],'confidence'),false);
  for(const missing of ['birthDate','expiryDate','latinFirstName']){
   const copy=structuredClone(p);delete copy.extraction.fields[missing];const person=run([copy,front()]).applicants[0];assert.equal(person.identityReady,false,missing);assert.equal(person.fields[missing],undefined,missing);
  }
+});
+
+test('legacy observations and known case numbers never stand in for a separately typed visual-zone number',()=>{
+ for(const person of [{},{passportNumber:'N12345678'}]){
+  const p=passport();delete p.extraction.fields.visiblePassportNumber;
+  const result=run([p,front()],[person]).applicants[0];assert.equal(result.identityReady,false);assert.equal(result.status,'needs_review');assert.equal(result.fields.passportNumber,'N12345678');
+  assert(result.issues.some(item=>item.code==='PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED'));assert(result.evidence.passportNumberObservations.every(source=>source.evidenceField==='passportNumber'));
+  assert.equal(result.evidence.fieldSources.passportNumber.some(source=>source.method==='visible_document_number_corroboration'),false);
+ }
+});
+
+test('a visible-zone wrapper must independently pass visibility and confidence rather than inheriting checked MRZ certainty',()=>{
+ for(const patch of [{confidence:0.979},{visible:false,value:null},{value:'N123456785'}]){
+  const p=passport();delete p.extraction.fields.passportNumber;Object.assign(p.extraction.fields.visiblePassportNumber,patch);
+  const person=run([p,front()]).applicants[0];assert.equal(person.identityReady,false);assert.equal(person.status,'needs_review');
+  assert(person.issues.some(item=>item.code==='PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED'));assert.equal(person.evidence.fieldSources.passportNumber.some(source=>source.method==='visible_document_number_corroboration'),false);
+ }
+ const person=run().applicants[0],sources=person.evidence.fieldSources.passportNumber;
+ assert(sources.some(source=>source.method==='td3_document_number_checked'&&source.evidenceField==='mrzLines'&&!Object.hasOwn(source,'confidence')));
+ assert(sources.some(source=>source.method==='visible_document_number_corroboration'&&source.evidenceField==='visiblePassportNumber'&&source.confidence>=0.98));
+ assert.equal(person.fields.visiblePassportNumber,undefined);
+});
+
+test('the observed 6-to-G checksum collision remains provisional without VIZ and cannot defeat a contradictory printed number',()=>{
+ const {parseTD3MRZ}=require('../src/raad-document-validation'),p=passport(),line=p.extraction.mrzLines[1];
+ assert.equal(line[6],'6');p.extraction.mrzLines[1]=line.slice(0,6)+'G'+line.slice(7);
+ const checked=parseTD3MRZ(p.extraction.mrzLines,{referenceDate:DAY,confirmedBirthDate:'1990-01-15',confirmedExpiryDate:'2031-01-01'});assert.equal(checked.ok,true);assert(Object.values(checked.checks).every(check=>check.ok));
+ const contradicted=run([p,front()]).applicants[0];assert.equal(contradicted.identityReady,false);assert(contradicted.issues.some(item=>item.code==='PASSPORT_VIZ_MRZ_MISMATCH'&&item.field==='passportNumber'));
+ delete p.extraction.fields.passportNumber;delete p.extraction.fields.visiblePassportNumber;
+ const absent=run([p,front()]).applicants[0];assert.equal(absent.fields.passportNumber,'N12345G78');assert.equal(absent.identityReady,false);assert(absent.issues.some(item=>item.code==='PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED'));
 });
 
 test('neither typed ten-digit VIZ nor cached ten-digit legacy values are truncated or erased by a checked nine-position MRZ',()=>{
@@ -520,7 +555,7 @@ test('new typed evidence never suppresses an existing contradictory legacy obser
 
 test('every check digit must pass before an MRZ-only number is projected, while unverified typed VIZ stays provisional',()=>{
  for(const offset of [9,19,27,42,43]){
-  const p=passport();delete p.extraction.fields.passportNumber;const line=p.extraction.mrzLines[1];p.extraction.mrzLines[1]=line.slice(0,offset)+(Number(line[offset])+1)%10+line.slice(offset+1);
+  const p=passport();delete p.extraction.fields.passportNumber;delete p.extraction.fields.visiblePassportNumber;const line=p.extraction.mrzLines[1];p.extraction.mrzLines[1]=line.slice(0,offset)+(Number(line[offset])+1)%10+line.slice(offset+1);
   const result=run([p,front()]);assert.equal(result.complete,false);assert.equal(result.applicants[0].fields.passportNumber,undefined);
  }
  const p=passport();p.extraction.fields.visiblePassportNumber=p.extraction.fields.passportNumber;delete p.extraction.fields.passportNumber;p.extraction.mrzLines=[];

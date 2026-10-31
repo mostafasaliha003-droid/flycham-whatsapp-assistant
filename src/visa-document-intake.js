@@ -9,14 +9,17 @@ const {reconcileDocumentEvidence}=require('./visa-document-matching');
 const {parseTD3MRZ}=require('./raad-document-validation');
 const {parseTD1MRZ}=require('./visa-id-mrz');
 const {MRZ_POLICY_FINGERPRINT,MRZ_VISION_ERROR_CODES,MAX_MRZ_IMAGE_BYTES,MAX_MRZ_IMAGE_PIXELS}=require('./visa-mrz-vision');
-const {MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
+const {MRZ_OPTICAL_ERROR_CODES,MAX_INPUT_PIXELS:MAX_OPTICAL_IMAGE_PIXELS}=require('./visa-mrz-optical');
 const {validateDocumentExtraction,POLICY_FINGERPRINT,COMPATIBLE_PREVIOUS_POLICIES,COMPATIBLE_COMPLETED_FAILURE_POLICIES=[],DOCUMENT_VISION_ERROR_CODES,DOCUMENT_FIELD_NAMES,SCHEMA_SECTIONS,SCHEMA_ISSUES,RETRYABLE_CODES}=require('./visa-document-vision');
 const sharedLock=require('./raad-preparation-lock');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;const MAX_SOURCES=20,MAX_ATTEMPTS=2,MAX_TOTAL_PAGES=100;
 // Changing matching/preparation reuses the existing OCR page checkpoints.
 // It must not silently send all existing originals to the provider again.
-const PREPARATION_POLICY='raad-document-preparation-2026-10-29.v10';
+const PREPARATION_POLICY='raad-document-preparation-2026-10-31.v12';
+// The local reader owns its TD3/TD1 crop. Sending the legacy bottom-45% crop
+// would crop it again and could remove a valid first machine-readable line.
+const LOCAL_OPTICAL_INPUT_POLICY='oriented-full-page-to-local-format-crop-v1';
 const clone=value=>structuredClone(value);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value===undefined?null:value;}
@@ -191,12 +194,33 @@ class VisaDocumentIntake{
   const parts=await this.rasterize(file.bytes,{kind:'passport',page});guard();if(!Array.isArray(parts)||parts.length!==1||!Buffer.isBuffer(parts[0].bytes)||!['image/png','image/jpeg'].includes(parts[0].mimeType))throw finite('DOCUMENT_PDF_INVALID');return parts[0];
  }
  pageCount(customer,caseId){return Object.values(this.data().jobs).filter(job=>job.customer===customer&&job.caseId===caseId&&job.policy===this.policyFingerprint&&job.status!=='stale').reduce((sum,job)=>sum+Object.keys(job.pages||{}).length,0);}
- async focusedMrzCrop(image,extraction,guard){
-  let corrected,cropped;try{corrected=await sharp(image.bytes,{failOn:'warning',limitInputPixels:20000000,sequentialRead:true}).autoOrient().rotate(extraction.rotation).png().toBuffer();guard();const meta=await sharp(corrected).metadata();guard();const top=Math.floor(meta.height*0.55),height=meta.height-top,width=meta.width,scale=Math.min(1,4096/width,4096/height,Math.sqrt(MAX_MRZ_IMAGE_PIXELS/(width*height)));let pipeline=sharp(corrected,{limitInputPixels:20000000}).extract({left:0,top,width,height});if(scale<1)pipeline=pipeline.resize({width:Math.max(1,Math.floor(width*scale)),height:Math.max(1,Math.floor(height*scale)),fit:'inside',withoutEnlargement:true});cropped=await pipeline.png().toBuffer();guard();if(cropped.length>MAX_MRZ_IMAGE_BYTES){const small=await sharp(cropped).jpeg({quality:90,chromaSubsampling:'4:4:4'}).toBuffer();cropped.fill(0);cropped=small;guard();if(cropped.length>MAX_MRZ_IMAGE_BYTES)throw finite('MRZ_VISION_INVALID_IMAGE');return {bytes:cropped,mimeType:'image/jpeg'};}return {bytes:cropped,mimeType:'image/png'};}catch(error){cropped?.fill(0);throw error;}finally{corrected?.fill(0);}
+ async focusedMrzCrop(image,extraction,guard,{localOptical=false}={}){
+  let corrected,cropped;
+  try{
+   if(typeof localOptical!=='boolean')throw finite('MRZ_VISION_INVALID_IMAGE');
+   corrected=await sharp(image.bytes,{failOn:'warning',limitInputPixels:20000000,sequentialRead:true}).autoOrient().rotate(extraction.rotation).png().toBuffer();guard();
+   const meta=await sharp(corrected).metadata();guard();
+   // A local optical engine receives the complete upright page and applies
+   // exactly one format-specific crop. Legacy remote readers retain their
+   // previous crop. Neither branch guesses a bounding box or repairs text.
+   const top=localOptical?0:Math.floor(meta.height*0.55),height=meta.height-top,width=meta.width;
+   const pixelLimit=localOptical?Math.min(MAX_MRZ_IMAGE_PIXELS,MAX_OPTICAL_IMAGE_PIXELS):MAX_MRZ_IMAGE_PIXELS;
+   const scale=Math.min(1,4096/width,4096/height,Math.sqrt(pixelLimit/(width*height)));
+   let pipeline=sharp(corrected,{limitInputPixels:20000000}).extract({left:0,top,width,height});
+   if(scale<1)pipeline=pipeline.resize({width:Math.max(1,Math.floor(width*scale)),height:Math.max(1,Math.floor(height*scale)),fit:'inside',withoutEnlargement:true});
+   cropped=await pipeline.png().toBuffer();guard();
+   if(cropped.length>MAX_MRZ_IMAGE_BYTES){
+    const small=await sharp(cropped).jpeg({quality:90,chromaSubsampling:'4:4:4'}).toBuffer();cropped.fill(0);cropped=small;guard();
+    if(cropped.length>MAX_MRZ_IMAGE_BYTES)throw finite('MRZ_VISION_INVALID_IMAGE');
+    return {bytes:cropped,mimeType:'image/jpeg'};
+   }
+   return {bytes:cropped,mimeType:'image/png'};
+  }catch(error){cropped?.fill(0);throw error;}finally{corrected?.fill(0);}
  }
  async focusMrzPage(snap,page,image){
   const guard=()=>this.guard(snap);guard();let job=this.data().jobs[snap.id],checkpoint=job.pages[page];const format=checkpoint?.extraction?.kind==='passport'?'TD3':checkpoint?.extraction?.kind==='uae_id_back'?'TD1':null;if(!this.mrzVision?.extract||!format)return false;
-  const scope={sourceSha256:snap.sourceSha256,page,format,policy:this.policyFingerprint,mrzPolicy:SHA.test(this.mrzVision.policyFingerprint||'')?this.mrzVision.policyFingerprint:MRZ_POLICY_FINGERPRINT,rereadKey:job.mrzFocusOnly?null:job.manualRereadKey||null},key=digest(scope),state=this.data().cases[snap.customer],record=state.mrzFocusReads?.[key],primaryValid=checkedMrz(checkpoint.extraction.mrzLines,this.now(),format);
+  const localOptical=this.mrzVision.status?.()?.local===true;
+  const scope={sourceSha256:snap.sourceSha256,page,format,policy:this.policyFingerprint,mrzPolicy:SHA.test(this.mrzVision.policyFingerprint||'')?this.mrzVision.policyFingerprint:MRZ_POLICY_FINGERPRINT,rereadKey:job.mrzFocusOnly?null:job.manualRereadKey||null,...(localOptical?{inputPolicy:LOCAL_OPTICAL_INPUT_POLICY}:{})},key=digest(scope),state=this.data().cases[snap.customer],record=state.mrzFocusReads?.[key],primaryValid=checkedMrz(checkpoint.extraction.mrzLines,this.now(),format);
   const priorChecked=Object.values(state.mrzFocusReads||{}).filter(item=>item.sourceSha256===scope.sourceSha256&&item.page===page&&item.format===format&&item.policy===scope.policy&&item.mrzPolicy===scope.mrzPolicy&&item.status==='ready'&&checkedMrz(item.mrzLines,this.now(),format));
   const finish=(result,issue)=>this.commit(()=>{guard();const current=this.data().jobs[snap.id],saved=current.pages[page];if(result&&!checkedMrz(saved.extraction.mrzLines,this.now(),format))saved.extraction=validateDocumentExtraction({...saved.extraction,mrzLines:result.mrzLines});delete saved.mrzFocusPending;saved.mrzFocusStatus=issue?'needs_review':result?'checked':'original_checked';current.mrzIssues||={};if(issue){current.mrzIssues[page]=clone(issue);saved.mrzIssue=clone(issue);}else{delete current.mrzIssues[page];delete saved.mrzIssue;}});
   if(primaryValid){const conflict=priorChecked.some(item=>JSON.stringify(item.mrzLines)!==JSON.stringify(checkpoint.extraction.mrzLines));finish(null,conflict?mrzReason('SOURCE_CONFLICT'):null);return false;}
@@ -206,7 +230,7 @@ class VisaDocumentIntake{
   }
   const defer=()=>{this.commit(()=>{guard();const current=this.data().jobs[snap.id];current.status='retry';current.nextAttemptAt=this.now()+Math.max(2000,Math.min(300000,Number(this.mrzVision.status?.()?.retryAfterMs||this.vision.status?.()?.retryAfterMs)||2000));});return true;};
   const readerReady=()=>{if(this.mrzVision.status?.()?.configured===false)throw finite('MRZ_OPTICAL_MODEL_UNAVAILABLE');return (this.mrzVision.ready?.()??this.vision.ready?.())===true;};
-  let crop;try{if(format==='TD1'&&!this.localTd1Capable())throw finite('MRZ_OPTICAL_ENGINE_UNAVAILABLE');if(!readerReady())return defer();crop=await this.focusedMrzCrop(image,checkpoint.extraction,guard);guard();if(!readerReady())return defer();
+  let crop;try{if(format==='TD1'&&!this.localTd1Capable())throw finite('MRZ_OPTICAL_ENGINE_UNAVAILABLE');if(!readerReady())return defer();crop=await this.focusedMrzCrop(image,checkpoint.extraction,guard,{localOptical});guard();if(!readerReady())return defer();
    this.commit(()=>{guard();const current=this.data().cases[snap.customer];current.mrzFocusReads||={};current.mrzFocusReads[key]={...scope,status:'running',cropSha256:hash(crop.bytes),startedAt:this.now()};});
    const output=await this.mrzVision.extract({bytes:crop.bytes,mimeType:crop.mimeType,guard,format});guard();
    if(!output||output.version!==1||!Array.isArray(output.mrzLines)||Object.keys(output).some(name=>!['version','mrzLines','checks'].includes(name)))throw finite('MRZ_VISION_INVALID_OUTPUT');

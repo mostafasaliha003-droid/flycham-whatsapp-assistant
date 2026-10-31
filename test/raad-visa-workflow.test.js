@@ -228,7 +228,9 @@ test('incomplete drafts save without invented negatives or configured contact va
   assert.equal(saved.fields.priorGccDeportation, undefined);
   assert.equal(saved.fields.priorGccRuleViolation, undefined);
   assert.equal(saved.fields.health, undefined);
-  for (const field of ['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'birthDate', 'entryDate', 'transport', 'health.congenitalCondition', 'previousNationality', 'priorGccDeportation', 'priorGccRuleViolation', 'documents.passport', 'evidence.payment', 'evidence.documents']) assert.ok(saved.missing.includes(field), field);
+  assert.equal(saved.fields.applicationPhone, undefined);
+  assert.equal(saved.missing.includes('applicationPhone'), false);
+  for (const field of ['contactEmail', 'insurancePhone', 'postalCode', 'birthDate', 'entryDate', 'transport', 'health.congenitalCondition', 'previousNationality', 'priorGccDeportation', 'priorGccRuleViolation', 'documents.passport', 'evidence.payment', 'evidence.documents']) assert.ok(saved.missing.includes(field), field);
   assert.equal(review(f, saved).state, 'needs_information');
 });
 

@@ -303,7 +303,8 @@ async function handleWebhookPost(request, response) {
     response.writeHead(503).end('Webhook signing secret is not configured');
     return;
   }
-  if (appSecret && !verifySignature(rawBody, request.headers['x-hub-signature-256'], appSecret)) {
+  const verifiedWebhook = Boolean(appSecret) && verifySignature(rawBody, request.headers['x-hub-signature-256'], appSecret);
+  if (appSecret && !verifiedWebhook) {
     response.writeHead(401).end('Invalid signature');
     return;
   }
@@ -311,6 +312,7 @@ async function handleWebhookPost(request, response) {
   let payload;
   try { payload = JSON.parse(rawBody.toString('utf8')); }
   catch { response.writeHead(400).end('Invalid JSON'); return; }
+  finally { rawBody.fill(0); }
 
   response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ received: true }));
   recordDeliveryStatuses(payload,assistant.store);
@@ -319,15 +321,20 @@ async function handleWebhookPost(request, response) {
     if(!quoteJobs.acceptMessage(message.id))continue;
     quoteJobs.save();noteIncoming(assistant.store,message.from);
     if(message.visaOwnerAction){
-      journal.recordInbound(message.from,{id:message.id,text:'[متابعة إجراء التأشيرة]',timestamp:message.timestamp,name:message.name});
+      if(!verifiedWebhook){message.text='';continue;}
+      journal.recordInbound(message.from,{id:message.id,text:'[متابعة إجراء التأشيرة]',timestamp:message.timestamp});
       const result=visaFulfilment.openOwnerAction({sender:message.from,challengeId:message.visaOwnerAction.challengeId,contextId:message.contextId});
       if(!result.ok&&message.from===visaFulfilment.otpOwner())await rawSendTextMessage(message.from,'تعذر فتح إجراء التحقق الحالي. قد تكون انتهت صلاحيته؛ انتظر إشعار المتابعة الجديد من رعد.').catch(()=>{});
       wakeVisa();continue;
     }
     if(visaFulfilment.isOtpMessage({sender:message.from,contextId:message.contextId,text:message.text})){
-      journal.recordInbound(message.from,{id:message.id,text:'[رمز تحقق محجوب]',timestamp:message.timestamp,name:message.name});
-      const result=await visaFulfilment.consumeOtp({sender:message.from,contextId:message.contextId,text:message.text});message.text='';
-      if(result.handled){await rawSendTextMessage(message.from,result.ok?'وصل الرمز إلى رعد وجارٍ استكمال التحقق من الطلب.':'تعذر ربط الرمز بطلب تحقق نشط. انتظر رسالة طلب الرمز الحالية ورد عليها مباشرة.').catch(()=>{});wakeVisa();continue;}
+      let result={handled:true,ok:false};const input={sender:message.from,messageId:message.id,contextId:message.contextId,text:message.text};
+      try{
+        if(verifiedWebhook){journal.recordInbound(message.from,{id:message.id,text:'[رمز تحقق محجوب]',timestamp:message.timestamp});result=await visaFulfilment.consumeOtp(input);}
+      }catch{/* Never include callback diagnostics, OTP text or sender names in logs. */}
+      finally{input.text='';message.text='';}
+      if(verifiedWebhook&&message.from===visaFulfilment.otpOwner())await rawSendTextMessage(message.from,result.ok?'وصل الرمز إلى رعد وجارٍ استكمال التحقق من الطلب.':'تعذر ربط الرمز بطلب تحقق نشط. انتظر رسالة طلب الرمز الحالية ورد عليها مباشرة.').catch(()=>{});
+      wakeVisa();continue;
     }
     if(message.text)message.text=journalSafeText(message.text);
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
@@ -513,5 +520,3 @@ if (require.main === module) {
 }
 
 module.exports = { createServer, handleWebhookPost };
-
-

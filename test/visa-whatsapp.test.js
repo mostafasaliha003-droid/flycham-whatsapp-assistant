@@ -7,7 +7,7 @@ const {VisaFulfilment} = require('../src/visa-fulfilment');
 const {visaCaseSignature} = require('../src/visa-case-signature');
 const {ConversationJournal} = require('../src/conversation-journal');
 
-const CUSTOMER = '971500000001', OWNER = '971500000005', OTHER = '971500000009';
+const CUSTOMER = '971500000001', OWNER = '971507993145', OTHER = '971500000009';
 const TOKEN = '12345678-1234-4321-abcd-123456789abc', JOB = '12345678-1234-4321-abcd-123456789abd', MEDIA = '12345678-1234-4321-abcd-123456789abe';
 const env = {DRY_RUN: 'false', WHATSAPP_ACCESS_TOKEN: 'synthetic-private-token', WHATSAPP_PHONE_NUMBER_ID: '100000000001', WHATSAPP_GRAPH_API_VERSION: 'v23.0', RAAD_OTP_OWNER_WHATSAPP: '+' + OWNER};
 const metadata = {customer: CUSTOMER};
@@ -146,6 +146,11 @@ test('OTP notification can only target the explicit normalized owner and uses jo
   assert.equal(JSON.parse(f.calls[0].request.body).to, OWNER);
   await assert.rejects(f.adapter.send(CUSTOMER, {type: 'text', text: 'رمز التحقق مطلوب.'}, ok, {kind: 'owner_otp_request', jobId: JOB, challengeId: TOKEN}), /VISA_WHATSAPP_RECIPIENT_MISMATCH/);
   await assert.rejects(f.adapter.sendOperatorOtp({text: 'رمز التحقق مطلوب.', challengeId: TOKEN}, ok), /VISA_WHATSAPP_PAYLOAD_INVALID/);
+});
+test('supervisor notifications reject other or conflicting configured numbers before any send',async()=>{
+ for(const config of [{RAAD_OTP_OWNER_WHATSAPP:OTHER},{RAAD_OTP_OWNER_RECIPIENT:OTHER},{RAAD_OTP_OWNER_WHATSAPP:''}]){
+  const f=fixture({env:config});await assert.rejects(f.adapter.sendOperatorOtp({jobId:JOB,challengeId:TOKEN,text:'رمز التحقق مطلوب.'},ok));assert.equal(f.calls.length,0);assert.equal(await f.adapter.ownerNotificationReady(),false);
+ }
 });
 
 test('out-of-window owner receives only the approved operational action notice while the actual prompt stays paused', async () => {

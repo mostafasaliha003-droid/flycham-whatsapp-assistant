@@ -13,7 +13,7 @@ async function readCaptcha({env=process.env,image,imageId,signal,fetchImpl=fetch
  if(!Buffer.isBuffer(image)||image.length<24||image.length>200000||!image.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||!/^[a-f0-9]{64}$/.test(imageId||'')||createHash('sha256').update(image).digest('hex')!==imageId)throw Error('CAPTCHA_IMAGE_INVALID');
  if(signal?.aborted)throw Error('CAPTCHA_CANCELLED');
  let response;
- try{response=await fetchImpl(new URL(ROOT,env.RAAD_MOFA_OTP_BRIDGE_URL),{method:'POST',headers:{Authorization:'Bearer '+env.RAAD_MOFA_OTP_BRIDGE_KEY,'Content-Type':'application/json'},body:JSON.stringify({image:image.toString('base64'),imageId}),signal:AbortSignal.any([AbortSignal.timeout(25000),...(signal?[signal]:[])]),redirect:'error'});}catch{throw Error(signal?.aborted?'CAPTCHA_CANCELLED':'CAPTCHA_BRIDGE_UNAVAILABLE');}
+ try{response=await fetchImpl(new URL(ROOT,env.RAAD_MOFA_OTP_BRIDGE_URL),{method:'POST',headers:{Authorization:'Bearer '+env.RAAD_MOFA_OTP_BRIDGE_KEY,'Content-Type':'application/json'},body:JSON.stringify({image:image.toString('base64'),imageId}),signal:AbortSignal.any([AbortSignal.timeout(40000),...(signal?[signal]:[])]),redirect:'error'});}catch{throw Error(signal?.aborted?'CAPTCHA_CANCELLED':'CAPTCHA_BRIDGE_UNAVAILABLE');}
  if(signal?.aborted)throw Error('CAPTCHA_CANCELLED');
  if(!response.ok)throw Error('CAPTCHA_BRIDGE_UNAVAILABLE');
  let data;try{data=await response.json();}catch{throw Error('CAPTCHA_BRIDGE_UNAVAILABLE');}

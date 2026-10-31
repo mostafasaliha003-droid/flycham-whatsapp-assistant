@@ -1,0 +1,16 @@
+{
+  "profile": "office-saudi-2026-10-30",
+  "origin": "https://visa.mofa.gov.sa",
+  "path": "/SmartForm/TraditionalApp",
+  "observedAt": "2026-10-30T13:35:31.155Z",
+  "fieldLabel": "رقم الجوال",
+  "actionLabel": "إرسال رمز التحقق",
+  "ownership": "not_specified_in_observed_ui",
+  "nearbyInstructionText": "",
+  "userApprovalMessageId": "Sentinel_3495332085ac819188281444be1f31be",
+  "smsNumber": "966591182035",
+  "whatsappNumber": "971507993145",
+  "basis": "user_authorization_and_observed_generic_field",
+  "officialRepresentativeStatus": "not_established",
+  "limits": "UI observation and explicit user instruction, not government recognition of representative authority. SMS verified in a separate manual test; production automation is not verified."
+}

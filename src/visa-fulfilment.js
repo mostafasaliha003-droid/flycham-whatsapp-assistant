@@ -1,6 +1,8 @@
 'use strict';
 
-const {createHash, randomUUID} = require('node:crypto');
+const {createHash, createHmac, randomBytes, randomUUID} = require('node:crypto');
+const {SUPERVISOR_WHATSAPP_NUMBER, supervisorWhatsAppRecipient} = require('./visa-supervisor-route');
+const {SMS_CHALLENGE_TTL_MS, validateSmsChallenge} = require('./visa-sms-challenge');
 const {visaCaseSignature, currentVisaEvidence} = require('./visa-case-signature');
 const {QUESTION_CATALOG, questionFor, validateAnswer, requiredQuestions} = require('./visa-client-questions');
 
@@ -9,7 +11,7 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const phone = value => typeof value === 'string' && /^\+?\d{8,16}$/.test(value) ? value.replace(/^\+/, '') : null;
 const terminal = new Set(['saved_application', 'stale', 'cancelled', 'portal_review_required']);
-const OTP_TTL = 5 * 60000;
+const OTP_TTL = SMS_CHALLENGE_TTL_MS;
 const DOCUMENT_FACT_FIELDS = Object.freeze(['nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode', 'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry']);
 const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
 const CLIENT_DOCUMENT_FIELDS = new Set(['passportType', 'issueDate', 'birthPlace']);
@@ -42,9 +44,13 @@ class VisaFulfilment {
     Object.assign(this, {store, inbox, mediaStore, artifactStore: artifactStore || mediaStore, raad, send, resumeOtp, canAutomate, now, env});
     this.resumeOtp ||= typeof portal?.resumeOtp === 'function' ? portal.resumeOtp.bind(portal) : null;
     this.messageLocks = new Map();
+    this.uncertainMessageIds = new Set(); // Never replay an uncertain dispatch after a store rollback.
     this.recipientLocks = new Map();
     this.otpLocks = new Set();
     this.usedOtpDigests = new Map(); // Process memory only; never serialize an OTP or its digest.
+    this.otpDigestKey = randomBytes(32); // Ephemeral HMAC key, never configured or persisted.
+    this.usedOtpChallenges = new Set(); // Survives a store rollback in this process.
+    this.usedOtpMessageIds = new Map();
     store.data.visaFulfilment ||= {version: 1, cases: {}, jobs: {}, outbox: {}, challenges: {}, lease: null, audit: []};
     const state = this.data();
     if (state.version !== 1) fail('VISA_STATE_VERSION_UNSUPPORTED', 500);
@@ -323,22 +329,44 @@ class VisaFulfilment {
   dispatchMessage(id) {
     if (this.messageLocks.has(id)) return this.messageLocks.get(id);
     const item = this.data().outbox[id]; if (!item) return Promise.reject(Object.assign(Error('VISA_MESSAGE_NOT_FOUND'), {code: 'VISA_MESSAGE_NOT_FOUND'}));
-    const prior = this.recipientLocks.get(item.recipient) || Promise.resolve();
+    const recipient = item.recipient, prior = this.recipientLocks.get(recipient) || Promise.resolve();
     const work = prior.catch(() => {}).then(() => this.performDispatch(id));
-    this.messageLocks.set(id, work); this.recipientLocks.set(item.recipient, work);
-    const done = () => { if (this.messageLocks.get(id) === work) this.messageLocks.delete(id); if (this.recipientLocks.get(item.recipient) === work) this.recipientLocks.delete(item.recipient); };
+    this.messageLocks.set(id, work); this.recipientLocks.set(recipient, work);
+    const done = () => { if (this.messageLocks.get(id) === work) this.messageLocks.delete(id); if (this.recipientLocks.get(recipient) === work) this.recipientLocks.delete(recipient); };
     work.then(done, done); return work;
   }
   async performDispatch(id) {
     let item = this.data().outbox[id];
+    if (this.uncertainMessageIds.has(id)) return this.commit(() => { item.state = 'uncertain'; item.failure = 'DELIVERY_OUTCOME_UNCERTAIN'; return item; });
     if (item.state !== 'pending') return clone(item);
     if (!this.messageCurrent(item)) return this.commit(() => { item.state = 'cancelled'; item.failure = 'MESSAGE_SUPERSEDED'; return item; });
     if (typeof this.send !== 'function') fail('VISA_SENDER_REQUIRED', 503);
+    const originalItem = clone(item), ownerPrompt = item.kind === 'owner_otp_request';
+    const select = (value, keys) => value ? Object.fromEntries(keys.map(key => [key, value[key]])) : null;
+    const deliveryBinding = () => {
+      if (!ownerPrompt) return null;
+      const current = this.data().outbox[id], challenge = current && this.data().challenges[current.challengeId], job = current && this.data().jobs[current.jobId];
+      return {
+        message: select(current, ['id','key','kind','customer','recipient','approvalId','caseSignature','caseRevision','jobId','challengeId','noticeMessageId']),
+        payloadHash: current ? hash(current.payload) : null,
+        job: select(job, ['id','caseId','customer','applicantIndex','approvalId','caseSignature','caseRevision','revision']),
+        challenge: select(challenge, ['id','jobId','customer','applicantIndex','approvalId','caseSignature','caseRevision','jobRevision','leaseToken','portalChallengeId','contextId','owner','outboxMessageId','messageId','noticeMessageId','challengeRequestedAt','challengeExpiresAt','accountBinding','expiresAt']),
+        lease: select(this.data().lease, ['jobId','customer','jobRevision','token']),
+        configuredOwner: this.otpOwner()
+      };
+    };
+    const originalBinding = hash(deliveryBinding());
+    const bindingCurrent = () => { try { return hash(deliveryBinding()) === originalBinding; } catch { return false; } };
+    let sendStarted = false;
     this.commit(() => { item.state = 'sending'; item.attempts++; item.updatedAt = this.now(); });
-    const guard = () => { if (!this.messageCurrent(this.data().outbox[id])) throw Object.assign(Error('MESSAGE_SUPERSEDED'), {notDispatched: true}); };
+    const guard = () => { if (!bindingCurrent() || !this.messageCurrent(this.data().outbox[id])) throw Object.assign(Error('MESSAGE_SUPERSEDED'), {notDispatched: true}); };
     try {
       guard();
+      sendStarted = true;
       const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {}), ...(item.noticeMessageId ? {noticeMessageId: item.noticeMessageId} : {})}));
+      // Expiry alone does not erase a real provider acceptance. Identity changes
+      // do prohibit correlating that response with any replacement challenge.
+      if (!bindingCurrent() || ownerPrompt && this.data().outbox[id]?.state !== 'sending') throw Error('OWNER_DELIVERY_BINDING_CHANGED');
       if (item.kind === 'owner_otp_request' && result?.paused === true && result.reason === 'owner_action_required') {
         const noticeMessageId = result.noticeMessageId || item.noticeMessageId;
         if (!providerMessageId(noticeMessageId) || item.noticeMessageId && noticeMessageId !== item.noticeMessageId) throw Error('OWNER_NOTICE_RESPONSE_INVALID');
@@ -354,17 +382,21 @@ class VisaFulfilment {
       }
       if (result?.dryRun === true || result?.paused === true || result?.notDispatched === true) throw Object.assign(Error('MESSAGE_NOT_DISPATCHED'), {notDispatched: true, reason: result?.paused === true ? 'DELIVERY_PAUSED' : 'DELIVERY_NOT_DISPATCHED'});
       const messageId = result?.messages?.[0]?.id || result?.messageId;
-      if (typeof messageId !== 'string' || !messageId || messageId.length > 500 || item.kind === 'owner_otp_request' && messageId === item.noticeMessageId) throw Error('DELIVERY_RESPONSE_INVALID');
+      if (!providerMessageId(messageId) || item.kind === 'owner_otp_request' && messageId === item.noticeMessageId) throw Error('DELIVERY_RESPONSE_INVALID');
       return this.commit(() => {
         item = this.data().outbox[id]; item.state = 'accepted'; item.messageId = messageId; item.updatedAt = this.now();
         if (item.challengeId && this.data().challenges[item.challengeId]?.state === 'pending') this.data().challenges[item.challengeId].messageId = messageId;
         return item;
       });
     } catch (error) {
+      const changedAfterSend = sendStarted && (!bindingCurrent() || ownerPrompt && this.data().outbox[id]?.state !== 'sending');
+      const status = Number(error?.status || error?.statusCode || String(error?.message || '').match(/^WHATSAPP_GRAPH_HTTP_(\d+)_/)?.[1]);
+      const outcome = changedAfterSend ? 'uncertain' : error?.notDispatched === true ? 'cancelled' : status >= 400 && status < 500 && status !== 408 ? 'failed' : 'uncertain';
+      if (outcome === 'uncertain') this.uncertainMessageIds.add(id);
       return this.commit(() => {
-        item = this.data().outbox[id];
-        const status = Number(error?.status || error?.statusCode || String(error?.message || '').match(/^WHATSAPP_GRAPH_HTTP_(\d+)_/)?.[1]);
-        item.state = error?.notDispatched === true ? 'cancelled' : status >= 400 && status < 500 && status !== 408 ? 'failed' : 'uncertain';
+        item = this.data().outbox[id] || (this.data().outbox[id] = clone(originalItem));
+        item.state = outcome;
+        if (changedAfterSend && originalItem.challengeId) { const original = this.data().challenges[originalItem.challengeId]; if (original && ['pending','consuming'].includes(original.state)) original.state = 'uncertain'; }
         const paused = error?.paused === true || ['DELIVERY_PAUSED', 'WINDOW_CLOSED', 'WHATSAPP_WINDOW_CLOSED'].includes(error?.code || error?.message);
         item.failure = item.state === 'cancelled' ? error?.reason || (paused ? 'DELIVERY_PAUSED' : 'MESSAGE_SUPERSEDED') : item.state === 'failed' ? 'PROVIDER_REJECTED' : 'DELIVERY_OUTCOME_UNCERTAIN';
         item.updatedAt = this.now(); return item;
@@ -596,27 +628,29 @@ class VisaFulfilment {
     return result;
   }
 
-  otpOwner() { return phone(this.env.RAAD_OTP_OWNER_WHATSAPP || this.env.RAAD_OTP_OWNER_RECIPIENT); }
-  requestOtp(jobId, {leaseToken, portalChallengeId, contextId, ttlMs = OTP_TTL} = {}) {
+  otpOwner() { return supervisorWhatsAppRecipient(this.env); }
+  requestOtp(jobId, {leaseToken, portalChallengeId, contextId, challengeRequestedAt, challengeExpiresAt, accountBinding} = {}) {
     const {job, lease} = this.guardLease(jobId, leaseToken), owner = this.otpOwner();
     if (!owner) fail('VISA_OTP_OWNER_NOT_CONFIGURED', 503);
     const portalContext = text(portalChallengeId, 200), context = text(contextId, 200);
-    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > OTP_TTL) fail('VISA_OTP_TTL_INVALID', 400);
+    const binding = validateSmsChallenge({challengeId: portalContext, challengeRequestedAt, challengeExpiresAt, accountBinding}, this.now());
+    if (Object.values(this.data().challenges).some(item => item.jobId === jobId && item.portalChallengeId === portalContext)) fail('VISA_OTP_ALREADY_REQUESTED');
     if (Object.values(this.data().challenges).some(item => item.jobId === jobId && item.state === 'pending' && item.expiresAt > this.now())) fail('VISA_OTP_ALREADY_PENDING');
     return this.commit(() => {
-      const challenge = {id: randomUUID(), jobId, customer: job.customer, applicantIndex: job.applicantIndex, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobRevision: job.revision, leaseToken: lease.token, portalChallengeId: portalContext, contextId: context, owner, state: 'pending', attempts: 0, maxAttempts: 3, createdAt: this.now(), expiresAt: this.now() + ttlMs};
+      const challenge = {id: randomUUID(), jobId, customer: job.customer, applicantIndex: job.applicantIndex, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobRevision: job.revision, leaseToken: lease.token, portalChallengeId: portalContext, contextId: context, owner, state: 'pending', attempts: 0, maxAttempts: 1, createdAt: this.now(), challengeRequestedAt: binding.challengeRequestedAt, challengeExpiresAt: binding.challengeExpiresAt, accountBinding: binding.accountBinding, expiresAt: binding.challengeExpiresAt};
       this.data().challenges[challenge.id] = challenge; job.state = 'waiting_otp';
       lease.expiresAt = Math.max(lease.expiresAt, challenge.expiresAt + 30000);
-      const message = this.enqueue({key: 'otp:' + challenge.id, kind: 'owner_otp_request', customer: job.customer, recipient: owner, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, challengeId: challenge.id, payload: {type: 'text', text: `رعد يحتاج رمز التحقق لمتابعة طلب المسافر ${job.applicantIndex + 1}. مرجع المتابعة: ${challenge.id.slice(0, 8)}. رد على هذه الرسالة برمز التحقق فقط قبل انتهاء صلاحية الرمز. لن يتم حفظ الرمز في سجل المحادثة.`}});
+      const message = this.enqueue({key: 'otp:' + challenge.id, kind: 'owner_otp_request', customer: job.customer, recipient: owner, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, challengeId: challenge.id, payload: {type: 'text', text: `رعد يحتاج رمز التحقق لمتابعة طلب المسافر ${job.applicantIndex + 1}. مرجع المتابعة: ${challenge.id.slice(0, 8)}. رد على هذه الرسالة برمز التحقق فقط قبل انتهاء صلاحية الرمز في الموعد الأصلي: ${new Date(binding.challengeExpiresAt).toISOString()} (UTC). التأخير لا يمدد صلاحية الرمز. لن يتم حفظ الرمز في سجل المحادثة.`}});
       challenge.outboxMessageId = message.id;
       return {challengeId: challenge.id, jobId, expiresAt: challenge.expiresAt, messageId: message.id};
     });
   }
   ownerChallengeContext(challengeId) {
     const challenge = this.data().challenges[challengeId];
-    if (!challenge || challenge.state !== 'pending' || challenge.expiresAt <= this.now() || challenge.owner !== this.otpOwner()) fail('OWNER_ACTION_CHALLENGE_STALE');
+    if (!challenge || challenge.state !== 'pending' || challenge.expiresAt <= this.now() || challenge.expiresAt !== challenge.challengeExpiresAt || challenge.owner !== this.otpOwner()) fail('OWNER_ACTION_CHALLENGE_STALE');
+    validateSmsChallenge({...challenge, challengeId: challenge.portalChallengeId}, this.now());
     const {job, lease} = this.guardLease(challenge.jobId, challenge.leaseToken);
-    if (job.state !== 'waiting_otp' || job.revision !== challenge.jobRevision || job.approvalId !== challenge.approvalId || job.caseSignature !== challenge.caseSignature || lease.jobId !== challenge.jobId) fail('OWNER_ACTION_CHALLENGE_STALE');
+    if (job.state !== 'waiting_otp' || job.revision !== challenge.jobRevision || job.approvalId !== challenge.approvalId || job.caseSignature !== challenge.caseSignature || job.customer !== challenge.customer || job.applicantIndex !== challenge.applicantIndex || lease.jobId !== challenge.jobId) fail('OWNER_ACTION_CHALLENGE_STALE');
     const item = this.data().outbox[challenge.outboxMessageId];
     if (!item || item.kind !== 'owner_otp_request' || item.challengeId !== challengeId || item.jobId !== job.id || item.customer !== challenge.customer || phone(item.recipient) !== challenge.owner || item.approvalId !== job.approvalId || item.caseSignature !== job.caseSignature) fail('OWNER_ACTION_CHALLENGE_STALE');
     return {challenge, job, item};
@@ -641,54 +675,76 @@ class VisaFulfilment {
       return {handled: true, ok: true, duplicate: false, jobId: job.id, challengeId, requeued: 1, messageIds: [item.id]};
     }); } catch { return reject('OWNER_ACTION_SAVE_FAILED'); }
   }
-  // Call directly from the webhook BEFORE journaling/batching/model processing.
-  // All owner messages containing only OTP digits are consumed, even if rejected.
+  // Call directly from the signed webhook BEFORE journaling/batching/models.
+  // Interception does not authorize a sender, context, code or browser action.
   isOtpMessage({sender, contextId, text: raw} = {}) {
-    if (!this.otpOwner() || phone(sender) !== this.otpOwner() || typeof raw !== 'string') return false;
-    return /[\d\u0660-\u0669\u06f0-\u06f9]{4,16}/u.test(raw) || Boolean(contextId && Object.values(this.data().challenges).some(item => item.owner === this.otpOwner() && item.messageId === contextId));
+    const knownReply = providerMessageId(contextId) && Object.values(this.data().challenges).some(item => item.messageId === contextId || item.noticeMessageId === contextId);
+    return Boolean(knownReply || phone(sender) === SUPERVISOR_WHATSAPP_NUMBER && typeof raw === 'string' && /[\d\u0660-\u0669\u06f0-\u06f9]{4,16}/u.test(raw));
   }
-  async consumeOtp({sender, contextId, text: raw} = {}) {
+  async consumeOtp(input = {}) {
+    let {sender, contextId, messageId, text: raw} = input, digits = '', normalized = '', handoff;
     if (!this.isOtpMessage({sender, contextId, text: raw})) return {handled: false};
     const reject = reason => ({handled: true, ok: false, reason});
-    const owner = this.otpOwner();
-    let candidates = Object.values(this.data().challenges).filter(item => item.owner === owner && item.state === 'pending' && item.messageId && item.expiresAt > this.now());
-    if (contextId) candidates = candidates.filter(item => item.messageId === contextId);
-    if (candidates.length !== 1) return reject(candidates.length ? 'OTP_CONTEXT_AMBIGUOUS' : 'OTP_NOT_PENDING');
-    const challenge = candidates[0], id = challenge.id;
-    if (this.otpLocks.has(id)) return reject('OTP_IN_PROGRESS');
-    const normalized = raw.replace(/[\u0660-\u0669]/gu, value => String(value.charCodeAt(0) - 0x660)).replace(/[\u06f0-\u06f9]/gu, value => String(value.charCodeAt(0) - 0x6f0));
-    const matches = normalized.match(/(?<!\d)\d{4,8}(?!\d)/gu) || [];
-    const digits = matches.length === 1 ? matches[0] : '';
-    if (!/^\d{4,8}$/.test(digits)) return reject('OTP_FORMAT_INVALID');
-    const replay = hash(owner + ':' + digits);
-    for (const [digest, expiresAt] of this.usedOtpDigests) if (expiresAt <= this.now()) this.usedOtpDigests.delete(digest);
-    if (this.usedOtpDigests.has(replay)) return reject('OTP_REPLAY_REJECTED');
-    const guardChallenge = () => {
-      const {job, lease} = this.guardLease(challenge.jobId, challenge.leaseToken);
-      if (challenge.jobRevision !== job.revision || lease.token !== challenge.leaseToken || !['pending', 'consuming'].includes(challenge.state) || job.state !== 'waiting_otp') fail('VISA_OTP_CONTEXT_STALE');
-    };
-    try { guardChallenge(); }
-    catch { return reject('OTP_CASE_STALE'); }
-    if (challenge.attempts >= challenge.maxAttempts || typeof this.resumeOtp !== 'function') return reject(challenge.attempts >= challenge.maxAttempts ? 'OTP_ATTEMPTS_EXHAUSTED' : 'OTP_RESUME_UNAVAILABLE');
-    this.otpLocks.add(id); this.usedOtpDigests.set(replay, this.now() + OTP_TTL);
+    let lockedId;
     try {
-      this.commit(() => { challenge.attempts++; challenge.state = 'consuming'; });
-      // The only path receiving the code is the exact browser challenge adapter.
-      // Neither callback return data nor callback exception text is persisted.
-      const result = await this.resumeOtp({jobId: challenge.jobId, customer: challenge.customer, applicantIndex: challenge.applicantIndex, challengeId: id, portalChallengeId: challenge.portalChallengeId, contextId: challenge.contextId, code: digits, guard: guardChallenge});
-      guardChallenge();
-      const success = result?.ok === true || result?.accepted === true;
-      return this.commit(() => {
-        const current = this.data().challenges[id], job = this.job(current.jobId);
-        current.state = success ? 'consumed' : current.attempts >= current.maxAttempts ? 'exhausted' : 'pending';
-        if (success) { current.consumedAt = this.now(); job.state = 'running'; }
-        else if (current.state === 'exhausted') { job.state = 'portal_review_required'; job.blockedReason = 'OTP_ATTEMPTS_EXHAUSTED'; }
-        this.audit(success ? 'otp_resumed' : 'otp_rejected', {customer: current.customer, jobId: current.jobId, challengeId: id, attempt: current.attempts});
-        return {handled: true, ok: success, jobId: current.jobId, reason: success ? null : 'OTP_REJECTED'};
-      });
-    } catch {
-      return this.commit(() => { const current = this.data().challenges[id]; current.state = 'uncertain'; const job = this.job(current.jobId); if (!terminal.has(job.state)) { job.state = 'portal_review_required'; job.blockedReason = 'OTP_RESUME_UNCERTAIN'; } return reject('OTP_RESUME_UNCERTAIN'); });
-    } finally { this.otpLocks.delete(id); }
+      const owner = this.otpOwner();
+      if (!owner || phone(sender) !== owner) return reject('OTP_SENDER_INVALID');
+      if (!providerMessageId(contextId)) return reject('OTP_REPLY_CONTEXT_REQUIRED');
+      if (!providerMessageId(messageId)) return reject('OTP_MESSAGE_ID_INVALID');
+      const candidates = Object.values(this.data().challenges).filter(item => item.owner === owner && item.messageId === contextId && item.state === 'pending' && item.expiresAt > this.now());
+      if (candidates.length !== 1) return reject(candidates.length ? 'OTP_CONTEXT_AMBIGUOUS' : 'OTP_NOT_PENDING');
+      const challenge = candidates[0], id = challenge.id;
+      if (this.otpLocks.has(id)) return reject('OTP_IN_PROGRESS');
+      if (this.usedOtpChallenges.has(id)) return reject('OTP_ALREADY_USED');
+      for (const map of [this.usedOtpDigests, this.usedOtpMessageIds]) for (const [key, expiry] of map) if (expiry <= this.now()) map.delete(key);
+      if (this.usedOtpMessageIds.has(messageId)) return reject('OTP_MESSAGE_REPLAY_REJECTED');
+      normalized = typeof raw === 'string' ? raw.replace(/[\u0660-\u0669]/gu, value => String(value.charCodeAt(0) - 0x660)).replace(/[\u06f0-\u06f9]/gu, value => String(value.charCodeAt(0) - 0x6f0)).trim() : '';
+      // A code must be the complete reply, not extracted from unrelated prose.
+      if (!/^\d{4,8}$/.test(normalized)) return reject('OTP_FORMAT_INVALID');
+      digits = normalized;
+      const replay = createHmac('sha256', this.otpDigestKey).update(owner + ':' + digits).digest('hex');
+      if (this.usedOtpDigests.has(replay)) return reject('OTP_REPLAY_REJECTED');
+      const snapshot = Object.freeze(Object.fromEntries(['id','jobId','customer','applicantIndex','approvalId','caseSignature','caseRevision','jobRevision','leaseToken','portalChallengeId','contextId','owner','messageId','outboxMessageId','challengeRequestedAt','challengeExpiresAt','accountBinding','expiresAt'].map(key => [key, challenge[key]])));
+      const guardChallenge = () => {
+        const current = this.data().challenges[id];
+        if (!current || Object.entries(snapshot).some(([key, value]) => current[key] !== value) || current.owner !== this.otpOwner() || !['pending','consuming'].includes(current.state) || current.expiresAt !== current.challengeExpiresAt) fail('VISA_OTP_CONTEXT_STALE');
+        validateSmsChallenge({...current, challengeId: current.portalChallengeId}, this.now());
+        const {job, lease} = this.guardLease(current.jobId, current.leaseToken);
+        const item = this.data().outbox[current.outboxMessageId];
+        if (job.revision !== current.jobRevision || job.customer !== current.customer || job.applicantIndex !== current.applicantIndex || job.approvalId !== current.approvalId || job.caseSignature !== current.caseSignature || lease.token !== current.leaseToken || lease.jobId !== current.jobId || job.state !== 'waiting_otp' || !item || !['accepted','delivered'].includes(item.state) || item.messageId !== contextId || item.challengeId !== id || item.jobId !== job.id || phone(item.recipient) !== owner) fail('VISA_OTP_CONTEXT_STALE');
+      };
+      try { guardChallenge(); } catch { return reject('OTP_CASE_STALE'); }
+      if (challenge.attempts >= 1 || typeof this.resumeOtp !== 'function') return reject(challenge.attempts >= 1 ? 'OTP_ALREADY_USED' : 'OTP_RESUME_UNAVAILABLE');
+      // Reserve synchronously before the first await, including storage failures.
+      lockedId = id; this.otpLocks.add(id); this.usedOtpChallenges.add(id);
+      this.usedOtpMessageIds.set(messageId, challenge.expiresAt);
+      this.usedOtpDigests.set(replay, this.now() + OTP_TTL);
+      try {
+        this.commit(() => { const current = this.data().challenges[id]; current.attempts = 1; current.state = 'consuming'; });
+        guardChallenge();
+        handoff = {jobId: snapshot.jobId, customer: snapshot.customer, applicantIndex: snapshot.applicantIndex, challengeId: id, portalChallengeId: snapshot.portalChallengeId, contextId: snapshot.contextId, challengeRequestedAt: snapshot.challengeRequestedAt, challengeExpiresAt: snapshot.challengeExpiresAt, accountBinding: snapshot.accountBinding, code: digits, guard: guardChallenge};
+        const result = await this.resumeOtp(handoff);
+        guardChallenge();
+        const success = result?.ok === true || result?.accepted === true;
+        return this.commit(() => {
+          const current = this.data().challenges[id], job = this.job(current.jobId);
+          current.state = success ? 'consumed' : 'exhausted';
+          if (success) { current.consumedAt = this.now(); job.state = 'running'; }
+          else { job.state = 'portal_review_required'; job.blockedReason = 'OTP_ATTEMPTS_EXHAUSTED'; }
+          this.audit(success ? 'otp_resumed' : 'otp_rejected', {customer: current.customer, jobId: current.jobId, challengeId: id, attempt: 1});
+          return {handled: true, ok: success, jobId: current.jobId, reason: success ? null : 'OTP_REJECTED'};
+        });
+      } catch {
+        // Do not retry a possibly dispatched code, and never persist raw errors.
+        try { this.commit(() => { const current = this.data().challenges[id]; if (current && ['pending','consuming'].includes(current.state)) current.state = 'uncertain'; const job = this.data().jobs[snapshot.jobId]; if (job && !terminal.has(job.state)) { job.state = 'portal_review_required'; job.blockedReason = 'OTP_RESUME_UNCERTAIN'; } }); } catch {}
+        return reject('OTP_RESUME_UNCERTAIN');
+      }
+    } finally {
+      if (handoff) handoff.code = '';
+      if (input && typeof input === 'object') input.text = '';
+      raw = ''; digits = ''; normalized = '';
+      if (lockedId) this.otpLocks.delete(lockedId);
+    }
   }
 
   recordPortalResult(jobId, {leaseToken, status, applicationReference, paymentAttempted, returnedFromPayment, requestCopy} = {}) {

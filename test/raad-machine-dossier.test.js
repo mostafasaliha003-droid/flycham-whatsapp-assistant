@@ -42,6 +42,9 @@ function fixture({canAutomate = () => true, gaps = [], cropPhoto = false} = {}) 
     read(id, {customer}) { return {metadata: this.get(id, {customer}), bytes: Buffer.from(bytes.get(id))}; }
   };
   const passportFields = Object.fromEntries(Object.entries(DOC_FIELDS).filter(([key]) => !gaps.includes(key)));
+  // This complete ORIGINAL-page fixture separately labels Passport No. Keep
+  // that private observation out of DOC_FIELDS and client/manual proofs.
+  if (!gaps.includes('passportNumber') && !gaps.includes('visiblePassportNumber')) passportFields.visiblePassportNumber = DOC_FIELDS.passportNumber;
   const documents = [
     {mediaId: IDS.passportSource, page: 1, sha256: sha('passport-ocr-pixels'), sourceSha256: store.data.visaMedia[IDS.passportSource].checksum, extraction: extraction('passport', passportFields, cropPhoto ? {portraitBox: {x: 0.1, y: 0.2, width: 0.2, height: 0.3, confidence: 0.999}} : {})},
     {mediaId: IDS.residenceSource, page: 1, sha256: sha('residence-ocr-pixels'), sourceSha256: store.data.visaMedia[IDS.residenceSource].checksum, extraction: extraction('uae_id_front', {passportNumber: DOC_FIELDS.passportNumber, birthDate: DOC_FIELDS.birthDate, latinFullName: 'Synthetic Example', emiratesId: '784199000000001', residenceExpiry: '2029-01-01'})},

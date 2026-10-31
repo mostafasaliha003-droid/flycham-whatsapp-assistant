@@ -1,0 +1,32 @@
+# Build context allowlist. Credentials, uploads, state and evidence stay out.
+**
+!Dockerfile.worker
+!.dockerignore
+!package.json
+!package-lock.json
+!THIRD_PARTY_MRZ_MODEL.md
+!scripts/
+!scripts/install-mrz-model.js
+!scripts/raad-readiness-check.js
+!src/
+!src/**
+
+# Runtime source contains colocated tests; do not ship their fixtures.
+src/**/*.test.js
+src/**/*.test.cjs
+src/**/test/**
+src/**/tests/**
+src/**/fixtures/**
+
+# Keep these excluded even if a future file appears under an allowed directory.
+**/.env
+**/.env.*
+**/.npmrc
+**/node_modules/**
+**/.git/**
+**/uploads/**
+**/state/**
+**/*.log
+**/*.tap
+**/*.pem
+**/*.key

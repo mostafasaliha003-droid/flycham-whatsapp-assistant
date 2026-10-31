@@ -36,7 +36,9 @@ const DOCUMENT_FACT_FIELDS = Object.freeze([
   'emiratesId', 'residenceExpiry'
 ]);
 const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
-const CONTACT_FIELDS = Object.freeze(['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode']);
+// SMS verification uses the separately authorized supervisor route. Do not
+// require or manufacture an applicant phone merely to complete that route.
+const CONTACT_FIELDS = Object.freeze(['contactEmail', 'insurancePhone', 'postalCode']);
 const CONTACT_ENV = Object.freeze({applicationPhone: 'RAAD_APPLICATION_PHONE', contactEmail: 'RAAD_CONTACT_EMAIL', insurancePhone: 'RAAD_INSURANCE_PHONE', postalCode: 'RAAD_POSTAL_CODE', city: 'RAAD_CITY', postOfficeBox: 'RAAD_POST_OFFICE_BOX'});
 const NATIONALITY_CODES = Object.freeze({
   'سوريا': 'SYR', 'الأردن': 'JOR', 'لبنان': 'LBN', 'جزر القمر': 'COM',

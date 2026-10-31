@@ -2,6 +2,7 @@
 
 const {safeGraphFailure} = require('./graph-api');
 const {QUESTION_CATALOG, validateAnswer} = require('./visa-client-questions');
+const {supervisorWhatsAppRecipient} = require('./visa-supervisor-route');
 const {createHash} = require('node:crypto');
 const sharp = require('sharp');
 
@@ -221,7 +222,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
   }
   async function sendOperatorOtp(input, guard, metadata = {}) {
     if (!input || typeof input !== 'object') throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
-    const recipient = recipientNumber(env.RAAD_OTP_OWNER_WHATSAPP || env.RAAD_OTP_OWNER_RECIPIENT), jobId = identifier(input.jobId || metadata.jobId), challengeId = identifier(input.challengeId || metadata.challengeId);
+    const recipient = recipientNumber(supervisorWhatsAppRecipient(env)), jobId = identifier(input.jobId || metadata.jobId), challengeId = identifier(input.challengeId || metadata.challengeId);
     const body = string(input.text, 4096);
     if (input.recipient !== undefined && recipientNumber(input.recipient) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
     await guardNow(guard);
@@ -332,7 +333,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
   async function ownerNotificationReady() {
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return false;
     let owner;
-    try { owner = recipientNumber(env.RAAD_OTP_OWNER_WHATSAPP || env.RAAD_OTP_OWNER_RECIPIENT); credentials(env); }
+    try { owner = recipientNumber(supervisorWhatsAppRecipient(env)); credentials(env); }
     catch { return false; }
     try {
       const summary = journal?.summary?.(owner), lastInboundAt = summary?.lastInboundAt ?? journal?.get?.(owner)?.lastInboundAt, currentTime = now();

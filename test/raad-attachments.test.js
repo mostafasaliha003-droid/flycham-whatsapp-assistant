@@ -258,3 +258,34 @@ test('general document composer preserves residence compatibility, records per-p
   await assert.rejects(preparePortalImage(clear, { enhance: 1 }), { code: 'INVALID_IMAGE_OPTIONS' });
   await assert.rejects(prepareDocumentImage([clear], { maxBytes: 1000001 }), { code: 'INVALID_MAX_BYTES' });
 });
+
+test('document inputs require both real dimensions: 300 is retained and 299 or cropped strips are rejected before composition', async () => {
+  for (const [width, height] of [[1000, 300], [300, 1000]]) {
+    const bytes = await image(width, height);
+    const result = await preparePortalImage(bytes);
+    await assertSafeResult(result, [bytes]);
+    assert.deepEqual([result.width, result.height], [width, height]);
+  }
+  const clear = await image(1200, 800);
+  for (const [width, height] of [[1000, 299], [299, 1000], [1200, 1], [1, 1200]]) {
+    const bytes = await image(width, height), original = Buffer.from(bytes);
+    await assert.rejects(preparePortalImage(bytes), { code: 'IMAGE_TOO_SMALL' });
+    await assert.rejects(prepareDocumentImage([bytes], { kind: 'passport' }), { code: 'IMAGE_TOO_SMALL' });
+    await assert.rejects(prepareDocumentImage([clear, bytes], { kind: 'passport' }), { code: 'IMAGE_TOO_SMALL' });
+    await assert.rejects(prepareResidenceImage([bytes, clear]), { code: 'IMAGE_TOO_SMALL' });
+    assert.deepEqual(bytes, original);
+  }
+});
+
+test('single and combined compression cannot reduce a document short edge below 300 to fit the byte cap', async () => {
+  const bytes = await noise(1800, 300), original = Buffer.from(bytes);
+  // Previously this exact source and cap became 1080x180, passing only the
+  // long-edge test. It must now stop instead of manufacturing enough pixels.
+  await assert.rejects(preparePortalImage(bytes, { maxBytes: 150000 }), { code: 'SIZE_LIMIT_UNACHIEVABLE' });
+  await assert.rejects(prepareDocumentImage([bytes, await image(1200, 800)], { kind: 'passport', maxBytes: 150000 }), { code: 'SIZE_LIMIT_UNACHIEVABLE' });
+  await assert.rejects(prepareResidenceImage([bytes, await image(1200, 800)], { maxBytes: 150000 }), { code: 'SIZE_LIMIT_UNACHIEVABLE' });
+  const enough = await preparePortalImage(bytes);
+  await assertSafeResult(enough, [bytes]);
+  assert.equal(enough.height, 300); assert.equal(enough.width, 1800);
+  assert.deepEqual(bytes, original);
+});
