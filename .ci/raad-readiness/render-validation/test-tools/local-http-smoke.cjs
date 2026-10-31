@@ -1,0 +1,23 @@
+'use strict';
+const assert=require('node:assert/strict'),crypto=require('node:crypto'),path=require('node:path');
+if(!require.cache[path.join(__dirname,'offline-loopback-guard.cjs')])throw Error('FENCE_REQUIRED');
+assert.equal(process.env.SAUDI_VISA_ENABLED,'false');assert.equal(process.env.RAAD_VISA_AUTOMATION_ENABLED,'false');
+assert.equal(process.env.DRY_RUN,'true');assert.equal(process.env.WHATSAPP_ACCESS_TOKEN,undefined);
+const {createServer}=require('../test-build/src/server');
+const {createPilot}=require('../test-build/src/raad-login-pilot/server');
+let launches=0;const pilot=createPilot({env:{RAAD_PILOT_KEY:'isolated_test_key_'.repeat(3),RAAD_PILOT_ORIGIN:'https://isolated.invalid'},launch:async()=>{launches++;throw Error('BROWSER_DISABLED');}});
+const main=createServer(),checks=[];
+const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve('http://127.0.0.1:'+server.address().port)));
+const close=server=>new Promise(resolve=>server.close(resolve));
+(async()=>{try{
+ const mainUrl=await listen(main),raadUrl=await listen(pilot.server);
+ let response=await fetch(mainUrl+'/health');let body=await response.json();assert.equal(response.status,200);assert.equal(body.ok,true);assert.equal(body.mode,'dry-run');assert.equal(body.assistant.saudiVisa.enabled,false);checks.push('main_health_dry_run_and_visa_disabled');
+ response=await fetch(mainUrl+'/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token='+process.env.WHATSAPP_VERIFY_TOKEN+'&hub.challenge=isolated-challenge');assert.equal(response.status,200);assert.equal(await response.text(),'isolated-challenge');checks.push('webhook_verification_valid');
+ response=await fetch(mainUrl+'/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=isolated-challenge');assert.equal(response.status,403);checks.push('webhook_verification_invalid_rejected');
+ const raw=JSON.stringify({entry:[]}),signature='sha256='+crypto.createHmac('sha256',process.env.WHATSAPP_APP_SECRET).update(raw).digest('hex');
+ response=await fetch(mainUrl+'/webhooks/whatsapp',{method:'POST',headers:{'content-type':'application/json','x-hub-signature-256':'sha256='+'0'.repeat(64)},body:raw});assert.equal(response.status,401);checks.push('invalid_webhook_signature_rejected');
+ response=await fetch(mainUrl+'/webhooks/whatsapp',{method:'POST',headers:{'content-type':'application/json','x-hub-signature-256':signature},body:raw});assert.equal(response.status,200);checks.push('signed_empty_webhook_accepted_without_messages');
+ response=await fetch(raadUrl+'/health');body=await response.json();assert.equal(response.status,200);assert.equal(body.ready,true);assert.equal(body.production.enabled,false);assert.equal(body.production.activeJob,false);checks.push('raad_health_and_production_disabled');
+ response=await fetch(raadUrl+'/api/start',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});assert.equal(response.status,401);assert.equal(launches,0);checks.push('unauthorized_raad_start_rejected_without_browser');
+ console.log(JSON.stringify({passed:checks.length,checks,browserLaunches:launches,actualMessages:0,actualVisaRequests:0,actualPayments:0}));
+ }finally{await Promise.all([close(main),pilot.shutdown()]);}})().catch(error=>{console.error(error.code||error.message);process.exitCode=1;});
