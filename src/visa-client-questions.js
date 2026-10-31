@@ -47,7 +47,7 @@ const CATALOG = {
   sex: choice('ما الجنس المثبت في جواز السفر؟', [
     {id: 'male', label: 'ذكر (M)', value: 'M'},
     {id: 'female', label: 'أنثى (F)', value: 'F'},
-    {id: 'unspecified', label: 'غير محدد في الجواز (X)', value: 'X'}
+    {id: 'unspecified', label: 'غير محدد (X)', value: 'X'}
   ]),
   latinFirstName: text('ما الاسم الأول بالأحرف اللاتينية كما هو في جواز السفر؟', 200, 'latinName'),
   latinFamilyName: text('ما اسم العائلة بالأحرف اللاتينية كما هو في جواز السفر؟', 200, 'latinName'),
