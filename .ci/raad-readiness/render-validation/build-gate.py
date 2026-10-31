@@ -20,9 +20,9 @@ import time
 
 INPUT = Path('/validation-input')
 ROOT = Path('/validation-work')
-COMMIT = 'f019ad03652121abf75774f5ebe3d5325206f9eb'
-TREE = '218c5149f6c8ae9e29075894422da9be94382a54'
-FINGERPRINT = 'a59e55daf716d668d6adcb26b9a57fbb9b4497f03b925a3300637063a890e53b'
+COMMIT = '4b39b9d1e93e70147d794a7e9b47a3fc550f41b1'
+TREE = 'd39d02285e78dff1d44b2647997e6281eb756fe1'
+FINGERPRINT = 'aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448'
 
 
 def sha(raw):
@@ -97,7 +97,7 @@ def main():
     start = time.monotonic()
     info = json.loads((INPUT/'inputs.json').read_text())
     assert info['functionalCommit'] == COMMIT and info['functionalTree'] == TREE
-    assert info['applicationFingerprintSha256'] == FINGERPRINT and len(info['files']) == 417
+    assert info['applicationFingerprintSha256'] == FINGERPRINT and len(info['files']) == 418
     assert sha(json.dumps(info['files'], sort_keys=True, separators=(',', ':')).encode()) == FINGERPRINT
     assert (Path('/raad-validation-build-nonce').read_text().strip() == info['buildNonce'])
     for name, expected in info['toolFiles'].items():
@@ -144,6 +144,8 @@ def main():
     assert native['passed'] and native['nativeChecks'] == 12 and native['liveActions'] == 0
     assert native['buildNonce'] == info['buildNonce'] and native['functionalCommit'] == COMMIT
     assert native['applicationFingerprintSha256'] == FINGERPRINT
+    assert native['patchedSharpVerified'] is True
+    assert native['patchedSharp'] == {'sharp': '0.35.5', 'vips': '8.18.7', 'rsvg': '2.63.2'}
     native_raw = Path('/tmp/raad-native-proof/native-preflight.log').read_bytes()
     assert len(native_raw) == native['bytes'] and sha(native_raw) == native['sha256']
     artifacts = ROOT/'artifacts'; artifacts.mkdir()
@@ -175,19 +177,22 @@ def main():
     assert step['exitCode'] == 0 and not step['timeout']
     assert not final['missing_files'] and not final['incomplete_logs']
     totals = final['totals']
-    assert totals['tests'] == totals['pass'] == 2629 and totals['files'] == totals['files_passed'] == len(index) == 208
+    assert totals['tests'] == totals['pass'] == 2633 and totals['files'] == totals['files_passed'] == len(index) == 209
     assert not any(totals.get(k, 0) for k in ['fail', 'cancelled', 'skipped', 'todo', 'blocked_attempts', 'files_failed'])
     assert manifest(build) == info['files'], 'SOURCE_MUTATED_DURING_TESTS'
     assert time.monotonic()-start < 1000, 'VALIDATION_ELAPSED_LIMIT'
     dump(artifacts/'result.json', {'success': True, 'functionalCommit': COMMIT,
          'applicationFingerprintSha256': FINGERPRINT, 'unitTotals': totals, 'nativeChecks': 12,
          'validationNetwork': 'Dockerfile RUN --network=none', 'derivedWorkerRecipe': True,
+         'patchedSharpVerified': True, 'patchedSharpVersions': native['patchedSharp'],
          'releaseReady': False, 'liveActions': 0})
     dump(artifacts/'evidence-index.json', {'files': manifest(artifacts), 'selfExcluded': True})
     evidence_bytes, chunks, digest = archive_evidence(artifacts)
     public = {'kind': 'isolated_build_validation', 'functionalCommit': COMMIT, 'functionalTree': TREE,
-              'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 417,
-              'unitTests': 2629, 'unitPassed': 2629, 'unitFiles': 208, 'nativeChecks': 12,
+              'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 418,
+              'unitTests': 2633, 'unitPassed': 2633, 'unitFiles': 209, 'nativeChecks': 12,
+              'patchedSharpVerified': True, 'sharpVersion': native['patchedSharp']['sharp'],
+              'vipsVersion': native['patchedSharp']['vips'], 'rsvgVersion': native['patchedSharp']['rsvg'],
               'workerRecipeSha256': info['workerRecipeSha256'], 'sourceSnapshotSha256': info['sourceSnapshotSha256'],
               'evidenceSha256': digest, 'evidenceBytes': evidence_bytes, 'evidenceChunks': chunks,
               'buildNonce': info['buildNonce'], 'buildOnly': True, 'releaseReady': False, 'liveActions': 0}

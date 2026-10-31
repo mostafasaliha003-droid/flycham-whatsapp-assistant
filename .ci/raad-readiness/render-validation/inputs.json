@@ -1,7 +1,7 @@
 {
-  "functionalCommit": "f019ad03652121abf75774f5ebe3d5325206f9eb",
-  "functionalTree": "218c5149f6c8ae9e29075894422da9be94382a54",
-  "applicationFingerprintSha256": "a59e55daf716d668d6adcb26b9a57fbb9b4497f03b925a3300637063a890e53b",
+  "functionalCommit": "4b39b9d1e93e70147d794a7e9b47a3fc550f41b1",
+  "functionalTree": "d39d02285e78dff1d44b2647997e6281eb756fe1",
+  "applicationFingerprintSha256": "aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448",
   "files": {
     ".dockerignore": {
       "bytes": 619,
@@ -132,12 +132,12 @@
       "sha256": "e1a93967a86ce24940883b93b47153b38984eae7759fb9cf6d1f24e250b23b7c"
     },
     "package-lock.json": {
-      "bytes": 35596,
-      "sha256": "dc9881dca9a7436d2034bab569d2791e302dee1d765c6c5dc1013d5abcc79e48"
+      "bytes": 36578,
+      "sha256": "546c3b131a1bb7461546eb0502f67595143f45b6068d7c72b1411ff96cb81b77"
     },
     "package.json": {
       "bytes": 516,
-      "sha256": "555f5e35fd085e77a438c1beadb6c30613570f8a5924f6735b0a81d840f7e0ff"
+      "sha256": "e7879adf2c1a0af6f1a4b5ca714b8499b5a056817d363a1dbcd2c3c645d9f2ad"
     },
     "render.yaml": {
       "bytes": 640,
@@ -1583,6 +1583,10 @@
       "bytes": 7588,
       "sha256": "002ec128f23f09e3ee7e4039a470c1f1566f05a4d55c56031b1eb6dfb940c667"
     },
+    "test/visa-otp-full-router-e2e.test.js": {
+      "bytes": 21763,
+      "sha256": "312e70e84d5e5226405272721b3d8da4f73a8b034f51dae921308e90b63d3c94"
+    },
     "test/visa-otp-loopback-e2e.test.js": {
       "bytes": 15202,
       "sha256": "e24af2682ac0914a68abe4ab152c40ab9672d3eb133d87449cb7fb6042277c92"
@@ -1672,17 +1676,17 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-f019ad0-03",
+  "buildNonce": "raad-validation-20261031-4b39b9d-04",
   "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
-  "sourceSnapshotSha256": "5d1395b04bcd58990d8178b0d72e3542a7908e096b8afbbf0febc4b81628fc1b",
+  "sourceSnapshotSha256": "81692671ebc51a437d471ae4180a024d39a53b1619621e4cd85670ad72fd59a7",
   "toolFiles": {
-    "Dockerfile.validation": "78e0a7d25d899aa6cafd9dba7ff9b29119c7c2cc1053acc395ea7cb7dbfba475",
+    "Dockerfile.validation": "4a6e2ad211e744f85b43d7a68c3e1802d5d871ace8a0868dcbe0b9f3eba3f4ec",
     "Dockerfile.validation.dockerignore": "851f9ca78e439740d94c02c78826d6158888d41cf755059760f8e6c2a8284c5d",
-    "build-gate.py": "ccd87126c301c56ffeedda28c593d19e58c1ca8e7a3742f765f63a45cb5fa6ed",
+    "build-gate.py": "179a4603f824f53c832031fa91065fe42ca56996f87bb96c0828a3081e7147e1",
     "container-preflight.cjs": "88ffb7d2bf033a83bc7e5d93f821fcf7e2a58715baefe77fbd16d99af4ec5335",
-    "native-gate.cjs": "9c117685c0dea681dea5a5f7e3729dc443930f46fb1044b48a4db7ddd13b2d3b",
-    "prepare-inputs.py": "16491c7f61d88b7999ebeeae85d4a1a086c210ede17c6cdd4e1894d3241a4d96",
-    "report-server.cjs": "35d88b8df33d4e5b1a20edd829a771f2d003422df3920a4685e99a7c3e99ce69",
+    "native-gate.cjs": "37dbe97462acf80b3b24558b05131be96e836ea2b3de84ae90bf4826f20fa9c8",
+    "prepare-inputs.py": "c479b79e956a6c521131065dd24bdf40b60f3abfc5e036373d8ef61502bb7784",
+    "report-server.cjs": "01df65d3050257204b83b8b15e4cfd47544f5c6233299ea1e5b1b13388a7d182",
     "test-tools/finalize-results.py": "b59336d7c57369f58e98e99535048ca0415116e8ad2eeb91342e5580f7b7fa6e",
     "test-tools/local-entry.cjs": "433842f44e807a8b03b63f63b6176ad45ec72feb1956b87bc55ee49a2657e084",
     "test-tools/local-http-smoke.cjs": "9c8d43a3c8ae3d49490f98ba349d992b20a28da5d1686e0d60902342767b06fb",

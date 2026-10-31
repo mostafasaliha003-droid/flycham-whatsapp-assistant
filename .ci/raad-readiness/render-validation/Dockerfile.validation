@@ -3,7 +3,7 @@
 # RAAD_WORKER_BEGIN
 FROM mcr.microsoft.com/playwright:v1.64.0-noble AS worker
 # RAAD_CACHE_BEGIN
-ARG RAAD_VALIDATION_NONCE=raad-validation-20261031-f019ad0-03
+ARG RAAD_VALIDATION_NONCE=raad-validation-20261031-4b39b9d-04
 ENV NPM_CONFIG_CACHE=/validation-npm-cache NPM_CONFIG_USERCONFIG=/validation-npm-user.npmrc NPM_CONFIG_GLOBALCONFIG=/validation-npm-global.npmrc
 RUN mkdir /validation-npm-cache && touch /validation-npm-user.npmrc /validation-npm-global.npmrc && printf '%s\n' "$RAAD_VALIDATION_NONCE" > /raad-validation-build-nonce
 # RAAD_CACHE_END

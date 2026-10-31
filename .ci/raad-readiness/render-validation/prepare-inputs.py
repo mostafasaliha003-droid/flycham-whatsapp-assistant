@@ -14,7 +14,7 @@ out = Path(__file__).resolve().parent
 baseline = json.loads(Path(sys.argv[1]).read_text())
 files = baseline['files']
 fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-assert len(files) == 417 and fingerprint == 'a59e55daf716d668d6adcb26b9a57fbb9b4497f03b925a3300637063a890e53b'
+assert len(files) == 418 and fingerprint == 'aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448'
 blob = io.BytesIO()
 with tarfile.open(fileobj=blob, mode='w') as snapshot:
     for name, item in sorted(files.items()):
@@ -32,7 +32,7 @@ for cache in (out/'test-tools').rglob('__pycache__'):
 shutil.copyfile(root/'.ci/raad-readiness/container-preflight.cjs', out/'container-preflight.cjs')
 original = (root/'Dockerfile.worker').read_text()
 first, rest = original.split('\n', 1)
-nonce = 'raad-validation-20261031-f019ad0-03'
+nonce = 'raad-validation-20261031-4b39b9d-04'
 worker = first + ' AS worker\n' + '# RAAD_CACHE_BEGIN\n' \
     + 'ARG RAAD_VALIDATION_NONCE=' + nonce + '\n' \
     + 'ENV NPM_CONFIG_CACHE=/validation-npm-cache NPM_CONFIG_USERCONFIG=/validation-npm-user.npmrc NPM_CONFIG_GLOBALCONFIG=/validation-npm-global.npmrc\n' \
@@ -67,8 +67,8 @@ ignore += '\n**/__pycache__/**\n**/*.pyc\n**/.env\n**/.env.*\n**/.npmrc\n**/node
 tool_files = {str(p.relative_to(out)): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in sorted(out.rglob('*')) if p.is_file()
               and p.name not in {'source-snapshot.tar.gz', 'inputs.json'} and '__pycache__' not in p.parts}
-info = {'functionalCommit': 'f019ad03652121abf75774f5ebe3d5325206f9eb',
-        'functionalTree': '218c5149f6c8ae9e29075894422da9be94382a54',
+info = {'functionalCommit': '4b39b9d1e93e70147d794a7e9b47a3fc550f41b1',
+        'functionalTree': 'd39d02285e78dff1d44b2647997e6281eb756fe1',
         'applicationFingerprintSha256': fingerprint, 'files': files, 'buildNonce': nonce,
         'workerRecipeSha256': hashlib.sha256(original.encode()).hexdigest(),
         'sourceSnapshotSha256': hashlib.sha256(snapshot_bytes).hexdigest(), 'toolFiles': tool_files}

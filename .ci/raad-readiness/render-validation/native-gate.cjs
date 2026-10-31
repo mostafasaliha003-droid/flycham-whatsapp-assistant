@@ -47,6 +47,14 @@ function verifyBrowserCompatibility({imageBrowserPath, probe}) {
       pathGuardPassed: true, scope: 'read-only executable path metadata; launch still required'};
   } catch { return fail(); }
 }
+function verifyPatchedSharpVersions(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join(',') !== 'rsvg,sharp,vips'
+      || value.sharp !== '0.35.5' || value.vips !== '8.18.7' || value.rsvg !== '2.63.2') {
+    throw Error('RAAD_PATCHED_SHARP_VERSIONS_FAILED');
+  }
+  return Object.freeze({sharp: '0.35.5', vips: '8.18.7', rsvg: '2.63.2'});
+}
 function main() {
 const path = '/tmp/raad-native-proof';
 fs.mkdirSync(path, {recursive: true});
@@ -59,6 +67,17 @@ const input = JSON.parse(fs.readFileSync('/validation-input/inputs.json', 'utf8'
 const networkObservation = verifyLoopbackOnly();
 const cleanEnv = {PATH: process.env.PATH, HOME: '/tmp', TMPDIR: '/tmp',
   LANG: 'C.UTF-8', TZ: 'UTC', NODE_ENV: 'test'};
+const sharpProbe = spawnSync(process.execPath, ['-e',
+  "const{createRequire}=require('node:module');const r=createRequire('/app/package.json');const s=r('sharp').versions;console.log(JSON.stringify({sharp:s.sharp,vips:s.vips,rsvg:s.rsvg}));"],
+  {cwd: '/app', env: cleanEnv, timeout: 5000, maxBuffer: 4096,
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+let patchedSharp;
+try {
+  if (sharpProbe.error || sharpProbe.status !== 0) throw Error();
+  patchedSharp = verifyPatchedSharpVersions(JSON.parse(sharpProbe.stdout));
+} catch { throw Error('RAAD_PATCHED_SHARP_VERSIONS_FAILED'); }
+console.log(JSON.stringify({tag: 'RAAD_PATCHED_SHARP', patchedSharpVerified: true,
+  sharpVersion: patchedSharp.sharp, vipsVersion: patchedSharp.vips, rsvgVersion: patchedSharp.rsvg}));
 const program = `const fs=require('node:fs');const{createRequire}=require('node:module');
 const r=createRequire('/app/package.json');const p=r('playwright').chromium.executablePath();
 const exists=fs.existsSync(p)&&fs.statSync(p).isFile();
@@ -128,6 +147,7 @@ child.on('close', async code => {
     buildNonce: input.buildNonce, network: 'Dockerfile RUN --network=none',
     ...networkObservation,
     browserEnvironment,
+    patchedSharpVerified: true, patchedSharp,
     runtime: 'derived worker stage before Python tooling installation',
     user: 'root (original worker default)', applicationMount: 'read-only bind from worker stage',
     stdoutEof: true, bytes: raw.length,
@@ -135,11 +155,11 @@ child.on('close', async code => {
   console.log('RAAD_NATIVE_GATE_PASSED');
 });
 }
-module.exports = {verifyLoopbackOnly, verifyBrowserCompatibility};
+module.exports = {verifyLoopbackOnly, verifyBrowserCompatibility, verifyPatchedSharpVersions};
 if (require.main === module) {
   try { main(); } catch (error) {
-    console.error(error?.message === 'RAAD_IMAGE_BROWSER_COMPATIBILITY_FAILED'
-      ? 'RAAD_IMAGE_BROWSER_COMPATIBILITY_FAILED' : 'RAAD_NATIVE_NETWORK_GUARD_FAILED');
+    console.error(['RAAD_IMAGE_BROWSER_COMPATIBILITY_FAILED', 'RAAD_PATCHED_SHARP_VERSIONS_FAILED'].includes(error?.message)
+      ? error.message : 'RAAD_NATIVE_NETWORK_GUARD_FAILED');
     process.exitCode = 1;
   }
 }

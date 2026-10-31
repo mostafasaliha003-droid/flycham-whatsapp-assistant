@@ -4,15 +4,19 @@ const http = require('node:http');
 
 const EXPECTED = Object.freeze({
   kind: 'isolated_build_validation',
-  functionalCommit: 'f019ad03652121abf75774f5ebe3d5325206f9eb',
-  functionalTree: '218c5149f6c8ae9e29075894422da9be94382a54',
-  applicationFingerprintSha256: 'a59e55daf716d668d6adcb26b9a57fbb9b4497f03b925a3300637063a890e53b',
-  applicationFiles: 417,
-  unitTests: 2629,
-  unitPassed: 2629,
-  unitFiles: 208,
+  functionalCommit: '4b39b9d1e93e70147d794a7e9b47a3fc550f41b1',
+  functionalTree: 'd39d02285e78dff1d44b2647997e6281eb756fe1',
+  applicationFingerprintSha256: 'aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448',
+  applicationFiles: 418,
+  unitTests: 2633,
+  unitPassed: 2633,
+  unitFiles: 209,
   nativeChecks: 12,
-  buildNonce: 'raad-validation-20261031-f019ad0-03',
+  patchedSharpVerified: true,
+  sharpVersion: '0.35.5',
+  vipsVersion: '8.18.7',
+  rsvgVersion: '2.63.2',
+  buildNonce: 'raad-validation-20261031-4b39b9d-04',
   buildOnly: true,
   releaseReady: false,
   liveActions: 0,
@@ -22,7 +26,7 @@ const KEYS = Object.freeze(['kind', 'functionalCommit', 'functionalTree',
   'applicationFingerprintSha256', 'applicationFiles', 'unitTests', 'unitPassed',
   'unitFiles', 'nativeChecks', 'workerRecipeSha256', 'sourceSnapshotSha256',
   'evidenceSha256', 'evidenceBytes', 'evidenceChunks', 'buildNonce', 'buildOnly',
-  'releaseReady', 'liveActions']);
+  'releaseReady', 'liveActions', 'patchedSharpVerified', 'sharpVersion', 'vipsVersion', 'rsvgVersion']);
 const INVALID = 'REPORT_SUMMARY_INVALID';
 
 function validateSummary(value) {
@@ -48,6 +52,10 @@ function validateSummary(value) {
     unitPassed: EXPECTED.unitPassed,
     unitFiles: EXPECTED.unitFiles,
     nativeChecks: EXPECTED.nativeChecks,
+    patchedSharpVerified: true,
+    sharpVersion: EXPECTED.sharpVersion,
+    vipsVersion: EXPECTED.vipsVersion,
+    rsvgVersion: EXPECTED.rsvgVersion,
     workerRecipeSha256: value.workerRecipeSha256,
     sourceSnapshotSha256: value.sourceSnapshotSha256,
     evidenceSha256: value.evidenceSha256,
