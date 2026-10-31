@@ -82,7 +82,7 @@ def main():
         port = reservation.getsockname()[1]
     env = {
         'PATH': str(work / 'bin') + ':/usr/bin:/bin',
-        'HOME': str(work / 'home'), 'TMPDIR': str(work / 'tmp'),
+        'TMPDIR': str(work / 'tmp'),
         'NODE_ENV': 'production', 'PORT': str(port),
         'DRY_RUN': 'true', 'SAUDI_VISA_ENABLED': 'false',
         'RAAD_VISA_AUTOMATION_ENABLED': 'false', 'FARE_CATALOG_ENABLED': 'false',
@@ -195,3 +195,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

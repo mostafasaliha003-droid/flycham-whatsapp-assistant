@@ -25,3 +25,4 @@ async function main() {
     liveActions: 0}));
 }
 main().catch(() => {console.error('MAIN_NATIVE_SMOKE_FAILED'); process.exitCode = 1;});
+

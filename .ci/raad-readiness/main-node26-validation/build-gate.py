@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import signal
@@ -21,10 +22,10 @@ ARTIFACTS = ROOT / 'artifacts'
 APP = Path('/app')
 NODE = '/opt/node/bin/node'
 NPM = '/opt/node/lib/node_modules/npm/bin/npm-cli.js'
-COMMIT = '4b39b9d1e93e70147d794a7e9b47a3fc550f41b1'
-TREE = 'd39d02285e78dff1d44b2647997e6281eb756fe1'
-FINGERPRINT = 'aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448'
-NONCE = 'raad-validation-20261031-4b39b9d-06'
+COMMIT = '2167d5f87fce8f2cf05de1c96e367a8a57ce7402'
+TREE = '036355159f736467891c29ec6383b928ae4b6d2d'
+FINGERPRINT = '5fc02e363543161c53a9bc540d05f7bc3cb824825fb3f5dff92d57f60577e756'
+NONCE = 'raad-validation-20261031-2167d5f-01'
 BASE_DIGEST = 'sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e'
 
 
@@ -51,7 +52,7 @@ def manifest(folder):
 def config():
     info = json.loads((INPUT / 'inputs.json').read_text())
     assert info['functionalCommit'] == COMMIT and info['functionalTree'] == TREE
-    assert info['applicationFingerprintSha256'] == FINGERPRINT and len(info['files']) == 418
+    assert info['applicationFingerprintSha256'] == FINGERPRINT and len(info['files']) == 431
     assert sha(json.dumps(info['files'], sort_keys=True, separators=(',', ':')).encode()) == FINGERPRINT
     assert info['buildNonce'] == NONCE and info['baseImageDigest'] == BASE_DIGEST
     assert Path('/raad-validation-build-nonce').read_text().strip() == NONCE
@@ -68,7 +69,7 @@ def verify_source(info):
 
 
 def clean_env(home, temporary):
-    return {'PATH': '/opt/node/bin:/usr/bin:/bin', 'HOME': str(home), 'TMPDIR': str(temporary),
+    return {'PATH': '/opt/node/bin:/usr/bin:/bin', 'TMPDIR': str(temporary),
             'LANG': 'C.UTF-8', 'TZ': 'UTC', 'NODE_ENV': 'production'}
 
 
@@ -193,8 +194,30 @@ def probe(phase):
     return result
 
 
+def profile_controls():
+    home = ROOT / 'profile-home'; temporary = ROOT / 'profile-tmp'
+    for directory in [home, temporary]: directory.mkdir(exist_ok=False)
+    names = ['inbox-automation-transition', 'visa-document-intake-profiles',
+             'visa-mrz-composition', 'visa-mrz-consent', 'visa-mrz-durable-budget',
+             'visa-mrz-production', 'visa-mrz-profiles', 'visa-upload-consent',
+             'raad-machine-dossier', 'visa-upload-ui']
+    command = [NODE, '--test', '--test-reporter=tap', '--test-concurrency=2', *['test/' + n + '.test.js' for n in names]]
+    log = ARTIFACTS / 'profile-controls/test.log'
+    step = run(command, clean_env(home, temporary), log, 120)
+    text = log.read_text()
+    counts = {name: int(re.findall(r'^# ' + name + r' (\d+)$', text, re.M)[-1])
+              for name in ['tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo']}
+    result = {**step, 'counts': counts, 'files': len(names),
+              'providerTransport': 'synthetic', 'securityScan': False,
+              'persistentMountClaimed': False, 'liveActions': 0}
+    dump(ARTIFACTS / 'profile-controls/result.json', result)
+    assert step['exitCode'] == 0 and not step['timedOut']
+    assert counts['tests'] == counts['pass'] and counts['tests'] > 0
+    assert all(counts[name] == 0 for name in ['fail', 'cancelled', 'skipped', 'todo'])
+
+
 def baseline(info):
-    verify_source(info); result = probe('baseline')
+    verify_source(info); result = probe('baseline'); profile_controls()
     command = ['python3', str(INPUT / 'verify-main-start.py'), '--source', '/app', '--node', NODE,
                '--npm-cli', NPM, '--install-result', str(ARTIFACTS / 'install/result.json'),
                '--work', str(ROOT / 'startup-work'), '--evidence', str(ARTIFACTS / 'startup')]
@@ -212,23 +235,26 @@ def finish(info):
     verify_source(info); pdf = probe('pdf')
     baseline = json.loads((ARTIFACTS / 'baseline/result.json').read_text())
     startup = json.loads((ARTIFACTS / 'startup/result.json').read_text())
+    assert json.loads((ARTIFACTS / 'profile-controls/result.json').read_text())['counts']['fail'] == 0
     assert len(baseline['checks']) == 4 and len(pdf['checks']) == 3 and startup['passed'] is True
     dump(ARTIFACTS / 'build-provenance.json', {key: info[key] for key in [
         'functionalCommit', 'functionalTree', 'applicationFingerprintSha256', 'buildNonce',
         'baseImageDigest', 'sourceSnapshotSha256', 'toolFiles']})
     dump(ARTIFACTS / 'result.json', {'success': True, 'functionalCommit': COMMIT,
-        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 418,
+        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 431,
         'buildNonce': NONCE, 'baselineChecks': 4, 'pdfChecks': 3, 'startupPassed': True,
+        'profileControlFiles': 10, 'profileControlsPassed': True,
         'freshInstallPassed': True, 'lockUnchanged': True, 'fullSuiteRerun': False,
         'validationNetwork': 'Dockerfile RUN --network=none', 'accuracyClaimed': False,
         'scope': 'derived_debian12_validation_not_platform_image_equivalence',
         'releaseReady': False, 'liveActions': 0})
     size, chunks, digest = export_evidence(True)
     summary = {'kind': 'isolated_main_node26_validation', 'functionalCommit': COMMIT,
-        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 418,
+        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 431,
         'buildNonce': NONCE, 'nodeVersion': 'v26.13.0', 'npmVersion': '11.20.0', 'debianVersion': '12',
         'glibcVersion': '2.36', 'pdfToolsVersion': '22.12.0', 'freshInstallPassed': True,
         'lockUnchanged': True, 'baselineChecks': 4, 'startupPassed': True, 'pdfChecks': 3,
+        'profileControlFiles': 10, 'profileControlsPassed': True,
         'baseImageDigest': BASE_DIGEST, 'sourceSnapshotSha256': info['sourceSnapshotSha256'],
         'evidenceSha256': digest, 'evidenceBytes': size, 'evidenceChunks': chunks,
         'scope': 'derived_debian12_validation_not_platform_image_equivalence',
@@ -256,3 +282,4 @@ if __name__ == '__main__':
             print('RAAD_MAIN_NODE26_FAILURE_EVIDENCE_INCOMPLETE', flush=True)
         print('RAAD_MAIN_NODE26_GATE_FAILED', flush=True)
         raise SystemExit(1)
+

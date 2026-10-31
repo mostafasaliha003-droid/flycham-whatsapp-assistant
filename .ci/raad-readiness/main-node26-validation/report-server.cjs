@@ -3,11 +3,11 @@
 const http = require('node:http');
 const EXPECTED = Object.freeze({
   "kind": "isolated_main_node26_validation",
-  "functionalCommit": "4b39b9d1e93e70147d794a7e9b47a3fc550f41b1",
-  "functionalTree": "d39d02285e78dff1d44b2647997e6281eb756fe1",
-  "applicationFingerprintSha256": "aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448",
-  "applicationFiles": 418,
-  "buildNonce": "raad-validation-20261031-4b39b9d-06",
+  "functionalCommit": "2167d5f87fce8f2cf05de1c96e367a8a57ce7402",
+  "functionalTree": "036355159f736467891c29ec6383b928ae4b6d2d",
+  "applicationFingerprintSha256": "5fc02e363543161c53a9bc540d05f7bc3cb824825fb3f5dff92d57f60577e756",
+  "applicationFiles": 431,
+  "buildNonce": "raad-validation-20261031-2167d5f-01",
   "nodeVersion": "v26.13.0",
   "npmVersion": "11.20.0",
   "debianVersion": "12",
@@ -18,8 +18,10 @@ const EXPECTED = Object.freeze({
   "baselineChecks": 4,
   "startupPassed": true,
   "pdfChecks": 3,
+  "profileControlFiles": 10,
+  "profileControlsPassed": true,
   "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
-  "sourceSnapshotSha256": "81692671ebc51a437d471ae4180a024d39a53b1619621e4cd85670ad72fd59a7",
+  "sourceSnapshotSha256": "ca2bf49b8a9e7b898606bf01c10b4d39b52e9d5ac49e6f404b565ebb7e61535f",
   "scope": "derived_debian12_validation_not_platform_image_equivalence",
   "fullSuiteRerun": false,
   "mrzAccuracyClaimed": false,
@@ -27,7 +29,7 @@ const EXPECTED = Object.freeze({
   "releaseReady": false,
   "liveActions": 0
 });
-const KEYS = Object.freeze(["kind", "functionalCommit", "functionalTree", "applicationFingerprintSha256", "applicationFiles", "buildNonce", "nodeVersion", "npmVersion", "debianVersion", "glibcVersion", "pdfToolsVersion", "freshInstallPassed", "lockUnchanged", "baselineChecks", "startupPassed", "pdfChecks", "baseImageDigest", "sourceSnapshotSha256", "scope", "fullSuiteRerun", "mrzAccuracyClaimed", "buildOnly", "releaseReady", "liveActions", "evidenceSha256", "evidenceBytes", "evidenceChunks"]);
+const KEYS = Object.freeze(["kind", "functionalCommit", "functionalTree", "applicationFingerprintSha256", "applicationFiles", "buildNonce", "nodeVersion", "npmVersion", "debianVersion", "glibcVersion", "pdfToolsVersion", "freshInstallPassed", "lockUnchanged", "baselineChecks", "startupPassed", "pdfChecks", "profileControlFiles", "profileControlsPassed", "baseImageDigest", "sourceSnapshotSha256", "scope", "fullSuiteRerun", "mrzAccuracyClaimed", "buildOnly", "releaseReady", "liveActions", "evidenceSha256", "evidenceBytes", "evidenceChunks"]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const INVALID = 'REPORT_SUMMARY_INVALID';
 function validateSummary(value) {
@@ -56,6 +58,8 @@ function validateSummary(value) {
     baselineChecks: EXPECTED.baselineChecks,
     startupPassed: EXPECTED.startupPassed,
     pdfChecks: EXPECTED.pdfChecks,
+    profileControlFiles: EXPECTED.profileControlFiles,
+    profileControlsPassed: EXPECTED.profileControlsPassed,
     baseImageDigest: EXPECTED.baseImageDigest,
     sourceSnapshotSha256: EXPECTED.sourceSnapshotSha256,
     scope: EXPECTED.scope,
@@ -127,3 +131,4 @@ if (require.main === module) {
     process.stderr.write('REPORT_SERVER_STARTUP_FAILED\n'); process.exitCode = 1;
   }
 }
+

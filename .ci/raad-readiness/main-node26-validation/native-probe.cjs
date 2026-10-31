@@ -195,3 +195,4 @@ if (require.main === module) main().catch(error => {
   console.error(JSON.stringify({tag: 'RAAD_MAIN_NODE26_NATIVE_FAILURE', ...failureMetadata(error)}));
   console.error('MAIN_NODE26_NATIVE_PROBE_FAILED'); process.exitCode = 1;
 });
+

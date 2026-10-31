@@ -16,3 +16,4 @@ const cp=require('node:child_process');for(const key of ['exec','execFile','exec
 // Node calls lookup even for a numeric listen address; answer locally without DNS.
 require('node:dns').lookup=(host,options,callback)=>{if(host!=='127.0.0.1')return blocked('dns');if(typeof options==='function'){callback=options;options={};}if(typeof callback!=='function')throw TypeError('CALLBACK_REQUIRED');process.nextTick(()=>options?.all?callback(null,[{address:'127.0.0.1',family:4}]):callback(null,'127.0.0.1',4));};
 require('node:dns').promises.lookup=async(host,options)=>{if(host!=='127.0.0.1')return blocked('dns');return options?.all?[{address:'127.0.0.1',family:4}]:{address:'127.0.0.1',family:4};};
+

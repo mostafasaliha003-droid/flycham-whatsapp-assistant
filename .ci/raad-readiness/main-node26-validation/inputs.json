@@ -1,16 +1,16 @@
 {
-  "functionalCommit": "4b39b9d1e93e70147d794a7e9b47a3fc550f41b1",
-  "functionalTree": "d39d02285e78dff1d44b2647997e6281eb756fe1",
-  "applicationFingerprintSha256": "aa3711e6a439b90ecd63f34884948386eef03ce846c0be23261aaa8e70c41448",
-  "sourceSnapshotSha256": "81692671ebc51a437d471ae4180a024d39a53b1619621e4cd85670ad72fd59a7",
+  "functionalCommit": "2167d5f87fce8f2cf05de1c96e367a8a57ce7402",
+  "functionalTree": "036355159f736467891c29ec6383b928ae4b6d2d",
+  "applicationFingerprintSha256": "5fc02e363543161c53a9bc540d05f7bc3cb824825fb3f5dff92d57f60577e756",
+  "sourceSnapshotSha256": "ca2bf49b8a9e7b898606bf01c10b4d39b52e9d5ac49e6f404b565ebb7e61535f",
   "files": {
     ".dockerignore": {
       "bytes": 619,
       "sha256": "9341c8cde3cdaddc4a43c9109fa17c5dd34dab653ce815acb9ad39b4be396928"
     },
     ".env.example": {
-      "bytes": 1345,
-      "sha256": "e8c4cd10107e28ee8d8a39e771f3298f85124e99de43e2a9e295e21374fd8598"
+      "bytes": 2035,
+      "sha256": "722d2eccbad573a76cda7fa0add710d347f74c2fcfa1fb382a5d4af9cb1b7185"
     },
     ".gitignore": {
       "bytes": 161,
@@ -25,8 +25,8 @@
       "sha256": "79e3907caace11617e0a9fd261ef902be949882db22b3a155681a37435a0eb45"
     },
     "README.md": {
-      "bytes": 3312,
-      "sha256": "43dd3509ceed3f3790ee4fad3581e8b333a290c79023224da213c34ce2f83dfa"
+      "bytes": 3677,
+      "sha256": "b43df4d0d587cc3ae41eae78a27b6337cffc813b41b800550620858578df81da"
     },
     "THIRD_PARTY_MRZ_MODEL.md": {
       "bytes": 2137,
@@ -67,6 +67,10 @@
     "docs/assistant/ISMAIL-SAUDIO-VISA-2026-10-27.md": {
       "bytes": 5274,
       "sha256": "63ace542ebd03f9f4db752b3838a9b242168580d1ff0dbb074378fcb5d780734"
+    },
+    "docs/assistant/MRZ-PRODUCTION-2026-10-31.md": {
+      "bytes": 6859,
+      "sha256": "4ea8c12ca1b75fd52a4c811ebd2243b64981dac148a62a85efa548b3a39b8f1a"
     },
     "docs/assistant/RAAD-AUTOMATION-REVIEW-2026-10-30.md": {
       "bytes": 3815,
@@ -205,8 +209,8 @@
       "sha256": "35f5c8fa05360686b364751b5ba53e935a63aa6283863e9a91e89723acc40b45"
     },
     "src/assistant-state.js": {
-      "bytes": 6927,
-      "sha256": "e6cda5a07afcdfde4139b61da42da6ea28f37140f0dc96b237c629968cdee8e4"
+      "bytes": 7362,
+      "sha256": "2b49498d31b3da44f784ce0e6035a5f46cea0bdd30d5c81b045655ad8b681011"
     },
     "src/catalog-party.js": {
       "bytes": 832,
@@ -297,8 +301,8 @@
       "sha256": "523907f6a5bb9eb7d959179be07ceb6ff71ccaaf8ee0ea0f171254deb974ac2f"
     },
     "src/inbox-http.js": {
-      "bytes": 18366,
-      "sha256": "b293c10d67dc97028d19cdd321a22e170a615950a52dc53d877b518fd7be71d1"
+      "bytes": 18818,
+      "sha256": "17c31fd932428aed7d7ac4eed1497d46ad22604fb55c9d987dec11e10134a406"
     },
     "src/ismail-conversation-style.js": {
       "bytes": 7743,
@@ -409,8 +413,8 @@
       "sha256": "c72a579d455881e199e85e6373421eca8df2754efe2c0080609dc19a2c107ced"
     },
     "src/privacy.html": {
-      "bytes": 6882,
-      "sha256": "d3b9855b1648dbc2a3d077ad85f76b1b55cb917630203579271569a5dfbcb906"
+      "bytes": 9122,
+      "sha256": "7bcb24416a98286b394a29930e8d4ceb3559a94c01c9eb2b4cdce2d84d449c6e"
     },
     "src/quote-comparison.js": {
       "bytes": 16163,
@@ -817,8 +821,8 @@
       "sha256": "6cd861701b520fb87d63f2c06a03c3824869e445355018688b0979285d5d5c68"
     },
     "src/raad-visa-workflow.js": {
-      "bytes": 55808,
-      "sha256": "917433d69be273f7a0c8c007d8edc1cf6c3e2978eb5b155adf63c2be755deb22"
+      "bytes": 57851,
+      "sha256": "b35bed917de531c00afedd02d8b1eff41ac348e973b11456ba723cf75b21fcea"
     },
     "src/remal-logo.js": {
       "bytes": 62621,
@@ -853,8 +857,8 @@
       "sha256": "707ffaa27e1763ce0c4b0a8fe36fc51d77f33c10fee9d20c22a3388a6584fee1"
     },
     "src/server.js": {
-      "bytes": 58936,
-      "sha256": "03ba22fea05dc3b4d08ddbff74acb2dfda76b351a84489319ddc7993b52c58a8"
+      "bytes": 60768,
+      "sha256": "35d431b7133f6dcb5a69c5de912802ecb27fbfdf807d4dc3dbd28680056ea877"
     },
     "src/service-menu-delivery.js": {
       "bytes": 865,
@@ -889,8 +893,8 @@
       "sha256": "f9e079cb87ef7288c533d4495f1bf6e1dca69a293cc0b9aa29e21fcd482ef8ed"
     },
     "src/visa-document-intake.js": {
-      "bytes": 77850,
-      "sha256": "3986702c17a8fd972d0e22bb6ea1fed8a7fd51a2647d2856921243a57e5324c7"
+      "bytes": 83513,
+      "sha256": "8012c6c0a95fe204f0e9d4c4a7d5538f61a0374db5e9c3ee1f70ccdbbe335de1"
     },
     "src/visa-document-matching.js": {
       "bytes": 62298,
@@ -940,6 +944,14 @@
       "bytes": 11960,
       "sha256": "ba6f2a1c1fa7e7baad75450521bc695913e44ea05699d3553ae57eb05f057609"
     },
+    "src/visa-mrz-consent.js": {
+      "bytes": 8651,
+      "sha256": "0ebb774b726368e5ecf73d7bb83930eab88d533a34eb8929d2a71e3a1385f4f7"
+    },
+    "src/visa-mrz-durable-budget.js": {
+      "bytes": 25575,
+      "sha256": "425cb1a31c9d689aa4368e9500a4c5b90626fccd1b290ad9745cd3f987fa344d"
+    },
     "src/visa-mrz-openai.js": {
       "bytes": 17722,
       "sha256": "7e42e6d7c08280a2dba8d43e534630f5c1d11ed9e129ee329a4e6e0dd9484342"
@@ -951,6 +963,14 @@
     "src/visa-mrz-optical.js": {
       "bytes": 13389,
       "sha256": "aa7f1174f77cebc3acadc25b947492c5cac28e348b8185611fcb1b610d781eba"
+    },
+    "src/visa-mrz-production.js": {
+      "bytes": 19066,
+      "sha256": "1db858b28c4d3578c03dc03d243ad1f28ce2f85b8bc76abf32e36a0d400e2fa2"
+    },
+    "src/visa-mrz-profiles.js": {
+      "bytes": 13070,
+      "sha256": "e6e0feede257086b7f8e7e406c8c6e78c385387381a5b5462dde33db22d5093a"
     },
     "src/visa-mrz-vision.js": {
       "bytes": 5784,
@@ -989,20 +1009,20 @@
       "sha256": "fd42916d010ec47cda14d4b05451372e0499a97fef656caa0da2fd6b91dbdd07"
     },
     "src/visa-upload-ui.css": {
-      "bytes": 18998,
-      "sha256": "24a915c8009bb841903e45b0be9737fb99ebaaac45d3b623ff7c30da7f47f183"
+      "bytes": 19836,
+      "sha256": "f142e77742014d01e6a8f7847aadfa290ffe3c0ff8556b272b694888a9f71111"
     },
     "src/visa-upload-ui.js": {
-      "bytes": 23091,
-      "sha256": "429fcd0867f3580ececb8c9d2fc017ac0ec5d69b2aa4032b77449a2f2b2e0073"
+      "bytes": 26079,
+      "sha256": "00a34dcc365f5d8c373dfcfc47a2bd3118625a09f46b3af040b3c55e6af88ebd"
     },
     "src/visa-upload.html": {
-      "bytes": 10988,
-      "sha256": "d74022cba97a8c63d149ff16b7d95cb02de4431f7f2842016ebf2de2a47c5b4f"
+      "bytes": 11704,
+      "sha256": "13cffa71e512920587a4a723158f47fa4606cd08bf4d4ce553a69e7d07a48d02"
     },
     "src/visa-upload.js": {
-      "bytes": 11871,
-      "sha256": "1399ccd741e6c9b7de743ac733970e03d691986da6e38ecf4700d126ccd4f058"
+      "bytes": 17421,
+      "sha256": "baa2508a83ad810001350e55cc372d2f033da075bade92c2b501cbc1bd017bef"
     },
     "src/visa-whatsapp.js": {
       "bytes": 29605,
@@ -1200,6 +1220,10 @@
       "bytes": 10484,
       "sha256": "5915026982dbd93f55e6da06ffbe71f268f0b506adc84de87dc3db3839688583"
     },
+    "test/inbox-automation-transition.test.js": {
+      "bytes": 4179,
+      "sha256": "11ec8da0779b2242efb71a2edafa561a31699c2aaa48d7bbb95fabcdd52d470b"
+    },
     "test/inbox-http.test.js": {
       "bytes": 12906,
       "sha256": "3841e327831fb1c16b39ac9dfad17101ae538efb1ff6f32f03728cc45b901c3f"
@@ -1241,8 +1265,8 @@
       "sha256": "8cc6aac99272cf3bc8c2148219541432d2820930b3a1a74275991a7d7a8fc58a"
     },
     "test/mofa-captcha-server.test.js": {
-      "bytes": 3517,
-      "sha256": "82d8ea607d1b4402a2f4e010234c04acbe29774f253695f52fa686bf4805d5dc"
+      "bytes": 3796,
+      "sha256": "11b14102b719d925be075ae5494627c89813674584f45feb4a9181c506e3b273"
     },
     "test/mofa-gmail-wiring.test.js": {
       "bytes": 2266,
@@ -1373,8 +1397,8 @@
       "sha256": "aa94cb5b01fdc66811af30c73b716b3c6890fd39d2f3e6de0b8e2ed34d021314"
     },
     "test/raad-machine-dossier.test.js": {
-      "bytes": 24832,
-      "sha256": "ce497a341937a2412a31093fe155b46494e8220eb583783a40fd1a749c847b5b"
+      "bytes": 28575,
+      "sha256": "6c94f44d6cb4a433fb01c5310aa2ea6c43e170498a14a2f518f789a60eb1c6bb"
     },
     "test/raad-mofa-preview.test.js": {
       "bytes": 10754,
@@ -1457,16 +1481,16 @@
       "sha256": "80c8ad7b150eb36c509d615dc76ef1dbcf18974304f1d5e15ef21cfc851c3e23"
     },
     "test/service-menu-delivery.test.js": {
-      "bytes": 2006,
-      "sha256": "15ef8af00285e606b8c75d49189ab11fb59cd45ea4da8d3fc4313968df3466f3"
+      "bytes": 2257,
+      "sha256": "f98ae58a059f57fdeea8ad3a5fca61a301a4d5f9fbbf8c4ca7328d77e94df3e6"
     },
     "test/service-menu.test.js": {
-      "bytes": 3494,
-      "sha256": "ff7069ccb3ef9ae988b1f46da6ffa0af439874fef52effd87bf9a35f2976fe50"
+      "bytes": 3745,
+      "sha256": "b4d062ab98cd4a413b123d82a31201a3044e7d3b7d5501ce2e4d4ae4ec7217b8"
     },
     "test/service-routing.test.js": {
-      "bytes": 2204,
-      "sha256": "03f6055d73f1365823f6c91f84fb383370e133cc31d2ed106a0af575e8edf24d"
+      "bytes": 2835,
+      "sha256": "2885799551e5c9fadf93527b849e4f102506a4fc32799ced8a8a7a650fd74cd2"
     },
     "test/state-storage.test.js": {
       "bytes": 2611,
@@ -1507,6 +1531,10 @@
     "test/visa-document-conversation.test.js": {
       "bytes": 23118,
       "sha256": "ba333032998ca46dd9ebebd364c378eae0d7d2ab0ab551dc323b78d73cf18256"
+    },
+    "test/visa-document-intake-profiles.test.js": {
+      "bytes": 15133,
+      "sha256": "5aa2111f2c13337da93d26aa419b713eefd0ab4010de2d77f64fa29a31aee1e2"
     },
     "test/visa-document-intake-reader-contract.test.js": {
       "bytes": 12010,
@@ -1572,6 +1600,18 @@
       "bytes": 21099,
       "sha256": "c0c4cd8ee5a9ff5ba1c4442da2f73ec70046ff93803d8962ada56e0864eba177"
     },
+    "test/visa-mrz-composition.test.js": {
+      "bytes": 18188,
+      "sha256": "a60f49b9431a2ee8283ea00726968a56cbf6f3410570936f911fce47ae8e22f9"
+    },
+    "test/visa-mrz-consent.test.js": {
+      "bytes": 9520,
+      "sha256": "14a90e78909923a42ca42d2714350c487b27074a0df14aecf4a3d079b401f9ac"
+    },
+    "test/visa-mrz-durable-budget.test.js": {
+      "bytes": 27256,
+      "sha256": "a51608d5937e433541acd9d0100bd510144eeb09b464f958c0e68cfeff738971"
+    },
     "test/visa-mrz-openai.test.js": {
       "bytes": 20484,
       "sha256": "b0cb4c50ce7bd644e3f2ebf3ad5973a680cdfc8d3544c1c07cd8f6ac8c766999"
@@ -1579,6 +1619,14 @@
     "test/visa-mrz-optical.test.js": {
       "bytes": 19978,
       "sha256": "e88a4b7b2a73123ad5d5d946ffbff9517105e31a05fe5298d1016aa7216ac40d"
+    },
+    "test/visa-mrz-production.test.js": {
+      "bytes": 24599,
+      "sha256": "e4b4304adbf47a92fd8b209f6c41c5716cbb9814b4a5903edf7475ca8a8f349b"
+    },
+    "test/visa-mrz-profiles.test.js": {
+      "bytes": 18936,
+      "sha256": "dac9699b808bf6f4105c08eda692b5d60bc98bf862888e500e62886685543cde"
     },
     "test/visa-mrz-vision.test.js": {
       "bytes": 7588,
@@ -1648,9 +1696,13 @@
       "bytes": 7532,
       "sha256": "3ce7c557cf0e032ec1d6a372ce656a1bbf1ab46724356bb74bbabcd83f91fc36"
     },
+    "test/visa-upload-consent.test.js": {
+      "bytes": 12024,
+      "sha256": "f4da312d768425a7d57a228fa97d1c5c3cc466510d8d8e67ccb1b55a3757419b"
+    },
     "test/visa-upload-ui.test.js": {
-      "bytes": 12552,
-      "sha256": "6a4701182d7f3511f42d2ef4fd4332bb998ae828025959623787fe2f9248e69d"
+      "bytes": 18874,
+      "sha256": "93e5629325ebf44f9bff01827902c50d74c95b0ed7fadabeae0ef4f434def501"
     },
     "test/visa-upload-webhook.test.js": {
       "bytes": 11053,
@@ -1677,22 +1729,24 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-4b39b9d-06",
+  "buildNonce": "raad-validation-20261031-2167d5f-01",
   "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
   "nodeArchiveSha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
   "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
   "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
   "toolFiles": {
-    "Dockerfile.validation": "20b7c3fd12179ed9da5f17715d367dc1685f91e0397184242df1972befcd70ca",
-    "Dockerfile.validation.dockerignore": "872a6cbd7591b7c9f0a2eb3803076d219469dd5a3fdd4069f96ce0c9ebc144ef",
-    "build-gate.py": "3d419dd437a9c881e3a565ef239fd76287fc1f17fb1998dcb7daf3c2f49bf724",
-    "expected-source-manifest.json": "295229c24e980fb03761e57c64666dee38b5db71942cf611b8c27a84470c2999",
-    "loopback-network-guard.cjs": "f64b794b2cff41c62e89990049b9992fa04960747e05bfc8da84e89812cf0692",
-    "main-native-smoke.cjs": "8ff3daa461f25d4d3b91406916e64611d3d723eed36dfcfaf8df6e8a20d808cb",
-    "main-start-preload.cjs": "4d2961af2d0483f836e7608941751dcc50bff8e6a613ca07dab316399c19a775",
-    "native-probe.cjs": "98d9c3c17a7e6f26d7029e85b1c3fd18a69a912679fe09a3534b42cbd7c08212",
-    "report-server.cjs": "fa5045417fff8eb90fb8ae764e4a708e0bf5a842074d02ec9430bad45cfd54ac",
-    "target-runtime-provenance.json": "d8635b028f34c514179184bc78751a247a37ec21737eba356410763c6b7f5d4a",
-    "verify-main-start.py": "534239eabd6cb84b20be0bc58ffe4c494042ad53c20d39892387b155e7c49de5"
-  }
+    "Dockerfile.validation": "1e043bd90b3ba99e29a659357331712d5f3ad68144258eeb66b8910179312126",
+    "Dockerfile.validation.dockerignore": "8222c6098ca87bea41c036cc56fc0267c7eb37e2b8fa82ef26b425a006ab8b36",
+    "build-gate.py": "89e58895f307e0e52db5c22d5cf9acbacba220930104d299eb55abbe38118546",
+    "expected-source-manifest.json": "4520a69ea1321725e65e62315799fc0494a397cb964c84ff9a3dbaf676f23a90",
+    "loopback-network-guard.cjs": "53438dae447b08fe1e341b0c1b5d6ab15a7e9576c18cd90bbfabe9abd44d8d0a",
+    "main-native-smoke.cjs": "05a7c3c7921fc5af01ad41ceefb544581ee2085c4c0e7f8d6b7cf4fe2116d4de",
+    "main-start-preload.cjs": "43ab76f7ab71488e69d93091c1ee645d27b75e5b3205bc154ec54d7144a5e78d",
+    "native-probe.cjs": "6a7860d1a544def6798784eb6649be56d90b8c962c386413912bdd9a442c7efc",
+    "report-server.cjs": "28816c704ff65b005af9b280f4334b8e75abceb19e7b7db65c5e9438b3b42e75",
+    "target-runtime-provenance.json": "a7edc4a38c830d3f030d856105e24a6b2fac729bed6b1ff8954e9ed15a5f6637",
+    "verify-main-start.py": "e9f0608aea46ec7ce70ef6ac2b3e9324e8918891b1ecd0f0ad6009b0e74ed299"
+  },
+  "firstPartyFiles": 445,
+  "sourceFreezeSha256": "dc33bc9ce880ae446729cda9a6232f34b19a9045f9497206cf7c2c1e838536da"
 }

@@ -1,7 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {MessageBatcher}=require('../src/message-batcher');
-const {routeService,noteIncoming}=require('../src/service-routing');
+const {routeService:routeServiceImpl,noteIncoming}=require('../src/service-routing');
+// Pure routing fixture: explicit service availability, independent of runtime execution flags.
+const routeService=(store,id,text,options={})=>routeServiceImpl(store,id,text,{...options,env:options.env||{SAUDI_VISA_ENABLED:'true'}});
 const {createServiceMenuSender}=require('../src/service-menu-delivery');
 function setup(){const store={data:{},save(){}},sent=[],journaled=[];let human=false;const sender=createServiceMenuSender({store,inbox:{isHumanOwned:()=>human},send:async(to,payload)=>{sent.push({to,payload});return{messages:[{id:'synthetic-menu'}]};},journal:{hasCustomer:()=>true,recordOutbound:(to,payload)=>journaled.push({to,payload})}});return{store,sent,journaled,sender,setHuman:value=>{human=value;}};}
 test('menu completes while a price delivery waits for a pending inbound batch to settle',async()=>{

@@ -6,6 +6,8 @@ const {MAX_BYTES}=require('./visa-media');
 const TOKEN=/^[A-Za-z0-9_-]{43}$/,UUID=/^[a-f0-9-]{36}$/,KEY=/^[A-Za-z0-9_-]{8,100}$/;
 const LIMITS=Object.freeze({passport:2,residence:2,photo:1}),TTL=2*3600000;
 const RETURN_TEXT='تم رفع المستندات';
+const MRZ_CONSENT_DESCRIPTION='اختياري: أوافق على إرسال الجزء الذي يحتوي على سطور القراءة الآلية (MRZ) من صور جواز السفر أو الهوية في هذا الرفع إلى OpenAI لقراءة هذه السطور. يمكنني رفع المستندات دون هذه الموافقة.';
+const SHA=/^[a-f0-9]{64}$/,COMPLETE_BODY_MAX=1024;
 const MIME=new Set(['image/jpeg','image/png','image/webp','application/pdf']);
 const STATUS={UPLOAD_UNAUTHORIZED:401,UPLOAD_EXPIRED:410,UPLOAD_STALE:409,UPLOAD_PAUSED:409,UPLOAD_SEALED:409,UPLOAD_LIMIT:409,UPLOAD_CONFLICT:409,UPLOAD_EMPTY:409,UPLOAD_NOT_FOUND:404,UPLOAD_INVALID:400,UPLOAD_TYPE_INVALID:400,UPLOAD_CONTENT_INVALID:400,UPLOAD_TOO_LARGE:413,UPLOAD_BUSY:429,UPLOAD_STORAGE_UNAVAILABLE:503,UPLOAD_UNAVAILABLE:503,UPLOAD_ORIGIN_INVALID:403};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -19,10 +21,26 @@ async function readUpload(request){
  const chunks=[];let size=0;const timer=setTimeout(()=>request.destroy?.(),30000);timer.unref?.();
  try{for await(const value of request){const chunk=Buffer.from(value);size+=chunk.length;if(size>MAX_BYTES)fail('UPLOAD_TOO_LARGE');chunks.push(chunk);}if(!size||declared!==undefined&&Number(declared)!==size)fail('UPLOAD_INVALID');return Buffer.concat(chunks,size);}catch(error){if(STATUS[error?.code])throw error;fail('UPLOAD_INVALID');}finally{clearTimeout(timer);}
 }
+async function readCompletion(request,{revoke=false}={}){
+ const maxBytes=revoke?64:COMPLETE_BODY_MAX,declared=request.headers['content-length'];
+ if(declared!==undefined&&(!/^\d+$/.test(String(declared))||Number(declared)>maxBytes))fail(Number(declared)>maxBytes?'UPLOAD_TOO_LARGE':'UPLOAD_INVALID');
+ const chunks=[];let size=0,timedOut=false,timer;
+ const timeout=new Promise((resolve,reject)=>{timer=setTimeout(()=>{timedOut=true;request.destroy?.();reject(Object.assign(Error('UPLOAD_INVALID'),{code:'UPLOAD_INVALID'}));},5000);timer.unref?.();});
+ try{return await Promise.race([timeout,(async()=>{
+  for await(const value of request){if(timedOut)fail('UPLOAD_INVALID');const chunk=Buffer.from(value);size+=chunk.length;if(size>maxBytes)fail('UPLOAD_TOO_LARGE');chunks.push(chunk);}if(timedOut||declared!==undefined&&Number(declared)!==size)fail('UPLOAD_INVALID');if(!size)return null;
+  if(request.headers['content-type']!=='application/json')fail('UPLOAD_INVALID');let body;try{body=JSON.parse(Buffer.concat(chunks,size).toString('utf8'));}catch{fail('UPLOAD_INVALID');}
+  if(revoke){if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length)fail('UPLOAD_INVALID');return null;}
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='mrzConsent'))fail('UPLOAD_INVALID');
+  if(body.mrzConsent===undefined)return null;const consent=body.mrzConsent;
+  if(!consent||typeof consent!=='object'||Array.isArray(consent)||Object.keys(consent).some(key=>!['accepted','policySha256'].includes(key))||typeof consent.accepted!=='boolean'||consent.policySha256!==undefined&&!SHA.test(consent.policySha256))fail('UPLOAD_INVALID');
+  return consent;
+ })()]);}catch(error){if(STATUS[error?.code])throw error;fail('UPLOAD_INVALID');}finally{clearTimeout(timer);}
+}
+
 class VisaUploadService{
- constructor({store,mediaStore,documentIntake,inbox,env=process.env,now=Date.now,onComplete=()=>{},whatsappNumber}={}){
-  if(!store?.data||typeof store.save!=='function'||!mediaStore||typeof inbox?.isHumanOwned!=='function'||typeof onComplete!=='function')throw Error('UPLOAD_CONFIG_INVALID');
-  Object.assign(this,{store,mediaStore,documentIntake,inbox,env,now,onComplete});this.origin=originFor(env);this.locks=new Map();
+ constructor({store,mediaStore,documentIntake,inbox,env=process.env,now=Date.now,onComplete=()=>{},whatsappNumber,mrzConsentOptions,mrzConsents,onConsentRevoked=()=>{}}={}){
+  if(!store?.data||typeof store.save!=='function'||!mediaStore||typeof inbox?.isHumanOwned!=='function'||typeof onComplete!=='function'||typeof onConsentRevoked!=='function')throw Error('UPLOAD_CONFIG_INVALID');
+  Object.assign(this,{store,mediaStore,documentIntake,inbox,env,now,onComplete,mrzConsentOptions,mrzConsents,onConsentRevoked});this.origin=originFor(env);this.locks=new Map();
   // Open the configured business chat with an ordinary follow-up drafted.
   // The customer still presses Send in WhatsApp; no case data or link token
   // enters the return URL, and this text never supplies application consent.
@@ -31,11 +49,18 @@ class VisaUploadService{
  }
  get data(){return this.store.data.visaUpload;}
  currentCase(customer){const c=this.store.data.visaCases?.[customer];if(!validCustomer(customer)||!c||typeof c.id!=='string'||!c.id||c.pendingAmendment||c.submissionStatus==='submitted')fail('UPLOAD_STALE');return c;}
+ consentOption(){
+  try{const value=typeof this.mrzConsentOptions==='function'?this.mrzConsentOptions():null;
+   if(this.mrzConsents?.healthy===false||value?.available!==true||value.provider!=='openai'||!SHA.test(value.readerFingerprint||'')||!SHA.test(value.policySha256||'')||value.inputPolicy!=='upright_page_internal_mrz_crop_v1'||typeof this.mrzConsents?.grantUpload!=='function')return null;
+   return{available:true,provider:'openai',readerFingerprint:value.readerFingerprint,inputPolicy:value.inputPolicy,policySha256:value.policySha256,description:MRZ_CONSENT_DESCRIPTION};
+  }catch{return null;}
+ }
+ cancelConsent(session){try{this.mrzConsents?.revokeSession?.(session?.id);}catch{}}
  guard(session,{open=false}={}){
   if(!session||this.data.sessions[session.id]!==session)fail('UPLOAD_UNAUTHORIZED');
-  if(session.expiresAt<=this.now())fail('UPLOAD_EXPIRED');
-  const c=this.currentCase(session.customer);if(c.id!==session.caseId||visaCaseSignature(c)!==session.caseSignature)fail('UPLOAD_STALE');
-  if(this.inbox.isHumanOwned(session.customer)||this.inbox.isBlocked?.(session.customer))fail('UPLOAD_PAUSED');
+  if(session.expiresAt<=this.now()){this.cancelConsent(session);fail('UPLOAD_EXPIRED');}
+  let c;try{c=this.currentCase(session.customer);}catch(error){this.cancelConsent(session);throw error;}if(c.id!==session.caseId||visaCaseSignature(c)!==session.caseSignature){this.cancelConsent(session);fail('UPLOAD_STALE');}
+  if(this.inbox.isHumanOwned(session.customer)||this.inbox.isBlocked?.(session.customer)){this.cancelConsent(session);fail('UPLOAD_PAUSED');}
   if(open&&session.state!=='open')fail('UPLOAD_SEALED');
   if(!this.mediaStore.durable)fail('UPLOAD_STORAGE_UNAVAILABLE');return c;
  }
@@ -54,7 +79,9 @@ class VisaUploadService{
   const a=request.headers.authorization;if(typeof a!=='string'||!a.startsWith('Bearer ')||!TOKEN.test(a.slice(7)))fail('UPLOAD_UNAUTHORIZED');
   const tokenHash=hash(a.slice(7)),s=Object.values(this.data.sessions).find(x=>x.tokenHash===tokenHash);if(!s)fail('UPLOAD_UNAUTHORIZED');this.guard(s);return s;
  }
- view(s){return{ok:true,state:s.state,expiresAt:s.expiresAt,maxBytes:MAX_BYTES,limits:LIMITS,files:s.files.filter(x=>!x.withdrawn).map(({id,role,mimeType,size,clientKey})=>({id,role,mimeType,size,clientKey})),...(this.whatsappUrl?{whatsappUrl:this.whatsappUrl}:{})};}
+ hasSessionConsent(s,includeRevoked=false){try{return this.mrzConsents?.hasSessionConsent?.(s.id,{includeRevoked})===true;}catch{return false;}}
+ canRevoke(s){return typeof this.mrzConsents?.revokeSession==='function'&&Boolean(this.consentOption()||this.hasSessionConsent(s,true));}
+ view(s){const mrzConsent=s.state==='open'?this.consentOption():null;return{ok:true,state:s.state,expiresAt:s.expiresAt,maxBytes:MAX_BYTES,limits:LIMITS,files:s.files.filter(x=>!x.withdrawn).map(({id,role,mimeType,size,clientKey})=>({id,role,mimeType,size,clientKey})),...(this.whatsappUrl?{whatsappUrl:this.whatsappUrl}:{}),...(mrzConsent?{mrzConsent}:{}),...(s.state==='completed'&&this.hasSessionConsent(s)?{mrzConsentRevocable:true}:{})};}
  async serial(session,work){
   // Never accumulate attacker-controlled file buffers while a previous decode
   // is running. The client retries the same idempotency key after HTTP429.
@@ -78,18 +105,36 @@ class VisaUploadService{
   this.guard(session,{open:true});if(!UUID.test(id))fail('UPLOAD_NOT_FOUND');const file=session.files.find(x=>x.id===id&&!x.withdrawn);if(!file)fail('UPLOAD_NOT_FOUND');
   file.withdrawn=true;try{this.mediaStore.withdrawUpload(session.customer,{sessionId:session.id,mediaId:id,guard:()=>this.guard(session,{open:true})});}catch(error){delete file.withdrawn;throw error;}return this.view(session);
  }
- async complete(session){
+ async complete(session,consent=null){
   this.guard(session);if(session.state==='completed')return this.view(session);this.guard(session,{open:true});const mediaIds=session.files.filter(x=>!x.withdrawn).map(x=>x.id);if(!mediaIds.length)fail('UPLOAD_EMPTY');
+  const option=this.consentOption();
+  const accepted=session.mrzConsentDenied!==true&&consent?.accepted===true&&option&&consent.policySha256===option.policySha256;
   session.state='completed';session.completedAt=this.now();
-  try{this.mediaStore.activateUploads(session.customer,{sessionId:session.id,mediaIds,guard:()=>this.guard(session)});}catch(error){session.state='open';delete session.completedAt;throw error;}
-  // Committing files is the only durable action. No payment, visa consent or
-  // government submission is implied. Intake can recover these originals even
-  // if the wake-up callback is interrupted or the process restarts here.
-  try{await this.onComplete({customer:session.customer,mediaIds:[...mediaIds],sessionId:session.id});}catch{}
+  // The completed state is persisted with media activation. A retry never adds
+  // consent, including after an interrupted or ambiguous consent write.
+  try{this.mediaStore.activateUploads(session.customer,{sessionId:session.id,mediaIds,guard:()=>this.guard(session)});}catch(error){session.state='open';delete session.completedAt;if(accepted)session.mrzConsentDenied=true;throw error;}
+  // Committing files implies no payment, application consent or government
+  // submission. The separate optional MRZ consent is captured below. Intake
+  // can recover the originals if the callback or process is interrupted.
+  let mrzConsent;
+  if(accepted){
+   mrzConsent={};
+   try{this.guard(session);const sources=mediaIds.map(id=>{this.mediaStore.get(id,{customer:session.customer});return this.mediaStore.records?.[id]||this.store.data.visaMedia?.[id];});
+    mrzConsent=this.mrzConsents.grantUpload({customer:session.customer,caseId:session.caseId,caseSignature:session.caseSignature,sources,sessionId:session.id,expiresAt:session.expiresAt,provider:'openai',readerFingerprint:option.readerFingerprint,inputPolicy:option.inputPolicy,policySha256:option.policySha256});
+    if(!mrzConsent||typeof mrzConsent!=='object'||typeof mrzConsent.then==='function')throw Error();this.guard(session);
+   }catch{this.cancelConsent(session);mrzConsent={};}
+  }
+  try{this.guard(session);await this.onComplete({customer:session.customer,mediaIds:[...mediaIds],sessionId:session.id,...(mrzConsent?{mrzConsent}:{})});}catch{}
   this.guard(session);return this.view(session);
  }
- prune(){let changed=false;for(const [id,s]of Object.entries(this.data.sessions)){if(!s||s.expiresAt<=this.now()||!this.store.data.visaCases?.[s.customer]||this.store.data.visaCases[s.customer].id!==s.caseId){delete this.data.sessions[id];changed=true;}}if(changed)this.store.save();}
- deleteCustomer(customer){let changed=false;for(const [id,s]of Object.entries(this.data.sessions))if(s.customer===customer){delete this.data.sessions[id];changed=true;}if(changed)this.store.save();}
+ async revokeConsent(session,request){
+  this.guard(session);await readCompletion(request,{revoke:true});this.guard(session);
+  let revoked;try{revoked=this.mrzConsents.revokeSession(session.id);}catch{fail('UPLOAD_STORAGE_UNAVAILABLE');}
+  if(revoked)try{await this.onConsentRevoked({customer:session.customer,sessionId:session.id});}catch{}
+  this.guard(session);return this.view(session);
+ }
+ prune(){let changed=false;for(const [id,s]of Object.entries(this.data.sessions)){if(!s||s.expiresAt<=this.now()||!this.store.data.visaCases?.[s.customer]||this.store.data.visaCases[s.customer].id!==s.caseId){this.cancelConsent(s);delete this.data.sessions[id];changed=true;}}if(changed)this.store.save();}
+ deleteCustomer(customer){let changed=false;for(const [id,s]of Object.entries(this.data.sessions))if(s.customer===customer){this.cancelConsent(s);delete this.data.sessions[id];changed=true;}if(changed)this.store.save();}
  async handleRequest(request,response,url){
   if(url.pathname!=='/api/visa-upload'&&!url.pathname.startsWith('/api/visa-upload/'))return false;
   const headers={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'"};
@@ -99,7 +144,8 @@ class VisaUploadService{
    const session=this.authenticate(request);let result;
    if(url.pathname==='/api/visa-upload/session'&&request.method==='GET')result=this.view(session);
    else if(url.pathname==='/api/visa-upload/files'&&request.method==='POST')result=await this.serial(session,()=>this.upload(session,request));
-   else if(url.pathname==='/api/visa-upload/complete'&&request.method==='POST')result=await this.serial(session,()=>this.complete(session));
+   else if(url.pathname==='/api/visa-upload/complete'&&request.method==='POST')result=await this.serial(session,async()=>{const consent=this.consentOption()?await readCompletion(request):null;this.guard(session);return this.complete(session,consent);});
+   else if(url.pathname==='/api/visa-upload/mrz-consent/revoke'&&request.method==='POST'&&this.canRevoke(session))result=await this.serial(session,()=>this.revokeConsent(session,request));
    else if(url.pathname.startsWith('/api/visa-upload/files/')&&request.method==='DELETE'){const id=url.pathname.slice('/api/visa-upload/files/'.length);result=await this.serial(session,()=>this.remove(session,id));}
    else{reply(405,{ok:false,error:'UPLOAD_METHOD_INVALID'});return true;}
    reply(200,result);

@@ -23,7 +23,7 @@ const DOC_FIELDS = {nationalityCode: 'EGY', passportNumber: 'N12345678', passpor
 const CLIENT_FIELDS = {maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, saudiAddress: 'Fictitious hotel, Riyadh', health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}};
 const CONTACTS = {RAAD_APPLICATION_PHONE: '+15550001210', RAAD_CONTACT_EMAIL: 'visa@example.test', RAAD_INSURANCE_PHONE: '+15550001211', RAAD_POSTAL_CODE: '00000'};
 const extraction = (kind, fields = {}, extra = {}) => ({version: 1, kind, readable: true, rotation: 0, fields: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, {value, visible: true, confidence: 0.999}])), mrzLines: kind === 'passport' ? mrz() : [], portraitBox: null, ...extra});
-function fixture({canAutomate = () => true, gaps = [], cropPhoto = false} = {}) {
+function fixture({canAutomate = () => true, gaps = [], cropPhoto = false, mrzProfiles = null} = {}) {
   const c = {id: 'fictitious-machine-case', policyVersion: 'fictitious-policy', revision: 4, applicantCount: 1, applicants: [{nationality: 'مصر', documentType: 'passport'}], quote: {total: 240}, documents: [], paymentStatus: 'verified', submissionStatus: 'not_submitted'};
   c.staffVerification = {payment: {amount: 240, reference: 'BANK-MACHINE-EXAMPLE', caseSignature: visaCaseSignature(c)}};
   let saves = 0;
@@ -54,8 +54,8 @@ function fixture({canAutomate = () => true, gaps = [], cropPhoto = false} = {}) 
   assert(['ready', 'needs_confirmation'].includes(matched.status), JSON.stringify(matched.issues));
   const app = {id: IDS.evidence, applicantIndex: 0, status: matched.status, clientFieldsRequired: matched.clientFieldsRequired, fields: structuredClone(matched.fields), documents: {passport: IDS.passport, residence: IDS.residence, photo: IDS.photo}, evidence: structuredClone(matched.evidence), sourceManifest: [IDS.passportSource, IDS.residenceSource, ...(!cropPhoto ? [IDS.photoSource] : [])].sort().map(mediaId => ({mediaId, sha256: store.data.visaMedia[mediaId].checksum})), preparedManifest: ['passport', 'residence', 'photo'].map(kind => ({kind, mediaId: IDS[kind], sha256: store.data.visaMedia[IDS[kind]].checksum})), extractionDigest: hash({documents, applicantIndex: 0, fields: matched.fields, matchedDocuments: matched.documents, evidence: matched.evidence})};
   store.data.visaDocumentIntake = {version: 1, cases: {[CUSTOMER]: {caseId: c.id, caseSignature: visaCaseSignature(c), generation: 1, status: matched.status, documents, applicants: [app]}}};
-  const workflow = new RaadVisaWorkflow({store, mediaStore, now: () => NOW, env: CONTACTS, canAutomate});
-  const verify = () => verifyMachineDossier({store, mediaStore, customer: CUSTOMER, applicantIndex: 0, expectedCaseSignature: visaCaseSignature(c), evidenceId: IDS.evidence, now: () => NOW});
+  const workflow = new RaadVisaWorkflow({store, mediaStore, mrzProfiles, now: () => NOW, env: CONTACTS, canAutomate});
+  const verify = () => verifyMachineDossier({store, mediaStore, mrzProfiles, customer: CUSTOMER, applicantIndex: 0, expectedCaseSignature: visaCaseSignature(c), evidenceId: IDS.evidence, now: () => NOW});
   const apply = options => workflow.applyMachineDossier(CUSTOMER, {applicantIndex: 0, expectedRevision: 0, expectedCaseSignature: visaCaseSignature(c), evidenceId: IDS.evidence, ...options});
   function proof(patch = {}) {
     const verified = verify(), documentEvidence = {id: IDS.evidence, evidenceFingerprint: verified.evidenceFingerprint};
@@ -223,4 +223,32 @@ test('stale staff drafts are never carried into current case evidence',()=>{
 test('payment confirmation refreshes an otherwise unchanged manual draft without marking it staff reviewed',()=>{
  const f=fixture({gaps:['passportType','issueDate']});f.c.paymentStatus='unverified';f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2025-01-01'},confirm:true});
  f.c.paymentStatus='verified';assert.equal(f.workflow.get(CUSTOMER).state,'stale');const result=f.apply({expectedRevision:1});assert.equal(result.staffReviewRequired,true);const draft=f.workflow.get(CUSTOMER);assert.notEqual(draft.state,'stale');assert.equal(draft.fields.passportType,'ordinary');assert.equal(draft.review.complete,false);assert.equal(f.c.submissionStatus,'not_submitted');
+});
+
+function bindProfiledPassport(f){
+  const record=f.store.data.visaDocumentIntake.cases[CUSTOMER],document=record.documents.find(item=>item.mediaId===IDS.passportSource),profile={version:1,provider:'openai',consentId:'synthetic-grant',consentDigest:'a'.repeat(64)},binding=hash(profile),jobId='35000000-0000-4000-8000-000000000090';
+  document.mrzProfileKey=binding;
+  const job={id:jobId,customer:CUSTOMER,caseId:f.c.id,caseSignature:visaCaseSignature(f.c),generation:record.generation,status:'ready',mediaId:IDS.passportSource,sourceSha256:document.sourceSha256,mrzProfile:profile,pages:{1:structuredClone(document)}};
+  f.store.data.visaDocumentIntake.jobs={[jobId]:job};
+  const matched=reconcileDocumentEvidence({documents:record.documents,applicants:f.c.applicants,referenceDate:'2026-10-28'}).applicants[0];
+  f.app.extractionDigest=hash({documents:record.documents,applicantIndex:0,fields:matched.fields,matchedDocuments:matched.documents,evidence:matched.evidence});
+  return{job,document,record};
+}
+test('profiled machine evidence requires exact live approval at apply and final portal acceptance',()=>{
+ let approved=true,checks=0;const profiles={guard(binding,context){checks++;assert.equal(context.source,f.store.data.visaMedia[IDS.passportSource]);assert.equal(context.customer,CUSTOMER);assert.equal(context.caseId,f.c.id);assert.equal(context.caseSignature,visaCaseSignature(f.c));return approved;}};
+ const f=fixture({mrzProfiles:profiles});bindProfiledPassport(f);assert.equal(f.verify().ready,true);const result=f.apply();assert.equal(result.ok,true);const proof=f.proof();assert.equal(f.workflow.portalDossier(CUSTOMER,{clientProof:proof}).ready,true);approved=false;
+ assert.equal(f.verify().ready,false);assert.throws(()=>f.apply({expectedRevision:1}));const portal=f.workflow.portalDossier(CUSTOMER,{clientProof:proof});assert.equal(portal.ready,false);assert(portal.issues.some(item=>item.code==='RAAD_MACHINE_EVIDENCE_STALE'));assert.equal(portal.fingerprint,null);assert(checks>=6);
+});
+test('profiled cached evidence fails closed for an absent guard, false/void/async approval, missing job or marker',()=>{
+ for(const variant of ['missing-guard','false','void','async','missing-job','missing-marker','changed-page','stale-job']){
+  const profiles=variant==='missing-guard'?null:{guard:()=>variant==='false'?false:variant==='void'?undefined:variant==='async'?Promise.resolve(true):true},f=fixture({mrzProfiles:profiles}),{job,document}=bindProfiledPassport(f);
+  if(variant==='missing-job')f.store.data.visaDocumentIntake.jobs={};if(variant==='missing-marker')delete document.mrzProfileKey;if(variant==='changed-page')job.pages[1].extraction.rotation=90;if(variant==='stale-job')job.status='stale';
+  assert.equal(f.verify().ready,false,variant);assert.throws(()=>f.apply(),undefined,variant);assert.equal(f.store.data.raadApplications,undefined,variant);
+ }
+});
+test('a revoked profile cannot become accepted between repeated decrypted-media reads',()=>{
+ let approved=true,readCount=0;const f=fixture({mrzProfiles:{guard:()=>approved}});bindProfiledPassport(f);const read=f.mediaStore.read.bind(f.mediaStore);f.mediaStore.read=(...args)=>{if(++readCount===5)approved=false;return read(...args);};assert.equal(f.verify().ready,false);assert.equal(f.store.data.raadApplications,undefined);
+});
+test('a replaced live profile job cannot reuse the captured verification even with the same valid grant',()=>{
+ let checks=0;const f=fixture({mrzProfiles:{guard:()=>{if(++checks===2){const jobs=f.store.data.visaDocumentIntake.jobs,key=Object.keys(jobs)[0];jobs[key]=structuredClone(jobs[key]);}return true;}}});bindProfiledPassport(f);assert.equal(f.verify().ready,false);
 });
