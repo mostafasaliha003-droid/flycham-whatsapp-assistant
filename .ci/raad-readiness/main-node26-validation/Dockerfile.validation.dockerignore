@@ -1,0 +1,19 @@
+# Only this explicit test context. No app/state/env/deps directories copied.
+**
+!.ci/
+!.ci/raad-readiness/
+!.ci/raad-readiness/main-node26-validation/
+!.ci/raad-readiness/main-node26-validation/**
+**/__pycache__/**
+**/*.pyc
+**/.env
+**/.env.*
+**/.npmrc
+**/node_modules/**
+**/.git/**
+**/uploads/**
+**/state/**
+**/*.log
+**/*.tap
+**/*.pem
+**/*.key

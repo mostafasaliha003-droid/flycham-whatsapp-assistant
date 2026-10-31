@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+# TEST ONLY: a derived Debian/Node baseline, not Render native-image equivalence.
+FROM debian:bookworm-slim@sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e AS runtime-deps
+ARG RAAD_VALIDATION_NONCE=raad-validation-20261031-4b39b9d-05
+RUN printf '%s\n' "$RAAD_VALIDATION_NONCE" > /raad-validation-build-nonce \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM runtime-deps AS node-runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl xz-utils python3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --show-error --silent --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 120 --max-redirs 0 \
+      https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz -o /tmp/official-node.tar.xz \
+    && printf '%s  %s\n' d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997 /tmp/official-node.tar.xz | sha256sum -c - \
+    && mkdir /opt/node && tar -xJf /tmp/official-node.tar.xz -C /opt/node --strip-components=1 \
+    && printf '%s  %s\n' 0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b /opt/node/bin/node | sha256sum -c - \
+    && printf '%s  %s\n' 8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7 /opt/node/lib/node_modules/npm/bin/npm-cli.js | sha256sum -c - \
+    && test "$(/opt/node/bin/node --version)" = v26.13.0 \
+    && test "$(/opt/node/bin/node /opt/node/lib/node_modules/npm/bin/npm-cli.js --version)" = 11.20.0 \
+    && rm /tmp/official-node.tar.xz
+ENV PATH=/opt/node/bin:/usr/bin:/bin
+
+FROM node-runtime AS installed
+COPY .ci/raad-readiness/main-node26-validation /validation-input
+RUN timeout 360s python3 /validation-input/build-gate.py install
+
+FROM installed AS baseline-proof
+# No egress; source/dependencies RO. State/logs are synthetic and outside /app.
+RUN --network=none --mount=type=bind,from=installed,source=/app,target=/app,ro timeout 240s python3 /validation-input/build-gate.py baseline
+
+FROM baseline-proof AS pdf-tools-proof
+# Explicit PDF-tools overlay; no tesseract CLI and no browser installation.
+RUN timeout 300s sh -c 'apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*'
+RUN --network=none --mount=type=bind,from=installed,source=/app,target=/app,ro timeout 180s python3 /validation-input/build-gate.py pdf
+
+FROM runtime-deps AS reporter
+COPY --from=node-runtime /opt/node /opt/node
+ENV PATH=/opt/node/bin:/usr/bin:/bin
+WORKDIR /report
+COPY --from=pdf-tools-proof /validation-work/public/public-summary.json /report/public-summary.json
+COPY .ci/raad-readiness/main-node26-validation/report-server.cjs /report/report-server.cjs
+USER 65534:65534
+EXPOSE 10000
+CMD ["/opt/node/bin/node", "/report/report-server.cjs"]

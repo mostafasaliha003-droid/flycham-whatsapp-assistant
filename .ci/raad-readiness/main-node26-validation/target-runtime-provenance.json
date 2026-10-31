@@ -1,0 +1,7 @@
+{
+  "node": "v26.13.0",
+  "npm": "11.20.0",
+  "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
+  "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
+  "sourceManifestFunctionalCommit": "4b39b9d1e93e70147d794a7e9b47a3fc550f41b1"
+}
