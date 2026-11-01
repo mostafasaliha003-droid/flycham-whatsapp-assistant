@@ -511,7 +511,8 @@ function createServer() {
 
 if (require.main === module) {
   require('./visa-document-smoke').runDocumentSmoke({vision:documentVision,store:assistant.store}).catch(()=>console.log('DOCUMENT_VISION_SMOKE_UNAVAILABLE'));
-  if(consultantEnabled(process.env))runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE'));
+  const startupConsultant=consultantEnabled(process.env)?runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE')):Promise.resolve();
+  startupConsultant.then(()=>require('./cline-model-evaluation').runClineModelEvaluation({store:assistant.store})).catch(()=>console.log('CLINE_MODEL_EVAL_UNAVAILABLE'));
   checkWhatsAppConnection().then(code=>console.log(code));
   console.log('ASSISTANT_RUNTIME_'+JSON.stringify({...assistant.status(),visa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status(),notifications:{recipientConfigured:Boolean(COMPLAINT_RECIPIENT),templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE),ownerServiceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true}},catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));
   console.log('WHATSAPP_COMPARISON_DELIVERY_HISTORY_'+JSON.stringify(comparisonDeliverySummary(assistant.store)));
