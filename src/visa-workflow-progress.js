@@ -24,6 +24,7 @@ function workflowProgressReply(store,customer,summary,now=Date.now()){
   if(job.state==='awaiting_answer_confirmation')return 'بيانات الطلب بانتظار اعتمادك على ملخص الإجابات المرسل في هذه المحادثة. راجع الملخص وأكّد صحته لنكمل على نفس الملف.';
   const lease=data.visaFulfilment?.lease;
   if(!lease||lease.jobId!==job.id||lease.cancelled||lease.expiresAt<=now)return null;
+  if(job.state==='waiting_otp'&&run?.phase==='waiting_operator')return 'استكمال الطلب بانتظار التحقق المرئي من المشرف ضمن جلسة رعد الحالية. المرفقات محفوظة؛ لم يتأكد حفظ الطلب بعد.';
   if(job.state==='waiting_otp'&&run?.phase==='waiting_otp')return 'استكمال الطلب بانتظار رمز تحقق صالح من المشرف. لم يتأكد حفظ الطلب بعد؛ لا داعي لإعادة إرسال الأوراق.';
   if(job.state==='running'&&['starting','running'].includes(run?.phase))return 'رعد يتابع تنفيذ الطلب حاليًا. لم يتأكد حفظه بعد، وسنبلغك بالنتيجة المتحققة؛ لا داعي لإعادة إرسال الأوراق.';
  }catch{}
