@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {AssistantState} = require('../src/assistant-state');
 
@@ -17,9 +18,16 @@ test('standard and direct test invocations cannot consume an ambient encrypted d
   store.data.inbox = {owner: {firstAt: Date.now(), lastAt: Date.now(), messages: [{text: sentinel}]}};
   store.save();
   const before = fs.readFileSync(file);
+  const privateFile = path.join(root, 'saudi-visa-private.enc');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', crypto.createHash('sha256').update(key).digest(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify({banks: []})), cipher.final()]);
+  fs.writeFileSync(privateFile, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), {mode: 0o600});
+  const privateBefore = fs.readFileSync(privateFile);
   const source = path.resolve(__dirname, '../src/assistant-state.js');
+  const privateSource = path.resolve(__dirname, '../src/saudi-visa-private.js');
   const probe = path.join(root, 'probe.test.cjs');
-  fs.writeFileSync(probe, "const {test}=require('node:test'); const {AssistantState}=require(" + JSON.stringify(source) + "); test('ambient read',()=>new AssistantState());");
+  fs.writeFileSync(probe, "const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const {AssistantState}=require(" + JSON.stringify(source) + ");const {loadVisaPrivateConfig}=require(" + JSON.stringify(privateSource) + ");const read=fs.readFileSync;let privateReads=0;fs.readFileSync=function(file,...args){if(String(file)===" + JSON.stringify(privateFile) + ")privateReads++;return read.call(this,file,...args)};test('ambient read',()=>{loadVisaPrivateConfig();assert.equal(privateReads,0);new AssistantState();});");
   const env = {...process.env, ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: key, REMAL_TEST_ROOT: allowed};
   delete env.NODE_TEST_CONTEXT;
   const direct = spawnSync(process.execPath, ['--test', probe], {env, encoding: 'utf8', timeout: 10000});
@@ -27,6 +35,7 @@ test('standard and direct test invocations cannot consume an ambient encrypted d
   assert.match(direct.stdout + direct.stderr, /TEST_STATE_ISOLATION_REQUIRED/);
   assert.doesNotMatch(direct.stdout + direct.stderr, new RegExp(sentinel));
   assert.deepEqual(fs.readFileSync(file), before);
+  assert.deepEqual(fs.readFileSync(privateFile), privateBefore);
 
   fs.writeFileSync(probe, "const {test}=require('node:test'); const assert=require('node:assert/strict'); const {AssistantState}=require(" + JSON.stringify(source) + "); test('isolated read',()=>{assert.equal(process.env.CLINE_API_KEY,undefined);assert.equal(process.env.ASSISTANT_STATE_PATH,undefined);assert.equal(new AssistantState().file,undefined);});");
   const standard = spawnSync(process.execPath, [path.resolve(__dirname, '../scripts/run-tests.cjs'), probe], {

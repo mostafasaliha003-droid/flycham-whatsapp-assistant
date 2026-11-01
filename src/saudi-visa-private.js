@@ -1,10 +1,11 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const {defaultStateFile}=require('./state-storage');
+const {defaultStateFile,assertTestStatePath}=require('./state-storage');
 // Business financial/contact data is provisioned privately, never in source control.
 function loadVisaPrivateConfig({env=process.env,file}={}){
  try{
   const state=env.ASSISTANT_STATE_PATH||defaultStateFile(),target=file||env.SAUDI_VISA_PRIVATE_PATH||(state&&path.join(path.dirname(state),'saudi-visa-private.enc'));
+  assertTestStatePath(target);
   const key=env.ASSISTANT_STATE_KEY||env.WHATSAPP_APP_SECRET;if(!target||!key||!fs.existsSync(target))return{};
   const b=fs.readFileSync(target);if(b.length>20000||b.length<29)return{};
   const d=crypto.createDecipheriv('aes-256-gcm',crypto.createHash('sha256').update(key).digest(),b.subarray(0,12));d.setAuthTag(b.subarray(12,28));
