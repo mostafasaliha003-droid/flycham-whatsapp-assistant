@@ -2,6 +2,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const result = fs.readFileSync('/report/results.json');
+console.log('REMAL_VALIDATION_LIVE ' + result.toString('utf8'));
 http.createServer((request, response) => {
   if (!['/', '/health'].includes(request.url) || request.method !== 'GET') {
     response.writeHead(404).end();

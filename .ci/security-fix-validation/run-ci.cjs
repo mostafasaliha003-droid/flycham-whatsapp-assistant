@@ -17,7 +17,7 @@ assert.equal(require('/app/package.json').scripts.test, 'node scripts/run-tests.
 const suite = spawnSync(process.execPath, ['scripts/run-tests.cjs', '--test-reporter=tap'], {
   cwd: '/app', encoding: 'utf8', maxBuffer: 30 * 1024 * 1024, timeout: 600000
 });
-process.stdout.write(suite.stdout || '');
+process.stdout.write((suite.stdout || '').slice(-2000));
 process.stderr.write(suite.stderr || '');
 assert.equal(suite.status, 0, 'The complete isolated suite must pass');
 const count = name => Number(suite.stdout.match(new RegExp('^# ' + name + ' (\\d+)$', 'm'))?.[1]);
