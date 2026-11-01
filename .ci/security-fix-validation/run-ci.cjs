@@ -18,6 +18,7 @@ const suite = spawnSync(process.execPath, ['scripts/run-tests.cjs', '--test-repo
   cwd: '/app', encoding: 'utf8', maxBuffer: 30 * 1024 * 1024, timeout: 600000
 });
 process.stdout.write((suite.stdout || '').slice(-2000));
+if(suite.status!==0){const lines=(suite.stdout||'').split('\n');let count=0;for(let i=0;i<lines.length&&count<8;i++)if(/^\s*not ok /.test(lines[i])){console.log('FAILED_TEST_DETAIL\n'+lines.slice(i,i+45).join('\n'));count++;}}
 process.stderr.write(suite.stderr || '');
 assert.equal(suite.status, 0, 'The complete isolated suite must pass');
 const count = name => Number(suite.stdout.match(new RegExp('^# ' + name + ' (\\d+)$', 'm'))?.[1]);
