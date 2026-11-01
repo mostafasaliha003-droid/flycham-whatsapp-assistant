@@ -9,17 +9,17 @@ const {parseTD1MRZ} = require('./visa-id-mrz');
 const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR_CODES} = require('./visa-mrz-vision');
 const {OPTICAL_POLICY_FINGERPRINT,MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
 
-const MODEL = 'gemma-4-26b-a4b-it';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-10-29.v16';
+const MODEL = 'gemini-3.5-flash';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-11-01.v17';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
 const WIRE_PROJECTION_POLICY = 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6';
 // Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
 // Preserve completed V7/V8/V9/V10/V11 failures/unreadable outcomes for an explicit bounded
 // retry, never a rollout replay. Readable successful evidence remains reusable.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -273,12 +273,18 @@ function parseDocumentOutput(output, {deferPassportMrz = false} = {}) {
   return validateDocumentExtraction(projected);
 }
 
-function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.now} = {}) {
+function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.now, budgetStore} = {}) {
   let busy = false, cooldownUntil = 0;
+  const ledger = budgetStore || {data:{},save(){}};
+  const budgetConfigured = () => ledger?.data && typeof ledger.save === 'function' && (env.NODE_ENV !== 'production' || Boolean(budgetStore));
+  const dailyLimit = () => {const n=Number(env.RAAD_DOCUMENT_OCR_DAILY_LIMIT ?? 20);return Number.isInteger(n)&&n>=1&&n<=100?n:0;};
+  const day = () => new Date(now()+4*3600000).toISOString().slice(0,10);
+  const used = () => {const value=ledger.data.documentVisionBudget;return value?.day===day()?(Number.isSafeInteger(value.used)&&value.used>=0?value.used:dailyLimit()):0;};
+  const remaining = () => Math.max(0,dailyLimit()-used());
   const enabled = () => env.RAAD_DOCUMENT_OCR_ENABLED === 'true';
-  const configured = () => typeof env.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0 && (!env.RAAD_DOCUMENT_OCR_MODEL || env.RAAD_DOCUMENT_OCR_MODEL === MODEL);
-  const ready = () => enabled() && configured() && !busy && now() >= cooldownUntil;
-  const status = () => ({enabled: enabled(), configured: configured(), model: MODEL, ready: ready(), busy, ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
+  const configured = () => budgetConfigured() && dailyLimit()>0 && typeof env.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0 && (!env.RAAD_DOCUMENT_OCR_MODEL || env.RAAD_DOCUMENT_OCR_MODEL === MODEL);
+  const ready = () => enabled() && configured() && remaining()>0 && !busy && now() >= cooldownUntil;
+  const status = () => ({enabled: enabled(), configured: configured(), model: MODEL, ready: ready(), busy, dailyLimit:dailyLimit(),dailyUsed:used(),dailyRemaining:remaining(), ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
   const guardNow = async guard => { try { if (typeof guard !== 'function' || await guard() === false) throw Error(); } catch { throw failure('DOCUMENT_VISION_STALE'); } };
   async function perform({bytes, mimeType, guard} = {}, focused = false) {
     if (!enabled()) throw failure('DOCUMENT_VISION_DISABLED');
@@ -286,11 +292,14 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     if (!configured()) throw failure('DOCUMENT_VISION_NOT_CONFIGURED');
     if (busy) throw failure('DOCUMENT_VISION_BUSY');
     if (now() < cooldownUntil) throw failure('DOCUMENT_VISION_COOLDOWN', cooldownUntil - now());
+    if (!remaining()) throw failure('DOCUMENT_VISION_COOLDOWN', 60000);
     busy = true;
     try {
       await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
       const request = focused ? await buildMrzRequest({bytes, mimeType}) : {systemInstruction: {parts: [{text: PROMPT}]}, contents: [{role: 'user', parts: [{inlineData: {mimeType, data: bytes.toString('base64')}}, {text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], generationConfig: {temperature: 0, maxOutputTokens: 4096, thinkingConfig: {thinkingLevel: 'minimal'}}};
       await guardNow(guard);
+      ledger.data.documentVisionBudget={day:day(),used:used()+1};
+      try{ledger.save();}catch{throw failure('DOCUMENT_VISION_NOT_CONFIGURED');}
       let response;
       try { response = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent', {method: 'POST', headers: {'x-goog-api-key': env.GEMINI_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(request)}); }
       catch (error) { throw failure(['TimeoutError', 'AbortError'].includes(error?.name) ? 'DOCUMENT_VISION_TIMEOUT' : 'DOCUMENT_VISION_NETWORK'); }
