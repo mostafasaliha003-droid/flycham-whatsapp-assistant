@@ -58,7 +58,7 @@ test('real signed dialogue keeps one upload link, concise document turns and one
    return new Response(Buffer.from(page.bytes),{status:200,headers:{'content-type':'image/png','content-length':String(page.bytes.length)}});
   }
   if(target.hostname==='generativelanguage.googleapis.com'){
-   assert.equal(target.pathname,'/v1beta/models/gemma-4-26b-a4b-it:generateContent');assert.equal(options.headers['x-goog-api-key'],GEMMA_KEY);assert.equal(options.redirect,'error');
+   assert.equal(target.pathname,'/v1beta/models/gemini-3.5-flash:generateContent');assert.equal(options.headers['x-goog-api-key'],GEMMA_KEY);assert.equal(options.redirect,'error');
    const body=JSON.parse(options.body),bytes=Buffer.from(body.contents[0].parts[0].inlineData.data,'base64'),rgb=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer();
    const page=[...pages.values()].find(candidate=>candidate.rgb.every((channel,index)=>channel===rgb[index]));assert.ok(page,'Synthetic image must retain its known pixel marker');seenRoles.push(page.role);
    return Response.json({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(extraction(page.role))}]}}]});
