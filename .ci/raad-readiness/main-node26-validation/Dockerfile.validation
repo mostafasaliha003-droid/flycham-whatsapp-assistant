@@ -14,7 +14,7 @@ COPY .env.example .gitignore README.md THIRD_PARTY_MRZ_MODEL.md Dockerfile.worke
 COPY .ci/security-fix-validation/run-ci.cjs /report/run-ci.cjs
 COPY .ci/security-fix-validation/report-server.cjs /report/report-server.cjs
 COPY .ci/security-fix-validation/source-manifest.json /report/source-manifest.json
-RUN chown -R node:node /app /report
-USER node
+RUN useradd --user-group --create-home --uid 10001 remal-validator && chown -R remal-validator:remal-validator /app /report
+USER remal-validator
 RUN node /report/run-ci.cjs 7fa1127e675fdfa9ba21b4c13cc0119d114ac56c
 CMD ["node", "/report/report-server.cjs"]
