@@ -11,6 +11,21 @@ const page = (patch = {}) => ({version: 1, kind: 'passport', readable: true, rot
 const envelope = value => ({candidates: [{finishReason: 'STOP', content: {role: 'model', parts: [{text: JSON.stringify(value)}]}}]});
 const response = value => new Response(JSON.stringify(value), {status: 200, headers: {'Content-Type': 'application/json'}});
 const image = () => sharp({create: {width: 320, height: 240, channels: 3, background: '#efefef'}}).png().toBuffer();
+
+test('daily OCR quota persists across restarts, counts failed calls and resets at Dubai midnight',async()=>{
+ let clock=Date.parse('2026-11-01T19:59:00Z'),calls=0;const store={data:{},save(){}},bytes=await image();
+ const make=()=>createDocumentVision({env:{...env(),NODE_ENV:'production',RAAD_DOCUMENT_OCR_DAILY_LIMIT:'2'},budgetStore:store,now:()=>clock,fetchImpl:async()=>{calls++;return new Response('{}',{status:400});}});
+ const input={bytes,mimeType:'image/png',guard:()=>true};
+ await assert.rejects(make().extract(input),{code:'DOCUMENT_VISION_PROVIDER_UNAVAILABLE'});
+ await assert.rejects(make().extract(input),{code:'DOCUMENT_VISION_PROVIDER_UNAVAILABLE'});
+ const capped=make();assert.equal(capped.ready(),false);await assert.rejects(capped.extract(input),{code:'DOCUMENT_VISION_COOLDOWN'});assert.equal(calls,2);
+ assert.deepEqual(store.data.documentVisionBudget,{day:'2026-11-01',used:2});
+ clock+=60000;assert.equal(make().ready(),true);await assert.rejects(make().extract(input),{code:'DOCUMENT_VISION_PROVIDER_UNAVAILABLE'});assert.equal(calls,3);
+ assert.deepEqual(store.data.documentVisionBudget,{day:'2026-11-02',used:1});
+ const failed=createDocumentVision({env:{...env(),NODE_ENV:'production'},budgetStore:{data:{},save(){throw Error('private');}},fetchImpl:async()=>{throw Error('must not send');}});
+ await assert.rejects(failed.extract(input),{code:'DOCUMENT_VISION_NOT_CONFIGURED'});
+ assert.equal(createDocumentVision({env:{...env(),NODE_ENV:'production'}}).ready(),false);
+});
 async function setup({config = {}, payload = envelope(page()), fetchImpl} = {}) {
   let clock = 1900000000000; const calls = [], bytes = await image();
   const adapter = createDocumentVision({env: {...env(), ...config}, now: () => clock, fetchImpl: async (url, options) => { calls.push({url, options}); return fetchImpl ? fetchImpl(url, options) : response(payload); }});
@@ -18,7 +33,7 @@ async function setup({config = {}, payload = envelope(page()), fetchImpl} = {}) 
   return {adapter, calls, bytes, extract, advance(ms) { clock += ms; }};
 }
 
-test('dedicated reader uses actual pixels with pinned Gemma and no conversation or arbitrary caller instruction', async () => {
+test('dedicated reader uses actual pixels with pinned Gemini and no conversation or arbitrary caller instruction', async () => {
   const f = await setup({config: {GEMINI_MODEL: 'arbitrary-other-model', OPENAI_API_KEY: 'unused-openai-key', CLINE_API_KEY: 'unused-cline-key'}});
   assert.deepEqual(await f.extract({caption: 'UNTRUSTED_CAPTION', history: ['UNTRUSTED_HISTORY'], prompt: 'UNTRUSTED_INSTRUCTION'}), page());
   assert.equal(f.calls.length, 1);
@@ -100,12 +115,12 @@ test('configuration and status never reveal credentials or call another provider
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-10-29.v16');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-11-01.v17');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
   assert.equal(WIRE_PROJECTION_POLICY, 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
-  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47']);
+  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
   assert.equal(Object.isFrozen(COMPATIBLE_COMPLETED_FAILURE_POLICIES), true);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });

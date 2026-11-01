@@ -66,7 +66,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
       return new Response(Buffer.from(bytes), {status: 200, headers: {'content-type': 'image/png', 'content-length': String(bytes.length)}});
     }
     if (target.hostname === 'generativelanguage.googleapis.com') {
-      assert.equal(target.pathname, '/v1beta/models/gemma-4-26b-a4b-it:generateContent'); assert.equal(options.headers['x-goog-api-key'], GEMMA_KEY); assert.equal(options.redirect, 'error');
+      assert.equal(target.pathname, '/v1beta/models/gemini-3.5-flash:generateContent'); assert.equal(options.headers['x-goog-api-key'], GEMMA_KEY); assert.equal(options.redirect, 'error');
       const request = JSON.parse(options.body), input = Buffer.from(request.contents[0].parts[0].inlineData.data, 'base64'), metadata = await sharp(input).metadata(); assert.ok(metadata.width >= 1000); assert.ok(metadata.height >= 1000);
       const rgb = await sharp(input).extract({left: 0, top: 0, width: 1, height: 1}).removeAlpha().raw().toBuffer(), maximum = Math.max(rgb[0], rgb[1], rgb[2]);
       const kind = rgb[2] === maximum ? 'passport' : rgb[1] === maximum ? 'uae_id_front' : 'portrait'; roles.push(kind); visionCount++;
