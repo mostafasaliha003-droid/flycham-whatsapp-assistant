@@ -5,6 +5,7 @@ const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const {currentVisaEvidence}=require('./visa-case-signature');
 const {redactVisaText}=require('./saudi-visa-nlu');
 const {detectDocumentStep}=require('./visa-document-conversation');
+const {enabled:conversationStyleEnabled,styleReply}=require('./ismail-conversation-style');
 const INTRO='أهلاً وسهلاً فيك بمجموعة الرمال 🌷 أنا إسماعيل، المساعد الافتراضي المختص بفيز السعودية.';
 const MONEY=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
 function countFrom(text){const n=P.normalize(text);if(/لحالي|لوحدي|شخص واحد|شخص بالغ|انا فقط|انا بس|one person|just me/.test(n))return 1;const m=n.match(/(?:نحن|نحنا|صرنا|عددنا|عدد الاشخاص|عدد المتقدمين)\s*(\d{1,2})|\b(\d{1,2})\s*(?:اشخاص|شخص|افراد|متقدم)/);if(m)return Number(m[1]||m[2]);if(/(?:ثلاثه|ثلاث|تلاته|تلات)\s*(?:اشخاص|افراد|متقدمين)|(?:نحن|نحنا|صرنا|عددنا)\s*(?:ثلاثه|ثلاث|تلاته|تلات)/.test(n))return 3;if(/شخصين|(?:نحن|نحنا|صرنا|عددنا)\s*(?:اتنين|اثنين)|انا و(?:مرتي|زوجتي)/.test(n))return /(?:ابني|بنتي|الولد|الطفل)/.test(n)?3:2;if(/اربعه اشخاص|اربع اشخاص/.test(n))return 4;if(/خمسه اشخاص|خمس اشخاص/.test(n))return 5;return null;}
@@ -39,7 +40,7 @@ function extractLocal(text,c){
  if(number)fields.applicantCount=number;
  const doc=/وثيقه|وثيقة|وثائق|travel document/.test(n)?'travel_document':/جواز|passport/.test(n)?'passport':null;
  if(ns.length===1&&!(doc==='travel_document'&&!/فلسطين/.test(n)))fields.nationality=ns[0];if(doc)fields.documentType=doc;
- if(ns.length>1&&/(?:انا|زوج|مرتي|امي|ابي|والد|ابني|بنتي)/.test(n)&&!doc){fields.applicants=ns.map(nationality=>({nationality}));fields.applicantCount=number||Math.max(c.applicantCount||0,ns.length);}
+ // Distinct nationality aliases identify countries, not people or their order.
  if(/كلنا|جميعنا|نحن.{0,10}سوريين|نحنا.{0,10}سوريين/.test(n)&&ns.length===1&&number)fields.applicants=Array.from({length:number},()=>({nationality:ns[0],...(doc?{documentType:doc}:{})}));
  if(/مصريه|مصري/.test(n)&&doc==='travel_document')fields.documentIssuer='مصر';else if(/لبنان/.test(n)&&doc==='travel_document')fields.documentIssuer='لبنان';else if(/سوريا|سوري/.test(n)&&doc==='travel_document')fields.documentIssuer='سوريا';
  if(/تحويل|حساب بنكي|حسابات|ايبان|iban|bank/.test(n))fields.paymentMethod='bank';else if(/تابي|tabby/.test(n))fields.paymentMethod='tabby';else if(/رابط الدفع|لينك|payment link/.test(n))fields.paymentMethod='link';
@@ -83,8 +84,8 @@ function quoteText(q){
  return text;
 }
 class SaudiVisaEngine{
- constructor({store,now=Date.now,understand=null,env=process.env,privateConfig=loadVisaPrivateConfig({env})}={}){
-  if(!store?.data||typeof store.save!=='function')throw Error('VISA_STORE_REQUIRED');Object.assign(this,{store,now,understand,env,privateConfig});store.data.visaCases||={};
+ constructor({store,now=Date.now,understand=null,env=process.env,privateConfig=loadVisaPrivateConfig({env}),conversationPlanner}={}){
+  if(!store?.data||typeof store.save!=='function')throw Error('VISA_STORE_REQUIRED');Object.assign(this,{store,now,understand,env,privateConfig,conversationPlanner});store.data.visaCases||={};
  }
  getCase(id){return this.store.data.visaCases[id]||null;}
  status(){return {enabled:true,policyVersion:P.POLICY_VERSION,cases:Object.keys(this.store.data.visaCases).length,feesEnabled:this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'};}
@@ -232,6 +233,17 @@ class SaudiVisaEngine{
    }
   }
   if(completion&&reply.includes(completion)){c.lastQuestion=nextQuestion;c.askedQuestions=nextAsked;}
+  if(conversationStyleEnabled(this.env)){
+   // Snapshot privately before the optional asynchronous local planner. It
+   // receives only enums/booleans. Never overwrite a concurrent staff update,
+   // a new awaiting question, or a deleted/replaced case after it resolves.
+   const sourceSnapshot=JSON.stringify(this.getCase(id));
+   const styled=await styleReply({reply,caseState:c,completion,questionKey:nextQuestion,
+    correctionConfirmed:!pendingAmendment&&afterFacts!==beforeFacts&&decision?.correction===true,
+    previousStyle:c.conversationStyle?.lastStyle},{env:this.env,planner:this.conversationPlanner});
+   if(JSON.stringify(this.getCase(id))!==sourceSnapshot){const latest=this.getCase(id);return{reply:null,superseded:true,caseId:latest?.id,revision:latest?.revision,service:'saudi_visa'};}
+   reply=styled.reply;if(styled.memory)c.conversationStyle=styled.memory;
+  }
   if(first)reply=INTRO+'\n\n'+reply;
   c.history.push({role:'user',text:(hasAttachments?'[attachment received]'+(semanticText?' '+semanticText:''):redactVisaText(text)).slice(0,1500)},{role:'assistant',text:redactVisaText(reply).slice(0,2500)});c.history=c.history.slice(-16);
   this.save(id,c);return{reply,complaint,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage,quote:c.quote};

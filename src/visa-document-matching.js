@@ -24,6 +24,7 @@ const MESSAGES = Object.freeze({
   PASSPORT_MRZ_INVALID: 'قراءة منطقة الجواز الآلية لم تجتز فحوص الأرقام والتحقق.',
   PASSPORT_MRZ_DATE_AMBIGUOUS: 'يلزم تأكيد التاريخ الكامل الظاهر في الجواز؛ لا نستنتج القرن من المنطقة الآلية.',
   PASSPORT_VIZ_MRZ_MISMATCH: 'توجد بيانات غير متطابقة بين النص الظاهر والمنطقة الآلية في الجواز.',
+  PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED: 'لم تتأكد قراءة رقم الجواز المطبوع بشكل مستقل؛ يلزم مطابقة موضع الرقم من النسخة الأصلية قبل المتابعة.',
   CASE_DATA_MISMATCH: 'توجد بيانات في المستند تختلف عن بيانات المتقدم المسجلة؛ يلزم توضيحها.',
   MULTIPLE_PASSPORTS: 'توجد صفحات جوازات مختلفة للمتقدم؛ يلزم تحديد الجواز الحالي.',
   RESIDENCE_MISSING: 'لم تُربط هوية أو إقامة واضحة ومطابقة لهذا المتقدم.',
@@ -552,6 +553,16 @@ function passportGroups(documents, referenceDate) {
     if(fields.passportNumber&&!primary.fieldProvenance?.passportNumber){
       const source=parts.find(part=>part.fields.passportNumber&&equivalent('passportNumber',part.fields.passportNumber,fields.passportNumber));
       if(source)primary.fieldProvenance={...primary.fieldProvenance,passportNumber:source.fieldProvenance?.passportNumber||[{...ref(source),confidence:source.extraction.fields.passportNumber.confidence}]};
+    }
+    // Check digits have collisions, and two modes of one OCR engine are not
+    // independent evidence. A machine dossier also needs the separately
+    // labelled visual number, explicitly typed by the visual-zone contract.
+    // Legacy/general numbers remain observations for review and conflicts;
+    // case answers, identity-card fields and MRZ text cannot create this proof.
+    const visualNumberSources=parts.flatMap(part=>part.passportNumberObservations||[]).filter(source=>source.evidenceField==='visiblePassportNumber'&&Number.isFinite(source.confidence)&&source.confidence>=THRESHOLD&&equivalent('passportNumber',source.value,primary.fields.passportNumber));
+    if(!visualNumberSources.length)issues.push(issue('PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED','passportNumber'));
+    else if(primary.fieldProvenance?.passportNumber){
+      primary.fieldProvenance={...primary.fieldProvenance,passportNumber:[...primary.fieldProvenance.passportNumber,...visualNumberSources.map(source=>({...ref(source),evidenceField:'visiblePassportNumber',confidence:source.confidence,method:'visible_document_number_corroboration'}))]};
     }
     if (checked.some(part => part.mrzIdentity && primary.mrzIdentity && [...MRZ_FIELDS, 'latinFullName'].some(field => part.mrzIdentity[field] && primary.mrzIdentity[field] && !equivalent(field, part.mrzIdentity[field], primary.mrzIdentity[field])))) issues.push(issue('MULTIPLE_PASSPORTS', 'mrz'));
     if (preparation.selected.length > 2) issues.push(issue('MULTIPLE_PASSPORTS', 'passport'));

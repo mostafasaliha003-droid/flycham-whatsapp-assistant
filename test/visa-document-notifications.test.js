@@ -27,6 +27,22 @@ function fixture({status = 'ready', send, owned = false, blocked = false, open =
   return {c, raw, source, store, journal, intake, inbox, service, options, dispatched, inbound, count: () => sends, saves: () => saves, advance(ms) { clock += ms; }, own(value) { ownership = value; }, block(value) { blocking = value; }};
 }
 
+test('an image geometry stop has a clear next step without internal error details or a submission claim', async () => {
+  const f = fixture({status:'needs_review'});
+  f.raw.applicants[0].issues=[{code:'DOCUMENT_IMAGE_UNSUITABLE',message:'IMAGE_TOO_SMALL PRIVATE_PATH'}];
+  f.raw.issues=[{code:'DOCUMENT_IMAGE_UNSUITABLE',message:'SIZE_LIMIT_UNACHIEVABLE PRIVATE_PATH'}];
+  const item=f.service.update(CUSTOMER);await f.service.flush();
+  assert.match(item.payload.text,/صورة أوضح وبحجمها الأصلي/);
+  assert.doesNotMatch(item.payload.text,/IMAGE_TOO_SMALL|SIZE_LIMIT_UNACHIEVABLE|PRIVATE_PATH|تم تقديم|اكتملت/);
+  assert.equal(f.c.submissionStatus,'not_submitted');assert.equal(f.c.paymentStatus,'unverified');
+});
+
+test('missing independent passport-number confirmation requests original review without echoing wrong OCR or demanding all documents again',async()=>{
+ const f=fixture({status:'needs_review'});f.raw.applicants[0].issues=[{code:'PASSPORT_NUMBER_VISUAL_CONFIRMATION_REQUIRED',field:'passportNumber',message:'PRIVATE_INTERNAL_N12345G78'}];
+ f.raw.issues=f.raw.applicants[0].issues;const item=f.service.update(CUSTOMER);await f.service.flush();
+ assert.match(item.payload.text,/رقم الجواز المطبوع/);assert.match(item.payload.text,/النسخة الأصلية قبل طلب أي صورة إضافية/);assert.doesNotMatch(item.payload.text,/N12345G78|PRIVATE_INTERNAL|PASSPORT_NUMBER_VISUAL|تم تقديم|أرسل جميع/);assert.equal(f.c.submissionStatus,'not_submitted');
+});
+
 test('successful document feedback works before payment without changing finance or sending extracted identifiers', async () => {
   const f = fixture(), before = structuredClone(f.c), item = f.service.update(CUSTOMER);
   assert.equal(item.state, 'pending'); assert.equal(item.kind, 'document_review');

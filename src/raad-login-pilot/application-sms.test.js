@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
-const {inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms,probeApplicationSmsEntry}=require('./application-sms');
+const {assertApplicationSmsContact,inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms,probeApplicationSmsEntry}=require('./application-sms');
 const ORIGIN='https://visa.mofa.gov.sa',PHONE='0500000123',PREFIX='الإمارات العربية المتحدة (00971)',CODE='123456';
 function fixture(options={}){
  let url=ORIGIN+(options.path||'/SmartForm/TraditionalApp'),activations=0,typed=0,cleared=0,wrappers=0;
@@ -38,7 +38,7 @@ function fixture(options={}){
  function resolve(arg){if(arg&&arg.__handle)return arg.node;if(Array.isArray(arg))return arg.map(resolve);if(arg&&Object.getPrototypeOf(arg)===Object.prototype){const out={};for(const [key,value]of Object.entries(arg))out[key]=resolve(value);return out;}return arg;}
  function execute(fn,arg,n,element=false){const context={URL,location:{get origin(){return new URL(url).origin;},get href(){return url;},get pathname(){return new URL(url).pathname;}},document,window,getComputedStyle:el=>({display:el.hidden?'none':'block',visibility:'visible'}),arg:resolve(arg),node:n};return vm.runInNewContext(element?'('+fn.toString()+')(node,arg)':'('+fn.toString()+')(arg)',context);}
  function handle(n){wrappers++;return {__handle:true,node:n,asElement(){return n?.nodeType===1?this:null;},getProperty:async key=>handle(n?.[key]),dispose:async()=>{},evaluate:async(fn,arg)=>execute(fn,arg,n,true),focus:async()=>{document.activeElement=n;if(options.changeOnFocus)phone.value='509876543';if(options.changeCodeOnFocus)codeField.value='654321';},
-  fill:async(value,opts)=>{assert.equal(n,codeField);assert.equal(value,'');assert.equal(opts.timeout,5000);cleared++;n.value='';},
+  fill:async(value,opts)=>{assert.equal(n,codeField);assert.equal(value,'');assert.ok(opts.timeout>0&&opts.timeout<=5000);cleared++;n.value='';if(options.afterClear)options.afterClear();},
   type:async(value,opts)=>{assert.equal(n,codeField);assert.equal(value,CODE);assert.equal(opts.delay,80);typed++;n.value=options.tamperCode?'654321':value;if(options.changeOnType)phone.value='509876543';if(confirm&&options.enableAfterTyping)confirm.disabled=false;if(options.afterTyping)options.afterTyping();},
   waitForElementState:async(state,opts)=>{assert.equal(state,'enabled');assert.equal(opts.timeout,5000);if(n.disabled)throw Error('private disabled diagnostics');},
   press:async(key,opts)=>{assert.equal(key,'Enter');assert.equal(document.activeElement,n);await activate(n,opts);},click:async opts=>{assert.equal(n,request);await activate(n,opts);}};}
@@ -78,3 +78,65 @@ test('native activation timeout is finite/uncertain and cannot retry same origin
 test('strict official top TraditionalApp, original label, payment/auth semantics remain protected',async()=>{for(const options of [{path:'/Account/Loginindividuals'},{notTop:true},{requestLabel:'Pay SMS verification fee'},{requestLabel:'Login OTP'},{requestLabel:'Delete mobile code'}]){const f=fixture(options);await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),label:options.requestLabel||requestArgs().label}));assert.equal(f.activations(),0);}const f=fixture();f.setUrl('https://external.test/SmartForm/TraditionalApp');await assert.rejects(enterApplicationSms(f.page,enterArgs()));assert.equal(f.typed(),0);const g=fixture({redirectAfterActivation:true});await assert.rejects(requestApplicationSms(g.page,requestArgs()),e=>e.code==='APPLICATION_SMS_ACTIVATION_UNCONFIRMED');assert.equal(g.activations(),1);});
 test('verification never treats main application Save/Submit or generic modal Continue as SMS confirmation',async()=>{for(const options of [{confirmLabel:'حفظ'},{confirmType:'submit'},{confirmId:'btnContinue',confirmLabel:'استمرار',smsModal:true}]){const f=fixture(options);await assert.rejects(verifyApplicationSms(f.page,{...verifyArgs(),id:options.confirmId||verifyArgs().id,label:options.confirmLabel||verifyArgs().label}));assert.equal(f.typed(),0);assert.equal(f.activations(),0);}});
 test('public inspector passes bounded existing metadata only; phone context alone is not challenge',async()=>{for(const explicit of [false,true]){const verification={context:'sms',evidence:[explicit?'explicit_sms_caption':'mobile_number_caption'],controls:[{id:'SmsOtpCode',type:'text'}],buttons:[],messages:[]};const page={url:()=>ORIGIN+'/SmartForm/TraditionalApp',mainFrame:()=>({url:()=>ORIGIN+'/SmartForm/TraditionalApp'}),evaluate:async()=>({applicationVerification:verification})};const result=await inspectApplicationSms(page);assert.equal(result.challengeVisible,explicit);assert.equal(result.verification,verification);assert.equal(JSON.stringify(result).includes(PHONE),false);assert.equal(JSON.stringify(result).includes(CODE),false);}});
+
+const officeLabel=(f,value='رقم الجوال')=>{const label=f.component.append(f.node('label',{},value));f.phone.labels=[label];return label;};
+test('office-contact policy accepts current generic mobile caption with a real SMS control, without claiming applicant ownership',async()=>{
+ const f=fixture();officeLabel(f,'رقم الجوال *');const args={...requestArgs(),officeContactLabel:'رقم الجوال'};assert.equal((await requestApplicationSms(f.page,args)).activationDispatched,true);assert.equal(f.activations(),1);
+});
+test('office-contact policy refuses current applicant-specific caption or nearby ownership requirement before SMS',async()=>{
+ for(const wording of ['رقم جوال مقدم الطلب','رقم هاتف المتقدم','Applicant phone number','The number must belong to the applicant','رقم الجوال الخاص بطالب التأشيرة','يجب أن يكون الرقم لصاحب التأشيرة','رقم مقدم طلب التأشيرة','رقم حامل الجواز']){
+  const f=fixture();officeLabel(f,wording);await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال'}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);
+  const g=fixture();officeLabel(g);g.component.append(g.node('p',{},wording));await assert.rejects(requestApplicationSms(g.page,{...requestArgs(),officeContactLabel:'رقم الجوال'}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(g.activations(),0);
+ }
+});
+test('office-contact policy refuses unknown or missing label instead of guessing from field ID',async()=>{
+ for(const label of [null,'Contact details','رقم الهاتف الخاص']){const f=fixture();if(label)officeLabel(f,label);await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال'}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);}
+});
+test('changed ownership wording is rechecked after asynchronous guards, not just initial observation',async()=>{
+ const f=fixture(),label=officeLabel(f);let calls=0;
+ await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال',guard:async()=>{if(++calls===2)label.childNodes[0].textContent='رقم جوال مقدم الطلب';}}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);
+});
+test('applicant wording added while typing prevents confirmation and clears the transient input object',async()=>{
+ let label;const f=fixture({afterTyping:()=>{label.childNodes[0].textContent='رقم جوال مقدم الطلب';}});label=officeLabel(f);const args={...verifyArgs(),officeContactLabel:'رقم الجوال'};await assert.rejects(verifyApplicationSms(f.page,args),e=>e.code==='APPLICATION_SMS_ACTIVATION_UNCONFIRMED');assert.equal(f.activations(),0);assert.equal(args.code,'');
+});
+
+test('current applicant ownership also overrides a different pre-reviewed contact basis',async()=>{const f=fixture();officeLabel(f,'Applicant mobile number');await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),rejectApplicantOwnership:true}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);});
+test('applicant ownership in aria-label or associated outside label stops every contact basis',async()=>{
+ for(const outside of [false,true]){const f=fixture();if(outside)f.phone.labels=[f.node('label',{},'Applicant mobile number')];else f.phone.attrs['aria-label']='Applicant mobile number';
+  await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),rejectApplicantOwnership:true}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);
+ }
+});
+test('explicitly associated descriptions or names outside the phone component cannot hide applicant ownership',async()=>{
+ for(const attribute of ['aria-describedby','aria-labelledby']){
+  const f=fixture();officeLabel(f);f.phone.attrs[attribute]='outside-mobile-help';f.component.parentElement.parentElement.append(f.node('p',{id:'outside-mobile-help'},'رقم الجوال الخاص بطالب التأشيرة'));
+  await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال'}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);
+ }
+ const f=fixture();officeLabel(f);f.phone.attrs['aria-describedby']='outside-mobile-help';f.component.parentElement.parentElement.append(f.node('p',{id:'outside-mobile-help'},'إرسال رمز التحقق'));
+ assert.equal((await requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال'})).activationDispatched,true);
+});
+test('missing, duplicate, hidden or overlong associated instructions fail closed',async()=>{
+ for(const kind of ['missing','duplicate','hidden','overlong','too_many_ids','repeated_id']){
+  const f=fixture();officeLabel(f);f.phone.attrs['aria-describedby']=kind==='too_many_ids'?Array.from({length:9},(_,i)=>'help'+i).join(' '):kind==='repeated_id'?'help help':'help';
+  if(kind!=='missing'){const help=f.component.parentElement.parentElement.append(f.node('p',{id:'help'},kind==='overlong'?'x'.repeat(1001):'رمز التحقق'));if(kind==='hidden')help.hidden=true;if(kind==='duplicate')f.component.parentElement.parentElement.append(f.node('p',{id:'help'},'رمز التحقق'));}
+  await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),officeContactLabel:'رقم الجوال'}),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(f.activations(),0);
+ }
+});
+
+test('original SMS deadline rejects exact expiry before native interaction and never extends after an awaited guard',async()=>{
+ for(const afterAwait of [false,true]){let at=100000;const f=fixture(),options={...requestArgs(),now:()=>at,expiresAt:afterAwait?100001:100000,guard:async()=>{if(afterAwait)at=100001;}};await assert.rejects(requestApplicationSms(f.page,options),e=>e.code==='APPLICATION_SMS_CHALLENGE_STALE');assert.equal(f.activations(),0);}
+});
+test('expiry during code typing prevents confirmation and clears the caller code',async()=>{let at=100000;const f=fixture({afterTyping:()=>{at=110000;}}),options={...verifyArgs(),now:()=>at,expiresAt:110000};await assert.rejects(verifyApplicationSms(f.page,options),e=>e.code==='APPLICATION_SMS_ACTIVATION_UNCONFIRMED');assert.equal(f.activations(),0);assert.equal(options.code,'');});
+
+test('Save contact guard rechecks phone and ownership without reading or consuming any OTP',async()=>{
+ const f=fixture({noConfirm:true});officeLabel(f);Object.defineProperty(f.codeField,'value',{get(){throw Error('OTP must not be inspected');}});const options={expectedPhone:PHONE,expectedPrefixLabel:PREFIX,officeContactLabel:'رقم الجوال',rejectApplicantOwnership:true};assert.deepEqual(await assertApplicationSmsContact(f.page,options),{matched:true});assert.equal(f.typed(),0);assert.equal(f.activations(),0);f.phone.value='509999999';await assert.rejects(assertApplicationSmsContact(f.page,options),e=>e.code==='APPLICATION_SMS_PHONE_MISMATCH');
+ const g=fixture({noConfirm:true});officeLabel(g);g.component.append(g.node('p',{},'رقم صاحب التأشيرة'));await assert.rejects(assertApplicationSmsContact(g.page,options),e=>e.code==='APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');assert.equal(g.activations(),0);
+});
+
+test('near-expiry OTP cannot begin typing digits, including expiry while clearing the input',async()=>{
+ for(const delayedClear of [false,true]){let at=100000;const f=fixture({afterClear:()=>{if(delayedClear)at=110000;}}),options={...verifyArgs(),now:()=>at,expiresAt:delayedClear?110000:100500};await assert.rejects(verifyApplicationSms(f.page,options),e=>e.code==='APPLICATION_SMS_ACTIVATION_UNCONFIRMED');assert.equal(f.typed(),0);assert.equal(f.activations(),0);assert.equal(options.code,'');}
+});
+test('lease revocation while clearing OTP input stops before typing any digit',async()=>{let current=true;const f=fixture({afterClear:()=>{current=false;}}),options={...verifyArgs(),guard:async()=>{if(!current)throw Object.assign(Error('LEASE_REVOKED'),{code:'LEASE_REVOKED'});}};await assert.rejects(verifyApplicationSms(f.page,options));assert.equal(f.typed(),0);assert.equal(f.activations(),0);assert.equal(options.code,'');});
+
+test('lease revocation during OTP typing prevents any confirmation press',async()=>{let current=true;const f=fixture({afterTyping:()=>{current=false;}}),options={...verifyArgs(),guard:async()=>{if(!current)throw Object.assign(Error('LEASE_REVOKED'),{code:'LEASE_REVOKED'});}};await assert.rejects(verifyApplicationSms(f.page,options));assert.equal(f.typed(),1);assert.equal(f.activations(),0);assert.equal(options.code,'');});
+
+test('SMS activation stops if cancellation arrives during the final native readback',async()=>{const f=fixture(),controller=new AbortController(),evaluate=f.page.evaluate;f.page.evaluate=async(fn,args)=>{const result=await evaluate(fn,args);if(args?.owned&&args?.requireFocus)controller.abort();return result;};await assert.rejects(requestApplicationSms(f.page,{...requestArgs(),signal:controller.signal}),e=>e.code==='APPLICATION_SMS_CANCELLED');assert.equal(f.activations(),0);});

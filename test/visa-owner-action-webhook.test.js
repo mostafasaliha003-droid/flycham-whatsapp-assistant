@@ -14,7 +14,7 @@ const source = readFileSync(require.resolve('../src/server'), 'utf8');
 const handler = source.slice(source.indexOf('async function handleWebhookPost('), source.indexOf('\nfunction customerSearchActive'));
 
 function fixture({ok = true} = {}) {
-  const events = [], codes = [], sends = [], accepted = new Set();
+  const events = [], codes = [], codeInputs = [], sends = [], accepted = new Set();
   const store = {data: {}, save() {}};
   const journal = new ConversationJournal({store});
   const originalRecord = journal.recordInbound.bind(journal);
@@ -34,7 +34,7 @@ function fixture({ok = true} = {}) {
         return {handled: true, ok, requeued: ok ? 1 : 0};
       },
       isOtpMessage(input) { events.push('otp-check'); return /^\d{6}$/.test(input.text); },
-      async consumeOtp(input) { assert.equal(journal.get(input.sender).messages.at(-1).text, '[رمز تحقق محجوب]'); codes.push(input); return {handled: true, ok: true}; },
+      async consumeOtp(input) { assert.equal(journal.get(input.sender).messages.at(-1).text, '[رمز تحقق محجوب]'); codes.push({...input}); codeInputs.push(input); return {handled: true, ok: true}; },
       requeuePausedMessages() { assert.fail('owner action must not reach generic customer routing'); }
     },
     async rawSendTextMessage(to, text) { sends.push({to, text}); },
@@ -48,7 +48,7 @@ function fixture({ok = true} = {}) {
     return status;
   }
   const action = (id = 'synthetic-owner-action') => ({id, from: OWNER, timestamp: String(Math.floor(Date.now() / 1000)), context: {id: 'accepted-task-notice'}, type: 'button', button: {payload: 'visa_owner_action:' + CHALLENGE, text: 'متابعة المهمة'}});
-  return {inbound, action, events, codes, sends, journal};
+  return {inbound, action, events, codes, codeInputs, sends, journal};
 }
 
 test('signed template quick reply opens window and reaches only the bound owner action, once', async () => {
@@ -81,5 +81,6 @@ test('subsequent OTP reaches only the ephemeral consumer and is redacted before 
   await f.inbound(f.action());
   await f.inbound({id: 'synthetic-code', from: OWNER, type: 'text', text: {body: '418073'}, context: {id: 'actual-otp-prompt'}});
   assert.equal(f.codes.length, 1); assert.equal(f.codes[0].contextId, 'actual-otp-prompt'); assert.equal(f.codes[0].text, '418073');
+  assert.equal(f.codeInputs[0].text, '', 'the original handoff is scrubbed after the awaited consumer returns');
   assert.equal(JSON.stringify(f.journal.data).includes('418073'), false);
 });

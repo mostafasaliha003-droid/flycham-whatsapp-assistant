@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {AssistantState}=require('../src/assistant-state');
-const {SaudiVisaEngine,isComplaint}=require('../src/saudi-visa-engine');
+const {SaudiVisaEngine,isComplaint,extractLocal}=require('../src/saudi-visa-engine');
 const P=require('../src/saudi-visa-policy');
 const {visaCaseSignature}=require('../src/visa-case-signature');
 const make=options=>new SaudiVisaEngine({store:new AssistantState({file:null}),env:{},privateConfig:{banks:[{bank:'Synthetic Bank',name:'Synthetic Company',account:'00000001',iban:'AE000000000000000000000'}]},...options});
@@ -200,4 +200,51 @@ test('document utility turns record the actual answer without replacing the subj
  const engine=make();await engine.handle('document-customer','انا سوري ومعي جواز عادي شخص واحد');const c=engine.getCase('document-customer');c.stage='documents_pending_review';const before=structuredClone(c),reply='عم جهّز صور الهوية ضمن نفس ملفك.';
  const r=engine.recordDocumentTurn('document-customer','ادمجهم',reply,{caseId:c.id,expectedRevision:c.revision});assert.equal(r.reply,reply);const after=engine.getCase('document-customer');assert.equal(after.stage,before.stage);assert.equal(visaCaseSignature(after),visaCaseSignature(before));assert.equal(after.history.at(-1).text,reply);assert.equal(after.history.at(-2).text,'ادمجهم');assert.equal(after.revision,before.revision+1);
  assert.equal(engine.recordDocumentTurn('document-customer','الهوية','answer',{caseId:c.id,expectedRevision:before.revision}).superseded,true);
+});
+
+// Exercise the real validated NLU adapter with synthetic responses, never a model call.
+function familyUnderstanding(fields,{target='group'}={}){
+ const {createSaudiVisaUnderstanding,schema}=require('../src/saudi-visa-nlu');
+ const blanks=Object.fromEntries(Object.entries(schema.properties.fields.properties).map(([key,value])=>[key,value.type==='array'?[]:null]));
+ const decision={intent:'apply',fields:{...blanks,...fields},target,correction:false,question:null,option:null},requests=[];
+ const understand=createSaudiVisaUnderstanding({env:{ASSISTANT_AI_PROVIDER:'openai',OPENAI_MODEL:'gpt-6.1-sol',OPENAI_API_KEY:'synthetic-family-test-not-a-credential',ASSISTANT_AI_FALLBACK:'none'},fetchImpl:async(url,init)=>{
+  assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(init.method,'POST');const body=JSON.parse(init.body);assert.equal(body.store,false);assert.equal(body.text.format.strict,true);requests.push(JSON.parse(body.input));
+  return {ok:true,json:async()=>({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(decision)}]}]})};
+ }});
+ return {understand,requests};
+}
+const mixedFamilyText='أنا سوري ورفيقتي وزوجها بدنا نقدم وهي جنسيتها مصر وزوجها متلي';
+const familyPerson=nationality=>({nationality,documentType:'passport',documentIssuer:null});
+test('family extraction retains three people including repeated nationality through the validated NLU adapter',async()=>{
+ const people=['سوريا','مصر','سوريا'].map(familyPerson),nlu=familyUnderstanding({applicantCount:3,applicants:people}),e=make({understand:nlu.understand});
+ const r=await e.handle('mixed-family',mixedFamilyText),c=e.getCase('mixed-family');
+ assert.equal(nlu.requests.length,1);assert.equal(nlu.requests[0].text,mixedFamilyText);assert.equal(c.applicantCount,3);assert.deepEqual(c.applicants.map(p=>p.nationality),['سوريا','مصر','سوريا']);
+ assert.equal(r.quote.total,P.calculateQuote({...c,applicantCount:3,applicants:people}).total);assert.equal(r.quote.total,1950);assert.equal(c.paymentStatus,'unverified');assert.equal(c.submissionStatus,'not_submitted');
+});
+test('distinct nationality mentions do not supply a local headcount or applicant order',async()=>{
+ const fields=extractLocal(mixedFamilyText,{applicantCount:null});assert.equal(fields.applicantCount,undefined);assert.equal(fields.applicants,undefined);
+ const e=make(),r=await e.handle('unknown-family',mixedFamilyText),c=e.getCase('unknown-family');assert.equal(c.applicantCount,null);assert.deepEqual(c.applicants,[]);assert.equal(r.quote,null);assert.ok(c.lastQuestion);
+});
+test('explicit count with mixed nationality mentions keeps unknown applicant identities unknown',async()=>{
+ const text='نحنا 3 أنا سوري ورفيقتي مصرية وزوجها معنا',fields=extractLocal(text,{applicantCount:null});assert.equal(fields.applicantCount,3);assert.equal(fields.applicants,undefined);
+ const e=make(),r=await e.handle('explicit-family',text),c=e.getCase('explicit-family');assert.equal(c.applicantCount,3);assert.deepEqual(c.applicants,[]);assert.equal(r.quote,null);assert.equal(c.lastQuestion,'nationality');
+});
+test('nationality mentions do not expand a previously confirmed count or reorder its applicants',async()=>{
+ const e=make();await e.handle('confirmed-family','نحنا 3 كلنا سوريين جواز عادي');const before=structuredClone(e.getCase('confirmed-family').applicants);
+ await e.handle('confirmed-family','أنا سوري، معنا مصري ولبناني وأردني وسوداني');const c=e.getCase('confirmed-family');assert.equal(c.applicantCount,3);assert.deepEqual(c.applicants,before);
+});
+test('explicit user count wins over a conflicting semantic count without inventing a missing third person',async()=>{
+ const nlu=familyUnderstanding({applicantCount:2,applicants:['سوريا','مصر'].map(familyPerson)}),e=make({understand:nlu.understand}),r=await e.handle('count-priority','نحنا 3 أنا سوري والباقي مصريين'),c=e.getCase('count-priority');
+ assert.equal(nlu.requests.length,1);assert.equal(c.applicantCount,3);assert.deepEqual(c.applicants.map(p=>p.nationality),['سوريا','مصر']);assert.equal(c.lastQuestion,'nationality_2');assert.equal(r.quote,null);
+});
+test('same-nationality family preserves three applicants without deduplicating people',async()=>{
+ const nlu=familyUnderstanding({applicantCount:3,applicants:Array.from({length:3},()=>familyPerson('سوريا'))}),e=make({understand:nlu.understand}),r=await e.handle('same-family','نحنا 3 كلنا سوريين جواز عادي'),c=e.getCase('same-family');
+ assert.equal(nlu.requests.length,1);assert.equal(c.applicantCount,3);assert.deepEqual(c.applicants.map(p=>p.nationality),['سوريا','سوريا','سوريا']);assert.equal(r.quote.total,1950);
+});
+test('family visa understanding leaves the flight itinerary and baggage memory intact',async()=>{
+ const {AssistantEngine}=require('../src/assistant-engine'),now=Date.parse('2026-11-01T08:00:00Z'),store=new AssistantState({file:null,now:()=>now}),flight=new AssistantEngine({store,env:{},nlu:async()=>null});
+ const initial=await flight.handle('shared-customer','من الشارقة للشام 11-11-2026 ذهاب بس شخص واحد',{now});assert.equal(initial.complete,true);
+ const amended=await flight.handle('shared-customer','بدي 40 كيلو',{now:now+1});assert.equal(amended.complete,true);assert.equal(amended.request.baggageRequest.checkedWeightKg,40);const before=structuredClone(store.get('shared-customer'));
+ const nlu=familyUnderstanding({applicantCount:3,applicants:['سوريا','مصر','سوريا'].map(familyPerson)}),visa=make({store,understand:nlu.understand});await visa.handle('shared-customer',mixedFamilyText);
+ assert.equal(visa.getCase('shared-customer').applicantCount,3);assert.deepEqual(store.get('shared-customer'),before);assert.equal(flight.state('shared-customer').base.request.departureDate,'2026-11-11');assert.equal(flight.state('shared-customer').base.request.baggageRequest.checkedWeightKg,40);
 });

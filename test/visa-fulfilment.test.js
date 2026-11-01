@@ -8,7 +8,7 @@ const {visaCaseSignature} = require('../src/visa-case-signature');
 const {RaadVisaWorkflow} = require('../src/raad-visa-workflow');
 const {reconcileDocumentEvidence} = require('../src/visa-document-matching');
 
-const CUSTOMER = '15550001001', OWNER = '15550001999', OTHER = '15550001002';
+const CUSTOMER = '15550001001', OWNER = '971507993145', OTHER = '15550001002';
 const RECEIPT = '4bcb3aaa-67be-405b-854e-ebc4f962bc00', PDF = 'c444dc53-ab4e-4f46-9e6a-4f080ab1d742';
 function fixture({send, resumeOtp, count = 2, canAutomate} = {}) {
   let at = 1000000, claimed = true, saves = 0, paymentCalls = 0, sends = 0;
@@ -24,12 +24,16 @@ function fixture({send, resumeOtp, count = 2, canAutomate} = {}) {
   const raad = {get(customer, {applicantIndex}) { assert.equal(customer, CUSTOMER); return structuredClone(drafts.get(applicantIndex) || {revision: 0, fields: {}}); }, prepare(customer, input) { assert.equal(customer, CUSTOMER); const old = drafts.get(input.applicantIndex) || {revision: 0, fields: {}}; assert.equal(input.expectedRevision, old.revision); const next = {revision: old.revision + 1, fields: {...old.fields, ...structuredClone(input.fields)}}; drafts.set(input.applicantIndex, next); applied.push(structuredClone(input)); return next; }};
   const options = {store, inbox, mediaStore, raad, now: () => at, env: {RAAD_OTP_OWNER_WHATSAPP: '+' + OWNER}, canAutomate, send: send || (async (recipient, payload, guard) => { guard(); sends++; return {messages: [{id: 'outbound-' + sends}]}; }), resumeOtp};
   const service = new VisaFulfilment(options);
+  // Synthetic signed-ingress transport supplies an independent provider message ID.
+  const consume = service.consumeOtp.bind(service); let incomingSequence = 0;
+  service.consumeOtp = input => consume({messageId: 'synthetic-inbound-' + (++incomingSequence), ...input});
   const input = (patch = {}) => ({receiptId: RECEIPT, amount: 240, reference: 'BANK-EXAMPLE-8', actor: {id: 'accountant-example', role: 'accountant'}, actualReceived: true, confirm: true, expectedCaseSignature: visaCaseSignature(c), idempotencyKey: 'accountant-key-1', ...patch});
   const receive = () => service.receiveReceipt(CUSTOMER, {receiptId: RECEIPT});
   const approve = () => { receive(); return service.confirmPayment(CUSTOMER, input()); };
   const activate = async () => { const approval = approve(); claimed = false; await service.dispatchMessage(approval.jobs[0].paymentNoticeId); return approval; };
   return {service, options, store, c, inbox, mediaStore, input, receive, approve, activate, drafts, applied, tick: ms => { at += ms; }, claim: value => { claimed = value; }, stats: () => ({saves, paymentCalls, sends})};
 }
+const otpBinding = f => ({challengeRequestedAt: f.options.now(), challengeExpiresAt: f.options.now() + 300000, accountBinding: 'a'.repeat(64)});
 const throwsCode = (run, code) => assert.throws(run, error => error.code === code || error.message === code);
 
 test('receipt only is not payment; accountant approval uses existing financial action and creates independent jobs', () => {
@@ -182,7 +186,7 @@ test('reissued question invalidates old option token and old unsent message', as
 
 async function otpFixture(options = {}) {
   const f = fixture(options), result = await f.activate(), work = f.service.acquireJob(result.jobs[0].id, {workerId: 'otp-worker'});
-  const request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'portal-challenge-example', contextId: 'form-login-example'});
+  const request = f.service.requestOtp(work.job.id, {...otpBinding(f), leaseToken: work.lease.token, portalChallengeId: 'portal-challenge-example', contextId: 'form-login-example'});
   const notification = await f.service.dispatchMessage(request.messageId);
   return {...f, work, request, notification};
 }
@@ -192,40 +196,40 @@ test('OTP only resumes exact owner, accepted message context and exact pending a
   assert.deepEqual(await f.service.consumeOtp({sender: OTHER, text: '381642'}), {handled: false});
   assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: 'unrelated-message', text: '381642'})).reason, 'OTP_NOT_PENDING');
   const result = await f.service.consumeOtp({sender: '+' + OWNER, contextId: f.notification.messageId, text: '381642'});
-  assert.equal(result.ok, true); assert.equal(calls.length, 1); assert.equal(calls[0].jobId, f.work.job.id); assert.equal(calls[0].code, '381642');
+  assert.equal(result.ok, true); assert.equal(calls.length, 1); assert.equal(calls[0].jobId, f.work.job.id); assert.equal(calls[0].code, '');
   assert.equal(calls[0].portalChallengeId, 'portal-challenge-example'); assert.equal(calls[0].contextId, 'form-login-example');
   assert.doesNotMatch(JSON.stringify(f.store.data), /381642/);
-  assert.equal((await f.service.consumeOtp({sender: OWNER, text: '381642'})).reason, 'OTP_NOT_PENDING');
+  assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '381642'})).reason, 'OTP_NOT_PENDING');
 });
 
 test('OTP expiry and unsupported context are consumed without leaking code into durable data', async () => {
   const f = await otpFixture({resumeOtp: async () => { throw Error('must not run'); }}); f.tick(5 * 60000 + 1);
-  const result = await f.service.consumeOtp({sender: OWNER, text: '761904'});
+  const result = await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '761904'});
   assert.equal(result.handled, true); assert.equal(result.ok, false); assert.equal(result.reason, 'OTP_NOT_PENDING');
   assert.doesNotMatch(JSON.stringify(f.store.data), /761904/);
 });
 
-test('OTP rejects replay and caps rejected browser attempts without storing code or error text', async () => {
+test('OTP rejection consumes the challenge once without storing code or error text', async () => {
   let calls = 0;
   const f = await otpFixture({resumeOtp: async () => { calls++; return {ok: false, privateCode: 'never persist me'}; }});
-  assert.equal((await f.service.consumeOtp({sender: OWNER, text: '817203'})).reason, 'OTP_REJECTED');
-  assert.equal((await f.service.consumeOtp({sender: OWNER, text: '817203'})).reason, 'OTP_REPLAY_REJECTED');
-  await f.service.consumeOtp({sender: OWNER, text: '817204'}); await f.service.consumeOtp({sender: OWNER, text: '817205'});
-  assert.equal(calls, 3); assert.equal(f.service.job(f.work.job.id).state, 'portal_review_required');
+  assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '817203'})).reason, 'OTP_REJECTED');
+  assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '817203'})).reason, 'OTP_NOT_PENDING');
+  await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '817204'}); await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '817205'});
+  assert.equal(calls, 1); assert.equal(f.service.job(f.work.job.id).state, 'portal_review_required');
   assert.doesNotMatch(JSON.stringify(f.store.data), /817203|817204|817205|never persist me/);
 });
 
 test('OTP adapter exception is uncertain and never stores callback error or code', async () => {
   const f = await otpFixture({resumeOtp: async ({code}) => { throw Error('provider leaked ' + code); }});
-  assert.equal((await f.service.consumeOtp({sender: OWNER, text: '290471'})).reason, 'OTP_RESUME_UNCERTAIN');
+  assert.equal((await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '290471'})).reason, 'OTP_RESUME_UNCERTAIN');
   assert.equal(f.service.job(f.work.job.id).state, 'portal_review_required'); assert.doesNotMatch(JSON.stringify(f.store.data), /290471|provider leaked/);
 });
 
 test('concurrent OTP replies cannot resume a challenge twice', async () => {
   let finish, calls = 0;
   const f = await otpFixture({resumeOtp: async () => { calls++; return await new Promise(resolve => { finish = resolve; }); }});
-  const first = f.service.consumeOtp({sender: OWNER, text: '610392'});
-  const second = await f.service.consumeOtp({sender: OWNER, text: '610393'});
+  const first = f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '610392'});
+  const second = await f.service.consumeOtp({sender: OWNER, contextId: f.notification.messageId, text: '610393'});
   assert.equal(second.handled, true); assert.equal(second.ok, false); finish({ok: true}); assert.equal((await first).ok, true); assert.equal(calls, 1);
 });
 
@@ -236,13 +240,13 @@ test('restart interrupts browser lease/OTP and preserves uncertain message state
   const restarted = new VisaFulfilment(f.options);
   assert.equal(restarted.job(f.work.job.id).state, 'portal_review_required'); assert.equal(restarted.data().lease, null);
   assert.equal(restarted.data().challenges[f.request.challengeId].state, 'interrupted'); assert.equal(restarted.data().outbox[paymentMessage.id].state, 'uncertain');
-  assert.equal((await restarted.consumeOtp({sender: OWNER, text: '743102'})).reason, 'OTP_NOT_PENDING');
+  assert.equal((await restarted.consumeOtp({sender: OWNER, messageId: 'restart-inbound', contextId: f.notification.messageId, text: '743102'})).reason, 'OTP_NOT_PENDING');
 });
 
 test('saved application requires Return, no payment, exact customer PDF, and sends honest request-copy caption', async () => {
   const f = fixture(), result = await f.activate(), asked = f.service.askQuestions(result.jobs[0].id);
   for (const question of asked.questions) {
-    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
+    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
     else f.service.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : question.field === 'birthPlace' ? 'Example City' : 'Example Hotel, Riyadh'});
   }
   f.service.confirmAnswers({sender: CUSTOMER, token: f.service.job(result.jobs[0].id).summary.token, confirm: true});
@@ -452,7 +456,7 @@ async function ownerNoticeFixture({noticeMessageId = 'accepted-owner-task-notice
     return meta.kind === 'owner_otp_request' ? {paused: true, reason: 'owner_action_required', noticeMessageId} : {messageId: 'accepted-payment-before-notice'};
   })});
   const result = await f.activate(), work = f.service.acquireJob(result.jobs[0].id, {workerId: 'owner-task-worker'});
-  const request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'owner-task-portal-challenge', contextId: 'owner-task-form-context'});
+  const request = f.service.requestOtp(work.job.id, {...otpBinding(f), leaseToken: work.lease.token, portalChallengeId: 'owner-task-portal-challenge', contextId: 'owner-task-form-context'});
   const notice = await f.service.dispatchMessage(request.messageId);
   return {...f, work, request, notice, metadata, challenge: () => f.service.data().challenges[request.challengeId], original: () => f.service.data().outbox[request.messageId]};
 }
@@ -554,7 +558,7 @@ test('owner action persistence failure leaves original safely paused and permits
 test('notice acceptance racing a released challenge never reopens or binds that old OTP prompt', async () => {
   let finish;
   const f = fixture({send: async (_recipient, _payload, guard, meta) => { guard(); if (meta.kind !== 'owner_otp_request') return {messageId: 'accepted-payment'}; return new Promise(resolve => { finish = resolve; }); }});
-  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'racing-owner-task'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'racing-portal-challenge', contextId: 'racing-form-context'});
+  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'racing-owner-task'}), request = f.service.requestOtp(work.job.id, {...otpBinding(f), leaseToken: work.lease.token, portalChallengeId: 'racing-portal-challenge', contextId: 'racing-form-context'});
   const sending = f.service.dispatchMessage(request.messageId);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.service.openOwnerAction({sender: OWNER, challengeId: request.challengeId, contextId: 'racing-notice'}).ok, false);
@@ -572,7 +576,7 @@ test('verified template approval requeues only known paused payment and eligible
   assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: 'true'}).requeued, 0);
   assert.deepEqual(f.service.requeueApprovedNotifications({paymentTemplateApproved: true}).messageIds, [approval.jobs[0].paymentNoticeId]);
   f.service.send = async () => ({messageId: 'accepted-approved-payment'}); await f.service.dispatchMessage(approval.jobs[0].paymentNoticeId);
-  const work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'approved-owner-template'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'approved-owner-challenge', contextId: 'approved-owner-context'});
+  const work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'approved-owner-template'}), request = f.service.requestOtp(work.job.id, {...otpBinding(f), leaseToken: work.lease.token, portalChallengeId: 'approved-owner-challenge', contextId: 'approved-owner-context'});
   f.service.send = async () => ({paused: true, reason: 'template_not_approved'}); await f.service.dispatchMessage(request.messageId);
   assert.equal(f.service.requeueApprovedNotifications({paymentTemplateApproved: true}).requeued, 0);
   assert.deepEqual(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).messageIds, [request.messageId]);
@@ -619,7 +623,7 @@ test('notice acceptance followed by persistence failure cannot resend the utilit
   let failSave = false;
   const f = fixture({send: async (_recipient, _payload, guard, meta) => { guard(); if (meta.kind !== 'owner_otp_request') return {messageId: 'accepted-payment'}; failSave = true; return {paused: true, reason: 'owner_action_required', noticeMessageId: 'notice-accepted-before-disk-error'}; }});
   const save = f.store.save; f.store.save = () => { if (failSave) { failSave = false; throw Error('EXAMPLE_NOTICE_SAVE_FAILURE'); } save(); };
-  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'notice-save-worker'}), request = f.service.requestOtp(work.job.id, {leaseToken: work.lease.token, portalChallengeId: 'notice-save-challenge', contextId: 'notice-save-context'});
+  const approval = await f.activate(), work = f.service.acquireJob(approval.jobs[0].id, {workerId: 'notice-save-worker'}), request = f.service.requestOtp(work.job.id, {...otpBinding(f), leaseToken: work.lease.token, portalChallengeId: 'notice-save-challenge', contextId: 'notice-save-context'});
   const result = await f.service.dispatchMessage(request.messageId);
   assert.equal(result.state, 'uncertain'); assert.equal(result.noticeMessageId, undefined); assert.equal(f.service.data().challenges[request.challengeId].messageId, undefined);
   assert.equal(f.service.requeuePausedMessages(OWNER).requeued, 0); assert.equal(f.service.requeueApprovedNotifications({ownerTemplateApproved: true}).requeued, 0);
@@ -659,7 +663,11 @@ async function machineFactsFixture({missing = []} = {}) {
   const first = 'P<EGYEXAMPLE<<ARI'.padEnd(44, '<'), second = number + checkDigit(number) + 'EGY' + birth + checkDigit(birth) + 'M' + expiry + checkDigit(expiry) + optional + checkDigit(optional);
   const mrz = [first, second + checkDigit(second.slice(0, 10) + second.slice(13, 20) + second.slice(21, 43))];
   const extraction = (kind, fields, mrzLines = []) => ({version: 1, kind, readable: true, rotation: 0, fields: Object.fromEntries(Object.entries(fields).map(([field, value]) => [field, {value, confidence: 1, visible: true}])), mrzLines});
-  const visiblePassport = {...passportFields}; for (const field of missing) delete visiblePassport[field];
+  const visiblePassport = {...passportFields};
+  // This positive ORIGINAL-page fixture explicitly labels Passport No outside
+  // the MRZ. Legacy/manual fields alone must never supply that corroboration.
+  if (!missing.includes('passportNumber') && !missing.includes('visiblePassportNumber')) visiblePassport.visiblePassportNumber = passportFields.passportNumber;
+  for (const field of missing) delete visiblePassport[field];
   const documents = [[ids.passportSource, extraction('passport', visiblePassport, mrz)], [ids.residenceSource, extraction('uae_id_front', {latinFullName: 'Ari Example', passportNumber: 'N12345678', nationalityCode: 'EGY', birthDate: '1990-01-15', sex: 'M', emiratesId: '784190012345673', residenceExpiry: '2031-04-30'})], [ids.photoSource, extraction('portrait', {})]].map(([mediaId, value]) => ({mediaId, page: 1, sha256: f.store.data.visaMedia[mediaId].checksum, sourceSha256: f.store.data.visaMedia[mediaId].checksum, extraction: value}));
   const matched = reconcileDocumentEvidence({documents, applicants: f.c.applicants, referenceDate: '2026-10-28'}).applicants[0];
   const applicant = {id: ids.evidence, applicantIndex: 0, status: matched.status, fields: structuredClone(matched.fields), clientFieldsRequired: [...matched.clientFieldsRequired], documents: {passport: ids.passport, residence: ids.residence, photo: ids.photo}, sourceManifest: [ids.passportSource, ids.residenceSource, ids.photoSource].map(mediaId => ({mediaId, sha256: f.store.data.visaMedia[mediaId].checksum})), preparedManifest: ['passport', 'residence', 'photo'].map(kind => ({kind, mediaId: ids[kind], sha256: f.store.data.visaMedia[ids[kind]].checksum})), evidence: structuredClone(matched.evidence), extractionDigest: machineHash({documents, applicantIndex: 0, fields: matched.fields, matchedDocuments: matched.documents, evidence: matched.evidence})};
@@ -671,7 +679,7 @@ async function machineFactsFixture({missing = []} = {}) {
 function answerRemainingMachineQuestions(f) {
   const asked = f.service.askQuestions(f.jobId);
   for (const question of asked.questions) {
-    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : question.field === 'passportType' ? 'ordinary' : 'no'});
+    if (question.type === 'choice') f.service.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : question.field === 'passportType' ? 'ordinary' : 'no'});
     else f.service.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'issueDate' ? '2020-01-01' : question.field === 'birthPlace' ? 'Example City' : question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : 'Example Hotel, Riyadh'});
   }
   return asked;
@@ -774,4 +782,13 @@ test('assisted portal rejects absent consent, changed draft facts, extra facts, 
  (f,p)=>{delete f.service.job(f.jobId).staffDocumentSupplement;},
  (f,p)=>{f.c.paymentStatus='unverified';}
  ]){const f=await confirmedAssistedFixture(),proof=f.service.getConfirmedFields(f.jobId);mutate(f,proof);assert.equal(f.raad.portalDossier(CUSTOMER,{clientProof:proof}).ready,false);}
+});
+
+test('confirmed nested answers survive later question rounds without another prompt',async()=>{
+ const f=fixture(),result=await f.activate(),id=result.jobs[0].id;
+ const first=f.service.askQuestions(id,{fields:['health.hospitalizedOrEmergency']});
+ f.service.answerQuestion({sender:CUSTOMER,token:first.questions[0].token,option:'yes'});
+ f.service.confirmAnswers({sender:CUSTOMER,token:f.service.job(id).summary.token,confirm:true,messageId:'synthetic-confirmation'});
+ const repeated=f.service.askQuestions(id,{fields:['health.hospitalizedOrEmergency']});
+ assert.equal(repeated.questions.length,0);assert.equal(f.service.job(id).confirmedFields.health.hospitalizedOrEmergency,true);
 });

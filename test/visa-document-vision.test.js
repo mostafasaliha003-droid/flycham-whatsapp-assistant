@@ -247,7 +247,9 @@ test('instructions contain complete valid wrapped examples and distinct readable
 
 function wireMatchingFixture() {
   const passport = page();
-  Object.assign(passport.fields, {passportNumber: field('ZT1234567'), passportType: field('ordinary'), birthPlace: field('Example City')});
+  // The complete matching fixture explicitly models its separately labelled
+  // VIZ number. Generic wire-only and legacy reader fixtures stay unchanged.
+  Object.assign(passport.fields, {passportNumber: field('ZT1234567'), visiblePassportNumber: field('ZT1234567'), passportType: field('ordinary'), birthPlace: field('Example City')});
   const check = text => String([...text].reduce((sum, c, index) => sum + (c === '<' ? 0 : /\d/.test(c) ? Number(c) : c.charCodeAt(0) - 55) * [7, 3, 1][index % 3], 0) % 10);
   const first = 'P<EGYEXAMPLE<<ARI'.padEnd(44, '<'), number = 'ZT1234567', birth = '900203', expiry = '300102', optional = '<'.repeat(14);
   const second = number + check(number) + 'EGY' + birth + check(birth) + 'M' + expiry + check(expiry) + optional + check(optional);

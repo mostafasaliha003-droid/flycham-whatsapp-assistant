@@ -12,6 +12,11 @@
   const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
   const CLIENT_KEY = /^[a-zA-Z\d_-]{8,100}$/;
   const MAX_BYTES = 10 * 1024 * 1024;
+  const MRZ_COPY = 'اختياري: أوافق على إرسال الجزء الذي يحتوي على سطور القراءة الآلية (MRZ) من صور جواز السفر أو الهوية في هذا الرفع إلى OpenAI لقراءة هذه السطور. يمكنني رفع المستندات دون هذه الموافقة.';
+  function normaliseMrzConsent(value) {
+    if (value?.available !== true || value.provider !== 'openai' || !/^[a-f0-9]{64}$/.test(value.readerFingerprint || '') || !/^[a-f0-9]{64}$/.test(value.policySha256 || '') || value.inputPolicy !== 'upright_page_internal_mrz_crop_v1') return null;
+    return {available: true, provider: 'openai', readerFingerprint: value.readerFingerprint, inputPolicy: value.inputPolicy, policySha256: value.policySha256, description: MRZ_COPY};
+  }
   const ERROR_COPY = {
     UPLOAD_SIZE_INVALID: 'حجم الملف غير مناسب. اختر ملفًا لا يتجاوز 10 ميغابايت.',
     UPLOAD_TOO_LARGE: 'حجم الملف كبير. اختر ملفًا لا يتجاوز 10 ميغابايت.',
@@ -52,7 +57,7 @@
       return {id: file.id, role: file.role, mimeType: file.mimeType, size: file.size, ...(CLIENT_KEY.test(file.clientKey || '') ? {clientKey: file.clientKey} : {})};
     });
     for (const role of ROLES) if (files.filter(file => file.role === role).length > limits[role]) throw new Error('UPLOAD_RESPONSE_INVALID');
-    return {state: data.state, expiresAt: data.expiresAt, maxBytes: Math.min(MAX_BYTES, Number.isSafeInteger(data.maxBytes) && data.maxBytes > 0 ? data.maxBytes : MAX_BYTES), limits, files, whatsappUrl: safeWhatsapp(data.whatsappUrl)};
+    return {state: data.state, expiresAt: data.expiresAt, maxBytes: Math.min(MAX_BYTES, Number.isSafeInteger(data.maxBytes) && data.maxBytes > 0 ? data.maxBytes : MAX_BYTES), limits, files, whatsappUrl: safeWhatsapp(data.whatsappUrl), mrzConsent: normaliseMrzConsent(data.mrzConsent), mrzConsentRevocable: data.mrzConsentRevocable === true};
   }
   function fileProblem(file, role, maxBytes = MAX_BYTES) {
     if (!file || !Number.isSafeInteger(file.size) || file.size <= 0 || file.size > maxBytes) return 'حجم الملف غير مناسب. اختر ملفًا من 1 بايت إلى 10 ميغابايت.';
@@ -66,7 +71,7 @@
   }
   function createUploadPage({window, document, fetchImpl = (...args) => window.fetch(...args), binaryRequest} = {}) {
     const $ = id => document.getElementById(id);
-    let token = cleanToken(window.location.hash), session = null, items = [], uploading = false, completing = false, terminal = false, started = false, clock;
+    let token = cleanToken(window.location.hash), session = null, items = [], uploading = false, completing = false, revokingConsent = false, terminal = false, started = false, clock;
     const sizeText = bytes => bytes >= 1024 * 1024 ? (bytes / (1024 * 1024)).toLocaleString('ar-AE', {maximumFractionDigits: 1}) + ' ميغابايت' : Math.max(1, Math.round(bytes / 1024)).toLocaleString('ar-AE') + ' كيلوبايت';
     const element = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
     const headers = () => ({Authorization: 'Bearer ' + token});
@@ -89,9 +94,9 @@
       if (!canRetry) token = '';
       if (clock) window.clearInterval(clock);
     }
-    async function request(path, method = 'GET') {
+    async function request(path, method = 'GET', body) {
       let response;
-      try { response = await fetchImpl('/api/visa-upload/' + path, {method, headers: headers(), credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'error'}); }
+      try { response = await fetchImpl('/api/visa-upload/' + path, {method, headers: {...headers(), ...(body ? {'Content-Type': 'application/json'} : {})}, ...(body ? {body: JSON.stringify(body)} : {}), credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'error'}); }
       catch { throw Object.assign(new Error('UPLOAD_NETWORK'), {code: 'UPLOAD_NETWORK'}); }
       let data;
       try { const raw = await response.text(); if (raw.length > 100000) throw Error(); data = JSON.parse(raw); } catch { throw uploadError(response.status, {error: 'UPLOAD_RESPONSE_INVALID'}); }
@@ -113,6 +118,7 @@
     }));
     function applySession(data) {
       const next = normaliseSession(data);
+      if (session?.mrzConsent?.policySha256 !== next.mrzConsent?.policySha256) $('mrz-consent').checked = false;
       session = next;
       for (const saved of next.files) {
         let item = items.find(candidate => candidate.id === saved.id || saved.clientKey && candidate.key === saved.clientKey);
@@ -157,6 +163,9 @@
         const input = $(role + '-input'); input.disabled = completing || group.length >= session.limits[role];
         input.closest('.drop-zone').classList.toggle('unavailable', input.disabled);
       }
+      $('mrz-consent-option').hidden = !session.mrzConsent;
+      $('mrz-consent-copy').textContent = session.mrzConsent?.description || '';
+      $('mrz-consent').disabled = completing || !session.mrzConsent;
       const saved = items.filter(item => item.state === 'saved').length, busy = items.some(item => item.state !== 'saved');
       $('upload-count').textContent = saved ? 'تم حفظ ' + saved.toLocaleString('ar-AE') + ' من المرفقات' : items.length ? 'جارٍ تجهيز المرفقات' : 'لم تُضف مستندات بعد';
       $('upload-hint').textContent = busy ? 'انتظر تأكيد حفظ المرفقات قبل الضغط على «تم».' : 'أضف ما تبقّى من مستنداتك. ما أرسلته على واتساب يبقى في ملفك.';
@@ -219,17 +228,32 @@
       for (const role of ROLES) { const count = session.files.filter(file => file.role === role).length; if (count) summary.append(element('span', '', LABELS[role] + ' · ' + count.toLocaleString('ar-AE'))); }
       const link = $('whatsapp-link'); link.hidden = !session.whatsappUrl;
       if (session.whatsappUrl) { link.href = session.whatsappUrl; $('return-copy').textContent = 'تفتح العودة محادثتك مع رسالة «تم رفع المستندات». أرسلها هناك للمتابعة.'; }
+      $('mrz-revoke-panel').hidden = !session.mrzConsentRevocable;
+      $('mrz-revoke-button').disabled = revokingConsent;
       $('success-heading').focus();
       for (const item of items) revoke(item);
       if (clock) window.clearInterval(clock);
       window.scrollTo?.({top: 0, behavior: 'auto'});
+    }
+    async function revokeMrzConsent() {
+      if (revokingConsent || terminal || !token || session?.state !== 'completed' || !session.mrzConsentRevocable) return;
+      revokingConsent = true; $('mrz-revoke-button').disabled = true; $('mrz-revoke-error').hidden = true;
+      try {
+        const data = await request('mrz-consent/revoke', 'POST');
+        if (data.state !== 'completed' || data.mrzConsentRevocable === true) throw new Error('UPLOAD_RESPONSE_INVALID');
+        applySession(data); $('mrz-revoke-status').textContent = 'تم إيقاف قراءة OpenAI الإضافية التي لم تُنفذ بعد.'; $('mrz-revoke-status').hidden = false;
+      } catch (error) {
+        if (terminalProblem(error)) showTerminal(error);
+        else { $('mrz-revoke-error').textContent = 'لم يتم تأكيد إيقاف القراءة الإضافية. جرّب مرة أخرى أو تواصل مع فريق الرمال على واتساب.'; $('mrz-revoke-error').hidden = false; }
+      } finally { revokingConsent = false; $('mrz-revoke-button').disabled = false; }
     }
     async function complete(event) {
       event.preventDefault();
       if (!active() || completing || !items.length || items.some(item => item.state !== 'saved')) return;
       completing = true; $('complete-error').hidden = true; render();
       try {
-        const data = await request('complete', 'POST');
+        const consent = session.mrzConsent && $('mrz-consent').checked === true ? {mrzConsent: {accepted: true, policySha256: session.mrzConsent.policySha256}} : undefined;
+        const data = await request('complete', 'POST', consent);
         if (data.state !== 'completed') throw new Error('UPLOAD_RESPONSE_INVALID');
         applySession(data);
       } catch (error) {
@@ -252,8 +276,11 @@
       // A bearer link is read once into memory. It never enters an API path,
       // referrer, cookie or browser storage, and refresh requires the chat link.
       window.history.replaceState(null, '', window.location.pathname);
+      $('mrz-consent').checked = false;
+      $('mrz-revoke-status').hidden = true; $('mrz-revoke-error').hidden = true;
       $('upload-form').addEventListener('submit', complete);
       $('retry-session').addEventListener('click', loadSession);
+      $('mrz-revoke-button').addEventListener('click', revokeMrzConsent);
       for (const role of ROLES) {
         const input = $(role + '-input'), zone = input.closest('.drop-zone');
         input.addEventListener('change', () => { addFiles(role, input.files); input.value = ''; });
@@ -267,5 +294,5 @@
     }
     return {start};
   }
-  return {createUploadPage, cleanToken, safeWhatsapp, normaliseSession, fileProblem, errorCopy};
+  return {createUploadPage, cleanToken, safeWhatsapp, normaliseSession, normaliseMrzConsent, fileProblem, errorCopy};
 });

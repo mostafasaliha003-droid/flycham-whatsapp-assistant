@@ -17,7 +17,7 @@ const FIELD_ALLOWLIST = Object.freeze([
   'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry',
   'maritalStatus', 'previousNationality', 'previousNationalityDetails',
   'travelledLastFiveYears', 'travelHistory', 'performUmrah', 'saudiAddress',
-  'entryDate', 'transport', 'arrivalPort', 'gccResident', 'health', 'guardian',
+  'entryDate', 'transport', 'arrivalPort', 'arrivalPortDetails', 'gccResident', 'health', 'guardian',
   'priorGccDeportation', 'priorGccRuleViolation',
   'mission', 'residenceCountryCode', 'visitPurpose', 'entries', 'visaValidityDays',
   'applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode', 'city', 'postOfficeBox'
@@ -36,7 +36,9 @@ const DOCUMENT_FACT_FIELDS = Object.freeze([
   'emiratesId', 'residenceExpiry'
 ]);
 const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
-const CONTACT_FIELDS = Object.freeze(['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode']);
+// SMS verification uses the separately authorized supervisor route. Do not
+// require or manufacture an applicant phone merely to complete that route.
+const CONTACT_FIELDS = Object.freeze(['contactEmail', 'insurancePhone', 'postalCode']);
 const CONTACT_ENV = Object.freeze({applicationPhone: 'RAAD_APPLICATION_PHONE', contactEmail: 'RAAD_CONTACT_EMAIL', insurancePhone: 'RAAD_INSURANCE_PHONE', postalCode: 'RAAD_POSTAL_CODE', city: 'RAAD_CITY', postOfficeBox: 'RAAD_POST_OFFICE_BOX'});
 const NATIONALITY_CODES = Object.freeze({
   'سوريا': 'SYR', 'الأردن': 'JOR', 'لبنان': 'LBN', 'جزر القمر': 'COM',
@@ -164,7 +166,7 @@ function validPortraitBox(value) {
 // Recompute from the protected intake and actual decrypted media on every use.
 // This is document-consistency evidence, never a staff review or authenticity
 // assertion. Caller authorization and client consent are separate gates.
-function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now = Date.now} = {}) {
+function verifyMachineDossier({store, mediaStore, mrzProfiles = null, customer, applicantIndex, expectedCaseSignature, evidenceId, now = Date.now} = {}) {
   const notReady = code => ({ready: false, evidenceId: evidenceId || null, evidenceFingerprint: null, fields: {}, documents: {}, issues: [issue('documents', code, 'The current document evidence requires review.')], blockedReason: code});
   try {
     const at = typeof now === 'function' ? now() : now;
@@ -195,9 +197,27 @@ function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expe
       sources.set(manifest.mediaId, observed);
       sourceSnapshots.push({mediaId: manifest.mediaId, sha256: observed.sha256, expiresAt: observed.metadata.expiresAt ?? null});
     }
+    // A profiled checkpoint remains conditional on the exact live consent and
+    // original source. Cached/prepared images never replace that authority.
+    const profileSnapshots = [];
+    const profiledJobs = Object.values(intake.jobs || {}).filter(job => job?.customer === customer && job.caseId === c.id && job.caseSignature === signature && job.generation === record.generation && job.status !== 'stale' && sources.has(job.mediaId) && Object.hasOwn(job, 'mrzProfile'));
+    const profileBindings = new Map(profiledJobs.map(job => [job, hash(job.mrzProfile)]));
+    const guardProfiles = () => {
+      for (const job of profiledJobs) {
+        const binding = profileBindings.get(job), source = store.data.visaMedia?.[job.mediaId];
+        const approved = typeof mrzProfiles?.guard === 'function' && mrzProfiles.guard(job.mrzProfile, {customer, caseId: c.id, caseSignature: signature, source}) === true;
+        if (!approved || !Object.values(intake.jobs || {}).includes(job) || hash(job.mrzProfile) !== binding || job.status !== 'ready' || source !== sources.get(job.mediaId).raw || Object.values(job.pages || {}).some(page => page.mrzProfileKey !== binding)) fail('RAAD_MACHINE_PROFILE_UNVERIFIED', 409);
+      }
+    };
+    guardProfiles();
+    for (const job of profiledJobs) profileSnapshots.push({mediaId: job.mediaId, binding: hash(job.mrzProfile)});
     for (const document of record.documents) {
       if (!isObject(document) || !UUID.test(document.mediaId || '') || !Number.isInteger(document.page) || document.page < 1 || document.page > 10 || !/^[a-f0-9]{64}$/.test(document.sha256 || '') || !/^[a-f0-9]{64}$/.test(document.sourceSha256 || '')) return notReady('RAAD_MACHINE_EXTRACTION_INVALID');
       if (sources.has(document.mediaId) && sources.get(document.mediaId).sha256 !== document.sourceSha256) return notReady('RAAD_MACHINE_SOURCE_INVALID');
+      if (sources.has(document.mediaId)) {
+        const profiled = profiledJobs.filter(job => job.mediaId === document.mediaId);
+        if (Object.hasOwn(document, 'mrzProfileKey') && !profiled.length || profiled.some(job => document.mrzProfileKey !== hash(job.mrzProfile) || hash(job.pages?.[document.page]) !== hash(document))) return notReady('RAAD_MACHINE_PROFILE_UNVERIFIED');
+      }
     }
     const matched = reconcileDocumentEvidence({documents: record.documents, applicants: c.applicants, referenceDate: dubaiDate(at)}).applicants[applicantIndex];
     const clientFieldsRequired = matched?.clientFieldsRequired || [];
@@ -230,16 +250,17 @@ function verifyMachineDossier({store, mediaStore, customer, applicantIndex, expe
       documents[kind] = {mediaId: manifest.mediaId, sha256: observed.sha256, mimeType: observed.metadata.mimeType, size: observed.bytes.length, expiresAt: observed.metadata.expiresAt ?? null};
       preparedSnapshots.push({kind, ...documents[kind], sourceIds: [...sourceIds].sort()});
     }
-    const evidenceFingerprint = hash({version: 1, matcherVersion: 1, customer, caseId: c.id, caseSignature: signature, applicantIndex, evidenceId, generation: record.generation, extractionDigest, fields, clientFieldsRequired, sources: sourceSnapshots.sort((a, b) => a.mediaId.localeCompare(b.mediaId)), prepared: preparedSnapshots.sort((a, b) => a.kind.localeCompare(b.kind))});
+    guardProfiles();
+    const evidenceFingerprint = hash({version: 1, matcherVersion: 1, ...(profileSnapshots.length ? {mrzProfiles: profileSnapshots.sort((a, b) => a.mediaId.localeCompare(b.mediaId))} : {}), customer, caseId: c.id, caseSignature: signature, applicantIndex, evidenceId, generation: record.generation, extractionDigest, fields, clientFieldsRequired, sources: sourceSnapshots.sort((a, b) => a.mediaId.localeCompare(b.mediaId)), prepared: preparedSnapshots.sort((a, b) => a.kind.localeCompare(b.kind))});
     return {ready: true, evidenceId, evidenceFingerprint, caseId: c.id, caseSignature: signature, applicantIndex, generation: record.generation, fields, clientFieldsRequired: clone(clientFieldsRequired), documents, extractionDigest, issues: [], blockedReason: null};
   } catch { return notReady('RAAD_MACHINE_EVIDENCE_INVALID'); }
 }
 
 class RaadVisaWorkflow {
-  constructor({store, mediaStore, now = Date.now, env = {}, privateConfig = {}, canAutomate = () => false} = {}) {
+  constructor({store, mediaStore, mrzProfiles = null, now = Date.now, env = {}, privateConfig = {}, canAutomate = () => false} = {}) {
     if (!store?.data || typeof store.save !== 'function') fail('RAAD_STORE_REQUIRED', 500);
     if (typeof mediaStore?.get !== 'function') fail('RAAD_MEDIA_STORE_REQUIRED', 500);
-    Object.assign(this, {store, mediaStore, now, env, privateConfig, canAutomate});
+    Object.assign(this, {store, mediaStore, mrzProfiles, now, env, privateConfig, canAutomate});
   }
 
   portalStatus() { return {connected: false, mode: 'preparation', reason: 'PORTAL_NOT_CONNECTED'}; }
@@ -406,7 +427,7 @@ class RaadVisaWorkflow {
     if (expectedCaseSignature !== context.caseSignature) fail('RAAD_CASE_SIGNATURE_CONFLICT', 409);
     if (previous && (previous.review?.reviewedAt || previous.review?.confirmedFields?.length)) failManual('reviewed');
     if (previous?.machineReview && previous.machineReview.draftFingerprint !== hash({fields: previous.fields, documents: previous.documents})) failManual('machine_changed');
-    const dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now: this.now});
+    const dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, mrzProfiles: this.mrzProfiles, customer, applicantIndex, expectedCaseSignature, evidenceId, now: this.now});
     if (!dossier.ready) fail(dossier.blockedReason || 'RAAD_MACHINE_REVIEW_REQUIRED', 409);
     for (const [field, value] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(dossier.fields, field) && !equivalentFact(field, value, dossier.fields[field])) fail('RAAD_MACHINE_SOURCE_CONFLICT', 409);
     if (previous?.machineReview?.evidenceFingerprint === dossier.evidenceFingerprint) return clone({...this.summary(context, previous), ok: true, duplicate: true, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview: previous.machineReview});
@@ -445,11 +466,11 @@ class RaadVisaWorkflow {
     let dossier = null;
     if (source === 'machine') {
       if (!this.machineAllowed(customer)) add('case', 'RAAD_MACHINE_AUTOMATION_PAUSED', 'Automatic preparation is paused.');
-      dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature: context.caseSignature, evidenceId: job.machineReview.evidenceId, now: this.now});
+      dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, mrzProfiles: this.mrzProfiles, customer, applicantIndex, expectedCaseSignature: context.caseSignature, evidenceId: job.machineReview.evidenceId, now: this.now});
       if (!dossier.ready || dossier.evidenceFingerprint !== job.machineReview.evidenceFingerprint || job.machineReview.draftFingerprint !== hash({fields: job.fields, documents: job.documents})) add('documents', 'RAAD_MACHINE_EVIDENCE_STALE', 'Document evidence has changed and must be checked again.');
     } else if (source === 'assisted') {
       if(!this.machineAllowed(customer))add('case','RAAD_MACHINE_AUTOMATION_PAUSED','Automatic preparation is paused.');
-      dossier=verifyMachineDossier({store:this.store,mediaStore:this.mediaStore,customer,applicantIndex,expectedCaseSignature:context.caseSignature,evidenceId:job.documentAssistance.evidenceId,now:this.now});
+      dossier=verifyMachineDossier({store:this.store,mediaStore:this.mediaStore,mrzProfiles:this.mrzProfiles,customer,applicantIndex,expectedCaseSignature:context.caseSignature,evidenceId:job.documentAssistance.evidenceId,now:this.now});
       if(!dossier.ready||job.caseId!==context.c.id||job.caseSignature!==context.caseSignature||job.documentAssistance.evidenceFingerprint!==dossier.evidenceFingerprint)add('documents','RAAD_MACHINE_EVIDENCE_STALE','Document evidence requires verification.');
       else {
         for(const [field,value]of Object.entries(dossier.fields))if(!Object.hasOwn(job.fields,field)||!equivalentFact(field,value,job.fields[field]))add(field,'DOCUMENT_DATA_CONFLICT','Draft document facts differ from verified facts.');
@@ -487,6 +508,9 @@ class RaadVisaWorkflow {
     fields = mergeFields(fields, answers);
     if (!Object.hasOwn(fields, 'entryDate')) fields.entryDate = defaults.proposedEntryDate;
     delete fields.proposedEntryDate;
+    const entryDateProvenance=Object.hasOwn(answers,'entryDate')?{source:'applicant_confirmed'}:Object.hasOwn(job?.fields||{},'entryDate')?{source:'staff_entered'}:{source:'office_estimate',referenceDate:dubaiDate(this.now()),offsetDays:15};
+    if(fields.arrivalPort==='other'&&answers.arrivalPortDetails)fields.arrivalPort=answers.arrivalPortDetails;
+    delete fields.arrivalPortDetails;
     for (const [field, expected] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(fields, field) && !equivalentFact(field, expected, fields[field])) add(field, 'CASE_FACT_MISMATCH', 'This document fact differs from the paid applicant record.');
     for (const [field, expected] of Object.entries(job?.fields || {})) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(answers, field) && !equivalentFact(field, expected, answers[field])) add(field, 'DOCUMENT_DATA_CONFLICT', 'The client answer differs from the verified document fact.');
     const validation = validateApplicant(fields, {referenceDate: dubaiDate(this.now())});
@@ -516,7 +540,7 @@ class RaadVisaWorkflow {
     const uniqueIssues = issues.filter((value, index) => issues.findIndex(other => other.field === value.field && other.code === value.code) === index);
     const ready = uniqueIssues.length === 0;
     const fingerprint = ready ? hash({version: 1, source, customer, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, draftId: job.jobId, draftRevision: job.revision, machineEvidence: dossier?.evidenceFingerprint || null, staffReview: source === 'staff' ? job.review : null, fields, defaults, documents, payment: context.c.staffVerification.payment, clientProof}) : null;
-    return clone({ready, source, fingerprint, fields, defaults, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
+    return clone({ready, source, fingerprint, fields, defaults, entryDateProvenance, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
   }
 
   persist(context, job) {

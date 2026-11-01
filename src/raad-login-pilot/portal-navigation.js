@@ -1,4 +1,5 @@
 'use strict';
+const {assertPageAction,assertPageDestination}=require('./execution-policy');
 const ORIGIN='https://visa.mofa.gov.sa';
 // Keep this sanitizer aligned with the read-only inspection representation.
 function safeObservedLabel(text){return String(text||'').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/[0-9\u0660-\u0669\u06f0-\u06f9]{6,}/g,'[number]').replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[id]').replace(/[A-Za-z0-9_-]{40,}/g,'[id]').replace(/[<>]/g,' ').replace(/\s+/g,' ').trim().slice(0,120);}
@@ -28,13 +29,14 @@ function inspectObservedNavigation({path,label,acceptAgreement=false,viewPayment
  }catch{return null;}
 }
 async function navigateObservedLink(page,{path,label,acceptAgreement=false,viewPaymentDetails=false}={}){
+ assertPageAction(page,'open-page',{path,label,acceptAgreement,viewPaymentDetails});
  if(typeof path!=='string'||path.length<2||path.length>240||!/^\/[A-Za-z0-9/_-]+$/.test(path)||path.startsWith('//')||typeof label!=='string'||!label||label.length>120||safeObservedLabel(label)!==label)throw Error('NAVIGATION_INPUT_INVALID');
  try{
   const main=page.mainFrame(),before=new URL(page.url());if(!main||main.url()!==page.url()||before.origin!==ORIGIN||before.username||before.password)throw Error('UNTRUSTED_PAGE');
   const selected=await page.evaluate(inspectObservedNavigation,{path,label,acceptAgreement,viewPaymentDetails});
   if(!selected||typeof selected.href!=='string'||selected.href.length>8192)throw Error('LINK_UNAVAILABLE');
   const target=new URL(selected.href);if(target.origin!==ORIGIN||target.pathname!==path||target.username||target.password)throw Error('LINK_UNAVAILABLE');
-  await page.goto(selected.href,{waitUntil:'domcontentloaded',timeout:30000});
+  assertPageDestination(page,selected.href);assertPageAction(page,'open-page',{path,label,acceptAgreement,viewPaymentDetails});await page.goto(selected.href,{waitUntil:'domcontentloaded',timeout:30000});
   const after=new URL(page.url());if(after.origin!==ORIGIN||after.username||after.password)throw Error('UNTRUSTED_PAGE');
   return {opened:true,path:after.pathname};
  }catch{throw Error('PORTAL_NAVIGATION_UNAVAILABLE');}

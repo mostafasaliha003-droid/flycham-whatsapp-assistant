@@ -17,7 +17,9 @@ const TOKEN = 'synthetic-document-graph-token';
 const GEMMA_KEY = 'synthetic-document-gemma-key';
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const field = value => ({value, visible: true, confidence: 0.999});
-const DOC_FIELDS = {nationalityCode: 'EGY', passportNumber: 'N12345678', passportType: 'ordinary', issuingCountryCode: 'EGY', issueDate: '2025-01-01', expiryDate: '2031-01-01', birthDate: '1990-01-15', birthPlace: 'Synthetic City', sex: 'F', latinFirstName: 'Synthetic', latinFamilyName: 'Example'};
+// The accepted synthetic provider response includes its own labelled VIZ zone;
+// it is distinct from the independently checked MRZ transcription.
+const DOC_FIELDS = {nationalityCode: 'EGY', passportNumber: 'N12345678', visiblePassportNumber: 'N12345678', passportType: 'ordinary', issuingCountryCode: 'EGY', issueDate: '2025-01-01', expiryDate: '2031-01-01', birthDate: '1990-01-15', birthPlace: 'Synthetic City', sex: 'F', latinFirstName: 'Synthetic', latinFamilyName: 'Example'};
 function checkDigit(value) { return String([...value].reduce((sum, character, index) => sum + (character === '<' ? 0 : /\d/.test(character) ? Number(character) : character.charCodeAt(0) - 55) * [7, 3, 1][index % 3], 0) % 10); }
 function mrz() {
   const first = 'P<EGYEXAMPLE<<SYNTHETIC'.padEnd(44, '<'), number = DOC_FIELDS.passportNumber, birth = '900115', expiry = '310101', optional = '<'.repeat(14);

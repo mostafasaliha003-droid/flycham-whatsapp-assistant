@@ -215,3 +215,8 @@ test('insurance never claims a cheapest offer when any available offer is unread
     assert.equal(result.issues.length > 0, true);
   }
 });
+
+test('an unspecified stay is not silently used as a government address',()=>{
+ const result=validateApplicant({saudiAddress:'not_specified'},{referenceDate:'2026-10-30'});
+ assert.ok(result.issues.some(i=>i.code==='SAUDI_ADDRESS_UNSPECIFIED_REQUIRES_PORTAL_REVIEW'));
+});

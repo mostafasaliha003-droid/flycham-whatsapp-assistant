@@ -9,7 +9,9 @@ const id=n=>'45000000-0000-4000-8000-'+String(n).padStart(12,'0');
 function digit(value){return String([...value].reduce((sum,c,i)=>sum+(c==='<'?0:/\d/.test(c)?Number(c):c.charCodeAt(0)-55)*[7,3,1][i%3],0)%10);}
 function mrz(){const first='P<EGYEXAMPLE<<SYNTHETIC'.padEnd(44,'<'),number='N12345678',birth='900115',expiry='310101',optional='<'.repeat(14),body=number+digit(number)+'EGY'+birth+digit(birth)+'F'+expiry+digit(expiry)+optional+digit(optional);return[first,body+digit(body.slice(0,10)+body.slice(13,20)+body.slice(21,43))];}
 function td1(number='Z12345678'){const first='ILARE'+number+digit(number)+'784199000000001',body='900115'+digit('900115')+'F'+'290101'+digit('290101')+'EGY'+'<'.repeat(11);return[first,body+digit(first.slice(5)+body.slice(0,7)+body.slice(8,15)+body.slice(18,29)),'EXAMPLE<<SYNTHETIC'.padEnd(30,'<')];}
-const FIELDS={nationalityCode:'EGY',passportNumber:'N12345678',passportType:'ordinary',issuingCountryCode:'EGY',issueDate:'2025-01-01',expiryDate:'2031-01-01',birthDate:'1990-01-15',birthPlace:'Synthetic City',sex:'F',latinFirstName:'Synthetic',latinFamilyName:'Example'};
+// Positive mocked full-page reads explicitly declare the separate labelled VIZ
+// zone. Legacy-only and missing-zone controls are tested independently.
+const FIELDS={nationalityCode:'EGY',passportNumber:'N12345678',visiblePassportNumber:'N12345678',passportType:'ordinary',issuingCountryCode:'EGY',issueDate:'2025-01-01',expiryDate:'2031-01-01',birthDate:'1990-01-15',birthPlace:'Synthetic City',sex:'F',latinFirstName:'Synthetic',latinFamilyName:'Example'};
 const extraction=(kind,fields={},extra={})=>({version:1,kind,readable:true,rotation:0,fields:Object.fromEntries(Object.entries(fields).map(([key,value])=>[key,{value,visible:true,confidence:0.999}])),mrzLines:kind==='passport'?mrz():[],portraitBox:null,...extra});
 async function fixtures(){return Promise.all([{r:230,g:220,b:210},{r:10,g:150,b:50},{r:20,g:30,b:200},{r:150,g:40,b:10}].map((background,index)=>sharp({create:{width:index===2?600:1200,height:index===2?600:800,channels:3,background}}).png().toBuffer()));}
 async function setup(options={}){
@@ -344,4 +346,72 @@ test('a protected conflicting staff draft keeps data intact and records one fail
  const reports=[];const f=await setup({unpaid:true,report:(code,metadata)=>reports.push({code,metadata})});f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();f.realRaad.prepare(CUSTOMER,{expectedRevision:0,fields:{passportNumber:'CONFLICT123'},confirm:true});f.c.paymentStatus='verified';const job={id:id(91),customer:CUSTOMER,caseId:f.c.id,caseSignature:visaCaseSignature(f.c),applicantIndex:0,state:'queued'};f.store.data.visaFulfilment={jobs:{[job.id]:job}};const saved=structuredClone(f.store.data.raadApplications);
  for(let i=0;i<5;i++)assert.equal((await f.worker.prepareJob(job)).readyForQuestions,false);
  assert.equal(f.worker.data().cases[CUSTOMER].issues.filter(i=>i.code==='DOCUMENT_APPLY_UNCONFIRMED').length,1);assert.deepEqual(f.store.data.raadApplications,saved);assert.equal(f.counts().stages,0);assert.equal(f.c.submissionStatus,'not_submitted');const diagnostics=reports.filter(entry=>entry.metadata.operation);assert.equal(diagnostics.length,1);assert.equal(diagnostics[0].metadata.code,'RAAD_MANUAL_DRAFT_PROTECTED');assert.equal(diagnostics[0].metadata.operation,'draft_apply');assert.equal(diagnostics[0].metadata.detail,'field_conflict');assert.deepEqual(Object.keys(diagnostics[0].metadata).sort(),['caseHash','code','detail','operation']);assert.doesNotMatch(JSON.stringify(diagnostics),/CONFLICT123|15550001201|synthetic-case/);
+});
+
+test('a deterministic image quality failure stops the dossier before applying or staging while retaining OCR checkpoints',async()=>{
+ const realPrepare=require('../src/raad-attachments').preparePortalImage;
+ const cropped=await sharp({create:{width:1200,height:299,channels:3,background:'#123456'}}).png().toBuffer();
+ const f=await setup({prepare:async(bytes,options)=>realPrepare(options.kind==='document'?cropped:bytes,options)}),before=structuredClone(f.c);
+ f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();
+ const summary=f.worker.summary(CUSTOMER),app=summary.applicants[0];
+ assert.equal(summary.status,'needs_review');assert.equal(app.status,'needs_review');assert.equal(app.documents.passport,null);
+ assert(app.issues.some(issue=>issue.code==='DOCUMENT_IMAGE_UNSUITABLE'));
+ assert.equal(f.counts().applies,0);assert.equal(f.counts().stages,0);assert.equal(f.counts().visionCalls,3);
+ assert.equal(Object.values(f.worker.data().jobs).every(job=>job.status==='ready'&&job.pages[1]),true);
+ await f.worker.tick();assert.equal(f.counts().visionCalls,3);assert.equal(f.counts().applies,0);assert.deepEqual(f.c,before);
+ assert.doesNotMatch(JSON.stringify(summary),/IMAGE_TOO_SMALL|SIZE_LIMIT_UNACHIEVABLE/);
+});
+
+test('the new geometry preparation policy refreshes a genuine previous-policy checkpoint without another OCR call',async()=>{
+ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),{createRequire}=require('node:module');
+ const sourcePath=require.resolve('../src/visa-document-intake'),source=fs.readFileSync(sourcePath,'utf8');
+ assert(source.includes("raad-document-preparation-2026-10-31.v12"));
+ const historical={exports:{}};
+ vm.runInThisContext('(function(require,module,exports,__filename,__dirname){'+source.replace('raad-document-preparation-2026-10-31.v12','raad-document-preparation-2026-10-29.v10')+'\n})',{filename:sourcePath})(createRequire(sourcePath),historical,historical.exports,sourcePath,path.dirname(sourcePath));
+ let preparations=0;const f=await setup({unpaid:true,prepare:async(...args)=>{preparations++;return require('../src/raad-attachments').preparePortalImage(...args);}});
+ const shared={store:f.store,mediaStore:f.media,vision:f.vision,raad:f.raad,fulfilment:f.fulfilment,env:f.worker.env,now:()=>NOW,lock:f.lock,prepare:f.worker.prepare};
+ const old=new historical.exports.VisaDocumentIntake(shared);f.add(1,0);f.add(2,1);f.add(3,2);
+ for(let i=0;i<6;i++)await old.tick();
+ assert.equal(old.summary(CUSTOMER).status,'ready');const prior=f.worker.data().cases[CUSTOMER].inputFingerprint,reads=f.counts().visionCalls,transforms=preparations,before=structuredClone(f.c);
+ const current=new VisaDocumentIntake(shared);await current.tick();
+ assert.notEqual(current.data().cases[CUSTOMER].inputFingerprint,prior);assert(preparations>transforms);
+ assert.equal(f.counts().visionCalls,reads);assert.equal(f.counts().applies,0);assert.equal(f.counts().stages,0);assert.deepEqual(f.c,before);
+ const after=preparations;await current.tick();assert.equal(preparations,after);assert.equal(f.counts().visionCalls,reads);
+});
+
+test('trusted local TD3 receives the full upright page once with the exact source binding and preprocessing marker',async()=>{
+ let calls=0;const reader={status:()=>({local:true,configured:true}),ready:()=>true,extract:async({bytes,format,guard})=>{
+  calls++;guard();assert.equal(format,'TD3');const meta=await sharp(bytes).metadata();assert.deepEqual([meta.width,meta.height],[1200,800]);return {version:1,mrzLines:mrz()};
+ }};
+ const f=await setup({mrzVision:reader,extract:async()=>extraction('passport',FIELDS,{mrzLines:[]})}),source=f.add(1,0);await f.processAll();
+ assert.equal(calls,1);const ledger=Object.values(f.worker.data().cases[CUSTOMER].mrzFocusReads);assert.equal(ledger.length,1);
+ assert.equal(ledger[0].sourceSha256,f.records[source].checksum);assert.equal(ledger[0].page,1);assert.equal(ledger[0].format,'TD3');assert.equal(ledger[0].inputPolicy,'oriented-full-page-to-local-format-crop-v1');
+ const page=Object.values(f.worker.data().jobs)[0].pages[1];assert.equal(page.mediaId,source);assert.deepEqual(page.extraction.mrzLines,mrz());
+ await f.worker.tick();assert.equal(calls,1);
+});
+
+test('trusted local TD1 receives the complete model-corrected identity page rather than a second bottom crop',async()=>{
+ let calls=0;const reader={supports:format=>format==='TD1',status:()=>({local:true,configured:true}),ready:()=>true,extract:async({bytes,format,guard})=>{
+  calls++;guard();assert.equal(format,'TD1');const meta=await sharp(bytes).metadata();assert.deepEqual([meta.width,meta.height],[800,1200]);return {version:1,mrzLines:td1()};
+ }};
+ const f=await setup({mrzVision:reader,extract:async()=>extraction('uae_id_back',{emiratesId:'784199000000001'},{rotation:90,mrzLines:[]})}),source=f.add(1,3);await f.processAll();
+ assert.equal(calls,1);const ledger=Object.values(f.worker.data().cases[CUSTOMER].mrzFocusReads);assert.equal(ledger[0].sourceSha256,f.records[source].checksum);assert.equal(ledger[0].format,'TD1');assert.equal(ledger[0].inputPolicy,'oriented-full-page-to-local-format-crop-v1');
+ assert.deepEqual(Object.values(f.worker.data().jobs)[0].pages[1].extraction.mrzLines,td1());
+});
+
+test('local full-page preparation keeps actual optical pixel and byte bounds, no upscaling, and stops on a changed guard',async()=>{
+ const f=await setup(),large=await sharp({create:{width:5000,height:3000,channels:3,background:'#32745b'}}).png().toBuffer(),original=Buffer.from(large);
+ const bounded=await f.worker.focusedMrzCrop({bytes:large,mimeType:'image/png'},{rotation:0},()=>{},{localOptical:true}),meta=await sharp(bounded.bytes).metadata();
+ assert(meta.width<=4096&&meta.height<=4096);assert(meta.width*meta.height<=4000000);assert(bounded.bytes.length<=2*1024*1024);assert(meta.width<5000&&meta.height<3000);assert.deepEqual(large,original);
+ const small=await f.worker.focusedMrzCrop({bytes:f.pixels[0],mimeType:'image/png'},{rotation:0},()=>{},{localOptical:true}),normal=await sharp(small.bytes).metadata();assert.deepEqual([normal.width,normal.height],[1200,800]);
+ const legacy=await f.worker.focusedMrzCrop({bytes:f.pixels[0],mimeType:'image/png'},{rotation:0},()=>{}),old=await sharp(legacy.bytes).metadata();assert.deepEqual([old.width,old.height],[1200,360]);
+ await assert.rejects(f.worker.focusedMrzCrop({bytes:large,mimeType:'image/png'},{rotation:0},()=>{throw Object.assign(Error('changed'),{code:'DOCUMENT_INTAKE_STALE'});},{localOptical:true}),{code:'DOCUMENT_INTAKE_STALE'});
+ await assert.rejects(f.worker.focusedMrzCrop({bytes:f.pixels[0],mimeType:'image/png'},{rotation:0},()=>{},{localOptical:'true'}),{code:'MRZ_VISION_INVALID_IMAGE'});
+});
+
+test('the execution verifier rechecks the VIZ gate and cannot reuse a cached ready dossier after independent visual evidence is absent',async()=>{
+ const f=await setup();f.add(1,0);f.add(2,1);f.add(3,2);await f.processAll();const state=f.worker.data().cases[CUSTOMER],app=state.applicants[0];
+ const verify=()=>verifyMachineDossier({store:f.store,mediaStore:f.media,customer:CUSTOMER,applicantIndex:0,expectedCaseSignature:visaCaseSignature(f.c),evidenceId:app.id,now:()=>NOW});assert.equal(verify().ready,true);
+ for(const doc of state.documents)if(doc.extraction.kind==='passport')delete doc.extraction.fields.visiblePassportNumber;
+ const result=verify();assert.equal(result.ready,false);assert.equal(result.blockedReason,'RAAD_MACHINE_MATCH_REVIEW_REQUIRED');assert.equal(f.c.submissionStatus,'not_submitted');
 });
