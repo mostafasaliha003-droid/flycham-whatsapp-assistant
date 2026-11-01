@@ -9,6 +9,28 @@ class VisaPortalDispatcher{
  configured(){try{const u=new URL(this.env.RAAD_BROWSER_WORKER_URL);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&u.pathname==='/'&&typeof this.env.RAAD_JOB_BRIDGE_KEY==='string'&&this.env.RAAD_JOB_BRIDGE_KEY.length>=32;}catch{return false;}}
  async request(path,{body,artifact=false,method}={}){if(!this.configured())throw Error('RAAD_BROWSER_NOT_CONFIGURED');const u=new URL(path,this.env.RAAD_BROWSER_WORKER_URL),headers={Authorization:'Bearer '+this.env.RAAD_JOB_BRIDGE_KEY};if(body)headers['Content-Type']='application/json';const r=await this.fetchImpl(u.href,{method:method|| (body?'POST':'GET'),headers,body:body?JSON.stringify(body):undefined,redirect:'error',signal:AbortSignal.timeout(30000)});if(!r.ok)throw Object.assign(Error('RAAD_BRIDGE_HTTP_'+r.status),{status:r.status});if(!artifact)return r.json();if(!(r.headers.get('content-type')||'').startsWith('application/pdf'))throw Error('RAAD_ARTIFACT_TYPE_INVALID');const parts=[];let length=0;for await(const chunk of r.body){length+=chunk.length;if(length>10*1024*1024)throw Error('RAAD_ARTIFACT_TOO_LARGE');parts.push(Buffer.from(chunk));}const bytes=Buffer.concat(parts);if(!bytes.subarray(0,5).equals(Buffer.from('%PDF-')))throw Error('RAAD_ARTIFACT_INVALID');return bytes;}
  async resumeOtp({jobId,portalChallengeId,code,guard}){guard();const run=this.store.data.visaPortalRuns[jobId];if(!run||run.phase!=='waiting_otp')throw Error('RAAD_OTP_CONTEXT_STALE');return this.request('/internal/raad/jobs/'+jobId+'/otp',{body:{challengeId:portalChallengeId,code}});}
+ async operatorChallenge(jobId,input){
+  const check=()=>{const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId];if(run?.phase!=='waiting_operator'||!run.operatorChallenge||run.operatorChallenge.expiresAt<=this.now())throw Error('OPERATOR_CHALLENGE_STALE');this.fulfilment.guardLease(jobId,run.leaseToken);this.currentDossier(job,run);return{job,run};};
+  const {job,run}=check(),id=run.operatorChallenge.id;
+  if(input&&(Object.keys(input).sort().join(',')!=='challengeId,imageId,value'||input.challengeId!==id||typeof input.value!=='string'||!/^[A-Za-z0-9]{1,32}$/.test(input.value)))throw Error('OPERATOR_INPUT_INVALID');
+  try{
+   const result=await this.request('/internal/raad/jobs/'+jobId+'/operator',input?{body:input}:{});check();
+   if(input){if(result.accepted!==true)throw Error('OPERATOR_SUBMISSION_UNCONFIRMED');run.phase='running';delete run.operatorChallenge;job.state='running';this.store.save();return{accepted:true};}
+   if(result.challengeId!==id||!['login','form'].includes(result.kind)||result.kind!==run.operatorChallenge.kind||typeof result.image!=='string'||result.image.length>280000||!/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(result.image)||!/^[a-f0-9]{64}$/.test(result.imageId||''))throw Error('OPERATOR_IMAGE_UNCONFIRMED');
+   const bytes=Buffer.from(result.image.slice(22),'base64');try{if(bytes.length>200000||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||digest(bytes)!==result.imageId)throw Error('OPERATOR_IMAGE_UNCONFIRMED');}finally{bytes.fill(0);}
+   return{challengeId:id,kind:result.kind,expiresAt:run.operatorChallenge.expiresAt,imageId:result.imageId,image:result.image};
+  }finally{if(input)input.value='';}
+ }
+ async restartOperatorLogin(jobId){
+  if(this.env.RAAD_OPERATOR_CAPTCHA_ENABLED!=='true')throw Error('OPERATOR_UNAVAILABLE');
+  const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId];
+  const verify=()=>{if(job.state!=='portal_review_required'||run?.phase!=='blocked'||run.lastStage!=='login'||!['LOGIN_CAPTCHA_TIMEOUT','OPERATOR_CHALLENGE_EXPIRED','LOGIN_REJECTED'].includes(job.blockedReason)||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.operatorManualStarts||0)>=2)throw Error('OPERATOR_RESTART_UNAVAILABLE');let proof,draft;job.state='ready';try{proof=this.fulfilment.getConfirmedFields(jobId);draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint)throw Error('OPERATOR_RESTART_UNAVAILABLE');return draft.fingerprint;};
+  const fingerprint=verify(),health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false||health.production?.operatorCaptcha!==true)throw Error('OPERATOR_UNAVAILABLE');
+  await this.cancelOwned(jobId);if(verify()!==fingerprint)throw Error('OPERATOR_RESTART_UNAVAILABLE');
+  const before={reason:job.blockedReason,phase:run.phase,count:job.operatorManualStarts};job.state='ready';delete job.blockedReason;job.operatorManualStarts=(job.operatorManualStarts||0)+1;run.phase='retry_ready';
+  try{this.store.save();}catch{job.state='portal_review_required';job.blockedReason=before.reason;run.phase=before.phase;if(before.count===undefined)delete job.operatorManualStarts;else job.operatorManualStarts=before.count;throw Error('OPERATOR_RESTART_UNCONFIRMED');}
+  return{restartQueued:true};
+ }
  block(job,reason){if(job.blockedReason!==reason){job.blockedReason=reason;job.updatedAt=this.now();this.store.save();}}
  dossier(job,proof){
   if(typeof this.raad.portalDossier==='function')return this.raad.portalDossier(job.customer,{applicantIndex:job.applicantIndex,clientProof:proof});
@@ -31,7 +53,7 @@ class VisaPortalDispatcher{
   }
  }
  async cancelOwned(id){const result=await this.request('/internal/raad/jobs/'+id+'/cancel',{body:{}});if(result.stage!=='cancelled'||result.ownedBrowserClosed!==true)throw Error('RAAD_CANCEL_UNCONFIRMED');return result;}
- async recover(){if(this.recovered)return;for(const [id,run]of Object.entries(this.store.data.visaPortalRuns)){if(!['starting','running','waiting_otp','uncertain'].includes(run.phase))continue;await this.cancelOwned(id);run.phase='interrupted';this.store.save();}this.recovered=true;}
+ async recover(){if(this.recovered)return;for(const [id,run]of Object.entries(this.store.data.visaPortalRuns)){if(!['starting','running','waiting_otp','waiting_operator','uncertain'].includes(run.phase))continue;await this.cancelOwned(id);run.phase='interrupted';this.store.save();}this.recovered=true;}
  async launch(job){
   const proof=this.fulfilment.getConfirmedFields(job.id);if(!proof.complete||!proof.confirmation?.messageId){this.block(job,'CLIENT_ANSWERS_REQUIRED');return;}
   const draft=this.dossier(job,proof),draftFingerprint=draft.fingerprint;
@@ -54,6 +76,7 @@ class VisaPortalDispatcher{
   try{this.currentDossier(job,run);this.fulfilment.renewLease(job.id,{leaseToken:run.leaseToken,ttlMs:30*60000});}catch{await this.cancelOwned(job.id);run.phase='cancelled';this.fulfilment.releaseJob(job.id,{leaseToken:run.leaseToken,state:'portal_review_required'});this.store.save();return;}
   let state;try{state=await this.request('/internal/raad/jobs/'+job.id);}catch(error){if(error?.status!==404)throw error;await this.cancelOwned(job.id);run.phase='interrupted';this.fulfilment.releaseJob(job.id,{leaseToken:run.leaseToken,state:'portal_review_required'});this.block(job,'BROWSER_JOB_LOST');this.store.save();return;}run.lastStage=state.phase;job.portalStage=state.phase;
   if(state.saved===true&&/^[A-Z]{0,3}[0-9]{3,20}$/.test(state.reference||'')){job.applicationReference=state.reference;job.portalSaved=true;}
+  if(state.requiresOperator===true){const c=state.operatorChallenge;if(state.jobId!==job.id||state.caseSignature!==job.caseSignature||state.applicantIndex!==job.applicantIndex||!c||!/^[a-f0-9-]{36}$/.test(c.id||'')||!['login','form'].includes(c.kind)||!Number.isFinite(c.expiresAt)||c.expiresAt<=this.now()||c.expiresAt>this.now()+310000)throw Error('OPERATOR_CHALLENGE_UNCONFIRMED');if(run.operatorChallenge?.id!==c.id)console.info('[VISA_OPERATOR_READY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),kind:c.kind,expiresAt:c.expiresAt}));run.phase='waiting_operator';run.operatorChallenge={id:c.id,kind:c.kind,expiresAt:c.expiresAt};job.state='waiting_otp';}
   if(state.requiresOtp&&state.challengeId){run.phase='waiting_otp';const prior=Object.values(this.fulfilment.data().challenges).find(c=>c.jobId===job.id&&c.portalChallengeId===state.challengeId);if(!prior)this.fulfilment.requestOtp(job.id,{leaseToken:run.leaseToken,portalChallengeId:state.challengeId,contextId:state.challengeId,ttlMs:Math.min(5*60000,Math.max(1000,(state.challengeExpiresAt||this.now()+5*60000)-this.now()))});}
   if(state.stage==='completed'&&state.artifactReady&&state.saved===true&&state.reference&&state.paymentAttempted===false&&state.returnedFromPayment===true){if(state.jobId!==job.id||state.caseSignature!==job.caseSignature||state.applicantIndex!==job.applicantIndex||!/^[a-f0-9]{64}$/.test(state.artifactSha256||''))throw Error('RAAD_ARTIFACT_BINDING_INVALID');const bytes=await this.request('/internal/raad/jobs/'+job.id+'/artifact',{artifact:true});if(digest(bytes)!==state.artifactSha256)throw Error('RAAD_ARTIFACT_DIGEST_INVALID');this.fulfilment.guardLease(job.id,run.leaseToken);this.currentDossier(job,run);const copy=this.mediaStore.storeApplicationPdf(job.customer,{bytes,applicationReference:state.reference,jobId:job.id});this.fulfilment.recordPortalResult(job.id,{leaseToken:run.leaseToken,status:'saved_application',applicationReference:state.reference,paymentAttempted:false,returnedFromPayment:true,requestCopy:{mediaId:copy.id}});run.phase='completed';}
   else if(['failed','blocked','cancelled','lease_lost'].includes(state.stage)){await this.cancelOwned(job.id);run.phase='blocked';this.fulfilment.releaseJob(job.id,{leaseToken:run.leaseToken,state:'portal_review_required'});this.block(job,state.blocker?.code||'PORTAL_REVIEW_REQUIRED');}
@@ -82,6 +105,20 @@ class VisaPortalDispatcher{
    if(!dossier?.ready)continue;
    try{const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob===true)continue;await this.cancelOwned(job.id);}catch{continue;}
    job.state='ready';job.loginRecoveryAttempts=(job.loginRecoveryAttempts||0)+1;if(policyRetry)job.loginPolicyRecovery='protected_applications_v7';if(captchaTimeoutRetry)job.captchaTimeoutRecovery='bounded30s_v1';delete job.blockedReason;run.phase='retry_ready';this.store.save();
+  }
+ }
+ async recoverOperatorLogin(){
+  if(this.env.RAAD_OPERATOR_CAPTCHA_ENABLED!=='true')return;
+  for(const job of Object.values(this.fulfilment.data().jobs)){
+   const run=this.store.data.visaPortalRuns[job.id];
+   if(job.state!=='portal_review_required'||!['LOGIN_CAPTCHA_TIMEOUT','OPERATOR_CHALLENGE_EXPIRED'].includes(job.blockedReason)||run?.phase!=='blocked'||run.lastStage!=='login'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.operatorLoginRecoveryAttempts||0)>=1)continue;
+   const verify=()=>{if(job.state!=='portal_review_required'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.operatorLoginRecoveryAttempts||0)>=1)return null;let draft;job.state='ready';try{const proof=this.fulfilment.getConfirmedFields(job.id);if(proof.complete)draft=this.dossier(job,proof);}catch{}finally{if(job.state==='ready')job.state='portal_review_required';}return draft?.ready?draft.fingerprint:null;};
+   const fingerprint=verify();if(!fingerprint)continue;
+   try{const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false||health.production?.operatorCaptcha!==true)continue;await this.cancelOwned(job.id);}catch{continue;}
+   if(verify()!==fingerprint)continue;
+   const before={reason:job.blockedReason,phase:run.phase};job.state='ready';job.operatorLoginRecoveryAttempts=1;delete job.blockedReason;run.phase='retry_ready';
+   try{this.store.save();}catch{job.state='portal_review_required';job.blockedReason=before.reason;run.phase=before.phase;delete job.operatorLoginRecoveryAttempts;}
+
   }
  }
  async recoverExpiredApplicationOtp(){
@@ -172,6 +209,7 @@ class VisaPortalDispatcher{
   await this.recoverPreflightLease();
   await this.recoverMissingPreflight();
   await this.recoverStoppedLogin();
+  await this.recoverOperatorLogin();
   await this.recoverExpiredApplicationOtp();
   await this.flushMessages();
   for(const job of Object.values(this.fulfilment.data().jobs)){
@@ -182,7 +220,7 @@ class VisaPortalDispatcher{
   }
   await this.flushMessages();if(!this.configured())return;await this.recover();
   const active=this.fulfilment.data().lease;
-  if(active){const job=this.fulfilment.job(active.jobId),run=this.store.data.visaPortalRuns[job.id];if(run&&['starting','running','waiting_otp','uncertain'].includes(run.phase))await this.poll(job,run);}
+  if(active){const job=this.fulfilment.job(active.jobId),run=this.store.data.visaPortalRuns[job.id];if(run&&['starting','running','waiting_otp','waiting_operator','uncertain'].includes(run.phase))await this.poll(job,run);}
   else for(const job of Object.values(this.fulfilment.data().jobs)){if(!['queued','ready'].includes(job.state)||!job.answerConfirmation)continue;try{this.fulfilment.guardJob(job.id);await this.launch(job);if(this.fulfilment.data().lease)break;}catch{this.block(job,'PREPARATION_REVIEW_REQUIRED');}}
   await this.flushMessages();
  }catch{ /* Safe state is retained; no uncertain write or message is replayed. */ }finally{this.busy=false;}}

@@ -37,7 +37,7 @@ test('the current approval excludes stale jobs and preserves explicit client and
   assert.equal(UI.normalize(base).payment.verified, false);
 });
 
-function harness({approve, capabilities, list, item, media} = {}) {
+function harness({approve, capabilities, list, item, media, operator} = {}) {
   const nodes = [], requests = [], toasts = [], revoked = [], mediaCalls = [], opened = [];
   const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
   class Element {
@@ -58,15 +58,17 @@ function harness({approve, capabilities, list, item, media} = {}) {
     getClientRects() { return this.hidden ? [] : [{}]; }
     contains(node) { return descendants(this).includes(node); }
     get elements() { return descendants(this).filter(node => ['input', 'button', 'select', 'textarea'].includes(node.tagName)); }
+    reset() { for(const node of this.elements) if(node.tagName==='input')node.value=''; }
     reportValidity() { return this.elements.every(node => node.disabled || !node.required || (node.type === 'checkbox' ? node.checked : node.type === 'number' ? Number(node.value) > 0 : node.value.trim().length >= (node.minLength || 1))); }
   }
   const body = new Element('body'), root = new Element('div');
   const document = {body, activeElement: null, getElementById: () => root, createElement: tag => new Element(tag), querySelectorAll: selector => descendants(body).filter(node => selector === '.vj-dialog' && node.tagName === 'dialog')};
-  const context = {document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
+  const context = {document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, atob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
   vm.runInNewContext(source, context);
   let current = sample(item);
   const ui = context.RemalVisaJourney.create({toast: message => toasts.push(message), openConversation: customer => opened.push(customer), media: async (id, customer) => { mediaCalls.push(id); return media ? media(id, customer) : new Blob(['fake'], {type: 'image/png'}); }, request: async (path, method, payload, headers) => {
     requests.push({path, method, payload, headers});
+    if(path.startsWith('visa-operator/')&&operator)return operator({path,method,payload});
     if (method === 'POST') { if (approve) return approve({path, payload, headers}); current = {...current, approval: {id: 'approved', state: 'approved', amount: payload.amount}}; return {ok: true}; }
     if (path.includes('?')) { if (list) return list({headers}); return {items: [current], capabilities: capabilities || {accountantConfigured: true, accountantReview: headers['X-Accountant-Key'] === 'test-accountant'}}; }
     return {...current};
@@ -219,3 +221,4 @@ test('reread rows distinguish identically named originals by finite document kin
   const binding={caseId:'visa-example',sourceSha256:'d'.repeat(64),generation:1,allowed:true},h=harness({item:{media:[{id:'older',filename:'visa-document.jpg',mimeType:'application/pdf'},{id:'latest',filename:'visa-document.jpg',mimeType:'image/jpeg'}],documentReview:{enabled:true,configured:true,status:'ready',caseId:binding.caseId,generation:1,rereadSources:[{...binding,mediaId:'latest',kind:'uae_id_front',kinds:['uae_id_front','uae_id_front','untrusted raw text'],receivedAt:'2026-10-29T11:20:00Z'},{...binding,mediaId:'older',kind:'passport',kinds:['passport','uae_id_back'],receivedAt:'2026-10-28T09:00:00Z'}],applicants:[],issues:[]}}});
   await h.ui.openCase('971500000001');const rows=h.descendants(h.activeDialog()).filter(node=>node.className==='vj-document-reread-source');assert.equal(rows.length,2);assert.match(rows[0].textContent,/المرفق الأصلي 2 · الهوية الإماراتية · الوجه الأمامي/);assert.match(rows[1].textContent,/المرفق الأصلي 1 · الجواز، الهوية الإماراتية · الوجه الخلفي/);assert.match(rows[0].textContent,/وصل /);assert.notEqual(rows[0].children[1].textContent,rows[1].children[1].textContent);assert.doesNotMatch(rows.map(row=>row.textContent).join(' '),/untrusted raw text/);assert.equal(h.requests.some(request=>request.method==='POST'),false);
 });
+test('operator action stays on the current job, clears typed verification and revokes its image',async()=>{let submitted;const h=harness({item:{approval:{id:'approved',state:'approved'},jobs:[{id:'job-current',approvalId:'approved',state:'waiting_otp',operatorAvailable:true}]},operator:async({method,payload})=>{if(method==='POST'){submitted=structuredClone(payload);return{accepted:true};}return{challengeId:'challenge-current',imageId:'b'.repeat(64),image:'data:image/png;base64,'+Buffer.from('SYNTHETIC').toString('base64')};}});await h.ui.openCase('971500000001');h.find('button','إكمال التحقق المرئي').click();await h.tick();const form=h.nodes.find(x=>x.className==='vj-operator-form'),input=h.descendants(form).find(x=>x.tagName==='input');assert.ok(form);input.value='HUMAN1';await h.submit(form);assert.equal(input.value,'');assert.equal(submitted.challengeId,'challenge-current');assert.equal(submitted.value,'HUMAN1');assert.ok(h.requests.filter(x=>x.path.startsWith('visa-operator/')).every(x=>x.path.endsWith('job-current')));assert.equal(h.requests.find(x=>x.path.startsWith('visa-operator/')&&x.method==='POST').payload.value,'');assert.ok(h.revoked.length);});

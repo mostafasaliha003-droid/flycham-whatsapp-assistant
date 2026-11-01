@@ -224,6 +224,29 @@
       finally { if (epoch === state.epoch) { state.loading = false; render(); } }
     }
     async function fetchCase(id) { const result = await adapter.detail(id); return normalize(result.item || result.case || result); }
+    async function operatorDialog(job) {
+      const epoch=state.epoch,dialog=modal('إكمال التحقق المرئي في جلسة رعد'),body=n('div','vj-dialog-body'),status=n('p','muted','جارٍ تحميل التحقق من الجلسة الحالية…');
+      body.append(status);dialog.append(body);dialog.showModal();let objectUrl=null;
+      dialog.addEventListener('close',()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);form?.reset();});
+      let form=null;
+      try{
+        const result=await request('visa-operator/'+encodeURIComponent(job.id),'GET');
+        if(epoch!==state.epoch||!dialog.open)return;
+        if(typeof result.image!=='string'||result.image.length>280000||!/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(result.image))throw Error('IMAGE_UNCONFIRMED');
+        const bytes=Uint8Array.from(atob(result.image.split(',')[1]),c=>c.charCodeAt(0));objectUrl=URL.createObjectURL(new Blob([bytes],{type:'image/png'}));bytes.fill(0);
+        const image=n('img','vj-operator-image');image.alt='صورة التحقق المرئي من جلسة رعد الحالية';image.src=objectUrl;
+        form=n('form','vj-operator-form');const label=n('label'),input=n('input');input.required=true;input.maxLength=32;input.pattern='[A-Za-z0-9]+';input.autocomplete='off';input.dir='ltr';label.append(n('span','','اكتب الرمز الظاهر بنفسك'),input);
+        const submit=button('إرسال ومتابعة نفس الجلسة',null,true);submit.type='submit';
+        status.textContent='أكمل التحقق بنفسك. بيانات الدخول موجودة على الخادم، ولن تبدأ جلسة منفصلة.';
+        form.append(image,label,submit);body.append(form);input.focus();
+        form.onsubmit=async event=>{event.preventDefault();if(submit.disabled)return;let value=input.value.trim();form.reset();if(!/^[A-Za-z0-9]{1,32}$/.test(value))return;submit.disabled=true;dialog.dataset.busy='true';
+          const payload={challengeId:result.challengeId,imageId:result.imageId,value};value='';
+          try{const pending=request('visa-operator/'+encodeURIComponent(job.id),'POST',payload);payload.value='';const sent=await pending;if(sent.accepted!==true)throw Error('UNCONFIRMED');status.textContent='أُرسل التحقق لهذه الجلسة. حدّث الملف لمتابعة نتيجة الدخول والتنفيذ.';form.remove();if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}await refresh();}
+          catch{status.textContent='لم يتأكد إرسال التحقق. أغلق النافذة وحدّث الملف لمعرفة حالة الجلسة قبل أي محاولة جديدة.';form.remove();}
+          finally{payload.value='';delete dialog.dataset.busy;}
+        };
+      }catch{status.textContent='التحقق غير متاح حاليًا أو انتهت صلاحيته. حدّث الملف لمعرفة حالة رعد.';}
+    }
     async function openCase(id) {
       const epoch = state.epoch, dialog = modal('تفاصيل رحلة التأشيرة', 'vj-case-dialog'), body = n('div', 'vj-dialog-body'); body.append(skeleton()); dialog.append(body); dialog.showModal();
       try { const item = await fetchCase(id); if (epoch !== state.epoch || !dialog.open) return; body.replaceChildren();
@@ -235,6 +258,8 @@
         const rows = item.applicants.length ? item.applicants : Array.from({length: item.applicantCount || 1}, (_, index) => ({index}));
         for (const [index, a] of rows.entries()) {
           const wrap = n('article', 'vj-applicant-card'), row = n('div', 'vj-applicant-row'), copy = n('div'); copy.append(n('strong', '', a.name || a.fullName || 'المتقدم ' + ((a.applicantIndex ?? index) + 1)), n('p', '', a.nextAction || a.blocker?.label || a.blocker?.message || 'مستندات · بيانات شخصية · إفصاح صحي')); row.append(n('span', 'vj-applicant-index', String((a.applicantIndex ?? index) + 1).padStart(2, '0')), copy, statusBadge(a.state || a.status || a.stage || item.stage)); wrap.append(row);
+          if(a.operatorAvailable===true)wrap.append(button('إكمال التحقق المرئي',()=>operatorDialog(a),true));
+          else if(a.operatorRestartAvailable===true)wrap.append(button('فتح جلسة التحقق',async()=>{try{const result=await request('visa-operator/'+encodeURIComponent(a.id),'POST',{restart:true});if(result.restartQueued!==true)throw Error('UNCONFIRMED');dialog.close();await refresh();toast('جارٍ فتح جلسة رعد. حدّث الملف بعد لحظات لإكمال التحقق.');}catch{toast('لم يتأكد فتح جلسة التحقق. حدّث الملف قبل إعادة المحاولة.');}},true));
           const questions = Object.values(a.questions || {}).filter(question => typeof question.prompt === 'string');
           if (questions.length) { const details = n('details', 'vj-questions'), pending = questions.filter(question => question.state !== 'answered').length; details.append(n('summary', '', pending ? pending + ' أسئلة تنتظر إجابة المتقدم' : 'إجابات المتقدم · ' + questions.length + ' أسئلة')); details.append(n('p', 'vj-questions-note', 'إجابات العميل محفوظة كما وردت؛ تظل غير مؤكدة حتى يراجع المتقدم ملخصها.'));
             for (const question of questions) { const q = n('div', 'vj-question'); q.append(n('strong', '', question.prompt)); if (Array.isArray(question.options)) { const choices = n('div', 'vj-question-options'); for (const option of question.options) { const selected = question.state === 'answered' && (option.value === question.answer || option.id === question.answer); choices.append(n('span', selected ? 'selected' : '', (selected ? '✓ ' : '') + option.label)); } q.append(choices); } else q.append(n('p', '', question.state === 'answered' && typeof question.answer === 'string' ? question.answer : 'بانتظار إجابة المتقدم')); details.append(q); } wrap.append(details); }

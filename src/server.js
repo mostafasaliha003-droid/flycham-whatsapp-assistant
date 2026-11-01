@@ -15,6 +15,7 @@ const {RaadVisaWorkflow}=require('./raad-visa-workflow');
 const {handleRaadRequest}=require('./raad-http');
 const {VisaFulfilment}=require('./visa-fulfilment');
 const {VisaPortalDispatcher}=require('./visa-portal-dispatcher');
+const {createVisaOperatorHttp}=require('./visa-operator-http');
 const {createVisaFulfilmentHttp}=require('./visa-fulfilment-http');
 const {createVisaWhatsAppAdapter}=require('./visa-whatsapp');
 const {createVisaSetup}=require('./visa-setup-http');
@@ -102,6 +103,7 @@ const visaUploads=new VisaUploadService({store:assistant.store,mediaStore:visaMe
 const visaPreparedDelivery=createVisaPreparedDelivery({store:assistant.store,mediaStore:visaMedia,documentIntake:visaDocumentIntake,inbox,journal,send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata),messageId=result?.messages?.[0]?.id;if(messageId)journal.recordOutbound(to,{id:messageId,text:'[صورة المستند المجهزة]',actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;})});
 const visaDocumentConversation=createVisaDocumentConversation({store:assistant.store,documentIntake:visaDocumentIntake,createUploadLink:customer=>visaUploads.createLink(customer),sendPrepared:(customer,options)=>visaPreparedDelivery.sendPrepared(customer,options)});
 visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady()});
+const handleVisaOperator=createVisaOperatorHttp({dispatcher:visaDispatcher,wake:()=>wakeVisa()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
 const handleVisaSetup=createVisaSetup({workerConfigured:()=>visaDispatcher.configured(),documentVision,documentIntake:visaDocumentIntake});
@@ -455,6 +457,7 @@ function createServer() {
     }
     if(url.pathname.startsWith('/internal/assistant/')){
       if(!validQueueKey(request.headers.authorization,process.env.ASSISTANT_ADMIN_KEY)){response.writeHead(401).end();return;}
+      if(await handleVisaOperator(request,response,url,readBody))return;
       if(await handleVisaWorkflow(request,response,url,readBody))return;
       if(await handleRaadRequest(request,response,url,{readBody,workflow:raad,inbox,mediaStore:visaMedia,provider:raadProvider}))return;
       if(await handleVisaMediaRequest(request,response,url,visaMedia))return;
