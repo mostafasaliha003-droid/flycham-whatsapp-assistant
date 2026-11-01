@@ -1,0 +1,62 @@
+{
+  "kind": "standalone_functional_recovery_harness_inputs",
+  "copiedNonRepositoryInputs": [
+    {
+      "file": "harness-template/durable-child-config.json",
+      "bytes": 367,
+      "sha256": "99c73b78ca5c966c8876e55a4c2b37522c3f0f62c97ace2270e15615bdf9f2e7",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/offline-dialogue-optical-guard.cjs",
+      "bytes": 1667,
+      "sha256": "9f45760d2c3da647fe7b83495a632fa22f94bfb53c47254dcd1bb09863e842f1",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/offline-durable-budget-guard.cjs",
+      "bytes": 1943,
+      "sha256": "cbbbc347c006769ce5f6dac81630a92c9cd7b78cb27e8527baab398989049948",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/offline-loopback-guard.cjs",
+      "bytes": 3370,
+      "sha256": "03030eb322796ec0b363c25ca15c2e795c607de9b9751e85158de6499100a44c",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/offline-optical-child-guard.cjs",
+      "bytes": 1137,
+      "sha256": "2f6033e58bf0d373fa4bfc8d74596daf65e404fecd9f46578f61f16148fede24",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/offline-pdf-guard.cjs",
+      "bytes": 2384,
+      "sha256": "a675b116ea3453bcd9ac5d6a09a7ab515d4246ef2a28aede816e24d2903dd101",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/optical-child-config.json",
+      "bytes": 645,
+      "sha256": "3893d2aafb2a8b6fbe5b4e72fcd1a326a4eadfd86540a903c2f6af85e3454882",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    },
+    {
+      "file": "harness-template/run-file-tests-once.py",
+      "bytes": 13055,
+      "sha256": "3e4c55b214c947799d9d08e7714de5cd37a41ae9c8bc5f8af3533d0cf7ba26a2",
+      "origin": "preserved prior-local v2 harness input; not a current application source file"
+    }
+  ],
+  "omittedRepositoryBackedInput": {
+    "name": "tap_log_evidence.py",
+    "repository": "mostafasaliha003-droid/flycham-whatsapp-assistant",
+    "commit": "46963b57c5490afcd2e9da15468cce52234f931a",
+    "path": ".ci/raad-readiness/test-tools/tap_log_evidence.py",
+    "sha256": "ecd59e282cc3463265f68b8eab4bf3c1c6e4710e5097def471795296075f5827"
+  },
+  "sourceApplicationIncluded": false,
+  "dependenciesModelRuntimeStateIncluded": false
+}

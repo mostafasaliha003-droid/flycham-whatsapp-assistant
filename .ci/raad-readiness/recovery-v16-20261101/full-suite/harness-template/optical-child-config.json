@@ -1,0 +1,8 @@
+{
+  "test": "/workspace/scratch/94d2ed38778f/flycham-ocr-deps-scjqvece/project/test/visa-dialogue-regression.test.js",
+  "testSha256": "2cd2d9a6d96d1abc0517afa65bede905ca8dd2f264b6ebf22011467e460f113c",
+  "worker": "/workspace/scratch/94d2ed38778f/flycham-ocr-deps-scjqvece/project/src/visa-mrz-optical-worker.js",
+  "workerSha256": "736e56e0664680896963aafc946d6b0dc9161453e1fe717e9c51412898d39ef9",
+  "tesseractWorker": "/workspace/scratch/94d2ed38778f/flycham-ocr-deps-scjqvece/project/node_modules/tesseract.js/src/worker-script/node/index.js",
+  "tesseractWorkerSha256": "a973c23ce067bc752c0bf602297eac843098e531ac03f3ea34cdf694326a6d02"
+}
