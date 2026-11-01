@@ -29,13 +29,14 @@ function extractIncomingMessages(payload) {
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
         if(!message?.from)continue;
-        let text,requestChoice,serviceChoice,visaAnswer,visaConfirmation,visaOwnerAction,media;
+        let text,requestChoice,serviceChoice,visaAnswer,visaConfirmation,visaOwnerAction,visaOperatorAction,media;
         if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
         else if(message.type==='button'){
           const payload=message.button?.payload;
           const ownerAction=typeof payload==='string'?payload.match(/^visa_owner_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
-          if(!ownerAction)continue;
-          visaOwnerAction={challengeId:ownerAction[1]};text='[متابعة إجراء التأشيرة]';
+          const operatorAction=typeof payload==='string'?payload.match(/^visa_operator_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
+          if(!ownerAction&&!operatorAction)continue;
+          if(operatorAction)visaOperatorAction={noticeId:operatorAction[1]};else visaOwnerAction={challengeId:ownerAction[1]};text='[متابعة إجراء التأشيرة]';
         }
         else if(message.type==='interactive'&&['button_reply','list_reply'].includes(message.interactive?.type)){
           const isButton=message.interactive.type==='button_reply';
@@ -45,10 +46,12 @@ function extractIncomingMessages(payload) {
           const answer=typeof buttonId==='string'?buttonId.match(/^visa_answer:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):([a-z][a-z0-9_]{0,39})$/):null;
           const confirmation=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_confirm:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):(confirm|correct)$/):null;
           const ownerAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_owner_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
+          const operatorAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_operator_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           if(service){serviceChoice={id:service[2],service:service[1]};text=service[1]==='flight'?'طيران إلى سوريا':'فيزا السعودية';}
           else if(choice){requestChoice={id:choice[2],action:choice[1]};text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';}
           else if(answer){visaAnswer={token:answer[1],option:answer[2]};text='[إجابة بيانات التأشيرة]';}
           else if(confirmation){visaConfirmation={token:confirmation[1],confirm:confirmation[2]==='confirm'};text=confirmation[2]==='confirm'?'أؤكد صحة إجابات التأشيرة':'أريد تصحيح إجابات التأشيرة';}
+          else if(operatorAction){visaOperatorAction={noticeId:operatorAction[1]};text='[متابعة التحقق المرئي]';}
           else if(ownerAction){visaOwnerAction={challengeId:ownerAction[1]};text='[متابعة إجراء التأشيرة]';}
           else continue;
         }else if(['image','document','audio'].includes(message.type)){
@@ -70,6 +73,7 @@ function extractIncomingMessages(payload) {
           ...(visaAnswer?{visaAnswer}:{}),
           ...(visaConfirmation?{visaConfirmation}:{}),
           ...(visaOwnerAction?{visaOwnerAction}:{}),
+          ...(visaOperatorAction?{visaOperatorAction}:{}),
           ...(media?{media}:{}),
           timestamp: message.timestamp ?? null
         });
