@@ -9,6 +9,30 @@ const CUSTOMER='15550004444';
 const ready=()=>({caseId:'case-one',status:'ready',applicants:[{applicantIndex:0,documents:{passport:'prepared-passport',residence:'prepared-residence',photo:'prepared-photo'}}],issues:[]});
 const make=(summary,options={})=>createVisaDocumentConversation({documentIntake:{summary:()=>summary},...options});
 
+test('received-document followups use actual saved attachments instead of repeating the requirements',async()=>{
+ const stamp=1000000,c={id:'case-one',createdAt:stamp-1000,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}],paymentStatus:'verified'};c.quote=P.calculateQuote(c);
+ const media=Object.fromEntries(Array.from({length:5},(_,i)=>['source-'+i,{id:'source-'+i,customer:CUSTOMER,type:'image',mimeType:'image/jpeg',receivedAt:stamp-100,expiresAt:stamp+100000}]));
+ const store={data:{visaCases:{[CUSTOMER]:c},visaMedia:media},save(){}},before=structuredClone(c);
+ for(const status of ['not_started','processing','needs_review','ready']){
+  const summary={caseId:c.id,status,applicants:status==='ready'?ready().applicants:[],issues:status==='needs_review'?[{code:'DOCUMENT_UNASSIGNED'}]:[]};
+  const conversation=make(summary,{store,now:()=>stamp});
+  for(const text of ['طيب شو المطلوب','الأوراق بعتلك ياهن','الأوراق بعتلك ياهن؟ مو كاملين ؟','مو كاملين ؟','شو صار معكن']){
+   const result=await conversation.handle(CUSTOMER,text);
+   assert.equal(result.handled,true,text+' '+status);assert.match(result.reply,/وصلتني 5 مرفقات/);assert.doesNotMatch(result.reply,/للبداية ابعت|وجهي الهوية الإماراتية|للتقديم السياحي أونلاين بنحتاج|لم تصل|تم التقديم|دفعة/);
+   if(status!=='ready')assert.doesNotMatch(result.reply,/اكتمل تجهيز/);
+  }
+ }
+ assert.deepEqual(c,before);
+});
+
+test('short completeness questions need a current document context and do not capture future sends or edits',()=>{
+ assert.equal(detectDocumentIntent('مو كاملين ؟'),null);
+ assert.equal(detectDocumentIntent('شو صار معكن'),null);
+ assert.equal(detectDocumentIntent('عدل رقم جوازي الناقص'),null);
+ assert.equal(detectDocumentIntent('بدي ابعت الأوراق'),null);
+ assert.deepEqual(detectDocumentIntent('رح ابعتلك الأوراق'),{intent:'will_send',kind:null});
+});
+
 test('document actions distinguish kind and ignore ordinary visa, insurance and requirements messages',()=>{
  for(const [text,intent,kind]of [['ادمج صور الهوية','merge','residence'],['اجمع صورتين الجواز بصورة واحدة','merge','passport'],['حسن جودة صورة الجواز','enhance','passport'],['وضحلي صورتي الشخصية','enhance','photo'],['ابعثلي نسخة الهوية المجهزة','send_prepared','residence'],['send me my passport image','send_prepared','passport'],['هل قرأت الصور؟','status',null],['ارسل رابط رفع المستندات','upload_link',null]])assert.deepEqual(detectDocumentIntent(text),{intent,kind},text);
  for(const text of ['شو جودة الصورة المطلوبة؟','رابط الدفع','ارسل رابط التأمين','ادمج الاسعار','عدل رقم جوازي','لا تدمج صور الجواز','بدي ابعت صورة جوازي'])assert.equal(detectDocumentIntent(text),null,text);

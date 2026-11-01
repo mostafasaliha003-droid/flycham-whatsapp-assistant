@@ -22,11 +22,12 @@ const ISSUE_COPY = Object.freeze({
   DOCUMENT_FIELD_REQUIRED: 'بقيت بيانات أساسية غير ظاهرة بوضوح في المستند.',
   DOCUMENT_IMAGE_UNSUITABLE: 'إحدى الصور تحتاج نسخة أوضح بحجمها الأصلي.'
 });
-const documentWords = /صور(?:ه|تين)?|الصور|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
+const documentWords = /صور(?:ه|تين)?|الصور|اوراق|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
 function detectDocumentStep(text) {
   const value = normalize(typeof text === 'string' ? text.slice(0, 12000) : '').replace(/\s+/g, ' ');
   // These requests belong to the financial, medical or personal-answer flows.
   if (/حساب|ايبان|بنك|دفع|تحويل|ايصال|سعر|قديش|بكم|رسوم|تامين|صحي|صحه|طبي|متزوج|اجتماعي|ترحيل|حرمان|ابعاد/.test(value)) return null;
+  if (/^(?:طيب\s+)?شو\s+(?:المطلوب|ناقص|النواقص)(?:\s+(?:هلق|هلء|الان|بعد))?[.!؟? ]*$/.test(value)) return 'requirements';
   if (/^(?:(?:طيب|تمام|اوكي|حاضر|ماشي|ان شاء الله|هلق)\s*[،,]?\s*)*(?:(?:رح|راح|سوف)\s+(?:ابعت|ابعث|ارسل)(?:لك|الكم|ها|هم|هن)?|(?:ابعتلك|ابعثلك|ارسللك)\s+(?:الاوراق|المستندات|الصور))(?:\s+(?:الاوراق|المستندات|الصور|الجواز|الهويه|هلق|الان|بعد شوي|قريبا|لو سمحت))*[.!؟? ]*$/.test(value)) return 'will_send';
   if (/كيف\s+(?:بقدم|اقدم|بدي\s+(?:قدم|اقدم))|شو\s+(?:ابعت|ابعث|ارسل)(?:لك|الكم)?|شو\s+بدك\s+(?:ابعت|ابعث|ارسل)|شو\s+(?:الاوراق|المستندات|الصور)(?:\s+المطلوب[هه]?)?|(?:الاوراق|المستندات)\s+المطلوب[هه]?|طريقه\s+التقديم/.test(value)) return 'requirements';
   if (/(?:بدي|حابب|اريد)\s+(?:اقدم|قدم)(?:\s|$)|جاهز\s+(?:للتقديم|اقدم)|خلينا\s+(?:نقدم|نبلش)|\bi (?:want|would like) to apply\b/.test(value)) return 'apply';
@@ -50,6 +51,10 @@ function detectDocumentIntent(text, {hasAttachments = false, hasDocumentContext 
   const value = normalize(typeof text === 'string' ? text.slice(0, 12000) : '').replace(/\s+/g, ' ');
   if (!value) return null;
   const document = documentWords.test(value), kind = requestedKind(value);
+  const sentDocuments = /(?:^|\s)(?:بعتلك|بعتتلك|بعثتلك|ارسلتلك|ارسلت لكم|ارسلتها|بعتهم|بعتن|بعتلكم)(?=\s|$|[؟?!.،,])/.test(value);
+  const completeness = /^(?:(?:طيب|هل|يعني)\s+)?(?:مو\s*كاملين|مش\s*كاملين|كاملين|مكتملين|شو\s+ناقص)[.!؟? ]*$/.test(value) || /^(?:الاوراق|المستندات|الصور)\s+(?:مو\s*كاملين|مش\s*كاملين|كامل[هه]|مكتمل[هه]|ناقص[هه])[.!؟? ]*$/.test(value);
+  if ((document || hasDocumentContext) && (sentDocuments || completeness) && !/(?:رح|راح|سوف|بدي)\s+(?:ابعت|ابعث|ارسل)|لا\s+(?:تبعت|ترسل)/.test(value)) return {intent: 'status', kind};
+  if (hasDocumentContext && /^(?:طيب\s+)?(?:شو صار(?:\s+(?:معكن|معكم))?|وين وصلتو|شو وضع الملف)[.!؟? ]*$/.test(value)) return {intent: 'status', kind};
   const step = detectDocumentStep(value);
   if (step) return {intent: step === 'will_send' ? 'will_send' : 'prepare_application', kind: null};
   if (/تم\s+(?:رفع|ارسال|ارفاق)\s+(?:الصور|المستندات|الاوراق)|رفعت\s+(?:الصور|المستندات|الاوراق)/.test(value)) return {intent: 'status', kind};
@@ -160,7 +165,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     const linkFollowup = stored(customer)?.uploadOfferedAt != null && /رابط|لينك|\blink\b/.test(normalize(text || '')) && !/دفع|تامين|حساب|بنك/.test(normalize(text || ''));
     if (!direct && !possibleContextual && !roleAnswer && !hasAttachments && !linkFollowup) { clear(customer); return {handled: false}; }
     const summary = snapshot(documentIntake, customer), previous = context(customer, summary);
-    const hasDocumentContext = Boolean(caseId(summary, customer) && (previous || ['processing', 'queued', 'running', 'retry', 'ready', 'needs_confirmation', 'needs_review'].includes(summary?.status)));
+    const hasDocumentContext = Boolean(caseId(summary, customer) && (previous || receivedDocuments(store, customer, summary, now()).exists || ['processing', 'queued', 'running', 'retry', 'ready', 'needs_confirmation', 'needs_review'].includes(summary?.status)));
     let request = direct || (hasDocumentContext ? possibleContextual : null);
     if (!request && linkFollowup && previous?.uploadOfferedAt != null) request = {intent: 'upload_link', kind: null};
     if (!request && roleAnswer && previous?.pendingIntent) request = {intent: previous.pendingIntent, kind: roleAnswer};
@@ -220,7 +225,9 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         } catch { return {...result, reply: 'إرسال النسخة ما تأكد بعد. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})}; }
       }
     }
-    return {...result, reply: [statusReply(summary, {...request, hasAttachments}),request.intent==='status'?paymentReceiptFollowup(store,customer,summary):''].filter(Boolean).join('\n\n')};
+    const received = request.intent === 'status' ? receivedDocuments(store, customer, summary, now()) : null;
+    const reply = received?.exists ? preparationCopy(summary, received) : statusReply(summary, {...request, hasAttachments});
+    return {...result, reply: [reply,request.intent==='status'?paymentReceiptFollowup(store,customer,summary):''].filter(Boolean).join('\n\n')};
   }};
 }
 

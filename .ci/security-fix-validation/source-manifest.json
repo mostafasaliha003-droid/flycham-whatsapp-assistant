@@ -956,7 +956,7 @@
   },
   {
     "path": "src/visa-document-conversation.js",
-    "sha": "05f372337e25a719bb5ebc0252d421997224e4de",
+    "sha": "88dfad1c40accf37778439eee96cd3f52b48b4b8",
     "mode": "100644"
   },
   {
@@ -1691,7 +1691,7 @@
   },
   {
     "path": "test/visa-document-conversation.test.js",
-    "sha": "68b6640029ec9a457f52b5bcf445e82382a9c64f",
+    "sha": "c0d60c167bae497bcd9aa872bdc643558a941cb6",
     "mode": "100644"
   },
   {
