@@ -7,7 +7,7 @@ const EXPECTED=Object.freeze({
   "functionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
   "applicationFingerprintSha256": "7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712",
   "applicationFiles": 431,
-  "buildNonce": "raad-validation-20261101-ad16a50-worker-01",
+  "buildNonce": "raad-validation-20261101-ad16a50-worker-02",
   "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
   "baseImageTag": "mcr.microsoft.com/playwright:v1.64.0-noble",
   "baseImageDigestObserved": false,

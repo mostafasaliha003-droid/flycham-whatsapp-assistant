@@ -10,6 +10,7 @@ const http = require('node:http');
 const requireApp = createRequire('/app/package.json');
 const sharp = requireApp('sharp');
 const checks = [], entrypointChecks = [], pdfTools = {};
+let modelVerification;
 async function check(name, operation) {
   await operation(); checks.push(name); console.log('PASS ' + name);
 }
@@ -66,8 +67,12 @@ async function main() {
   await check('model-size-and-hash', async () => {
     const bytes = await fs.readFile('/app/var/mrz-model/mrz.traineddata');
     assert.equal(bytes.length, 1452847);
-    assert.equal(createHash('sha256').update(bytes).digest('hex'),
-      'ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01');
+    const digest=createHash('sha256').update(bytes).digest('hex');
+    assert.equal(digest,'ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01');
+    const stat=await fs.stat('/app/var/mrz-model/mrz.traineddata');
+    assert.equal(stat.size,bytes.length);
+    modelVerification={method:'direct_model_read',phase:'original_worker_before_python_overlay',verifiedByUid:process.getuid(),bytes:bytes.length,sha256:digest,fileOwnerUid:stat.uid,fileMode:(stat.mode&0o777).toString(8),permissionsChanged:false};
+    assert.equal(modelVerification.verifiedByUid,0);
   });
   await check('sharp-native-image', async () => {
     const png = await sharp({create: {width: 100, height: 80, channels: 3,
@@ -204,6 +209,6 @@ async function main() {
   await check('whatsapp-source-entrypoint-disabled', () => entrypoint('src/server.js', 31001, false));
   // Critical: use explicit Raad entry override, never the default flight worker.
   await check('raad-source-entrypoint-disabled', () => entrypoint('src/raad-login-pilot/server.js', 31002, true));
-  console.log(JSON.stringify({status: 'passed', checks, liveActions: 0, entrypointChecks, pdfTools}));
+  console.log(JSON.stringify({status: 'passed', checks, liveActions: 0, entrypointChecks, pdfTools, modelVerification}));
 }
 main().catch(() => { console.error('CONTAINER_PREFLIGHT_FAILED'); process.exitCode = 1; });

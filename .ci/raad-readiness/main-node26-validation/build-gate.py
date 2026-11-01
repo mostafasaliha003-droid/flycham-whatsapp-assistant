@@ -19,7 +19,7 @@ INPUT=Path('/validation-input'); ROOT=Path('/validation-work'); ARTIFACTS=ROOT/'
 COMMIT='ad16a50edb11f859102e3b91bf85db2fab9b5442'
 TREE='b9747bfbf28809cf0c1e470148169b192bd040e3'
 FP='7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712'
-NONCE='raad-validation-20261101-ad16a50-worker-01'
+NONCE='raad-validation-20261101-ad16a50-worker-02'
 
 def sha(b):return hashlib.sha256(b).hexdigest()
 def durable(p,b):
@@ -90,7 +90,7 @@ def main():
   if n.startswith('src/') and not rel.name.endswith(('.test.js','.test.cjs')) and not any(x in {'test','tests','fixtures'} for x in rel.parts[1:]):runtime[n[4:]]=r
  assert manifest(Path('/app/src'))==runtime,'WORKER_RUNTIME_SOURCE_MISMATCH'
  for n in ['package.json','package-lock.json','scripts/install-mrz-model.js','scripts/raad-readiness-check.js','THIRD_PARTY_MRZ_MODEL.md']:assert (Path('/app')/n).read_bytes()==(source/n).read_bytes(),n
- native_path=Path('/tmp/raad-native-proof');native=json.loads((native_path/'native-proof.json').read_text())
+ native_path=Path('/tmp/raad-native-proof');native_receipt_bytes=(native_path/'native-proof.json').read_bytes();native=json.loads(native_receipt_bytes)
  assert native['passed'] and native['nativeChecks']==12 and native['liveActions']==0 and native['functionalCommit']==COMMIT and native['buildNonce']==NONCE
  assert native['applicationFingerprintSha256']==FP and native['workerRecipeSha256']==info['workerRecipeSha256']
  assert native['method']=='node_os_networkInterfaces' and native['observedInterfaces']==['lo'] and native['allInternal']
@@ -112,13 +112,23 @@ def main():
  dump(ARTIFACTS/'profile-controls/result.json',{**step,'counts':counts,'files':13,'testFiles':['test/'+n+'.test.js' for n in names],'filesInvokedOnceEach':True,'providerTransport':'synthetic','securityScan':False,'liveActions':0})
  assert step['exitCode']==0 and not step['timedOut'] and counts['tests']==counts['pass']==318 and all(counts[n]==0 for n in ['fail','cancelled','skipped','todo'])
  verify_source(source,info);assert manifest(Path('/app/src'))==runtime
- model=Path('/app/var/mrz-model/mrz.traineddata');assert model.stat().st_size==1452847 and sha(model.read_bytes())=='ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01'
+ # The original worker owns a private model. Native proof read it as the
+ # production UID before the tooling overlay. This pwuser phase must not
+ # change permissions or attempt a redundant privileged model read.
+ assert os.getuid()!=0
+ assert (native_path/'native-proof.json').read_bytes()==native_receipt_bytes
+ model=native['modelVerification']
+ assert model['method']=='direct_model_read' and model['phase']=='original_worker_before_python_overlay' and model['verifiedByUid']==0 and model['permissionsChanged'] is False
+ assert model['bytes']==1452847 and model['sha256']=='ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01'
+ model_context={'method':'unchanged_root_native_receipt_for_same_read_only_worker_mount','nativePhase':'before_python_tooling_overlay','nativeUid':model['verifiedByUid'],'validatorUid':os.getuid(),'receiptReadBeforeAndAfterTests':True,'validatorDirectModelRead':False,'productionPermissionsChanged':False,'workerMountReadOnlyByDockerInstruction':True}
+ dump(ARTIFACTS/'model-verification-context.json',model_context)
  dump(ARTIFACTS/'build-provenance.json',{k:info[k] for k in ['functionalCommit','functionalTree','applicationFingerprintSha256','buildNonce','workerRecipeSha256','baseImageTag','sourceSnapshotSha256','toolFiles']})
  result={'success':True,'functionalCommit':COMMIT,'functionalTree':TREE,'applicationFingerprintSha256':FP,'applicationFiles':431,'buildNonce':NONCE,'workerRecipeSha256':info['workerRecipeSha256'],'baseImageTag':info['baseImageTag'],'baseImageDigestObserved':False,'sourceSnapshotSha256':info['sourceSnapshotSha256'],'freshInstallPassed':True,'lockUnchanged':True,'nativeChecks':12,'raadOverrideHealthPassed':True,'profileControlFiles':13,'profileControlTests':318,'profileControlsPassed':True,'scope':'additive_original_worker_recipe_with_pre_tool_overlay_native_checks','fullSuiteRerun':False,'mrzAccuracyClaimed':False,'buildOnly':True,'releaseReady':False,'liveActions':0}
  result.update({k:native['runtimeMetadata'][k] for k in ['nodeVersion','npmVersion','glibcVersion']})
+ result['modelVerificationContext']=model_context
  dump(ARTIFACTS/'result.json',result)
  size,chunks,digest=export(True)
- summary={k:v for k,v in result.items() if k!='success'};summary['kind']='isolated_worker_image_validation'
+ summary={k:v for k,v in result.items() if k not in {'success','modelVerificationContext'}};summary['kind']='isolated_worker_image_validation'
  summary.update({'evidenceSha256':digest,'evidenceBytes':size,'evidenceChunks':chunks})
  dump(ROOT/'public/public-summary.json',summary);print('RAAD_WORKER_IMAGE_GATE_PASSED',flush=True)
 if __name__=='__main__':

@@ -1730,17 +1730,17 @@
     }
   },
   "firstPartyFiles": 445,
-  "buildNonce": "raad-validation-20261101-ad16a50-worker-01",
+  "buildNonce": "raad-validation-20261101-ad16a50-worker-02",
   "toolFiles": {
-    "Dockerfile.validation": "feee02bbc00b81a0fc4b136574dd658c1058d02abe34ea46d98384e64bdae018",
+    "Dockerfile.validation": "e93361a198b346f9d05bfa48730924707ebbb18651b4c5226c07882fafeb7da6",
     "Dockerfile.validation.dockerignore": "723197a1298ce2071ffcd881b923a2556f7682f9dec55fbb9615800098374b0e",
-    "build-gate.py": "ef5520c13dd19d57c63d96bb7053b1e8115f81e1cd31c29b5cf8a45f89be2cf1",
+    "build-gate.py": "39b15c5e92a80dcfe1020ae2bf2e904cb361d6f11eec5be009563523c3a54dd4",
     "expected-source-manifest.json": "b461392380cec17bfd49fa07606bc17f13bb2d4606e4bb899a033339daac2588",
     "loopback-network-guard.cjs": "53438dae447b08fe1e341b0c1b5d6ab15a7e9576c18cd90bbfabe9abd44d8d0a",
-    "main-native-smoke.cjs": "5a32f16750066adc142f1a9b0dca40df2ca36a4d9ea4799e2ffb04ce16d6d29c",
+    "main-native-smoke.cjs": "c9ca5bd4f3d40954a35d2dee545fdb73d87eee0ccf818454e03fa525e4b44434",
     "main-start-preload.cjs": "43ab76f7ab71488e69d93091c1ee645d27b75e5b3205bc154ec54d7144a5e78d",
-    "native-probe.cjs": "0b7f8d40cba3a0d81eade2c98ba1097301a2e521b852cfacc296e74c977dc26d",
-    "report-server.cjs": "538a56ecf199cc7583c12d6581e2b7c08389f642528b42a78f21bbe254cd6453",
+    "native-probe.cjs": "959d2847a7e0411c2a5edeb6ba1249ddb9430c1b5139cb73c0ec413ad642e350",
+    "report-server.cjs": "6813139b70dc29269a42a957a756ccc567deaf5f0260c0d0a05490c5b1d46210",
     "target-runtime-provenance.json": "b233fc89d01fc2c60f6397984b0e0238b2141a4ee519564792a360f2015b95fc",
     "verify-main-start.py": "e9f0608aea46ec7ce70ef6ac2b3e9324e8918891b1ecd0f0ad6009b0e74ed299"
   },

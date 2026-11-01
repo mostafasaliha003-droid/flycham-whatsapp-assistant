@@ -56,7 +56,7 @@ const expected = ['operator-readiness-tool-and-model-notice', 'model-size-and-ha
   'chromium-local-no-network', 'native-chromium-redirect-fence-before-follow',
   'whatsapp-source-entrypoint-disabled', 'raad-source-entrypoint-disabled'];
 const input = JSON.parse(fs.readFileSync('/validation-input/inputs.json', 'utf8'));
-if(input.functionalCommit!=='ad16a50edb11f859102e3b91bf85db2fab9b5442'||input.functionalTree!=='b9747bfbf28809cf0c1e470148169b192bd040e3'||input.buildNonce!=='raad-validation-20261101-ad16a50-worker-01')throw Error('RAAD_WORKER_SOURCE_IDENTITY_INVALID');
+if(input.functionalCommit!=='ad16a50edb11f859102e3b91bf85db2fab9b5442'||input.functionalTree!=='b9747bfbf28809cf0c1e470148169b192bd040e3'||input.buildNonce!=='raad-validation-20261101-ad16a50-worker-02')throw Error('RAAD_WORKER_SOURCE_IDENTITY_INVALID');
 for(const [name,digest]of Object.entries(input.toolFiles))if(crypto.createHash('sha256').update(fs.readFileSync('/validation-input/'+name)).digest('hex')!==digest)throw Error('RAAD_WORKER_TOOL_IDENTITY_INVALID');
 const version=process.versions.node.split('.').map(Number);
 if(version[0]<22||version[0]===22&&version[1]<13)throw Error('RAAD_WORKER_NODE_ENGINE_UNSUPPORTED');
@@ -129,7 +129,13 @@ child.on('close', async code => {
   const passed = raw.toString('utf8').split('\n').filter(line => line.startsWith('PASS ')).map(line => line.slice(5));
   if (code !== 0 || timedOut || overflow || JSON.stringify(passed) !== JSON.stringify(expected)
       || footer?.status !== 'passed' || footer.liveActions !== 0
-      || JSON.stringify(footer.checks) !== JSON.stringify(expected)) {
+      || JSON.stringify(footer.checks) !== JSON.stringify(expected)
+      || footer.modelVerification?.method!=='direct_model_read'
+      || footer.modelVerification?.phase!=='original_worker_before_python_overlay'
+      || footer.modelVerification?.verifiedByUid!==0
+      || footer.modelVerification?.bytes!==1452847
+      || footer.modelVerification?.sha256!=='ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01'
+      || footer.modelVerification?.permissionsChanged!==false) {
     console.error('RAAD_NATIVE_GATE_FAILED'); process.exitCode = 1; return;
   }
   fs.writeFileSync(path + '/native-proof.json', JSON.stringify({passed: true,
@@ -141,6 +147,7 @@ child.on('close', async code => {
     runtime: 'additive original worker recipe before Python tooling installation',
     runtimeMetadata, workerRecipeSha256: input.workerRecipeSha256, baseImageTag: input.baseImageTag, baseImageDigestObserved: false,
     entrypointChecks: footer.entrypointChecks, pdfTools: footer.pdfTools,
+    modelVerification: footer.modelVerification,
     user: 'root (original worker default)', applicationMount: 'read-only bind from worker stage',
     stdoutEof: true, bytes: raw.length,
     sha256: crypto.createHash('sha256').update(raw).digest('hex')}, null, 2) + '\n');
