@@ -39,7 +39,7 @@ const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value)
 
 test('signed document uploads traverse encrypted media, real Gemma adapter, matcher, preparation and private dashboard while unpaid', {timeout: 45000}, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'visa-document-webhook-')), file = path.join(directory, 'state.enc'), sourceImages = await images();
-  Object.assign(process.env, {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: STATE_KEY, WHATSAPP_APP_SECRET: SECRET, ASSISTANT_ADMIN_KEY: ADMIN, WHATSAPP_ACCESS_TOKEN: TOKEN, WHATSAPP_PHONE_NUMBER_ID: '123456789', WHATSAPP_GRAPH_API_VERSION: 'v23.0', DRY_RUN: 'false', SAUDI_VISA_ENABLED: 'true', RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: GEMMA_KEY, ASSISTANT_AI_PROVIDER: 'disabled', CLINE_API_KEY: '', OPENAI_API_KEY: '', ASSISTANT_DEBOUNCE_MS: '0', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', AIR_ARABIA_QUOTE_QUEUE_ENABLED: 'false', FLYCHAM_PORTAL_ENABLED: 'false', RAAD_VISA_AUTOMATION_ENABLED: 'false', RAAD_BROWSER_WORKER_URL: '', RAAD_JOB_BRIDGE_KEY: 'synthetic-document-bridge-key-xxxxxxxxxxxxxxxx', SAUDI_VISA_WABA_ID: '', RAAD_OTP_REQUEST_TEMPLATE: '', RAAD_VISA_PAYMENT_TEMPLATE: '', RAAD_APPLICATION_PHONE: '+' + CUSTOMER, RAAD_CONTACT_EMAIL: 'synthetic@example.test', RAAD_INSURANCE_PHONE: '+' + CUSTOMER, RAAD_POSTAL_CODE: '00000'});
+  Object.assign(process.env, {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: STATE_KEY, WHATSAPP_APP_SECRET: SECRET, ASSISTANT_ADMIN_KEY: ADMIN, WHATSAPP_ACCESS_TOKEN: TOKEN, WHATSAPP_PHONE_NUMBER_ID: '123456789', WHATSAPP_GRAPH_API_VERSION: 'v23.0', DRY_RUN: 'false', SAUDI_VISA_ENABLED: 'true', RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: GEMMA_KEY, ASSISTANT_AI_PROVIDER: 'disabled', CLINE_API_KEY: GEMMA_KEY, OPENAI_API_KEY: '', ASSISTANT_DEBOUNCE_MS: '0', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', AIR_ARABIA_QUOTE_QUEUE_ENABLED: 'false', FLYCHAM_PORTAL_ENABLED: 'false', RAAD_VISA_AUTOMATION_ENABLED: 'false', RAAD_BROWSER_WORKER_URL: '', RAAD_JOB_BRIDGE_KEY: 'synthetic-document-bridge-key-xxxxxxxxxxxxxxxx', SAUDI_VISA_WABA_ID: '', RAAD_OTP_REQUEST_TEMPLATE: '', RAAD_VISA_PAYMENT_TEMPLATE: '', RAAD_APPLICATION_PHONE: '+' + CUSTOMER, RAAD_CONTACT_EMAIL: 'synthetic@example.test', RAAD_INSURANCE_PHONE: '+' + CUSTOMER, RAAD_POSTAL_CODE: '00000'});
   const {AssistantState} = require('../src/assistant-state');
   const {ConversationJournal}=require('../src/conversation-journal');
   const P = require('../src/saudi-visa-policy');
@@ -65,13 +65,13 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
       const bytes = sourceImages.get(target.searchParams.get('media_id')); assert.ok(bytes);
       return new Response(Buffer.from(bytes), {status: 200, headers: {'content-type': 'image/png', 'content-length': String(bytes.length)}});
     }
-    if (target.hostname === 'generativelanguage.googleapis.com') {
-      assert.equal(target.pathname, '/v1beta/models/gemini-3.5-flash:generateContent'); assert.equal(options.headers['x-goog-api-key'], GEMMA_KEY); assert.equal(options.redirect, 'error');
-      const request = JSON.parse(options.body), input = Buffer.from(request.contents[0].parts[0].inlineData.data, 'base64'), metadata = await sharp(input).metadata(); assert.ok(metadata.width >= 1000); assert.ok(metadata.height >= 1000);
+    if (target.hostname === 'api.cline.bot') {
+      assert.equal(target.pathname, '/api/v1/chat/completions'); assert.equal(options.headers.Authorization, 'Bearer '+GEMMA_KEY); assert.equal(options.redirect, 'error');
+      const request = JSON.parse(options.body), input = Buffer.from(request.messages[1].content[0].image_url.url.split(',')[1], 'base64'), metadata = await sharp(input).metadata(); assert.ok(metadata.width >= 1000); assert.ok(metadata.height >= 1000);
       const rgb = await sharp(input).extract({left: 0, top: 0, width: 1, height: 1}).removeAlpha().raw().toBuffer(), maximum = Math.max(rgb[0], rgb[1], rgb[2]);
       const kind = rgb[2] === maximum ? 'passport' : rgb[1] === maximum ? 'uae_id_front' : 'portrait'; roles.push(kind); visionCount++;
       if (visionCount === 1) { firstEnteredResolve(); await firstRelease; }
-      return jsonResponse({candidates: [{finishReason: 'STOP', content: {role: 'model', parts: [{text: JSON.stringify(extraction(kind))}]}}]});
+      return jsonResponse({choices: [{finish_reason: 'stop', message: {role: 'assistant', content: JSON.stringify(extraction(kind))}}]});
     }
     if (target.hostname === 'graph.facebook.com' && target.pathname === '/v23.0/123456789/messages' && options.method === 'POST') {
       assert.equal(options.headers.Authorization, 'Bearer ' + TOKEN); const body = JSON.parse(options.body); posts.push(body); return jsonResponse({messages: [{id: 'wamid.synthetic-document-output-' + posts.length}]});
@@ -120,7 +120,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
     }
     assert.ok(posts.length > 0); assert.ok(posts.every(message => message.to === CUSTOMER)); assert.equal(posts.filter(message => /اكتملت قراءة المستندات/.test(message.text?.body || '')).length, 1);
     assert.doesNotMatch(JSON.stringify(posts), /N12345678|784199000000001|تم تأكيد استلام دفعتك|ليست تأشيرة صادرة/); assert.equal(posts.some(message => ['template', 'document'].includes(message.type)), false);
-    assert.deepEqual(rejectedRequests, []); assert.ok(requests.every(request => ['graph.facebook.com', 'lookaside.fbsbx.com', 'generativelanguage.googleapis.com'].includes(request.host)));
+    assert.deepEqual(rejectedRequests, []); assert.ok(requests.every(request => ['graph.facebook.com', 'lookaside.fbsbx.com', 'api.cline.bot'].includes(request.host)));
     assert.equal(fs.readFileSync(file).includes(Buffer.from(DOC_FIELDS.passportNumber)), false);
   } finally {
     firstReleaseResolve(); process.env.RAAD_DOCUMENT_OCR_ENABLED = 'false'; process.env.RAAD_VISA_AUTOMATION_ENABLED = 'false'; process.env.SAUDI_VISA_ENABLED = 'false';

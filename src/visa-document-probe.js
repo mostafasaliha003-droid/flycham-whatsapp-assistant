@@ -16,7 +16,7 @@ function safeSchemaDiagnostics(failure, reason) {
     return {schemaSection: section, ...(DOCUMENT_FIELD_NAMES.includes(fieldName) ? {fieldName} : {}), ...(SCHEMA_ISSUES.includes(schemaIssue) ? {schemaIssue} : {})};
   } catch { return {}; }
 }
-const EXPECTED = Object.freeze({passportNumber: 'ZT1234567', latinFirstName: 'EXAMPLE', latinFamilyName: 'TESTER', birthDate: '1990-04-03', expiryDate: '2035-11-30'});
+const EXPECTED = Object.freeze({visiblePassportNumber: 'ZT1234567', latinFirstName: 'EXAMPLE', latinFamilyName: 'TESTER', birthDate: '1990-04-03', expiryDate: '2035-11-30'});
 const lines = [
   'SYNTHETIC OCR DIAGNOSTIC — NOT A VALID DOCUMENT',
   'PASSPORT READING TEST',

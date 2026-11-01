@@ -9,17 +9,17 @@ const {parseTD1MRZ} = require('./visa-id-mrz');
 const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR_CODES} = require('./visa-mrz-vision');
 const {OPTICAL_POLICY_FINGERPRINT,MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
 
-const MODEL = 'gemini-3.5-flash';
-const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-11-01.v17';
+const MODEL = 'cline-pass/qwen3.8-max';
+const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-11-01.v18';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
 const WIRE_PROJECTION_POLICY = 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6';
 // Successfully validated, readable evidence from V3/V4/V5/V6/V7/V8 remains equally strict.
 // Intake can retain those checkpoints while selectively retrying failures.
-const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
+const COMPATIBLE_PREVIOUS_POLICIES = Object.freeze(['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a', '02e4cb95e0433dd04080785e51354649a1085363398258e7c867e5093c177f17']);
 // Preserve completed V7/V8/V9/V10/V11 failures/unreadable outcomes for an explicit bounded
 // retry, never a rollout replay. Readable successful evidence remains reusable.
-const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
+const COMPATIBLE_COMPLETED_FAILURE_POLICIES = Object.freeze(['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a', '02e4cb95e0433dd04080785e51354649a1085363398258e7c867e5093c177f17']);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_PIXELS = 20000000;
@@ -282,9 +282,9 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
   const used = () => {const value=ledger.data.documentVisionBudget;return value?.day===day()?(Number.isSafeInteger(value.used)&&value.used>=0?value.used:dailyLimit()):0;};
   const remaining = () => Math.max(0,dailyLimit()-used());
   const enabled = () => env.RAAD_DOCUMENT_OCR_ENABLED === 'true';
-  const configured = () => budgetConfigured() && dailyLimit()>0 && typeof env.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0 && (!env.RAAD_DOCUMENT_OCR_MODEL || env.RAAD_DOCUMENT_OCR_MODEL === MODEL);
+  const configured = () => budgetConfigured() && dailyLimit()>0 && typeof env.CLINE_API_KEY === 'string' && env.CLINE_API_KEY.trim().length > 0 && (!env.RAAD_DOCUMENT_OCR_MODEL || env.RAAD_DOCUMENT_OCR_MODEL === MODEL);
   const ready = () => enabled() && configured() && remaining()>0 && !busy && now() >= cooldownUntil;
-  const status = () => ({enabled: enabled(), configured: configured(), model: MODEL, ready: ready(), busy, dailyLimit:dailyLimit(),dailyUsed:used(),dailyRemaining:remaining(), ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
+  const status = () => ({enabled: enabled(), configured: configured(), provider: 'cline', model: MODEL, ready: ready(), busy, dailyLimit:dailyLimit(),dailyUsed:used(),dailyRemaining:remaining(), ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
   const guardNow = async guard => { try { if (typeof guard !== 'function' || await guard() === false) throw Error(); } catch { throw failure('DOCUMENT_VISION_STALE'); } };
   async function perform({bytes, mimeType, guard} = {}, focused = false) {
     if (!enabled()) throw failure('DOCUMENT_VISION_DISABLED');
@@ -296,29 +296,28 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     busy = true;
     try {
       await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
-      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {systemInstruction: {parts: [{text: PROMPT}]}, contents: [{role: 'user', parts: [{inlineData: {mimeType, data: bytes.toString('base64')}}, {text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], generationConfig: {temperature: 0, maxOutputTokens: 4096, thinkingConfig: {thinkingLevel: 'minimal'}}};
+      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}, {type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], stream: false, temperature: 0, max_tokens: 4096};
       await guardNow(guard);
       ledger.data.documentVisionBudget={day:day(),used:used()+1};
       try{ledger.save();}catch{throw failure('DOCUMENT_VISION_NOT_CONFIGURED');}
       let response;
-      try { response = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent', {method: 'POST', headers: {'x-goog-api-key': env.GEMINI_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(request)}); }
+      try { response = await fetchImpl('https://api.cline.bot/api/v1/chat/completions', {method: 'POST', headers: {Authorization: 'Bearer ' + env.CLINE_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(request)}); }
       catch (error) { throw failure(['TimeoutError', 'AbortError'].includes(error?.name) ? 'DOCUMENT_VISION_TIMEOUT' : 'DOCUMENT_VISION_NETWORK'); }
       await guardNow(guard);
       if (!response?.ok) {
         const status = Number(response?.status);
         if (status === 429) { cooldownUntil = now() + 60000; throw failure('DOCUMENT_VISION_RATE_LIMITED', 60000); }
-        if ([401, 403].includes(status)) { cooldownUntil = now() + 300000; throw failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 300000); }
+        if ([401, 402, 403].includes(status)) { cooldownUntil = now() + 300000; throw failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 300000); }
         throw failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE');
       }
       let payload;
       try { payload = await readBoundedJSON(response); }
       catch (error) { if (['DOCUMENT_VISION_RESPONSE_TOO_LARGE', 'DOCUMENT_VISION_INVALID_JSON'].includes(error?.code)) throw error; throw failure(['TimeoutError', 'AbortError'].includes(error?.name) ? 'DOCUMENT_VISION_TIMEOUT' : 'DOCUMENT_VISION_INVALID_JSON'); }
       await guardNow(guard);
-      const candidate = payload?.candidates?.[0];
-      if (payload?.promptFeedback?.blockReason || !Array.isArray(payload?.candidates) || payload.candidates.length !== 1 || candidate?.finishReason !== 'STOP' || candidate?.content?.role && candidate.content.role !== 'model' || !Array.isArray(candidate?.content?.parts)) throw failure('DOCUMENT_VISION_INCOMPLETE');
-      const visibleParts = candidate.content.parts.filter(part => part?.thought !== true);
-      if (!visibleParts.length || visibleParts.some(part => !plain(part) || typeof part.text !== 'string' || Object.keys(part).some(key => !['text', 'thought', 'thoughtSignature'].includes(key)))) throw failure('DOCUMENT_VISION_INCOMPLETE');
-      const output = visibleParts.map(part => part.text).join('');
+      const envelope = payload?.choices ? payload : payload?.data;
+      const choice = envelope?.choices?.[0], message = choice?.message;
+      if (payload?.success === false || envelope?.success === false || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1 || choice?.finish_reason !== 'stop' || !plain(message) || message.role !== 'assistant' || typeof message.content !== 'string' || message.refusal || message.tool_calls?.length || message.function_call) throw failure('DOCUMENT_VISION_INCOMPLETE');
+      const output = message.content;
       const result = focused ? parseMrzOutput(output) : parseDocumentOutput(output, {deferPassportMrz: true}); await guardNow(guard); return result;
     } finally { busy = false; }
   }

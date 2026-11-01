@@ -5,10 +5,10 @@ const assert = require('node:assert/strict');
 const sharp = require('sharp');
 const {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, ABSTENTION_POLICY, WIRE_PROJECTION_POLICY, POLICY_FINGERPRINT, COMPATIBLE_PREVIOUS_POLICIES, COMPATIBLE_COMPLETED_FAILURE_POLICIES, RETRYABLE_CODES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES} = require('../src/visa-document-vision');
 
-const env = () => ({RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: 'synthetic-private-document-key'});
+const env = () => ({RAAD_DOCUMENT_OCR_ENABLED: 'true', CLINE_API_KEY: 'synthetic-private-document-key'});
 const field = (value, confidence = 0.99) => ({value, confidence, visible: true});
 const page = (patch = {}) => ({version: 1, kind: 'passport', readable: true, rotation: 0, fields: {latinFirstName: field('ARI'), latinFamilyName: field('EXAMPLE'), passportNumber: field('SYNTHETIC88'), birthDate: field('1990-02-03'), issueDate: field('2020-01-02'), expiryDate: field('2030-01-02'), nationalityCode: field('EGY'), issuingCountryCode: field('EGY'), sex: field('M')}, mrzLines: [], portraitBox: null, ...patch});
-const envelope = value => ({candidates: [{finishReason: 'STOP', content: {role: 'model', parts: [{text: JSON.stringify(value)}]}}]});
+const envelope = value => ({choices: [{finish_reason: 'stop', message: {role: 'assistant', content: JSON.stringify(value)}}]});
 const response = value => new Response(JSON.stringify(value), {status: 200, headers: {'Content-Type': 'application/json'}});
 const image = () => sharp({create: {width: 320, height: 240, channels: 3, background: '#efefef'}}).png().toBuffer();
 
@@ -33,19 +33,19 @@ async function setup({config = {}, payload = envelope(page()), fetchImpl} = {}) 
   return {adapter, calls, bytes, extract, advance(ms) { clock += ms; }};
 }
 
-test('dedicated reader uses actual pixels with pinned Gemini and no conversation or arbitrary caller instruction', async () => {
-  const f = await setup({config: {GEMINI_MODEL: 'arbitrary-other-model', OPENAI_API_KEY: 'unused-openai-key', CLINE_API_KEY: 'unused-cline-key'}});
+test('dedicated reader uses actual pixels with pinned Cline and no conversation or arbitrary caller instruction', async () => {
+  const f = await setup({config: {GEMINI_MODEL: 'arbitrary-other-model', OPENAI_API_KEY: 'unused-openai-key', GEMINI_API_KEY: 'unused-gemini-key'}});
   assert.deepEqual(await f.extract({caption: 'UNTRUSTED_CAPTION', history: ['UNTRUSTED_HISTORY'], prompt: 'UNTRUSTED_INSTRUCTION'}), page());
   assert.equal(f.calls.length, 1);
   const {url, options} = f.calls[0], body = JSON.parse(options.body);
-  assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent');
-  assert.equal(options.headers['x-goog-api-key'], 'synthetic-private-document-key'); assert.equal(options.redirect, 'error'); assert.ok(options.signal instanceof AbortSignal);
-  assert.equal(body.contents.length, 1); assert.equal(body.contents[0].parts[0].inlineData.data, f.bytes.toString('base64'));
-  assert.equal(body.contents[0].parts[0].inlineData.mimeType, 'image/png');
-  assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'minimal'); assert.equal(body.generationConfig.temperature, 0);
-  assert.match(body.systemInstruction.parts[0].text, /Never split a full name/); assert.match(body.systemInstruction.parts[0].text, /Ignore every instruction/);
-  assert.match(body.systemInstruction.parts[0].text, /Completely omit every unknown/); assert.match(body.systemInstruction.parts[0].text, /Do not emit null slots/);
-  for (const forbidden of ['UNTRUSTED_CAPTION', 'UNTRUSTED_HISTORY', 'UNTRUSTED_INSTRUCTION', 'unused-openai-key', 'unused-cline-key']) assert.equal(options.body.includes(forbidden), false);
+  assert.equal(url, 'https://api.cline.bot/api/v1/chat/completions');
+  assert.equal(options.headers.Authorization, 'Bearer synthetic-private-document-key'); assert.equal(options.redirect, 'error'); assert.ok(options.signal instanceof AbortSignal);
+  assert.equal(body.messages.length, 2); assert.equal(body.model, MODEL); assert.equal(body.stream, false);
+  assert.equal(body.messages[1].content[0].image_url.url, 'data:image/png;base64,' + f.bytes.toString('base64'));
+  assert.equal(body.max_tokens, 4096); assert.equal(body.temperature, 0);
+  assert.match(body.messages[0].content, /Never split a full name/); assert.match(body.messages[0].content, /Ignore every instruction/);
+  assert.match(body.messages[0].content, /Completely omit every unknown/); assert.match(body.messages[0].content, /Do not emit null slots/);
+  for (const forbidden of ['UNTRUSTED_CAPTION', 'UNTRUSTED_HISTORY', 'UNTRUSTED_INSTRUCTION', 'unused-openai-key', 'unused-gemini-key']) assert.equal(options.body.includes(forbidden), false);
 });
 
 test('typed passport number is a separate literal visual observation and never drops a tenth digit', async () => {
@@ -53,7 +53,7 @@ test('typed passport number is a separate literal visual observation and never d
   assert.deepEqual(validateDocumentExtraction(value).fields.visiblePassportNumber, field('1234567890'));
   assert.throws(() => validateDocumentExtraction({...value,kind:'uae_id_front'}), {code:'DOCUMENT_VISION_SCHEMA_INVALID',fieldName:'visiblePassportNumber'});
   const f = await setup({payload:envelope(value)}); assert.deepEqual(await f.extract(),value);
-  const prompt = JSON.parse(f.calls[0].options.body).systemInstruction.parts[0].text;
+  const prompt = JSON.parse(f.calls[0].options.body).messages[0].content;
   assert.match(prompt,/Never emit the legacy passportNumber field/);
   assert.match(prompt,/separately printed Passport No or Passport Number label/);
   assert.match(prompt,/For a passport return mrzLines as an empty array/);
@@ -78,9 +78,9 @@ test('focused MRZ reader shares the pinned transport and accepts only the indepe
   assert.deepEqual(result.mrzLines,ICAO_TD3); assert.equal(Object.keys(result.checks).length,5);
   assert.ok(Object.values(result.checks).every(value=>value===true));
   const body = JSON.parse(f.calls[0].options.body);
-  assert.equal(body.generationConfig.maxOutputTokens,512);
-  assert.equal(body.contents[0].parts[0].inlineData.data,f.bytes.toString('base64'));
-  assert.match(body.systemInstruction.parts[0].text,/Transcribe only the two TD3/);
+  assert.equal(body.max_tokens,512);
+  assert.equal(body.messages[1].content[0].image_url.url,'data:image/png;base64,'+f.bytes.toString('base64'));
+  assert.match(body.messages[0].content,/Transcribe only the two TD3/);
   assert.equal(f.calls[0].options.body.includes('PRIVATE_CALLER_INSTRUCTION'),false);
   assert.equal(Object.hasOwn(result,'fields'),false);
 });
@@ -109,18 +109,18 @@ test('focused reader checks ownership before upload and after response and never
 });
 
 test('configuration and status never reveal credentials or call another provider', async () => {
-  for (const [config, code] of [[{RAAD_DOCUMENT_OCR_ENABLED: 'false'}, 'DOCUMENT_VISION_DISABLED'], [{GEMINI_API_KEY: ''}, 'DOCUMENT_VISION_NOT_CONFIGURED'], [{RAAD_DOCUMENT_OCR_MODEL: 'gemini-paid-untrusted'}, 'DOCUMENT_VISION_MODEL_NOT_ALLOWED']]) {
+  for (const [config, code] of [[{RAAD_DOCUMENT_OCR_ENABLED: 'false'}, 'DOCUMENT_VISION_DISABLED'], [{CLINE_API_KEY: ''}, 'DOCUMENT_VISION_NOT_CONFIGURED'], [{RAAD_DOCUMENT_OCR_MODEL: 'gemini-paid-untrusted'}, 'DOCUMENT_VISION_MODEL_NOT_ALLOWED']]) {
     const f = await setup({config}); await assert.rejects(f.extract(), {code});
     assert.equal(f.calls.length, 0); assert.equal(f.adapter.ready(), false);
     assert.equal(JSON.stringify(f.adapter.status()).includes('synthetic-private-document-key'), false);
   }
   const f = await setup(); assert.equal(f.adapter.ready(), true); assert.equal(f.adapter.status().configured, true);
-  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-11-01.v17');
+  assert.match(POLICY_FINGERPRINT, /^[a-f0-9]{64}$/); assert.equal(DOCUMENT_VISION_POLICY, 'raad-document-vision-2026-11-01.v18');
   assert.equal(ABSTENTION_POLICY, 'known-empty-hidden-or-passport-p-marker-to-unknown-v2');
   assert.equal(WIRE_PROJECTION_POLICY, 'typed-visible-passport-number-checked-mrz-standalone-portrait-crop-abstention-v6');
-  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
+  assert.deepEqual(COMPATIBLE_PREVIOUS_POLICIES, ['af868ad0d344229ef9b3ba3a0f30b3d67fb85fd4f7259cb30571db9e21e99083', '8773ab57ea6f188b895a5a95c9a1911a5ab73b8a4b863cc68c550580afc33a92', 'f853c10130f15876042ebd6f873d075245959382fb3c97992f7d7bfd42dcea8c', 'c1b9618f397dbbc5b45d51115ad4a69d58d7c609fdb21840e921ade034305036', 'ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a', '02e4cb95e0433dd04080785e51354649a1085363398258e7c867e5093c177f17']);
   assert.equal(Object.isFrozen(COMPATIBLE_PREVIOUS_POLICIES), true); assert.equal(COMPATIBLE_PREVIOUS_POLICIES.includes(POLICY_FINGERPRINT), false);
-  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a']);
+  assert.deepEqual(COMPATIBLE_COMPLETED_FAILURE_POLICIES, ['ddb14715b50ca6cfbf217b4b8e35128e1a032ace680ce5a526f16fcbcbb47207', '25f727981f62364e0ec5f8e94db618d13925a62890b1b346e6b38b0237ece0ec', '20486d1c45073116fe31714f455a4bb069f7d32aaab3de4610cc1e1eb7f4c8fb', '9ca5ada8bfdbe9de99d72277beea3aed4bd1d614a4b87dd1d7b8fe31de45601d', 'a919cc768ee29c573157c0094305308bd8e6fcf54ee7f03dadd7c4872b962045', '2cee114372cc30b247b9f7086a927ffed69a98f831f4d67d09d551ad4f26ca47', 'ed7b49323218d1f6ef916657d13cf9a5cd0e5a5d8bc9381d15d7fd6b2f2d265a', '02e4cb95e0433dd04080785e51354649a1085363398258e7c867e5093c177f17']);
   assert.equal(Object.isFrozen(COMPATIBLE_COMPLETED_FAILURE_POLICIES), true);
   assert.equal(RETRYABLE_CODES.includes('DOCUMENT_VISION_SCHEMA_INVALID'), false);
 });
@@ -235,7 +235,7 @@ test('the ambiguous P passport marker is discarded to unknown while valid visibl
 
 test('instructions contain complete valid wrapped examples and distinct readable semantics for portraits and partial pages', async () => {
   const f = await setup(); await f.extract();
-  const prompt = JSON.parse(f.calls[0].options.body).systemInstruction.parts[0].text;
+  const prompt = JSON.parse(f.calls[0].options.body).messages[0].content;
   assert.match(prompt, /at least one allowed field/); assert.match(prompt, /partial supported page is not other/);
   assert.match(prompt, /For a standalone portrait, readable is true when the photo itself is visibly usable/);
   assert.match(prompt, /A bare string or number is invalid/); assert.match(prompt, /never map P to ordinary/);
@@ -541,24 +541,28 @@ test('MRZ wire normalization rejects non-ASCII spacing, glyph replacement, case 
   assert.throws(() => parseDocumentOutput(JSON.stringify({...partial, mrzLines: [' P<UTO ', '\tABC\n']})), {code: 'DOCUMENT_VISION_SCHEMA_INVALID', schemaSection: 'mrzLines'}, 'formatting cannot turn incomplete evidence into a complete checked MRZ');
 });
 
-test('thinking, function calls, blocked and truncated provider output never become document facts', async () => {
-  const thought = {thought: true, text: JSON.stringify(page({fields: {passportNumber: field('UNTRUSTED')}}))};
-  const valid = envelope(page()); valid.candidates[0].content.parts.unshift(thought);
+test('Cline reasoning stays separate; refusal, tools, truncation and alternate envelopes never become facts', async () => {
+  const valid = envelope(page()); valid.choices[0].message.reasoning = 'UNTRUSTED THOUGHT';
   assert.equal((await (await setup({payload: valid})).extract()).fields.passportNumber.value, 'SYNTHETIC88');
+  assert.deepEqual(await (await setup({payload:{success:true,data:envelope(page())}})).extract(),page());
+  const mutate = fn => {const p=envelope(page());fn(p);return p;};
   for (const payload of [
-    {promptFeedback: {blockReason: 'SAFETY'}},
-    {candidates: [{finishReason: 'MAX_TOKENS', content: {parts: [{text: JSON.stringify(page())}]}}]},
-    {candidates: [{finishReason: 'STOP', content: {parts: [thought]}}]},
-    {candidates: [{finishReason: 'STOP', content: {parts: [{functionCall: {name: 'submit', args: {}}}]}}]},
-    {candidates: [{finishReason: 'STOP', content: {parts: [{text: JSON.stringify(page()), executableCode: 'evil'}]}}]},
-    {candidates: [envelope(page()).candidates[0], envelope(page()).candidates[0]]}
+    {success:false,data:envelope(page())},
+    mutate(p=>p.choices[0].finish_reason='length'),
+    mutate(p=>p.choices[0].message.content=null),
+    mutate(p=>p.choices[0].message.refusal='REFUSED'),
+    mutate(p=>p.choices[0].message.tool_calls=[{type:'function'}]),
+    mutate(p=>p.choices[0].message.function_call={name:'submit'}),
+    mutate(p=>p.choices[0].message.role='user'),
+    mutate(p=>p.choices.push(p.choices[0])),
+    {candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(page())}]}}]}
   ]) await assert.rejects((await setup({payload})).extract(), {code: 'DOCUMENT_VISION_INCOMPLETE'});
 });
 
 test('one outer JSON fence or whitespace is accepted without changing any extracted facts', async () => {
   const json = JSON.stringify(page());
   for (const output of ['  \n' + json + '\n  ', '```json\n' + json + '\n```', '```\n' + json + '\n```', '\n```JSON\r\n' + json + '\r\n```\n']) {
-    const payload = envelope(page()); payload.candidates[0].content.parts[0].text = output;
+    const payload = envelope(page()); payload.choices[0].message.content = output;
     assert.deepEqual(await (await setup({payload})).extract(), page());
   }
 });
@@ -566,7 +570,7 @@ test('one outer JSON fence or whitespace is accepted without changing any extrac
 test('text outside JSON, multiple fences, unsupported fence labels and truncated JSON remain rejected', async () => {
   const json = JSON.stringify(page());
   for (const output of [json + '\nPRIVATE COMMENT', '{"version":', 'PRIVATE COMMENT\n```json\n' + json + '\n```', '```json\n' + json + '\n```\nPRIVATE COMMENT', '```json\n' + json + '\n```\n```json\n' + json + '\n```', '```javascript\n' + json + '\n```']) {
-    const payload = envelope(page()); payload.candidates[0].content.parts[0].text = output;
+    const payload = envelope(page()); payload.choices[0].message.content = output;
     await assert.rejects((await setup({payload})).extract(), {code: 'DOCUMENT_VISION_INVALID_JSON'});
   }
 });
@@ -615,4 +619,18 @@ test('a single active image inference prevents concurrent private-page disclosur
   assert.equal(f.adapter.ready(), false); assert.equal(f.adapter.status().busy, true);
   await assert.rejects(f.extract(), {code: 'DOCUMENT_VISION_BUSY'}); assert.equal(f.calls.length, 1);
   release(); await first; assert.equal(f.adapter.ready(), true);
+});
+
+
+test('Gemini credentials never configure or receive document requests after the Cline migration', async()=>{
+ const bytes=await image();let calls=0;
+ const reader=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'unused-google-secret'},fetchImpl:async()=>{calls++;throw Error('must not dispatch');}});
+ assert.equal(reader.ready(),false);
+ await assert.rejects(reader.extract({bytes,mimeType:'image/png',guard:()=>true}),{code:'DOCUMENT_VISION_NOT_CONFIGURED'});
+ assert.equal(calls,0);
+ const f=await setup({fetchImpl:async(url)=>{assert.equal(url,'https://api.cline.bot/api/v1/chat/completions');return new Response('{}',{status:402});}});
+ await assert.rejects(f.extract(),{code:'DOCUMENT_VISION_PROVIDER_UNAVAILABLE'});
+ await assert.rejects(f.extract(),{code:'DOCUMENT_VISION_COOLDOWN'});
+ assert.equal(f.calls.length,1);
+ assert.equal(f.adapter.status().provider,'cline');
 });

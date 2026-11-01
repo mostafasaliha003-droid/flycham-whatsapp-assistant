@@ -7,7 +7,7 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 const {parseTD3MRZ} = require('./raad-document-validation');
 
-const MODEL = 'gemini-3.5-flash';
+const MODEL = 'cline-pass/qwen3.8-max';
 const MRZ_VISION_POLICY = 'raad-td3-mrz-vision-2026-10-29.v1';
 const MAX_MRZ_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_MRZ_IMAGE_PIXELS = 4 * 1024 * 1024;
@@ -42,9 +42,9 @@ async function validateMrzImage(bytes, mimeType) {
 async function buildMrzRequest({bytes, mimeType} = {}) {
   await validateMrzImage(bytes, mimeType);
   return {
-    systemInstruction: {parts: [{text: PROMPT}]},
-    contents: [{role: 'user', parts: [{inlineData: {mimeType, data: bytes.toString('base64')}}, {text: 'Copy only the two complete MRZ lines from this crop.'}]}],
-    generationConfig: {temperature: 0, maxOutputTokens: 512, thinkingConfig: {thinkingLevel: 'minimal'}}
+    model: MODEL,
+    messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}, {type: 'text', text: 'Copy only the two complete MRZ lines from this crop.'}]}],
+    stream: false, temperature: 0, max_tokens: 512
   };
 }
 
