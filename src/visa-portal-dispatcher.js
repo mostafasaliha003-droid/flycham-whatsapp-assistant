@@ -86,24 +86,27 @@ class VisaPortalDispatcher{
    const run=this.store.data.visaPortalRuns[job.id];
    if(job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run?.phase!=='blocked'||run.lastStage!=='application_sms'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.expiredOtpRecoveryAttempts||0)>=1)continue;
    const diagnostic=code=>{const key=job.id+':otp_recovery';if(this.reportedDiagnostics.get(key)===code)return;this.reportedDiagnostics.set(key,code);console.info('[VISA_OTP_RECOVERY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),code}));};
+   let phase='authorization';
    try{
-    const verify=expected=>{if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');let proof,draft;job.state='ready';try{this.fulfilment.guardJob(job.id);proof=this.fulfilment.getConfirmedFields(job.id);draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint||expected&&draft.fingerprint!==expected)throw Error('CURRENT_DOSSIER_REQUIRED');return draft.fingerprint;};
+    const verify=expected=>{phase='authorization';if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');let proof,draft;job.state='ready';try{this.fulfilment.guardJob(job.id);phase='document_evidence';proof=this.fulfilment.getConfirmedFields(job.id);phase='dossier';draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint||expected&&draft.fingerprint!==expected)throw Error('CURRENT_DOSSIER_REQUIRED');return draft.fingerprint;};
     // Releasing a lease increments the job revision, so the old execution
     // fingerprint cannot be reused. Independently verify current authorization
     // and retain its new fingerprint across every asynchronous check.
     const expectedFingerprint=verify();
-    if(typeof this.ownerNotificationReady!=='function'||await this.ownerNotificationReady()!==true){diagnostic('OWNER_NOTIFICATION_NOT_READY');continue;}
+    phase='owner_delivery';if(typeof this.ownerNotificationReady!=='function'||await this.ownerNotificationReady()!==true){diagnostic('OWNER_NOTIFICATION_NOT_READY');continue;}
+    phase='remote_record';
     const remote=await this.request('/internal/raad/jobs/'+job.id);
     // Cancellation scrubs the phase but retains save/uncertainty and binding
     // proof. A missing record or an ambiguous save never permits a restart.
     if(remote.jobId!==job.id||remote.caseSignature!==job.caseSignature||remote.applicantIndex!==job.applicantIndex||remote.saved!==false||remote.reference!==null||remote.submissionUncertain!==false||remote.paymentAttempted!==false||remote.ownedBrowserClosed!==true||!(remote.stage==='cancelled'&&remote.phase==='done'||remote.stage==='blocked'&&remote.phase==='application_sms'&&remote.blocker?.code==='OTP_CHALLENGE_EXPIRED')){diagnostic('REMOTE_UNSAVED_PROOF_REQUIRED');continue;}
-    const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
+    phase='worker_health';const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
+    phase='remote_cleanup';
     await this.cancelOwned(job.id);verify(expectedFingerprint);
     const before={state:job.state,blockedReason:job.blockedReason,attempts:job.expiredOtpRecoveryAttempts,phase:run.phase};
     job.expiredOtpRecoveryAttempts=1;job.state='ready';delete job.blockedReason;run.phase='retry_ready';
     try{this.store.save();}catch{job.state=before.state;job.blockedReason=before.blockedReason;run.phase=before.phase;if(before.attempts===undefined)delete job.expiredOtpRecoveryAttempts;else job.expiredOtpRecoveryAttempts=before.attempts;throw Error('RECOVERY_SAVE_FAILED');}
     diagnostic('READY_FOR_FRESH_OTP');
-   }catch(error){diagnostic(['CURRENT_DOSSIER_REQUIRED','CURRENT_JOB_REQUIRED','RECOVERY_SAVE_FAILED'].includes(error?.message)?error.message:'RECOVERY_CHECK_UNCONFIRMED');}
+   }catch(error){const codes=['CURRENT_DOSSIER_REQUIRED','CURRENT_JOB_REQUIRED','RECOVERY_SAVE_FAILED','VISA_DOCUMENT_EVIDENCE_STALE','VISA_DOCUMENT_EVIDENCE_UNVERIFIED','VISA_PAYMENT_NOTICE_UNCONFIRMED','VISA_JOB_STALE','HUMAN_OWNERSHIP'];const code=error?.code||error?.message;diagnostic(codes.includes(code)?code:error?.status===404&&phase==='remote_record'?'REMOTE_RECORD_NOT_FOUND':'CHECK_'+phase.toUpperCase()+'_UNCONFIRMED');}
   }
  }
  async recoverMissingPreflight(){
@@ -121,7 +124,10 @@ class VisaPortalDispatcher{
    try{this.fulfilment.askQuestions(job.id,{fields});run.phase='followup';delete job.blockedReason;this.store.save();}catch{job.state=oldState;}
   }
  }
- diagnose(){for(const job of Object.values(this.fulfilment.data().jobs)){if(!job.blockedReason)continue;const finite=value=>typeof value==='string'&&/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(value)?value:'unconfirmed';const run=this.store.data.visaPortalRuns[job.id];const row={caseHash:digest(String(job.caseId||'')).slice(0,12),state:finite(job.state),code:finite(job.blockedReason),runPhase:finite(run?.phase),portalStage:finite(run?.lastStage),saved:job.portalSaved===true,hasReference:!!job.applicationReference};const signature=JSON.stringify(row);if(this.reportedDiagnostics.get(job.id)===signature)continue;this.reportedDiagnostics.set(job.id,signature);console.info('[VISA_PORTAL_DIAGNOSTIC] '+signature);}}
+ diagnose(){for(const job of Object.values(this.fulfilment.data().jobs)){if(!job.blockedReason)continue;const finite=value=>typeof value==='string'&&/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(value)?value:'unconfirmed';const run=this.store.data.visaPortalRuns[job.id];const row={caseHash:digest(String(job.caseId||'')).slice(0,12),state:finite(job.state),code:finite(job.blockedReason),runPhase:finite(run?.phase),portalStage:finite(run?.lastStage),saved:job.portalSaved===true,hasReference:!!job.applicationReference};const signature=JSON.stringify(row);if(this.reportedDiagnostics.get(job.id)===signature)continue;this.reportedDiagnostics.set(job.id,signature);console.info('[VISA_PORTAL_DIAGNOSTIC] '+signature);}
+  if(typeof this.documentIntake?.summary!=='function')return;
+  for(const [customer,c]of Object.entries(this.store.data.visaCases||{}).slice(-50)){try{const s=this.documentIntake.summary(customer);if(s.caseId!==c.id||!['ready','needs_confirmation','needs_review','processing'].includes(s.status))continue;const row={caseHash:digest(String(c.id)).slice(0,12),status:s.status,awaitingPayment:s.awaitingPayment===true,applicants:(s.applicants||[]).slice(0,30).map(a=>({index:a.applicantIndex,status:['ready','needs_confirmation','needs_review'].includes(a.status)?a.status:'unconfirmed',gaps:['passportType','issueDate','birthPlace'].filter(f=>a.clientFieldsRequired?.includes(f)),prepared:['passport','residence','photo'].filter(k=>typeof a.documents?.[k]==='string'&&a.documents[k])}))};const key='documents:'+c.id,signature=JSON.stringify(row);if(this.reportedDiagnostics.get(key)===signature)continue;this.reportedDiagnostics.set(key,signature);console.info('[VISA_DOCUMENT_READINESS] '+signature);}catch{}}
+ }
  async tick(){if(this.busy||this.env.RAAD_VISA_AUTOMATION_ENABLED!=='true')return;this.busy=true;try{
   this.diagnose();
   if(this.now()<this.portalReadyAt){await this.flushMessages();return;}
