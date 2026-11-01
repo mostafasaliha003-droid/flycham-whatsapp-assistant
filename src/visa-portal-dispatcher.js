@@ -86,9 +86,27 @@ class VisaPortalDispatcher{
    const run=this.store.data.visaPortalRuns[job.id];
    if(job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run?.phase!=='blocked'||run.lastStage!=='application_sms'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.expiredOtpRecoveryAttempts||0)>=1)continue;
    const diagnostic=code=>{const key=job.id+':otp_recovery';if(this.reportedDiagnostics.get(key)===code)return;this.reportedDiagnostics.set(key,code);console.info('[VISA_OTP_RECOVERY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),code}));};
-   let phase='authorization';
+   let phase='authorization',refreshDocuments=false;
    try{
-    const verify=expected=>{phase='authorization';if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');let proof,draft;job.state='ready';try{this.fulfilment.guardJob(job.id);phase='document_evidence';proof=this.fulfilment.getConfirmedFields(job.id);phase='dossier';draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint||expected&&draft.fingerprint!==expected)throw Error('CURRENT_DOSSIER_REQUIRED');return draft.fingerprint;};
+    const verify=expected=>{
+     phase='authorization';
+     if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');
+     let proof,draft,requiresRefresh=false;
+     job.state='ready';
+     try{
+      this.fulfilment.guardJob(job.id);phase='document_evidence';
+      try{proof=this.fulfilment.getConfirmedFields(job.id);}
+      catch(error){
+       const consent=job.answerConfirmation;
+       if(!['VISA_DOCUMENT_EVIDENCE_UNVERIFIED','VISA_DOCUMENT_EVIDENCE_STALE'].includes(error?.code||error?.message)||typeof this.documentIntake?.refresh!=='function'||consent?.granted!==true||consent.scope!=='saudi_visa_application'||consent.caseSignature!==job.caseSignature||consent.sender!==job.customer||typeof consent.messageId!=='string'||!consent.messageId)throw error;
+       requiresRefresh=true;proof={complete:true};
+       draft={ready:true,fingerprint:'document_refresh:'+digest(JSON.stringify({confirmation:consent,fields:job.confirmedFields,revision:job.revision,caseSignature:job.caseSignature}))};
+      }
+      if(!requiresRefresh){phase='dossier';draft=this.dossier(job,proof);}
+     }finally{if(job.state==='ready')job.state='portal_review_required';}
+     if(!proof.complete||!draft.ready||!draft.fingerprint||expected&&draft.fingerprint!==expected)throw Error('CURRENT_DOSSIER_REQUIRED');
+     refreshDocuments=requiresRefresh;return draft.fingerprint;
+    };
     // Releasing a lease increments the job revision, so the old execution
     // fingerprint cannot be reused. Independently verify current authorization
     // and retain its new fingerprint across every asynchronous check.
@@ -102,6 +120,16 @@ class VisaPortalDispatcher{
     phase='worker_health';const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
     phase='remote_cleanup';
     await this.cancelOwned(job.id);verify(expectedFingerprint);
+    if(refreshDocuments){
+     // Changed document evidence invalidates the old consent. Restage only
+     // after remote unsaved proof, and require a fresh applicant confirmation.
+     const before=structuredClone(job),previousPhase=run.phase;
+     job.expiredOtpRecoveryAttempts=1;job.state='queued';job.revision++;delete job.blockedReason;delete job.answerConfirmation;run.phase='followup';
+     try{this.store.save();}catch{for(const key of Object.keys(job))delete job[key];Object.assign(job,before);run.phase=previousPhase;throw Error('RECOVERY_SAVE_FAILED');}
+     try{phase='document_refresh';const result=await this.documentIntake.refresh(job.customer,{applicantIndex:job.applicantIndex});if(result?.readyForQuestions!==true)throw Error('DOCUMENT_REFRESH_REVIEW_REQUIRED');if(!job.stagedFields)job.stagedFields=structuredClone(job.confirmedFields);this.fulfilment.askQuestions(job.id);diagnostic('DOCUMENTS_REBOUND_CONFIRMATION_REQUIRED');}
+     catch{job.state='portal_review_required';job.blockedReason='DOCUMENTS_REVIEW_REQUIRED';run.phase='blocked';this.store.save();diagnostic('DOCUMENT_REFRESH_REVIEW_REQUIRED');}
+     continue;
+    }
     const before={state:job.state,blockedReason:job.blockedReason,attempts:job.expiredOtpRecoveryAttempts,phase:run.phase};
     job.expiredOtpRecoveryAttempts=1;job.state='ready';delete job.blockedReason;run.phase='retry_ready';
     try{this.store.save();}catch{job.state=before.state;job.blockedReason=before.blockedReason;run.phase=before.phase;if(before.attempts===undefined)delete job.expiredOtpRecoveryAttempts;else job.expiredOtpRecoveryAttempts=before.attempts;throw Error('RECOVERY_SAVE_FAILED');}

@@ -479,3 +479,12 @@ test('document readiness diagnostics disclose fixed statuses and gap labels with
  const info=console.info,logs=[];try{console.info=x=>logs.push(x);f.dispatcher.diagnose();f.dispatcher.diagnose();}finally{console.info=info;}
  assert.equal(logs.length,1);assert.match(logs[0],/VISA_DOCUMENT_READINESS/);assert.match(logs[0],/issueDate/);assert.doesNotMatch(logs[0],/PRIVATE|15550002001|example-case/);
 });
+test('expired OTP with retired document evidence restages only after remote proof and requires fresh consent',async()=>{
+ const f=await expiredOtpFixture(),original=f.fulfilment.getConfirmedFields.bind(f.fulfilment);let fresh=false,refreshes=0;
+ f.fulfilment.getConfirmedFields=id=>{if(!fresh)throw Object.assign(Error('VISA_DOCUMENT_EVIDENCE_UNVERIFIED'),{code:'VISA_DOCUMENT_EVIDENCE_UNVERIFIED'});return original(id);};
+ f.dispatcher.documentIntake={refresh:async(customer,options)=>{assert.equal(customer,f.job.customer);assert.equal(options.applicantIndex,f.job.applicantIndex);assert.equal(f.job.answerConfirmation,undefined);fresh=true;refreshes++;return{readyForQuestions:true};}};
+ await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(refreshes,1);assert.equal(f.job.expiredOtpRecoveryAttempts,1);assert.equal(f.job.answerConfirmation,undefined);assert.equal(f.job.state,'awaiting_answer_confirmation');assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);assert.equal(f.job.summary.answers.maritalStatus,'single');
+});
+test('retired evidence cannot restore execution consent or refresh without verified remote cleanup',async()=>{
+ for(const mode of ['saved','no_consent','failed_refresh']){const f=await expiredOtpFixture(mode==='saved'?{saved:true}:{});let refreshes=0;f.fulfilment.getConfirmedFields=()=>{throw Object.assign(Error('VISA_DOCUMENT_EVIDENCE_STALE'),{code:'VISA_DOCUMENT_EVIDENCE_STALE'});};f.dispatcher.documentIntake={refresh:async()=>{refreshes++;return{readyForQuestions:false};}};if(mode==='no_consent')delete f.job.answerConfirmation;await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.job.state,'portal_review_required',mode);assert.equal(refreshes,mode==='failed_refresh'?1:0,mode);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);if(mode==='failed_refresh'){assert.equal(f.job.answerConfirmation,undefined);assert.equal(f.job.blockedReason,'DOCUMENTS_REVIEW_REQUIRED');}}
+});
