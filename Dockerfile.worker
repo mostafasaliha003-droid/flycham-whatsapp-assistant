@@ -2,6 +2,7 @@ FROM mcr.microsoft.com/playwright:v1.64.0-noble
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY scripts/install-mrz-model.js ./scripts/install-mrz-model.js
 RUN npm ci --omit=dev
 COPY src ./src
 CMD ["node", "src/combined-worker.js"]
