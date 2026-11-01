@@ -1,5 +1,7 @@
 'use strict';
 const crypto=require('node:crypto');
+const {createOperatorGate}=require('./operator-challenge');
+const {captureCaptcha}=require('./captcha-image');
 const {FIELD_ALLOWLIST}=require('../raad-visa-workflow');
 const {captureApplicationPdf}=require('./portal-print');
 const JOB=/^[A-Za-z0-9_-]{1,100}$/,REF=/^[A-Z]{0,3}[0-9]{3,20}$/;
@@ -47,7 +49,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
  if(!adapter||typeof adapter.reserve!=='function'||typeof adapter.call!=='function')throw finite('WORKER_ADAPTER_REQUIRED');
  let active=null,admitting=false;const records=new Map();
  const configured=()=>{try{const u=new URL(env.RAAD_MAIN_URL||MAIN_ORIGIN);return typeof env.RAAD_JOB_BRIDGE_KEY==='string'&&env.RAAD_JOB_BRIDGE_KEY.length>=32&&u.origin===MAIN_ORIGIN&&u.pathname==='/'&&!u.search&&!u.hash&&!u.username&&!u.password;}catch{return false;}};
- const status=record=>({jobId:record.id,stage:record.stage,phase:record.phase,reference:record.reference||null,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true,requiresOtp:record.stage==='waiting_otp',challengeId:record.stage==='waiting_otp'?record.challengeId:null,challengeExpiresAt:record.stage==='waiting_otp'?record.challengeExpiresAt:null,artifactReady:record.stage==='completed'&&Boolean(record.artifact)&&record.saved&&record.returnedFromPayment,blocker:record.blocker||null,paymentAttempted:false,returnedFromPayment:record.returnedFromPayment===true,ownedBrowserClosed:record.ownedBrowserClosed===true,caseSignature:record.caseSignature,applicantIndex:record.applicantIndex,artifactSha256:record.artifact?.sha256||null});
+ const status=record=>({jobId:record.id,stage:record.stage,phase:record.phase,reference:record.reference||null,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true,requiresOperator:record.stage==='waiting_operator',operatorChallenge:record.operator?{id:record.operator.id,kind:record.operator.kind,expiresAt:record.operator.expiresAt}:null,requiresOtp:record.stage==='waiting_otp',challengeId:record.stage==='waiting_otp'?record.challengeId:null,challengeExpiresAt:record.stage==='waiting_otp'?record.challengeExpiresAt:null,artifactReady:record.stage==='completed'&&Boolean(record.artifact)&&record.saved&&record.returnedFromPayment,blocker:record.blocker||null,paymentAttempted:false,returnedFromPayment:record.returnedFromPayment===true,ownedBrowserClosed:record.ownedBrowserClosed===true,caseSignature:record.caseSignature,applicantIndex:record.applicantIndex,artifactSha256:record.artifact?.sha256||null});
  const scrub=record=>{if(record.manifest){for(const doc of record.manifest.documents||[])doc.data='';record.manifest.facts={};record.manifest.documents=[];record.manifest.clientConsent=null;record.manifest.leaseToken='';record.manifest=null;}};
  async function checkLease(record){
   if(record.cancelled||record.controller.signal.aborted)throw finite('JOB_CANCELLED');
@@ -58,12 +60,13 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   if(record.ownedBrowserClosed)return true;let closed=false;try{closed=await adapter.close(record.reservation,record.sessionId)===true;}catch{}
   if(closed){record.ownedBrowserClosed=true;try{await adapter.release?.(record.reservation);}catch{}if(active===record)active=null;}return closed;
  }
+ const operatorGate=createOperatorGate({now,checkLease,capture:(r,kind)=>adapter.withPage(r.reservation,r.sessionId,async page=>{const u=new URL(page.url());if(u.origin!==ORIGIN||u.pathname!==(kind==='login'?'/Account/Loginindividuals':'/SmartForm/TraditionalApp'))throw finite('OPERATOR_PAGE_UNCONFIRMED');return captureCaptcha(page);},()=>checkLease(r))});
  const apiFor=record=>async(action,data={},mutation=true)=>{if(mutation)await checkLease(record);if(record.cancelled)throw finite('JOB_CANCELLED');return adapter.call(action,{...data,...(record.sessionId?{sessionId:record.sessionId}:{})},{reservation:record.reservation,signal:record.controller.signal});};
  async function execute(record,resume=false){
   if(record.running)return;record.running=true;record.stage='running';record.blocker=null;
   try{
    await checkLease(record);
-   const context={record,manifest:record.manifest,api:apiFor(record),checkLease:()=>checkLease(record),wait,now,withPage:fn=>adapter.withPage(record.reservation,record.sessionId,fn,()=>checkLease(record)),locate:()=>adapter.locate?.(record.reservation,record.sessionId),capturePdf:captureApplicationPdf};
+   const context={record,manifest:record.manifest,api:apiFor(record),checkLease:()=>checkLease(record),wait,now,withPage:fn=>adapter.withPage(record.reservation,record.sessionId,fn,()=>checkLease(record)),locate:()=>adapter.locate?.(record.reservation,record.sessionId),capturePdf:captureApplicationPdf,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true',awaitOperator:kind=>operatorGate.wait(record,kind)};
    await runFlow(context,{resume});
    if(record.cancelled)throw finite('JOB_CANCELLED');
    if(record.stage==='waiting_otp'){const challenge=record.challengeId;clearTimeout(record.otpTimer);record.otpTimer=setTimeout(()=>{void expireOtp(record,challenge);},Math.max(1,record.challengeExpiresAt-now()));record.otpTimer.unref?.();return;}
@@ -100,18 +103,19 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   if(!url.pathname.startsWith('/internal/raad/'))return false;
   const send=(code,obj)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(obj));};
   if(!authorized(req.headers.authorization)){send(401,{error:'UNAUTHORIZED'});return true;}
-  const route=url.pathname.match(/^\/internal\/raad\/jobs(?:\/([A-Za-z0-9_-]{1,100})(?:\/(otp|artifact|cancel))?)?$/);if(!route||url.search||url.hash){send(404,{error:'NOT_FOUND'});return true;}
+  const route=url.pathname.match(/^\/internal\/raad\/jobs(?:\/([A-Za-z0-9_-]{1,100})(?:\/(otp|artifact|cancel|operator))?)?$/);if(!route||url.search||url.hash){send(404,{error:'NOT_FOUND'});return true;}
   let input;try{
    const [,id,action]=route;
    if(req.method==='GET'&&id&&action==='artifact'){const item=artifact(id),bytes=Buffer.from(item.buffer);res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="application.pdf"','Content-Length':bytes.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Artifact-Sha256':item.sha256});res.end(bytes,()=>bytes.fill(0));}
+   else if(req.method==='GET'&&id&&action==='operator'){const r=records.get(id);if(!r)throw finite('JOB_NOT_FOUND');send(200,await operatorGate.image(r));}
    else if(req.method==='GET'&&id&&!action)send(200,get(id));
-   else if(req.method==='POST'&&(!id||action==='otp'||action==='cancel')){input=await readBody(req,!id?4200000:2048);if(!id)send(202,await start(input));else if(action==='otp')send(202,await otp(id,input));else send(200,await cancel(id));}
+   else if(req.method==='POST'&&(!id||action==='otp'||action==='cancel'||action==='operator')){input=await readBody(req,!id?4200000:2048);if(!id)send(202,await start(input));else if(action==='operator'){const r=records.get(id);if(!r)throw finite('JOB_NOT_FOUND');send(202,await operatorGate.submit(r,input));}else if(action==='otp')send(202,await otp(id,input));else send(200,await cancel(id));}
    else send(405,{error:'METHOD_NOT_ALLOWED'});
   }catch(error){const code=/^[A-Z][A-Z0-9_]{1,99}$/.test(error?.code||'')?error.code:'PRODUCTION_UNCONFIRMED';send(code==='JOB_NOT_FOUND'?404:code==='BRIDGE_DISABLED'?503:409,{error:code});}
-  finally{if(input?.code)input.code='';if(Array.isArray(input?.documents))for(const doc of input.documents)doc.data='';}
+  finally{if(input?.value)input.value='';if(input?.code)input.code='';if(Array.isArray(input?.documents))for(const doc of input.documents)doc.data='';}
   return true;
  }
- return {start,status:get,otp,cancel,artifact,handler,health:()=>({enabled:configured(),activeJob:active!==null}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
+ return {start,status:get,otp,cancel,artifact,handler,health:()=>({enabled:configured(),activeJob:active!==null,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true'}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
 }
 
 const TEXT_FIELDS={latinFirstName:'EFIRSTNAME',latinFatherName:'EFATHER',latinGrandfatherName:'EGRAND',latinFamilyName:'EFAMILY',arabicFirstName:'AFIRSTNAME',arabicFatherName:'AFATHER',arabicGrandfatherName:'AGRAND',arabicFamilyName:'AFAMILY',passportNumber:'PASSPORTnumber',birthPlace:'BIRTH_PLACE',saudiAddress:'ADDRESS_HOME',emiratesId:'TourismEVisaIqamaOrVisaNo'};
@@ -144,8 +148,8 @@ async function loginGovernmentAccount(ctx){
  const api=async(action,...args)=>{try{return await rawApi(action,...args);}catch(error){const operations=new Set(['start','auto-login','current','auto-verify','inspect-account-menu']);console.info('[RAAD_LOGIN_FINAL] '+JSON.stringify({otpSubmitted,...lastEvidence,failedOperation:operations.has(action)?action:'unconfirmed'}));throw error;}};
  const stages=new Set(['awaiting_input','submitted_unverified','verification_required','verification_submitted','verification_unconfirmed','authenticated','result_unverified','login_not_completed','no_session']);
  const report=(operation,state)=>{const stage=stages.has(state?.stage)?state.stage:'unconfirmed';if(r.loginDiagnostic?.operation===operation&&r.loginDiagnostic?.stage===stage)return;r.loginDiagnostic={operation,stage};console.info('[RAAD_LOGIN_DIAGNOSTIC] '+JSON.stringify(r.loginDiagnostic));};
- const started=await api('start');r.sessionId=started.sessionId;report('start',started);if(!r.sessionId||started.automaticCaptcha!==true)throw finite('AUTOMATIC_LOGIN_UNAVAILABLE');
- const submitted=await api('auto-login');report('submit',submitted);if(submitted.submitted!==true){const reasons=new Set(['DISABLED','READ_ALREADY_ATTEMPTED','IMAGE_CHANGED','CANCELLED','UNREADABLE','BRIDGE_UNAVAILABLE','PROVIDER_UNAVAILABLE','TIMEOUT','INVALID_PROVIDER_REPLY','RATE_LIMITED','BUSY','IMAGE_LIMIT']);throw finite('LOGIN_CAPTCHA_'+(reasons.has(submitted.captcha?.reason)?submitted.captcha.reason:'UNCONFIRMED'));}
+ const started=await api('start');r.sessionId=started.sessionId;report('start',started);if(!r.sessionId||(!ctx.operatorCaptcha&&started.automaticCaptcha!==true)||ctx.operatorCaptcha&&started.credentialsFromEnvironment!==true)throw finite('AUTOMATIC_LOGIN_UNAVAILABLE');
+ let submitted;if(ctx.operatorCaptcha){const answer=await ctx.awaitOperator('login');try{submitted=await api('submit',{captcha:answer.value,imageId:answer.imageId});}finally{answer.value='';}}else submitted=await api('auto-login');report('submit',submitted);if(submitted.submitted!==true){const reasons=new Set(['DISABLED','READ_ALREADY_ATTEMPTED','IMAGE_CHANGED','CANCELLED','UNREADABLE','BRIDGE_UNAVAILABLE','PROVIDER_UNAVAILABLE','TIMEOUT','INVALID_PROVIDER_REPLY','RATE_LIMITED','BUSY','IMAGE_LIMIT']);throw finite('LOGIN_CAPTCHA_'+(reasons.has(submitted.captcha?.reason)?submitted.captcha.reason:'UNCONFIRMED'));}
  for(let poll=0;poll<30;poll++){
   await wait(1500);const state=await api('current',{},false);report('observe',state);lastStage=state.stage;lastEvidence=loginDiagnosticEvidence({...state,menuInspection:lastMenuInspection});
   if(state.stage==='authenticated'||state.accountSignals?.accountUiVerified===true)return;
@@ -204,7 +208,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
    r.phase='application_sms';const sms=await api('inspect-application-sms',{},false);const buttons=(sms.verification?.buttons||[]).filter(button=>!button.disabled&&/send|request|ارسال|إرسال/i.test([button.id,button.name,button.label,button.title,button.ariaLabel].join(' '))&&!/resend|اعادة|إعادة/i.test([button.id,button.name,button.label,button.title,button.ariaLabel].join(' ')));if(buttons.length!==1)throw finite('APPLICATION_SMS_CONTROL_UNAVAILABLE');const requested=await api('request-application-sms',{id:buttons[0].id||undefined,label:buttons[0].label});if(!requested.activationDispatched)throw finite('APPLICATION_SMS_REQUEST_UNCONFIRMED');r.stage='waiting_otp';r.challengeId=crypto.randomUUID();r.challengeExpiresAt=ctx.now()+8*60*1000;return;
   }
  }
- if(resume){r.phase='application_sms';let code=r.pendingCode;r.pendingCode='';try{if(typeof code!=='string')throw finite('OTP_CHALLENGE_STALE');const result=await api('enter-application-sms',{code});if(!result.codeEntered)throw finite('APPLICATION_SMS_ENTRY_UNCONFIRMED');}finally{code='';}r.phase='save';await api('refresh-form-captcha');await api('solve-form-captcha');const meta=await inspect();if(!Array.isArray(r.expectedDraft)||r.expectedDraft.length>40)throw finite('DRAFT_READBACK_UNCONFIRMED');await originalButton(meta,'submit',r.expectedDraft);await wait(1000);let path=(await locate()).path;if(path==='/SmartForm/TraditionalApp'){const confirmation=await api('inspect-confirmation',{},false);if(confirmation.confirmation?.confirmationHash!==KNOWN_PLEDGE)throw finite('APPLICATION_PLEDGE_UNCONFIRMED');await api('confirm-application',{label:'استمرار',confirmationHash:KNOWN_PLEDGE,expectedFields:[{id:'PASSPORTnumber',kind:'text',expectedValue:f.passportNumber}]});await wait(1200);path=(await locate()).path;}if(!/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(path))throw finite('SAVE_UNCERTAIN');r.savedRoute=path;
+ if(resume){r.phase='application_sms';let code=r.pendingCode;r.pendingCode='';try{if(typeof code!=='string')throw finite('OTP_CHALLENGE_STALE');const result=await api('enter-application-sms',{code});if(!result.codeEntered)throw finite('APPLICATION_SMS_ENTRY_UNCONFIRMED');}finally{code='';}r.phase='save';await api('refresh-form-captcha');if(ctx.operatorCaptcha){const answer=await ctx.awaitOperator('form');try{await api('enter-form-captcha',{code:answer.value,imageId:answer.imageId});}finally{answer.value='';}}else await api('solve-form-captcha');const meta=await inspect();if(!Array.isArray(r.expectedDraft)||r.expectedDraft.length>40)throw finite('DRAFT_READBACK_UNCONFIRMED');await originalButton(meta,'submit',r.expectedDraft);await wait(1000);let path=(await locate()).path;if(path==='/SmartForm/TraditionalApp'){const confirmation=await api('inspect-confirmation',{},false);if(confirmation.confirmation?.confirmationHash!==KNOWN_PLEDGE)throw finite('APPLICATION_PLEDGE_UNCONFIRMED');await api('confirm-application',{label:'استمرار',confirmationHash:KNOWN_PLEDGE,expectedFields:[{id:'PASSPORTnumber',kind:'text',expectedValue:f.passportNumber}]});await wait(1200);path=(await locate()).path;}if(!/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(path))throw finite('SAVE_UNCERTAIN');r.savedRoute=path;
   // The list was observed before creating this draft. Revisit it read-only and
   // prove the unique passport row, then restore the original Health view with
   // native history. This records a saved draft even if insurance later blocks.
