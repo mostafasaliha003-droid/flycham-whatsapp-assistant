@@ -13,7 +13,7 @@ Independent quote-request intake MVP. This folder is separate from the hotel boo
 
 ## Run locally
 
-Requires Node.js 22.13 or newer and the dependencies declared in `package-lock.json`. Install with `npm ci` before running the application.
+Requires Node.js 18 or newer. No package installation is needed.
 
 ```sh
 cp .env.example .env
@@ -49,8 +49,6 @@ Only after a deliberate live test, set `DRY_RUN=false` and provide `WHATSAPP_ACC
 `.env.example` includes `QUOTE_CURRENCY`, `QUOTE_MARGIN_TYPE`, and `QUOTE_MARGIN_VALUE` as placeholders for the later quote workflow. They are not applied yet because the MVP has no fare source. Do not quote a price until the fare has actually been read from the authorized Fly Cham agent portal and the margin rule is agreed and implemented.
 
 ## Next implementation stage
-
-For the optional, default-off OpenAI document reader and its consent, spending and rollback requirements, see [MRZ production operations](docs/assistant/MRZ-PRODUCTION-2026-10-31.md). The legacy MVP scope above is historical and is not a readiness statement for the current visa workflow.
 
 1. Choose hosting and connect the Meta WhatsApp Cloud API test number.
 2. Verify webhook delivery with `DRY_RUN=true`.

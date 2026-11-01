@@ -7,25 +7,24 @@ const {VisaFulfilment} = require('../src/visa-fulfilment');
 const {VisaPortalDispatcher} = require('../src/visa-portal-dispatcher');
 const {visaCaseSignature} = require('../src/visa-case-signature');
 
-const CUSTOMER = '15550002001', OWNER = '971507993145';
+const CUSTOMER = '15550002001', OWNER = '15550002999';
 const IDS = {receipt: '10000000-0000-4000-8000-000000000001', passport: '10000000-0000-4000-8000-000000000002', residence: '10000000-0000-4000-8000-000000000003', photo: '10000000-0000-4000-8000-000000000004', pdf: '10000000-0000-4000-8000-000000000005'};
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const PDF = Buffer.from('%PDF-1.7\nexample application copy\n%%EOF');
 const completedState = (job, overrides = {}) => ({jobId: job.id, caseSignature: job.caseSignature, applicantIndex: job.applicantIndex, stage: 'completed', phase: 'request_copy', saved: true, artifactReady: true, reference: 'E12345678', artifactSha256: digest(PDF), paymentAttempted: false, returnedFromPayment: true, ...overrides});
 const jsonResponse = (value, status = 200) => ({ok: status >= 200 && status < 300, status, json: async () => structuredClone(value)});
-const waitingState=(job,at,overrides={})=>({jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,stage:'waiting_otp',phase:'application_sms',requiresOtp:true,challengeId:'native-window-test',challengeRequestedAt:at,challengeExpiresAt:at+300000,accountBinding:'a'.repeat(64),...overrides});
 function pdfResponse(bytes = PDF, mime = 'application/pdf') { return {ok: true, headers: {get: name => name === 'content-type' ? mime : null}, body: (async function* () { yield bytes; })()}; }
 function applicant() {
-  return {nationalityCode: 'EGY', issuingCountryCode: 'EGY', passportNumber: 'EXAMPLE88', passportType: 'ordinary', issueDate: '2020-01-01', expiryDate: '2100-01-01', birthDate: '1990-04-03', birthPlace: 'Example City', sex: 'M', latinFirstName: 'Ari', latinFatherName:'Example', arabicFirstName:'مثال', arabicFatherName:'مثال', arabicFamilyName:'مثال', latinFamilyName: 'Example', emiratesId: '784199000000001', residenceExpiry: '2100-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}, saudiAddress: 'Example Hotel, Riyadh', transport: 'air', arrivalPort: 'مطار الملك خالد الدولي', entryDate: '2099-01-01'};
+  return {nationalityCode: 'EGY', issuingCountryCode: 'EGY', passportNumber: 'EXAMPLE88', passportType: 'ordinary', issueDate: '2020-01-01', expiryDate: '2100-01-01', birthDate: '1990-04-03', birthPlace: 'Example City', sex: 'M', latinFirstName: 'Ari', latinFatherName:'Example', arabicFirstName:'مثال', arabicFatherName:'مثال', arabicFamilyName:'مثال', latinFamilyName: 'Example', emiratesId: '784199000000001', residenceExpiry: '2100-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}, saudiAddress: 'Example Hotel, Riyadh', transport: 'air', arrivalPort: 'Example Airport', entryDate: '2099-01-01'};
 }
-function fixture({count = 1, send, fetchImpl, configured = true, now = Date.now} = {}) {
+function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const calls = [], storedCopies = [], sent = [], reads = [];
   let claimed = true, state = {stage: 'running', phase: 'personal_info'}, saves = 0, ready = true;
   const c = {id: 'example-case', revision: 2, policyVersion: 'example-policy', applicantCount: count, applicants: Array.from({length: count}, () => ({nationality: 'مصر', latinFirstName: 'Ari', latinFamilyName: 'Example'})), quote: {total: count * 240}, documents: [], paymentStatus: 'awaiting_verification', submissionStatus: 'not_submitted'};
   const records = {};
   for (const [kind, id] of Object.entries(IDS)) {
     const bytes = kind === 'pdf' ? PDF : Buffer.from('example-image-' + kind);
-    records[id] = {id, customer: CUSTOMER, mimeType: kind === 'pdf' ? 'application/pdf' : 'image/png', size: bytes.length, checksum: digest(bytes), bytes, expiresAt: now() + 86400000};
+    records[id] = {id, customer: CUSTOMER, mimeType: kind === 'pdf' ? 'application/pdf' : 'image/png', size: bytes.length, checksum: digest(bytes), bytes, expiresAt: Date.now() + 86400000};
   }
   const store = {data: {visaCases: {[CUSTOMER]: c}, visaMedia: records, complaints: [], conversationJournal: {customers: {[CUSTOMER]: {}}}, raadApplications: {[CUSTOMER]: {applicants: {}}}}, save() { saves++; }};
   const drafts = Array.from({length: count}, (_, applicantIndex) => ({applicantIndex, revision: 5, fields: applicant(), defaults: {mission: 'Abu Dhabi', applicationPhone: '+' + CUSTOMER, contactEmail: 'example@example.test', insurancePhone: '+' + CUSTOMER, postalCode: '00000'}, documents: {passport: {mediaId: IDS.passport}, residence: {mediaId: IDS.residence}, photo: {mediaId: IDS.photo}}, review: {complete: true, invalidated: false, fingerprint: 'reviewed-example-' + applicantIndex}}));
@@ -34,24 +33,24 @@ function fixture({count = 1, send, fetchImpl, configured = true, now = Date.now}
   const mediaStore = {get(id, {customer}) { const record = records[id]; if (!record || record.customer !== customer) throw Error('MEDIA_NOT_FOUND'); const {bytes, ...metadata} = record; return structuredClone(metadata); }, read(id, {customer}) { const metadata = this.get(id, {customer}); reads.push({id, customer}); return {metadata, bytes: Buffer.from(records[id].bytes)}; }, storeApplicationPdf(customer, input) { storedCopies.push({customer, ...input, bytes: Buffer.from(input.bytes)}); records[IDS.pdf] = {...records[IDS.pdf], customer, bytes: input.bytes, size: input.bytes.length, checksum: digest(input.bytes), jobId: input.jobId, applicationReference: input.applicationReference}; return this.get(IDS.pdf, {customer}); }};
   const inbox = {isOperatorOwned: () => claimed, isBlocked: () => false, updateVisa(customer, input) { assert.equal(customer, CUSTOMER); c.staffVerification ||= {}; c.staffVerification.payment = {amount: input.amount, reference: input.reference, actor: 'staff', caseSignature: visaCaseSignature(c), verifiedAt: 1000}; c.paymentStatus = 'verified'; c.revision++; }};
   const env = {RAAD_OTP_OWNER_WHATSAPP: OWNER, RAAD_VISA_AUTOMATION_ENABLED: 'true', RAAD_BROWSER_WORKER_URL: configured ? 'https://worker.example.test/' : '', RAAD_JOB_BRIDGE_KEY: 'example-bridge-key-'.repeat(3)};
-  const fulfilment = new VisaFulfilment({store, inbox, mediaStore, raad, env, now, send: send || (async (to, payload, guard) => { guard(); sent.push({to, payload}); return {messageId: 'accepted-' + sent.length}; })});
+  const fulfilment = new VisaFulfilment({store, inbox, mediaStore, raad, env, send: send || (async (to, payload, guard) => { guard(); sent.push({to, payload}); return {messageId: 'accepted-' + sent.length}; })});
   const fetcher = async (url, options) => {
     const path = new URL(url).pathname, request = {url, path, ...options, body: options.body ? JSON.parse(options.body) : undefined}; calls.push(request);
     if (path === '/health') return jsonResponse({ready});
     if (fetchImpl) return await fetchImpl(request);
     if (path.endsWith('/artifact')) return pdfResponse();
     if (path.endsWith('/cancel')) return jsonResponse({ownedBrowserClosed: true, stage: 'cancelled'});
-    if (path.endsWith('/otp')) {const job=fulfilment.job(path.split('/')[4]);const {code,...binding}=request.body;return jsonResponse({accepted:true,otpReceipt:{jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,...binding}});}
+    if (path.endsWith('/otp')) return jsonResponse({accepted: true});
     if (options.method === 'POST') return jsonResponse({accepted: true, jobId: request.body.jobId});
-    const current=fulfilment.data().jobs[path.split('/')[4]];return jsonResponse({...current?{jobId:current.id,caseSignature:current.caseSignature,applicantIndex:current.applicantIndex}:{},...state});
+    return jsonResponse(state);
   };
-  const dispatcher = new VisaPortalDispatcher({fulfilment, raad, mediaStore, store, env, now, startupGraceMs:0, fetchImpl: fetcher});
+  const dispatcher = new VisaPortalDispatcher({fulfilment, raad, mediaStore, store, env, startupGraceMs:0, fetchImpl: fetcher});
   fulfilment.resumeOtp = input => dispatcher.resumeOtp(input);
   const approve = () => { fulfilment.receiveReceipt(CUSTOMER, {receiptId: IDS.receipt}); const result = fulfilment.confirmPayment(CUSTOMER, {receiptId: IDS.receipt, amount: c.quote.total, reference: 'BANK-EXAMPLE-88', actor: {id: 'example-accountant', role: 'accountant'}, actualReceived: true, confirm: true, expectedCaseSignature: visaCaseSignature(c), idempotencyKey: 'approval-example-1'}); claimed = false; return result; };
   const confirm = jobId => {
     const questions = fulfilment.askQuestions(jobId).questions;
     for (const question of questions) {
-      if (question.type === 'choice') fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'transport' ? 'air' : question.field === 'arrivalPort' ? 'ruh' : question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
+      if (question.type === 'choice') fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, option: question.field === 'maritalStatus' ? 'single' : question.field === 'sex' ? 'male' : question.field === 'gccResident' ? 'yes' : 'no'});
       else fulfilment.answerQuestion({sender: CUSTOMER, token: question.token, value: question.field === 'birthPlace' ? 'Example City' : question.field === 'latinFirstName' ? 'Ari' : question.field === 'latinFamilyName' ? 'Example' : 'Example Hotel, Riyadh'});
     }
     fulfilment.confirmAnswers({sender: CUSTOMER, token: fulfilment.job(jobId).summary.token, confirm: true, messageId: 'inbound-consent-' + jobId});
@@ -190,12 +189,12 @@ test('failed remote cancellation prevents launch after restart', async () => {
 
 test('OTP callback forwards code only to exact job challenge and never persists its bytes', async () => {
   const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job);
-  const nativeBinding={challengeId:'challenge-example-1',challengeRequestedAt:Date.now(),challengeExpiresAt:Date.now()+60000,accountBinding:'a'.repeat(64)}; f.setState({jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,stage:'waiting_otp',phase:'application_sms',requiresOtp:true,...nativeBinding});
+  f.setState({stage: 'running', phase: 'login_sms', requiresOtp: true, challengeId: 'challenge-example-1', challengeExpiresAt: Date.now() + 60000});
   await f.dispatcher.poll(job, f.store.data.visaPortalRuns[job.id]); await f.dispatcher.flushMessages();
   const challenge = Object.values(f.fulfilment.data().challenges)[0];
-  const result = await f.fulfilment.consumeOtp({sender: OWNER, messageId:'inbound-otp-dispatcher-1', contextId: challenge.messageId, text: '418073'});
+  const result = await f.fulfilment.consumeOtp({sender: OWNER, contextId: challenge.messageId, text: '418073'});
   assert.equal(result.ok, true);
-  const request = f.calls.find(call => call.path.endsWith('/otp')); assert.equal(request.path, '/internal/raad/jobs/' + job.id + '/otp'); assert.deepEqual(request.body, {...nativeBinding,code:'418073'});
+  const request = f.calls.find(call => call.path.endsWith('/otp')); assert.equal(request.path, '/internal/raad/jobs/' + job.id + '/otp'); assert.deepEqual(request.body, {challengeId: 'challenge-example-1', code: '418073'});
   assert.equal(JSON.stringify(f.store.data).includes('418073'), false);
   let guarded = false; await assert.rejects(f.dispatcher.resumeOtp({jobId: 'unrelated-job', portalChallengeId: 'challenge-example-1', code: '418074', guard: () => { guarded = true; }}), /RAAD_OTP_CONTEXT_STALE/); assert.equal(guarded, true);
 });
@@ -238,7 +237,7 @@ test('HTTP success without confirmed remote cancellation cannot free shared brow
 test('artifact metadata identity and actual PDF digest must match exact pending applicant', async () => {
   for (const patch of [{jobId: 'foreign-job'}, {caseSignature: 'c'.repeat(64)}, {applicantIndex: 1}, {artifactSha256: 'd'.repeat(64)}]) {
     const f = fixture(), [job] = await f.activate(); await f.dispatcher.launch(job); f.setState(completedState(job, patch));
-    await assert.rejects(f.dispatcher.poll(job, f.store.data.visaPortalRuns[job.id]), /RAAD_(?:ARTIFACT_(?:BINDING|DIGEST)_INVALID|JOB_STATUS_BINDING_INVALID)/);
+    await assert.rejects(f.dispatcher.poll(job, f.store.data.visaPortalRuns[job.id]), /RAAD_ARTIFACT_(?:BINDING|DIGEST)_INVALID/);
     assert.equal(f.storedCopies.length, 0); assert.equal(job.state, 'running');
   }
 });
@@ -382,7 +381,7 @@ test('non404 job GET errors retain current run and lease for safe later polling'
     await assert.rejects(f.dispatcher.poll(job, run), /RAAD_BRIDGE_HTTP_500|RAAD_BRIDGE_HTTP_503|EXAMPLE_STATUS_TIMEOUT|RAAD_BRIDGE_HTTP_404/);
     assert.deepEqual(requests, [{path: '/internal/raad/jobs/' + job.id, method: 'GET'}]);
     assert.equal(f.fulfilment.data().lease.token, leaseToken); assert.equal(run.phase, 'running'); assert.equal(job.state, 'running'); assert.notEqual(job.blockedReason, 'BROWSER_JOB_LOST');
-    f.dispatcher.fetchImpl = async () => jsonResponse({jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,stage:'running',phase:'after_transient_error'});
+    f.dispatcher.fetchImpl = async () => jsonResponse({stage: 'running', phase: 'after_transient_error'});
     await f.dispatcher.poll(job, run);
     assert.equal(run.lastStage, 'after_transient_error'); assert.equal(f.fulfilment.data().lease.token, leaseToken);
   }
@@ -442,110 +441,5 @@ test('protected applications migration never retries an explicit login or OTP re
  for(const code of ['LOGIN_REJECTED','LOGIN_EMAIL_OTP_REJECTED','LOGIN_CAPTCHA_UNREADABLE','LOGIN_CAPTCHA_TIMEOUT']){
   const f=fixture(),[job]=await f.activate();job.state='portal_review_required';job.blockedReason=code;job.loginPolicyRecovery='account_menu_diagnostic_v6';f.store.data.visaPortalRuns[job.id]={phase:'blocked',lastStage:'login'};
   await f.dispatcher.recoverStoppedLogin();assert.equal(job.state,'portal_review_required');assert.equal(job.loginPolicyRecovery,'account_menu_diagnostic_v6');assert.equal(f.calls.length,0);
- }
-});
-
-test('missing insurance/email contact facts remain questions but applicant SMS phone is never requested for the supervisor route',async()=>{
- const f=fixture(),[job]=await f.activate();
- f.raad.portalDossier=()=>({ready:false,blockedReason:'REQUIRED',issues:[{code:'REQUIRED',field:'applicationPhone'},{code:'REQUIRED',field:'contactEmail'}]});
- await f.dispatcher.launch(job);
- assert.deepEqual(Object.values(f.fulfilment.job(job.id).questions).map(q=>q.field),['contactEmail']);
- assert.equal(f.calls.some(c=>c.method==='POST'),false);
-});
-test('office-estimated entry date requires worker verification and provenance travels with the job',async()=>{
- const f=fixture(),[job]=await f.activate(),base=f.dispatcher.dossier.bind(f.dispatcher);
- const provenance={source:'office_estimate',referenceDate:'2026-10-30',offsetDays:15};
- f.dispatcher.dossier=(...args)=>({...base(...args),entryDateProvenance:provenance});
- await f.dispatcher.launch(job);assert.equal(f.fulfilment.job(job.id).blockedReason,'ESTIMATED_ENTRY_DATE_VERIFICATION_REQUIRED');
- assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
- const request=f.dispatcher.request.bind(f.dispatcher);
- f.dispatcher.request=(path,args)=>path==='/health'?Promise.resolve({ready:true,production:{estimatedEntryDateVerification:true}}):request(path,args);
- await f.dispatcher.launch(job);
- const posted=f.calls.find(c=>c.path==='/internal/raad/jobs');assert.deepEqual(posted.body.entryDateProvenance,provenance);
- assert.deepEqual(f.store.data.visaPortalRuns[job.id].entryDateProvenance,provenance);
-});
-
-test('another arrival port sends the confirmed detail consistently without changing original applicant answers',async()=>{
- const f=fixture(),[job]=await f.activate(),name='Example verified arrival port';
- job.confirmedFields.arrivalPort='other';job.confirmedFields.arrivalPortDetails=name;
- f.raad.portalDossier=()=>({ready:true,fingerprint:'custom-port-proof',source:'staff',fields:{...applicant(),arrivalPort:name},defaults:{},documents:f.drafts[0].documents});
- await f.dispatcher.launch(job);
- const body=f.calls.find(c=>c.path==='/internal/raad/jobs')?.body;
- assert.ok(body);assert.equal(body.fields.arrivalPort,name);assert.equal(body.answers.arrivalPort,name);assert.equal(body.answers.arrivalPortDetails,undefined);
- assert.equal(job.confirmedFields.arrivalPort,'other');assert.equal(job.confirmedFields.arrivalPortDetails,name);
-});
-
-test('legacy ready jobs collect newly required routing facts instead of stalling or invalidating old answers',async()=>{
- for(const legacy of [true,false]){
- const f=fixture(),[job]=await f.activate();delete job.confirmedFields.transport;delete job.confirmedFields.arrivalPort;if(legacy)delete job.routingRequiredFields;
- const health=structuredClone(job.confirmedFields.health);await f.dispatcher.launch(job);
- assert.equal(job.state,'awaiting_answers');assert.deepEqual(Object.values(job.questions).map(q=>q.field),['transport','arrivalPort']);
- assert.deepEqual(job.confirmedFields.health,health);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
- }
-});
-test('ready-job staff answers require applicant summary confirmation without asking the same routing choices again',async()=>{
- const {VisaStaffQuestions}=require('../src/visa-staff-questions');
- const f=fixture(),[job]=await f.activate();delete job.confirmedFields.transport;delete job.confirmedFields.arrivalPort;f.claim(true);
- const staff=new VisaStaffQuestions({fulfilment:f.fulfilment,store:f.store,inbox:{isOperatorOwned:()=>true},journal:{summary:()=>({serviceWindowOpen:true})}});
- for(const [field,option,value]of [['transport','land'],['arrivalPort','other'],['arrivalPortDetails',undefined,'Synthetic confirmed custom port']]){
- const sent=await staff.request(CUSTOMER,{jobId:job.id,field,expectedRevision:job.revision,expectedCaseSignature:job.caseSignature,idempotencyKey:'synthetic-staff-'+field});
- assert.equal(sent.state,'accepted');const response=staff.handleCustomerMessage(CUSTOMER,{id:'synthetic-answer-'+field,visaAnswer:{token:sent.token,...(option?{option}:{value})}});assert.equal(response.ok,true);
- }
- assert.equal(job.state,'ready');f.claim(false);await f.dispatcher.launch(job);
- assert.equal(job.state,'awaiting_answer_confirmation');assert.deepEqual(Object.keys(job.questions),[]);
- assert.equal(job.summary.answers.transport,'land');assert.equal(job.summary.answers.arrivalPortDetails,'Synthetic confirmed custom port');
- assert.equal(job.confirmedFields.transport,undefined);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
-});
-
-test('delayed polling retains native deadline and a later message dispatch cannot renew it',async()=>{
- const start=2000000000000;let at=start;const f=fixture({now:()=>at}),[job]=await f.activate();await f.dispatcher.launch(job);
- const original=waitingState(job,start);at+=240000;f.setState(original);await f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]);
- const challenge=Object.values(f.fulfilment.data().challenges)[0];assert.equal(challenge.challengeRequestedAt,start);assert.equal(challenge.expiresAt,start+300000);assert.deepEqual(f.store.data.visaPortalRuns[job.id].smsChallenge,{challengeId:original.challengeId,challengeRequestedAt:start,challengeExpiresAt:start+300000,accountBinding:original.accountBinding});
- const before=f.sent.length;at=start+300000;await f.dispatcher.flushMessages();assert.equal(f.sent.length,before);
- assert.equal(Object.values(f.fulfilment.data().outbox).find(m=>m.kind==='owner_otp_request').state,'cancelled');
-});
-test('missing expired future overlong and foreign challenge states never create an owner prompt',async()=>{
- const start=2000000000000;
- for(const patch of [{challengeExpiresAt:undefined},{challengeRequestedAt:undefined},{challengeExpiresAt:start},{challengeRequestedAt:start+1},{challengeExpiresAt:start+300001},{accountBinding:undefined}]){
-  const f=fixture({now:()=>start}),[job]=await f.activate();await f.dispatcher.launch(job);f.setState(waitingState(job,start,patch));
-  await f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]);assert.equal(Object.keys(f.fulfilment.data().challenges).length,0);assert.equal(job.state,'portal_review_required');assert.equal(f.calls.filter(c=>c.path.endsWith('/cancel')).length,1);
- }
-});
-test('repeat polling cannot alter the original deadline or switch the authenticated account',async()=>{
- const start=2000000000000;
- for(const patch of [{challengeExpiresAt:start+299999},{accountBinding:'b'.repeat(64)},{challengeId:'changed-challenge'}]){
-  const f=fixture({now:()=>start}),[job]=await f.activate();await f.dispatcher.launch(job);const run=f.store.data.visaPortalRuns[job.id];
-  f.setState(waitingState(job,start));await f.dispatcher.poll(job,run);f.setState(waitingState(job,start,patch));await f.dispatcher.poll(job,run);
-  assert.equal(Object.keys(f.fulfilment.data().challenges).length,1);assert.equal(job.state,'portal_review_required');assert.equal(run.phase,'blocked');
- }
-});
-test('expiry after asynchronous resume guard prevents bridge dispatch and clears code',async()=>{
- const start=2000000000000;let at=start;const f=fixture({now:()=>at}),[job]=await f.activate();await f.dispatcher.launch(job);const native=waitingState(job,start);f.setState(native);await f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]);
- let checks=0;const input={jobId:job.id,portalChallengeId:native.challengeId,challengeRequestedAt:native.challengeRequestedAt,challengeExpiresAt:native.challengeExpiresAt,accountBinding:native.accountBinding,code:'654321',guard:async()=>{if(++checks===2)at=start+300000;}};
- await assert.rejects(f.dispatcher.resumeOtp(input));assert.equal(input.code,'');assert.equal(f.calls.filter(c=>c.path.endsWith('/otp')).length,0);
-});
-test('concurrent direct bridge resumes are once-only and include the full native binding',async()=>{
- const start=2000000000000,f=fixture({now:()=>start}),[job]=await f.activate();await f.dispatcher.launch(job);const native=waitingState(job,start);f.setState(native);await f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]);
- const make=()=>({jobId:job.id,portalChallengeId:native.challengeId,challengeRequestedAt:native.challengeRequestedAt,challengeExpiresAt:native.challengeExpiresAt,accountBinding:native.accountBinding,code:'654321',guard:async()=>{await Promise.resolve();}});
- const a=make(),b=make(),results=await Promise.allSettled([f.dispatcher.resumeOtp(a),f.dispatcher.resumeOtp(b)]);
- assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(f.calls.filter(c=>c.path.endsWith('/otp')).length,1);assert.equal(a.code,'');assert.equal(b.code,'');assert.equal(JSON.stringify(f.store.data).includes('654321'),false);
-});
-
-
-test('every poll response is identity-bound before saved references or portal stage are written',async()=>{
- for(const patch of [{jobId:'foreign-job'},{caseSignature:'b'.repeat(64)},{applicantIndex:9},{jobId:undefined}]){
-  const f=fixture(),[job]=await f.activate();await f.dispatcher.launch(job);const before={reference:job.applicationReference,saved:job.portalSaved,stage:job.portalStage};
-  f.setState({...completedState(job),...patch});await assert.rejects(f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]),/RAAD_JOB_STATUS_BINDING_INVALID/);
-  assert.deepEqual({reference:job.applicationReference,saved:job.portalSaved,stage:job.portalStage},before);assert.equal(f.storedCopies.length,0);
- }
-});
-test('accepted OTP handoff without an exact bound receipt is uncertain and cannot be dispatched twice',async()=>{
- const start=2000000000000;
- for(const patch of [null,{jobId:'foreign-job'},{challengeId:'wrong-native'},{accountBinding:'b'.repeat(64)},{challengeExpiresAt:start+299999},{caseSignature:'b'.repeat(64)},{applicantIndex:2}]){
-  const f=fixture({now:()=>start}),[job]=await f.activate();await f.dispatcher.launch(job);const native=waitingState(job,start);f.setState(native);await f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]);
-  let requests=0;f.dispatcher.fetchImpl=async()=>{requests++;const receipt={jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,challengeId:native.challengeId,challengeRequestedAt:native.challengeRequestedAt,challengeExpiresAt:native.challengeExpiresAt,accountBinding:native.accountBinding};return jsonResponse({accepted:true,...patch===null?{}:{otpReceipt:{...receipt,...patch}}});};
-  const make=()=>({jobId:job.id,portalChallengeId:native.challengeId,challengeRequestedAt:native.challengeRequestedAt,challengeExpiresAt:native.challengeExpiresAt,accountBinding:native.accountBinding,code:'654321',guard:()=>{}});
-  const first=make();await assert.rejects(f.dispatcher.resumeOtp(first),/RAAD_OTP_RECEIPT_UNCONFIRMED/);assert.equal(first.code,'');
-  await assert.rejects(f.dispatcher.resumeOtp(make()),/RAAD_OTP_ALREADY_DISPATCHED/);assert.equal(requests,1);
  }
 });

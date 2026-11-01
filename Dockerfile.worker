@@ -1,20 +1,8 @@
 FROM mcr.microsoft.com/playwright:v1.64.0-noble
 
-# PDF intake requires both Poppler tools inside this exact image.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
-    && pdfinfo -v \
-    && pdftoppm -v \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts/install-mrz-model.js ./scripts/install-mrz-model.js
-COPY scripts/raad-readiness-check.js ./scripts/raad-readiness-check.js
-COPY THIRD_PARTY_MRZ_MODEL.md ./THIRD_PARTY_MRZ_MODEL.md
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --omit=dev \
-    && node -e "const fs=require('node:fs');const m=require('./scripts/install-mrz-model');if(!m.matches(fs.readFileSync(m.MODEL_DIRECTORY+'/mrz.traineddata')))process.exit(1)"
+RUN npm ci --omit=dev
 COPY src ./src
-# Preserve the flight worker default. The existing Raad service separately uses
-# the command override: node src/raad-login-pilot/server.js
 CMD ["node", "src/combined-worker.js"]

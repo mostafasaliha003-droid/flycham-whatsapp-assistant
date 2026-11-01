@@ -2,87 +2,39 @@
 const {getAccountSignals}=require('./account-signals');
 const attemptedPages=new WeakSet();
 // Structural main-document discovery only: no text, href, identity or values returned.
-function findAccountMenuToggle(withCensus=false){
- const census={observed:false,logoutControls:0,observedToggles:0,associatedVisibleSafeToggles:0,ambiguous:false,legacyAssociations:0,bs5Associations:0,ariaAssociations:0,rejectionCensusObserved:false,associatedTogglesBeforeSafety:0,associatedVisibleToggles:0,visibleMarkedToggles:0,enabledMarkedToggles:0,rejectedInlineAction:0,rejectedFormAncestor:0,rejectedFormOwner:0,rejectedTagOrType:0,rejectedHref:0,rejectedLogout:0,visibleDropdownToggles:0,visibleHeaderLoginToggles:0,visibleDesktopHeaderToggles:0,visibleMobileHeaderToggles:0,logoutAnchors:0,logoutButtons:0,logoutInputs:0,logoutDirectTargets:0,logoutInheritedTargets:0};
- const finish=toggle=>withCensus?{toggle,census}:toggle;
+function findAccountMenuToggle(){
  try{
-  if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self)return finish(null);
+  if(location.origin!=='https://visa.mofa.gov.sa'||window.top!==window.self)return null;
   const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
   const enabled=el=>!el.disabled&&el.getAttribute('aria-disabled')!=='true';
   const text=el=>String(el.textContent||'').replace(/[\u064B-\u065F\u0670\u0640]/g,'').replace(/\s+/g,' ').trim();
-  const isLogout=el=>{try{let raw;if(el.tagName==='A')raw=el.getAttribute('href');else if(['BUTTON','INPUT'].includes(el.tagName)){const form=el.closest('form');raw=el.getAttribute('formaction')||(form&&form.getAttribute('action'))||location.href;}else if(el.getAttribute('role')==='button')raw=el.getAttribute('href')||location.href;if(!raw)return false;const u=new URL(raw,location.href);return u.origin===location.origin&&(/^(?:تسجيل الخروج|تسجيل خروج|خروج|logout|log out|sign out)$/i.test(text(el))||/(?:^|\/)(?:logout|logoff|signout)(?:\/|$)/i.test(u.pathname));}catch{return false;}};
-  const marker=el=>el.getAttribute('data-toggle')==='dropdown'||el.getAttribute('data-bs-toggle')==='dropdown'||/^(?:true|menu)$/i.test(el.getAttribute('aria-haspopup')||'')||Boolean(el.getAttribute('aria-controls'))||['data-bs-target','data-target'].some(key=>/^#[A-Za-z0-9_:.-]{1,128}$/.test(el.getAttribute(key)||''))||el.matches('.dropdown-toggle');
-  const safe=el=>{
-   if(!['BUTTON','A'].includes(el.tagName)||!visible(el)||!enabled(el)||isLogout(el)||!marker(el))return false;
-   if(el.getAttribute('onclick')||el.getAttribute('formaction')||el.form||el.closest('form'))return false;
-   if(el.tagName==='BUTTON')return el.type==='button';
-   const href=(el.getAttribute('href')||'').trim();return href==='#'||/^javascript:\s*(?:;|void\s*\(\s*0\s*\)\s*;?)$/i.test(href);
-  };
-  const logouts=Array.from(document.querySelectorAll('a,button,input[type="submit"],input[type="button"],[role="button"]')).filter(isLogout);
-  const observed=new Set(Array.from(document.querySelectorAll('button,a')).filter(marker)),candidates=new Set();
-  const add=el=>{observed.add(el);if(safe(el))candidates.add(el);};
-  for(const logout of logouts){
-   let scope=logout.parentElement;
-   while(scope&&scope!==document.documentElement){
-    if(scope.matches('.dropdown')){for(const el of scope.querySelectorAll('button,a'))if(marker(el))add(el);break;}
-    scope=scope.parentElement;
+  const isLogout=el=>{try{const raw=el.getAttribute('href');if(!raw)return false;const u=new URL(raw,location.href);return u.origin===location.origin&&(/^(?:تسجيل الخروج|تسجيل خروج|خروج|logout|log out|sign out)$/i.test(text(el))||/(?:^|\/)(?:logout|logoff|signout)(?:\/|$)/i.test(u.pathname));}catch{return false;}};
+  const logouts=Array.from(document.querySelectorAll('a[href]')).filter(isLogout);if(logouts.length!==1)return null;
+  let scope=logouts[0].parentElement;
+  while(scope&&scope!==document.documentElement){
+   if(scope.matches('.dropdown')){
+    const toggles=Array.from(scope.querySelectorAll('button,a')).filter(el=>{
+     if(!['BUTTON','A'].includes(el.tagName)||!visible(el)||!enabled(el)||isLogout(el)||!el.matches('[data-toggle="dropdown"],[aria-haspopup="true"],.dropdown-toggle'))return false;
+     if(el.getAttribute('onclick')||el.getAttribute('formaction')||el.form||el.closest('form'))return false;
+     if(el.tagName==='BUTTON')return el.type==='button';
+     const href=(el.getAttribute('href')||'').trim();return href==='#'||/^javascript:\s*;$/i.test(href);
+    });
+    if(toggles.length!==1)return null;
+    const toggle=toggles[0],parts=[];for(let n=toggle;n&&n.nodeType===1;n=n.parentElement){let index=1;for(let s=n.previousElementSibling;s;s=s.previousElementSibling)if(s.tagName===n.tagName)index++;parts.unshift(n.tagName.toLowerCase()+':nth-of-type('+index+')');}
+    const selector=parts.join(' > ')+':visible';if(selector.length>2048)return null;
+    return {selector,alreadyExpanded:toggle.getAttribute('aria-expanded')==='true'};
    }
+   scope=scope.parentElement;
   }
-  for(const el of observed){
-   if(!safe(el))continue;
-   const ids=String(el.getAttribute('aria-controls')||'').trim().split(/\s+/).filter(Boolean).slice(0,8);
-   for(const attribute of ['data-bs-target','data-target']){const value=el.getAttribute(attribute)||'';if(/^#[A-Za-z0-9_:.-]{1,128}$/.test(value))ids.push(value.slice(1));}
-   if(ids.some(id=>{if(id.length>128)return false;const target=document.getElementById(id);return target&&logouts.some(logout=>target.contains(logout));}))candidates.add(el);
-  }
-  census.observed=true;census.logoutControls=Math.min(logouts.length,16);census.observedToggles=Math.min(observed.size,32);census.associatedVisibleSafeToggles=Math.min(candidates.size,32);census.ambiguous=candidates.size>1;
-  for(const el of candidates){if(el.getAttribute('data-toggle')==='dropdown')census.legacyAssociations=Math.min(census.legacyAssociations+1,32);if(el.getAttribute('data-bs-toggle')==='dropdown')census.bs5Associations=Math.min(census.bs5Associations+1,32);if(el.getAttribute('aria-controls')||/^(?:true|menu)$/i.test(el.getAttribute('aria-haspopup')||''))census.ariaAssociations=Math.min(census.ariaAssociations+1,32);}
-  // Read-only rejection evidence is separate from discovery. A diagnostic read
-  // failure must not change the selected toggle or activate a rejected control.
-  if(withCensus)try{
-   const counts={associatedTogglesBeforeSafety:0,associatedVisibleToggles:0,visibleMarkedToggles:0,enabledMarkedToggles:0,rejectedInlineAction:0,rejectedFormAncestor:0,rejectedFormOwner:0,rejectedTagOrType:0,rejectedHref:0,rejectedLogout:0,visibleDropdownToggles:0,visibleHeaderLoginToggles:0,visibleDesktopHeaderToggles:0,visibleMobileHeaderToggles:0,logoutAnchors:0,logoutButtons:0,logoutInputs:0,logoutDirectTargets:0,logoutInheritedTargets:0},associated=new Set();
-   const increment=key=>{counts[key]=Math.min(counts[key]+1,32);};
-   const hasAncestor=(el,selector)=>{for(let n=el.parentElement;n;n=n.parentElement)if(typeof n.matches==='function'&&n.matches(selector))return true;return false;};
-   for(const logout of logouts){
-    if(logout.tagName==='A')increment('logoutAnchors');if(logout.tagName==='BUTTON')increment('logoutButtons');if(logout.tagName==='INPUT')increment('logoutInputs');
-    // Own target attributes are distinguished from form/current-page fallback.
-    const direct=['BUTTON','INPUT'].includes(logout.tagName)?logout.getAttribute('formaction'):logout.getAttribute('href');increment(direct?'logoutDirectTargets':'logoutInheritedTargets');
-    let scope=logout.parentElement;
-    while(scope&&scope!==document.documentElement){
-     if(scope.matches('.dropdown')){for(const el of scope.querySelectorAll('button,a'))if(marker(el))associated.add(el);break;}
-     scope=scope.parentElement;
-    }
-   }
-   for(const el of observed){
-    const ids=String(el.getAttribute('aria-controls')||'').trim().split(/\s+/).filter(Boolean).slice(0,8);
-    for(const attribute of ['data-bs-target','data-target']){const value=el.getAttribute(attribute)||'';if(/^#[A-Za-z0-9_:.-]{1,128}$/.test(value))ids.push(value.slice(1));}
-    if(ids.some(id=>{if(id.length>128)return false;const target=document.getElementById(id);return target&&logouts.some(logout=>target.contains(logout));}))associated.add(el);
-    const shown=visible(el);if(shown)increment('visibleMarkedToggles');if(enabled(el))increment('enabledMarkedToggles');
-    // Predicate counts overlap deliberately; no action-attribute value escapes.
-    if(el.getAttribute('onclick')||el.getAttribute('formaction'))increment('rejectedInlineAction');
-    if(el.closest('form'))increment('rejectedFormAncestor');if(el.form)increment('rejectedFormOwner');
-    if(!['BUTTON','A'].includes(el.tagName)||el.tagName==='BUTTON'&&el.type!=='button')increment('rejectedTagOrType');
-    if(el.tagName==='A'){const href=(el.getAttribute('href')||'').trim();if(href!=='#'&&!/^javascript:\s*(?:;|void\s*\(\s*0\s*\)\s*;?)$/i.test(href))increment('rejectedHref');}
-    if(isLogout(el))increment('rejectedLogout');
-    if(shown){for(const [selector,key]of [['.dropdown','visibleDropdownToggles'],['.header-login','visibleHeaderLoginToggles'],['.page-header-menu','visibleDesktopHeaderToggles'],['.page-header-menu-mobile','visibleMobileHeaderToggles']])if(hasAncestor(el,selector))increment(key);}
-   }
-   counts.associatedTogglesBeforeSafety=Math.min(associated.size,32);for(const el of associated)if(visible(el))increment('associatedVisibleToggles');
-   Object.assign(census,counts,{rejectionCensusObserved:true});
-  }catch{ /* Unknown rejection details do not invalidate discovery evidence. */ }
-  if(candidates.size!==1)return finish(null);
-  const toggle=[...candidates][0],parts=[];for(let n=toggle;n&&n.nodeType===1;n=n.parentElement){let index=1;for(let s=n.previousElementSibling;s;s=s.previousElementSibling)if(s.tagName===n.tagName)index++;parts.unshift(n.tagName.toLowerCase()+':nth-of-type('+index+')');}
-  const selector=parts.join(' > ')+':visible';if(selector.length>2048)return finish(null);
-  return finish({selector,alreadyExpanded:toggle.getAttribute('aria-expanded')==='true'});
- }catch{return finish(null);}
+ }catch{}
+ return null;
 }
 async function activateAccountMenu(page){
- const result={attempted:false,opened:false,reason:'UNAVAILABLE',census:{observed:false,logoutControls:0,observedToggles:0,associatedVisibleSafeToggles:0,ambiguous:false,legacyAssociations:0,bs5Associations:0,ariaAssociations:0}};
+ const result={attempted:false,opened:false,reason:'UNAVAILABLE'};
  try{
   if(new URL(page.url()).origin!=='https://visa.mofa.gov.sa')return {...result,reason:'UNTRUSTED_PAGE'};
   if(attemptedPages.has(page))return {...result,reason:'ALREADY_ATTEMPTED'};
-  const observation=await page.evaluate(findAccountMenuToggle,true),found=observation&&Object.hasOwn(observation,'toggle')?observation.toggle:observation;
-  if(observation?.census){for(const key of ['observed','ambiguous'])result.census[key]=observation.census[key]===true;for(const key of ['logoutControls','observedToggles','associatedVisibleSafeToggles','legacyAssociations','bs5Associations','ariaAssociations']){const value=observation.census[key];result.census[key]=Number.isInteger(value)&&value>=0?Math.min(value,key==='logoutControls'?16:32):0;}}
-  if(observation?.census){if(typeof observation.census.rejectionCensusObserved==='boolean')result.census.rejectionCensusObserved=observation.census.rejectionCensusObserved;for(const key of ['associatedTogglesBeforeSafety','associatedVisibleToggles','visibleMarkedToggles','enabledMarkedToggles','rejectedInlineAction','rejectedFormAncestor','rejectedFormOwner','rejectedTagOrType','rejectedHref','rejectedLogout','visibleDropdownToggles','visibleHeaderLoginToggles','visibleDesktopHeaderToggles','visibleMobileHeaderToggles','logoutAnchors','logoutButtons','logoutInputs','logoutDirectTargets','logoutInheritedTargets']){const value=observation.census[key];if(Number.isSafeInteger(value)&&value>=0&&value<=32)result.census[key]=value;}}
-  if(!found||typeof found.selector!=='string'||found.selector.length>2048)return {...result,reason:'TOGGLE_UNAVAILABLE'};
+  const found=await page.evaluate(findAccountMenuToggle);if(!found||typeof found.selector!=='string'||found.selector.length>2048)return {...result,reason:'TOGGLE_UNAVAILABLE'};
   if(found.alreadyExpanded===true)return {...result,opened:true,reason:'ALREADY_EXPANDED'};
   const locator=page.locator(found.selector);if(await locator.count()!==1||!await locator.isVisible()||!await locator.isEnabled())return {...result,reason:'TOGGLE_UNAVAILABLE'};
   const handle=await locator.elementHandle();if(!handle)return {...result,reason:'TOGGLE_UNAVAILABLE'};

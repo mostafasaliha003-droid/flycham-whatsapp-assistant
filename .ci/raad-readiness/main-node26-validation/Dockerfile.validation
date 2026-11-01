@@ -1,49 +1,20 @@
-# syntax=docker/dockerfile:1.7
-# Isolated additive worker-image validation, not an application deployment.
-# RAAD_WORKER_BEGIN
-FROM mcr.microsoft.com/playwright:v1.64.0-noble AS worker
-# RAAD_CACHE_BEGIN
-ARG RAAD_VALIDATION_NONCE=raad-validation-20261101-ad16a50-worker-02
-ENV NPM_CONFIG_CACHE=/validation-npm-cache NPM_CONFIG_USERCONFIG=/validation-npm-user.npmrc NPM_CONFIG_GLOBALCONFIG=/validation-npm-global.npmrc NPM_CONFIG_STRICT_SSL=true
-RUN mkdir /validation-npm-cache && touch /validation-npm-user.npmrc /validation-npm-global.npmrc && printf '%s\n' "$RAAD_VALIDATION_NONCE" > /raad-validation-build-nonce
-# RAAD_CACHE_END
-
-# PDF intake requires both Poppler tools inside this exact image.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
-    && pdfinfo -v \
-    && pdftoppm -v \
-    && rm -rf /var/lib/apt/lists/*
+FROM mcr.microsoft.com/playwright:v1.64.0-noble
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts/install-mrz-model.js ./scripts/install-mrz-model.js
-COPY scripts/raad-readiness-check.js ./scripts/raad-readiness-check.js
-COPY THIRD_PARTY_MRZ_MODEL.md ./THIRD_PARTY_MRZ_MODEL.md
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --omit=dev \
-    && node -e "const fs=require('node:fs');const m=require('./scripts/install-mrz-model');if(!m.matches(fs.readFileSync(m.MODEL_DIRECTORY+'/mrz.traineddata')))process.exit(1)"
+RUN npm ci --omit=dev
 COPY src ./src
-# Preserve the flight worker default. The existing Raad service separately uses
-# the command override: node src/raad-login-pilot/server.js
-CMD ["node", "src/combined-worker.js"]
-# RAAD_WORKER_END
 
-FROM worker AS native-proof
-COPY .ci/raad-readiness/main-node26-validation /validation-input
-# Original worker runtime, before Python tooling, with source/dependencies read-only.
-RUN --network=none --mount=type=bind,from=worker,source=/app,target=/app,ro timeout 240s node /validation-input/native-probe.cjs
-
-FROM native-proof AS validation
-# Evidence tooling overlay only, after exact-worker native/actual-Raad health checks.
-RUN timeout 300s sh -c 'apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*'
-RUN mkdir /validation-work && chown pwuser:pwuser /validation-work
-USER pwuser
-RUN --network=none --mount=type=bind,from=worker,source=/app,target=/app,ro timeout 240s python3 /validation-input/build-gate.py
-
-FROM mcr.microsoft.com/playwright:v1.64.0-noble AS reporter
-WORKDIR /report
-COPY --from=validation /validation-work/public/public-summary.json /report/public-summary.json
-COPY .ci/raad-readiness/main-node26-validation/report-server.cjs /report/report-server.cjs
-USER pwuser
-EXPOSE 10000
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*
+COPY test ./test
+COPY scripts ./scripts
+COPY docs ./docs
+COPY .env.example .gitignore README.md THIRD_PARTY_MRZ_MODEL.md Dockerfile.worker render.yaml ./
+COPY .ci/security-fix-validation/run-ci.cjs /report/run-ci.cjs
+COPY .ci/security-fix-validation/report-server.cjs /report/report-server.cjs
+COPY .ci/security-fix-validation/source-manifest.json /report/source-manifest.json
+RUN chown -R node:node /app /report
+USER node
+RUN node /report/run-ci.cjs 7fa1127e675fdfa9ba21b4c13cc0119d114ac56c
 CMD ["node", "/report/report-server.cjs"]

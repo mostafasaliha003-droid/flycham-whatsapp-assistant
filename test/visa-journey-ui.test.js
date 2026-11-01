@@ -219,26 +219,3 @@ test('reread rows distinguish identically named originals by finite document kin
   const binding={caseId:'visa-example',sourceSha256:'d'.repeat(64),generation:1,allowed:true},h=harness({item:{media:[{id:'older',filename:'visa-document.jpg',mimeType:'application/pdf'},{id:'latest',filename:'visa-document.jpg',mimeType:'image/jpeg'}],documentReview:{enabled:true,configured:true,status:'ready',caseId:binding.caseId,generation:1,rereadSources:[{...binding,mediaId:'latest',kind:'uae_id_front',kinds:['uae_id_front','uae_id_front','untrusted raw text'],receivedAt:'2026-10-29T11:20:00Z'},{...binding,mediaId:'older',kind:'passport',kinds:['passport','uae_id_back'],receivedAt:'2026-10-28T09:00:00Z'}],applicants:[],issues:[]}}});
   await h.ui.openCase('971500000001');const rows=h.descendants(h.activeDialog()).filter(node=>node.className==='vj-document-reread-source');assert.equal(rows.length,2);assert.match(rows[0].textContent,/المرفق الأصلي 2 · الهوية الإماراتية · الوجه الأمامي/);assert.match(rows[1].textContent,/المرفق الأصلي 1 · الجواز، الهوية الإماراتية · الوجه الخلفي/);assert.match(rows[0].textContent,/وصل /);assert.notEqual(rows[0].children[1].textContent,rows[1].children[1].textContent);assert.doesNotMatch(rows.map(row=>row.textContent).join(' '),/untrusted raw text/);assert.equal(h.requests.some(request=>request.method==='POST'),false);
 });
-
-test('staff questions preview native options, require explicit send and prevent double click',async()=>{
- const staff={jobId:'staff-job',jobRevision:7,caseSignature:'staff-signature',busy:false,confirmedAnswers:[{prompt:'هل سبق حمل جنسية أخرى؟',label:'لا'}],collected:[],questions:[{field:'transport',prompt:'ما وسيلة الوصول؟',options:[{id:'air',label:'جوًا',value:'air'},{id:'land',label:'برًا',value:'land'},{id:'sea',label:'بحرًا',value:'sea'}]}],attempts:[]};
- const h=harness({item:{approval:{id:'approval',state:'approved'},jobs:[{id:'staff-job',approvalId:'approval',state:'portal_review_required',applicantIndex:0}],staffQuestions:[staff]},approve:()=>({result:{state:'accepted'}})});
- await h.ui.openCase('971500000001');
- assert.equal(h.requests.some(r=>r.method==='POST'),false);assert.match(h.activeDialog().textContent,/الإجابات المؤكدة السابقة/);assert.match(h.activeDialog().textContent,/هل سبق حمل جنسية أخرى/);
- const select=h.descendants(h.activeDialog()).find(n=>n.attributes['aria-label']==='سؤال ناقص واحد');select.value='transport';select.onchange();
- const send=h.find('button','إرسال السؤال وحده');assert.equal(send.disabled,false);assert.match(h.activeDialog().textContent,/خيارات فعلية/);
- const sending=send.onclick();await h.tick();const again=send.onclick();await h.tick();
- const confirms=h.descendants(h.body).filter(n=>n.tagName==='dialog'&&n.open&&n.textContent.includes('إرسال سؤال للعميل'));assert.equal(confirms.length,1);
- h.descendants(confirms[0]).find(n=>n.tagName==='button'&&n.textContent==='متابعة').click();await sending;await again;
- const posts=h.requests.filter(r=>r.method==='POST');assert.equal(posts.length,1);assert.equal(posts[0].path,'visa-workflow/971500000001/ask-question');assert.equal(posts[0].payload.field,'transport');assert.equal(posts[0].payload.expectedRevision,7);
- assert.equal(send.disabled,true);
-});
-test('staff uncertain or pending question offers no send control and logout cancels confirmation',async()=>{
- for(const state of ['uncertain','accepted']){
- const h=harness({item:{jobs:[{id:'job',state:'portal_review_required'}],staffQuestions:[{jobId:'job',busy:true,attempts:[{state}],questions:[]}]}});
- await h.ui.openCase('971500000001');assert.equal(h.find('button','إرسال السؤال وحده'),undefined);assert.equal(h.requests.some(r=>r.method==='POST'),false);
- }
- const h=harness({item:{jobs:[{id:'job',state:'portal_review_required'}],staffQuestions:[{jobId:'job',jobRevision:1,caseSignature:'sig',busy:false,attempts:[],questions:[{field:'entryDate',prompt:'ما التاريخ؟'}]}]}});
- await h.ui.openCase('971500000001');const select=h.descendants(h.activeDialog()).find(n=>n.attributes['aria-label']==='سؤال ناقص واحد');select.value='entryDate';select.onchange();
- const pending=h.find('button','إرسال السؤال وحده').onclick();await h.tick();h.ui.reset();await pending;assert.equal(h.requests.some(r=>r.method==='POST'),false);
-});

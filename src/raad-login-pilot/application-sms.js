@@ -4,7 +4,7 @@ const ORIGIN='https://visa.mofa.gov.sa',PATH='/SmartForm/TraditionalApp';
 // The owner route must enforce its authenticated application session. Optional
 // guard is re-run throughout native interaction; this module never logs in.
 const contexts=new WeakMap(),contextInitializations=new WeakMap();
-const CODES=new Set(['APPLICATION_SMS_CHALLENGE_STALE','APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED','APPLICATION_SMS_INPUT_INVALID','APPLICATION_SMS_UNAVAILABLE','APPLICATION_SMS_PHONE_MISMATCH','APPLICATION_SMS_CHALLENGE_UNAVAILABLE','APPLICATION_SMS_ALREADY_ATTEMPTED','APPLICATION_SMS_RESEND_COOLDOWN','APPLICATION_SMS_RESEND_LIMIT','APPLICATION_SMS_RESEND_UNAVAILABLE','APPLICATION_SMS_CANCELLED','APPLICATION_SMS_ACTIVATION_UNCONFIRMED']);
+const CODES=new Set(['APPLICATION_SMS_INPUT_INVALID','APPLICATION_SMS_UNAVAILABLE','APPLICATION_SMS_PHONE_MISMATCH','APPLICATION_SMS_CHALLENGE_UNAVAILABLE','APPLICATION_SMS_ALREADY_ATTEMPTED','APPLICATION_SMS_RESEND_COOLDOWN','APPLICATION_SMS_RESEND_LIMIT','APPLICATION_SMS_RESEND_UNAVAILABLE','APPLICATION_SMS_CANCELLED','APPLICATION_SMS_ACTIVATION_UNCONFIRMED']);
 const finite=code=>Object.assign(new Error(CODES.has(code)?code:'APPLICATION_SMS_UNAVAILABLE'),{code:CODES.has(code)?code:'APPLICATION_SMS_UNAVAILABLE'});
 
 // This callback returns DOM references only to the private caller. It never
@@ -37,22 +37,6 @@ function inspectSmsControls(args){
   const rootsFor=el=>{const roots=[];let root=el.closest('.form-group')||el.parentElement;for(let depth=0;root&&depth<3&&!['FORM','BODY','HTML'].includes(root.tagName);depth++,root=root.parentElement){if(visible(root)&&Array.from(root.querySelectorAll('input,select,textarea')).filter(visible).length<=16)roots.push(root);}return roots;};
   const phoneRoots=rootsFor(phone),inPhoneComponent=el=>phoneRoots.some(root=>root.contains(el));
   if(!phoneRoots.length)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
-  if(args.officeContactLabel||args.rejectApplicantOwnership){
-   const contactText=value=>normal(value).normalize('NFKC').replace(/[\u064b-\u065f\u0670\u0640\u200b-\u200f*:：]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
-   const ownerWording=/مقدم\s*(?:الطلب|طلب)|صاحب\s*الطلب|(?:طالب|صاحب)\s*(?:التأشير[ةه]|التاشير[ةه])|حامل\s*(?:جواز|الجواز)|المتقدم|المسافر|المستفيد|applicant|travell?er|beneficiary|passenger/i;
-   // Read only captions/instructions, never input values, cookies or OTPs.
-   const phoneLabel=contactText(label(phone));
-   if(args.officeContactLabel&&phoneLabel!==args.officeContactLabel||ownerWording.test(phoneLabel)||phoneRoots.some(root=>ownerWording.test(contactText(visibleText(root)))))return fail('APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');
-   for(const attribute of ['aria-describedby','aria-labelledby']){
-    const reference=phone.getAttribute(attribute)||'';if(reference.length>500)return fail('APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');
-    const ids=reference.trim()?reference.trim().split(/\s+/):[];
-    if(ids.length>8||new Set(ids).size!==ids.length)return fail('APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');
-    for(const id of ids){const elements=findId(id),element=elements[0];
-     if(id.length>120||elements.length!==1||!visible(element)||String(element.textContent||'').length>1000||ownerWording.test(contactText(visibleText(element))))return fail('APPLICATION_SMS_CONTACT_ROLE_UNCONFIRMED');
-    }
-   }
-  }
-  if(args.action==='contact')return {ok:true};
   let code=null,roots=phoneRoots;
   if(['verify','enter','probe'].includes(args.action)){
    const modals=Array.from(document.querySelectorAll('.modal.in,.modal.show,[role="dialog"],dialog[open],.swal-modal,.sweet-alert,.swal2-popup')).filter(visible);
@@ -66,7 +50,6 @@ function inspectSmsControls(args){
    });
    if(candidates.length!==1)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');code=candidates[0];
    if(args.codeField&&args.codeField!==code)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
-   if(args.expectedCode!==undefined&&code.value!==args.expectedCode)return fail('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');
    const containing=smsModals.filter(root=>root.contains(code));
    roots=containing.length?containing:rootsFor(code).filter(root=>inPhoneComponent(root)||phoneRoots.some(parent=>parent.contains(root)));
    if(!roots.length)return fail('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
@@ -101,7 +84,7 @@ function inspectSmsControls(args){
    return true;
   });
   if(args.id&&findId(args.id).length!==1||matches.length!==1)return fail('APPLICATION_SMS_UNAVAILABLE');
-  const control=matches[0];if(args.requireFocus&&document.activeElement!==control)return fail('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');if(args.control&&args.control!==control)return fail('APPLICATION_SMS_UNAVAILABLE');
+  const control=matches[0];if(args.control&&args.control!==control)return fail('APPLICATION_SMS_UNAVAILABLE');
   if(!args.attempts||typeof args.attempts.requested?.has!=='function')return fail('APPLICATION_SMS_UNAVAILABLE');
   const history=args.action==='request'?args.attempts.requested.get(control):null;
   if(history&&(history.phone!==phone||history.prefix!==prefix||history.expectedPhone!==args.expectedPhone||history.expectedPrefixLabel!==args.expectedPrefixLabel))return fail('APPLICATION_SMS_PHONE_MISMATCH');
@@ -122,47 +105,39 @@ async function attemptsFor(page){
  })();contextInitializations.set(page,work);try{return await work;}finally{if(contextInitializations.get(page)===work)contextInitializations.delete(page);}
 }
 function validate(options,action){
- if(options?.expiresAt!==undefined&&!Number.isSafeInteger(options.expiresAt)||options?.now!==undefined&&typeof options.now!=='function')throw finite('APPLICATION_SMS_INPUT_INVALID');
- if(options?.rejectApplicantOwnership!==undefined&&typeof options.rejectApplicantOwnership!=='boolean')throw finite('APPLICATION_SMS_INPUT_INVALID');
- if(options?.officeContactLabel!==undefined&&!['رقم الجوال','mobile number'].includes(options.officeContactLabel))throw finite('APPLICATION_SMS_INPUT_INVALID');
- if(!options||typeof options!=='object'||Array.isArray(options)||options.id!==undefined&&options.id!==''&&(typeof options.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(options.id))||!['enter','probe','contact'].includes(action)&&(typeof options.label!=='string'||options.label.length>120||!options.label&&!options.id)||typeof options.expectedPhone!=='string'||!/^\+?[0-9]{7,20}$/.test(options.expectedPhone)||typeof options.expectedPrefixLabel!=='string'||!options.expectedPrefixLabel||options.expectedPrefixLabel.length>120||options.guard!==undefined&&typeof options.guard!=='function'||options.resend!==undefined&&(action!=='request'||typeof options.resend!=='boolean'))throw finite('APPLICATION_SMS_INPUT_INVALID');
+ if(!options||typeof options!=='object'||Array.isArray(options)||options.id!==undefined&&options.id!==''&&(typeof options.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(options.id))||!['enter','probe'].includes(action)&&(typeof options.label!=='string'||options.label.length>120||!options.label&&!options.id)||typeof options.expectedPhone!=='string'||!/^\+?[0-9]{7,20}$/.test(options.expectedPhone)||typeof options.expectedPrefixLabel!=='string'||!options.expectedPrefixLabel||options.expectedPrefixLabel.length>120||options.guard!==undefined&&typeof options.guard!=='function'||options.resend!==undefined&&(action!=='request'||typeof options.resend!=='boolean'))throw finite('APPLICATION_SMS_INPUT_INVALID');
 }
 async function act(page,options,action){
  let raw,control,codeField,phone,prefix,attempts,started=false,code=action!=='request'?options?.code:undefined;
- const budget=(limit,minimum=1)=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');if(options.expiresAt===undefined)return limit;const remaining=options.expiresAt-(options.now||Date.now)();if(remaining<minimum)throw finite('APPLICATION_SMS_CHALLENGE_STALE');return Math.min(limit,remaining);};
- const deadline=()=>{if(options.expiresAt!==undefined&&(options.now||Date.now)()>=options.expiresAt)throw finite('APPLICATION_SMS_CHALLENGE_STALE');};
- const guard=async()=>{deadline();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();deadline();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
+ const guard=async()=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
  try{
   validate(options,action);if(action!=='request'&&(typeof code!=='string'||!/^\d{4,8}$/.test(code)))throw finite('APPLICATION_SMS_INPUT_INVALID');
-  await guard();attempts=await attemptsFor(page);const args={action,officeContactLabel:options.officeContactLabel,rejectApplicantOwnership:options.rejectApplicantOwnership,id:options.id,label:options.label,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,codeLength:code?.length,resend:options.resend===true,now:Date.now(),attempts};
+  await guard();attempts=await attemptsFor(page);const args={action,id:options.id,label:options.label,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,codeLength:code?.length,resend:options.resend===true,now:Date.now(),attempts};
   raw=await page.evaluateHandle(inspectSmsControls,args);let error=await raw.evaluate(result=>result.error||null);if(error)throw finite(error);
   for(const key of ['control','codeField','phone','prefix']){const handle=await raw.getProperty(key),element=handle.asElement();if(key==='control')control=element;else if(key==='codeField')codeField=element;else if(key==='phone')phone=element;else prefix=element;if(!element)await handle.dispose();}
   if(action!=='enter'&&!control||!phone||!prefix||action!=='request'&&!codeField)throw finite('APPLICATION_SMS_UNAVAILABLE');
   await guard();const retained={...args,control,codeField,phone,prefix,now:Date.now()};let checked=await page.evaluate(inspectSmsControls,{...retained,phase:'consume'});if(checked.error)throw finite(checked.error);if(checked.ok!==true)throw finite('APPLICATION_SMS_UNAVAILABLE');started=true;
   if(action!=='request'){
-   await guard();await codeField.fill('',{timeout:budget(5000)});await guard();
-   await codeField.type(code,{delay:80,timeout:budget(5000,5000)});await guard();
+   await codeField.fill('',{timeout:5000});await guard();
+   await codeField.type(code,{delay:80,timeout:5000});await guard();
    if(await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');
    try{options.code='';}catch{}
-   if(action==='enter'){await guard();checked=await page.evaluate(inspectSmsControls,{...retained,phase:'activate',owned:true});if(checked.error||checked.ok!==true)throw finite(checked.error);if(await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');deadline();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');return {codeEntered:true};}
-   await guard();await control.waitForElementState('enabled',{timeout:budget(5000)});await guard();
+   if(action==='enter'){await guard();checked=await page.evaluate(inspectSmsControls,{...retained,phase:'activate',owned:true});if(checked.error||checked.ok!==true)throw finite(checked.error);if(await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');return {codeEntered:true};}
+   await control.waitForElementState('enabled',{timeout:5000});
   }
   await guard();checked=await page.evaluate(inspectSmsControls,{...retained,phase:'activate',owned:true});if(checked.error||checked.ok!==true)throw finite(checked.error);
   const native=await control.evaluate(el=>['BUTTON','INPUT'].includes(el.tagName));
-  if(native)await control.focus();
-  await guard();checked=await page.evaluate(inspectSmsControls,{...retained,phase:'activate',owned:true,requireFocus:native,...(action==='verify'?{expectedCode:code}:{})});if(checked.error||checked.ok!==true)throw finite(checked.error);
-  if(native)await control.press('Enter',{timeout:budget(10000),noWaitAfter:true});
-  else await control.click({timeout:budget(10000),noWaitAfter:true});
+  if(native){await control.focus();await guard();checked=await page.evaluate(inspectSmsControls,{...retained,phase:'activate',owned:true});if(checked.error||checked.ok!==true)throw finite(checked.error);if(await control.evaluate(el=>el.isConnected&&!el.disabled&&document.activeElement===el)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');if(action==='verify'&&await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');await control.press('Enter',{timeout:10000,noWaitAfter:true});}
+  else{if(action==='verify'&&await codeField.evaluate((el,expected)=>el.isConnected&&el.value===expected,code)!==true)throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');await control.click({timeout:10000,noWaitAfter:true});}
   await guard();return {activationDispatched:true,action};
  }catch(error){if(started&&error?.code!=='APPLICATION_SMS_CANCELLED'&&error?.code!=='APPLICATION_SMS_PHONE_MISMATCH')throw finite('APPLICATION_SMS_ACTIVATION_UNCONFIRMED');throw finite(error?.code);}
  finally{code='';if(action!=='request'&&options&&typeof options==='object')try{options.code='';}catch{}if(action==='request'&&started&&control&&attempts)await page.evaluate(({attempts,control,now})=>{const entry=attempts.requested.get(control);if(entry){entry.lastRequestAt=Math.max(entry.lastRequestAt,now);entry.inFlight=false;}},{attempts,control,now:Date.now()}).catch(()=>{});for(const handle of [prefix,phone,codeField,control,raw])if(handle)await handle.dispose().catch(()=>{});}
 }
 async function probeApplicationSmsEntry(page,options){
  let raw,codeField,phone,prefix;
- const deadline=()=>{if(options.expiresAt!==undefined&&(options.now||Date.now)()>=options.expiresAt)throw finite('APPLICATION_SMS_CHALLENGE_STALE');};
- const guard=async()=>{deadline();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();deadline();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
+ const guard=async()=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');};
  try{
-  validate(options,'probe');await guard();const attempts=await attemptsFor(page),args={action:'probe',officeContactLabel:options.officeContactLabel,rejectApplicantOwnership:options.rejectApplicantOwnership,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,attempts};
+  validate(options,'probe');await guard();const attempts=await attemptsFor(page),args={action:'probe',expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel,attempts};
   raw=await page.evaluateHandle(inspectSmsControls,args);const error=await raw.evaluate(result=>result.error||null);if(error)throw finite(error);
   for(const key of ['codeField','phone','prefix']){const handle=await raw.getProperty(key),element=handle.asElement();if(key==='codeField')codeField=element;else if(key==='phone')phone=element;else prefix=element;if(!element)await handle.dispose();}
   if(!codeField||!phone||!prefix)throw finite('APPLICATION_SMS_CHALLENGE_UNAVAILABLE');
@@ -179,11 +154,7 @@ async function inspectApplicationSms(page){
   return {available:true,challengeVisible:explicit&&verification.controls.length===1,verification};
  }catch{throw finite('APPLICATION_SMS_UNAVAILABLE');}
 }
-async function assertApplicationSmsContact(page,options){
- const check=async()=>{if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');if(options.expiresAt!==undefined&&(options.now||Date.now)()>=options.expiresAt)throw finite('APPLICATION_SMS_CHALLENGE_STALE');const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!==PATH||u.username||u.password||!main||main.url()!==page.url())throw finite('APPLICATION_SMS_UNAVAILABLE');if(options.guard)await options.guard();if(options.signal?.aborted)throw finite('APPLICATION_SMS_CANCELLED');if(options.expiresAt!==undefined&&(options.now||Date.now)()>=options.expiresAt)throw finite('APPLICATION_SMS_CHALLENGE_STALE');};
- try{validate(options,'contact');await check();const result=await page.evaluate(inspectSmsControls,{action:'contact',officeContactLabel:options.officeContactLabel,rejectApplicantOwnership:options.rejectApplicantOwnership,expectedPhone:options.expectedPhone,expectedPrefixLabel:options.expectedPrefixLabel});if(result?.error||result?.ok!==true)throw finite(result?.error);await check();return {matched:true};}catch(error){throw finite(error?.code);}
-}
 const requestApplicationSms=(page,options)=>act(page,options,'request');
 const verifyApplicationSms=(page,options)=>act(page,options,'verify');
 const enterApplicationSms=(page,options)=>act(page,options,'enter');
-module.exports={assertApplicationSmsContact,inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms,probeApplicationSmsEntry};
+module.exports={inspectApplicationSms,requestApplicationSms,verifyApplicationSms,enterApplicationSms,probeApplicationSmsEntry};

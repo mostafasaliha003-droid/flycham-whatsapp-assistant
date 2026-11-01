@@ -10,10 +10,6 @@ const MAX_INPUT_BYTES = 25 * 1024 * 1024;
 const MAX_PIXELS = 20000000;
 const MAX_DIMENSION = 32767;
 const DOCUMENT_LONG_EDGE = 1000;
-// Use the same real-pixel short-edge floor as the intake reader. A long
-// one-row crop must not count as a complete upload merely because it is wide.
-// These geometry bounds do not establish that the document text is readable.
-const DOCUMENT_SHORT_EDGE = 300;
 const PORTRAIT_MIN_EDGE = 300;
 const MIME_BY_FORMAT = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
 const READ_OPTIONS = { failOn: 'warning', limitInputPixels: MAX_PIXELS, sequentialRead: true };
@@ -37,12 +33,6 @@ function cleanMime(value) {
 }
 function dimensionsAt(width, height, scale) {
   return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
-}
-function documentLegible({ width, height }) {
-  return Math.max(width, height) >= DOCUMENT_LONG_EDGE && Math.min(width, height) >= DOCUMENT_SHORT_EDGE;
-}
-function documentMinimumScale({ width, height }) {
-  return Math.max(DOCUMENT_LONG_EDGE / Math.max(width, height), DOCUMENT_SHORT_EDGE / Math.min(width, height));
 }
 
 // Reject incomplete containers even when an image decoder would tolerate a
@@ -99,7 +89,7 @@ async function inspect(bytes, mimeType, kind) {
   const oriented = { width: swapped ? height : width, height: swapped ? width : height };
   const legible = kind === 'portrait'
     ? oriented.width >= PORTRAIT_MIN_EDGE && oriented.height >= PORTRAIT_MIN_EDGE
-    : documentLegible(oriented);
+    : Math.max(oriented.width, oriented.height) >= DOCUMENT_LONG_EDGE;
   if (!legible) fail('IMAGE_TOO_SMALL');
   return { bytes, format, metadata, ...oriented, sourceSha256: hash(bytes) };
 }
@@ -221,10 +211,10 @@ async function preparePortalImage(bytes, { mimeType, maxBytes = MAX_OUTPUT_BYTES
   if (kind === 'document') await measureDocumentEnhancement(source, enhance);
   const isLegible = kind === 'portrait'
     ? dimensions => dimensions.width >= PORTRAIT_MIN_EDGE && dimensions.height >= PORTRAIT_MIN_EDGE
-    : documentLegible;
+    : dimensions => Math.max(dimensions.width, dimensions.height) >= DOCUMENT_LONG_EDGE;
   const minimumScale = kind === 'portrait'
     ? Math.max(PORTRAIT_MIN_EDGE / source.width, PORTRAIT_MIN_EDGE / source.height)
-    : documentMinimumScale(source);
+    : DOCUMENT_LONG_EDGE / Math.max(source.width, source.height);
   const encoded = await fitImage({ makePipeline: () => normalise(source), width: source.width, height: source.height, minimumScale, isLegible, maxBytes });
   return finish(encoded, [source], sourceTransformations(source), source);
 }
@@ -261,7 +251,7 @@ async function prepareDocumentImage(parts, { kind = 'passport', maxBytes = MAX_O
     dimensions = sources.map(source => dimensionsAt(source.width, source.height, initialScale));
     layout = residenceLayout(dimensions);
   }
-  if (dimensions.some(part => !documentLegible(part))) fail('SIZE_LIMIT_UNACHIEVABLE');
+  if (dimensions.some(part => Math.max(part.width, part.height) < DOCUMENT_LONG_EDGE)) fail('SIZE_LIMIT_UNACHIEVABLE');
   const layers = [];
   let top = 0;
   for (let index = 0; index < sources.length; index++) {
@@ -281,11 +271,11 @@ async function prepareDocumentImage(parts, { kind = 'passport', maxBytes = MAX_O
   // trying successive output encodings on a memory-constrained worker.
   layers.length = 0;
   const makePipeline = () => sharp(composite, READ_OPTIONS);
-  const minimumScale = Math.max(...dimensions.map(documentMinimumScale));
-  const isLegible = output => dimensions.every(part => documentLegible({
-    width: Math.round(part.width * output.width / layout.width),
-    height: Math.round(part.height * output.height / layout.height)
-  }));
+  const minimumScale = Math.max(...dimensions.map(part => DOCUMENT_LONG_EDGE / Math.max(part.width, part.height)));
+  const isLegible = output => dimensions.every(part => Math.max(
+    Math.round(part.width * output.width / layout.width),
+    Math.round(part.height * output.height / layout.height)
+  ) >= DOCUMENT_LONG_EDGE);
   const encoded = await fitImage({ makePipeline, width: layout.width, height: layout.height, minimumScale, isLegible, maxBytes });
   const transformations = ['apply_exif_orientation_per_part', 'strip_metadata', 'convert_to_srgb', 'combine_full_parts_on_white_with_gap'];
   sources.forEach((source, index) => {

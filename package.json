@@ -7,7 +7,7 @@
   "scripts": {
     "postinstall": "node scripts/install-mrz-model.js",
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node scripts/run-tests.cjs"
   },
   "engines": {
     "node": ">=22.13"

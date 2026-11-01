@@ -81,14 +81,3 @@ test('unknown field names and malformed collections fail without using prototype
   assert.throws(() => requiredQuestions({}, {requestedFields: 'maritalStatus'}), {code: 'VISA_QUESTION_FIELDS_INVALID'});
   assert.throws(() => requiredQuestions({}, {requestedFields: ['unknown']}), {code: 'VISA_QUESTION_UNKNOWN'});
 });
-
-test('unknown accommodation stays explicit and contact questions require real formats',()=>{
- assert.equal(validateAnswer('saudiAddress','none'),'not_specified');
- assert.equal(validateAnswer('saudiAddress','غير محدد'),'not_specified');
- assert.equal(validateAnswer('applicationPhone','+971500000001'),'+971500000001');
- assert.throws(()=>validateAnswer('applicationPhone','0500000001'));
- assert.equal(validateAnswer('contactEmail','example@example.test'),'example@example.test');
- assert.throws(()=>validateAnswer('contactEmail','غير مؤكد'));
- const q=questionFor('arrivalPort',{applicantIndex:0});assert.equal(q.type,'choice');assert.ok(q.options.length>3);
- assert.deepEqual(requiredQuestions({arrivalPort:'other'},{requestedFields:['arrivalPort']}),['arrivalPortDetails']);
-});

@@ -2,7 +2,6 @@
 
 const {safeGraphFailure} = require('./graph-api');
 const {QUESTION_CATALOG, validateAnswer} = require('./visa-client-questions');
-const {supervisorWhatsAppRecipient} = require('./visa-supervisor-route');
 const {createHash} = require('node:crypto');
 const sharp = require('sharp');
 
@@ -14,7 +13,6 @@ const OTP_TEMPLATE_BODY = 'تحديث مهمة متابعة طلب تأشيرة 
 const PAYMENT_TEMPLATE_BODY = 'أهلاً، معك إسماعيل من شركة الرمال. تم تأكيد استلام دفعتك وبدأ تجهيز طلب التأشيرة. مرجع المتابعة: {{1}}. يرجى الرد على هذه الرسالة لاستكمال البيانات المطلوبة ومتابعة الطلب. هذا التأكيد لا يعني صدور التأشيرة.';
 const TEMPLATE_REJECTION_CODES = new Set(['ABUSIVE_CONTENT', 'PROMOTIONAL', 'SCAM', 'INCORRECT_CATEGORY', 'TAG_CONTENT_MISMATCH', 'INVALID_FORMAT', 'CATEGORY_NOT_AVAILABLE', 'NONE']);
 const FIELD_LABELS = Object.freeze({
-  transport:'وسيلة الوصول',arrivalPort:'منفذ الوصول',arrivalPortDetails:'تفاصيل منفذ الوصول',applicationPhone:'جوال تحقق الطلب',contactEmail:'البريد الإلكتروني',insurancePhone:'جوال التأمين',postalCode:'الرمز البريدي',city:'مدينة التواصل',postOfficeBox:'صندوق البريد',
   maritalStatus: 'الحالة الاجتماعية', previousNationality: 'جنسية سابقة', previousNationalityDetails: 'تفاصيل الجنسية السابقة',
   travelledLastFiveYears: 'سفر خلال خمس سنوات', travelHistory: 'تفاصيل السفر', performUmrah: 'نية أداء العمرة', gccResident: 'إقامة خليجية سارية',
   priorGccDeportation: 'إبعاد أو ترحيل سابق', priorGccRuleViolation: 'منع دخول أو مخالفة سابقة',
@@ -148,7 +146,7 @@ function renderSummary(payload) {
     let value;
     if (typeof entry.value === 'boolean') value = entry.value ? 'نعم' : 'لا';
     else if (typeof entry.value === 'string') {
-      value = entry.field==='saudiAddress'&&entry.value==='not_specified'?'غير محدد':string(entry.value, 1500, {multiline: false});
+      value = string(entry.value, 1500, {multiline: false});
       if (definition?.type === 'choice') {
         const option = definition.options.find(item => item.value === entry.value);
         if (!option) throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
@@ -222,7 +220,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
   }
   async function sendOperatorOtp(input, guard, metadata = {}) {
     if (!input || typeof input !== 'object') throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
-    const recipient = recipientNumber(supervisorWhatsAppRecipient(env)), jobId = identifier(input.jobId || metadata.jobId), challengeId = identifier(input.challengeId || metadata.challengeId);
+    const recipient = recipientNumber(env.RAAD_OTP_OWNER_WHATSAPP || env.RAAD_OTP_OWNER_RECIPIENT), jobId = identifier(input.jobId || metadata.jobId), challengeId = identifier(input.challengeId || metadata.challengeId);
     const body = string(input.text, 4096);
     if (input.recipient !== undefined && recipientNumber(input.recipient) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
     await guardNow(guard);
@@ -333,7 +331,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
   async function ownerNotificationReady() {
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return false;
     let owner;
-    try { owner = recipientNumber(supervisorWhatsAppRecipient(env)); credentials(env); }
+    try { owner = recipientNumber(env.RAAD_OTP_OWNER_WHATSAPP || env.RAAD_OTP_OWNER_RECIPIENT); credentials(env); }
     catch { return false; }
     try {
       const summary = journal?.summary?.(owner), lastInboundAt = summary?.lastInboundAt ?? journal?.get?.(owner)?.lastInboundAt, currentTime = now();

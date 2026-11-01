@@ -146,7 +146,6 @@ function validateApplicant(fields, { referenceDate = today() } = {}) {
     return true;
   };
   for (const field of ['passportType', 'birthPlace', 'saudiAddress', 'arrivalPort']) requiredText(field);
-  if(typeof fields.saudiAddress==='string'&&/^(?:none|not[_ ]specified|غير محدد|لم تحدد بعد)$/iu.test(fields.saudiAddress.trim()))issues.push(issue('saudiAddress','SAUDI_ADDRESS_UNSPECIFIED_REQUIRES_PORTAL_REVIEW','No address is asserted. Verify that the official field accepts an unspecified stay before using a placeholder.'));
   for (const field of ['nationalityCode', 'issuingCountryCode']) {
     if (requiredText(field) && !/^[A-Z][A-Z<]{2}$/i.test(fields[field])) issues.push(issue(field, 'invalid_country_code', 'Provide the three-character document country code.'));
   }
