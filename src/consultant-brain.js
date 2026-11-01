@@ -134,4 +134,4 @@ async function runConsultantSmoke({env=process.env,fetchImpl=fetch,now=Date.now(
  }catch{}
  return {greeting,search,context:amendment&&singleAdult,ran:true};
 }
-module.exports={understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,consultantModel,CONSULTANT_CLINE_MODEL,schema,ACTIONS,NEXT_STEPS};
+module.exports={CONSULTANT_INSTRUCTIONS:INSTRUCTIONS,understandConsultant,validateConsultantDecision,canUseReply,runConsultantSmoke,consultantModel,CONSULTANT_CLINE_MODEL,schema,ACTIONS,NEXT_STEPS};

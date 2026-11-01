@@ -2,7 +2,7 @@
 const {createHash}=require('node:crypto');
 const GEMMA_MODEL='gemma-4-26b-a4b-it';
 const CLINE_MODEL='cline-pass/qwen3.8-max';
-const CLINE_MODELS=new Set(['cline-pass/qwen3.8-max','cline-pass/qwen3.7-max','cline-pass/qwen3.7-plus','cline-pass/glm-5.3','cline-pass/glm-5.3-flash','cline-pass/kimi-k3','cline-pass/deepseek-v4.1-flash']);
+const CLINE_MODELS=new Set(require('./cline-pass-models').CLINEPASS_MODELS);
 const REPAIR_HINT='The previous response did not satisfy the JSON/schema contract. Generate a fresh decision for the original input. Return exactly one JSON object matching the supplied schema, without markdown, commentary or extra keys. Dates must be ISO YYYY-MM-DD in date fields only. Use null for unchanged nullable fields and arrays for array fields. Keep action and intent compatible; operational replies and complete-search questions must be null. Do not invent facts or repeat a known question.';
 const circuits=new Map();
 function clineBudget(timeoutMs){return Number.isFinite(timeoutMs)?Math.max(20000,Math.min(35000,Math.trunc(timeoutMs))):20000;}
