@@ -80,7 +80,21 @@ async function understandConsultant(text,context={}, {env=process.env,fetchImpl=
  // caller's environment or legacy extraction's CLINE_MODEL setting. Provider
  // validation, circuit isolation and quota-only fallback remain authoritative.
  const providerEnv=aiProvider(env)==='cline'?{...env,CLINE_MODEL:consultantModel(env)}:env;
- return routeDecision({env:providerEnv,fetchImpl,now,timeoutMs:35000,repairInvalid:true,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory,conversationGuide}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
+ try{
+  return await routeDecision({env:providerEnv,fetchImpl,now,timeoutMs:35000,repairInvalid:true,input:JSON.stringify(payload),fallbackInput:JSON.stringify({...payload,context:{...safeContext(context,false),preferences,consultantMemory:memory,conversationGuide}}),instructions:INSTRUCTIONS,schema,validateDecision:validateConsultantDecision});
+ }catch(error){
+  // Keep the prose validator strict, including for negated claims. If both
+  // generations are rejected, discard the entire proposal: no extracted facts,
+  // question, offer selection or operational action survives this safe reply.
+  // Transport, quota and other schema failures retain their existing behavior.
+  if(error?.message!=='NLU_INVALID_SCHEMA_CONSULTANT_UNSAFE_REPLY')throw error;
+  return validateConsultantDecision({
+   intent:'other',
+   fields:Object.fromEntries(Object.entries(fieldSchema).map(([key,spec])=>[key,spec.type==='array'?[]:null])),
+   question:null,option:null,
+   consultant:{action:'answer',reply:'بقدر ساعدك بالمعلومات المتحققة، وأي تأكيد بيكون بعد مراجعة الفريق المختص.',preferences:{priority:null,airportFlexibility:null},nextStep:'none',knowledgeQuery:null}
+  });
+ }
 }
 function consultantModel(env=process.env){return env.CLINE_CONSULTANT_MODEL||CONSULTANT_CLINE_MODEL;}
 // Four bounded synthetic cases exercise the configured understanding provider.
