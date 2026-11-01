@@ -1,5 +1,6 @@
 'use strict';
 const {paymentReceiptFollowup}=require('./visa-payment-followup');
+const {documentConfirmationCopy,workflowProgressReply}=require('./visa-workflow-progress');
 
 const P = require('./saudi-visa-policy');
 const {normalize} = P;
@@ -54,7 +55,7 @@ function detectDocumentIntent(text, {hasAttachments = false, hasDocumentContext 
   const sentDocuments = /(?:^|\s)(?:بعتلك|بعتتلك|بعثتلك|ارسلتلك|ارسلت لكم|ارسلتها|بعتهم|بعتن|بعتلكم)(?=\s|$|[؟?!.،,])/.test(value);
   const completeness = /^(?:(?:طيب|هل|يعني)\s+)?(?:مو\s*كاملين|مش\s*كاملين|كاملين|مكتملين|شو\s+ناقص)[.!؟? ]*$/.test(value) || /^(?:الاوراق|المستندات|الصور)\s+(?:مو\s*كاملين|مش\s*كاملين|كامل[هه]|مكتمل[هه]|ناقص[هه])[.!؟? ]*$/.test(value);
   if ((document || hasDocumentContext) && (sentDocuments || completeness) && !/(?:رح|راح|سوف|بدي)\s+(?:ابعت|ابعث|ارسل)|لا\s+(?:تبعت|ترسل)/.test(value)) return {intent: 'status', kind};
-  if (hasDocumentContext && /^(?:طيب\s+)?(?:شو صار(?:\s+(?:معكن|معكم))?|وين وصلتو|شو وضع الملف)[.!؟? ]*$/.test(value)) return {intent: 'status', kind};
+  if (hasDocumentContext && /^(?:طيب\s+)?(?:شو صار(?:\s+(?:معكن|معكم))?|وين وصلتو|شو وضع الملف|بالانتظار|بانتظارك|ناطر)[.!؟? ]*$/.test(value)) return {intent: 'status', kind};
   const step = detectDocumentStep(value);
   if (step) return {intent: step === 'will_send' ? 'will_send' : 'prepare_application', kind: null};
   if (/تم\s+(?:رفع|ارسال|ارفاق)\s+(?:الصور|المستندات|الاوراق)|رفعت\s+(?:الصور|المستندات|الاوراق)/.test(value)) return {intent: 'status', kind};
@@ -109,7 +110,7 @@ function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
   if (summary.status === 'ready') return kind && hasPrepared(summary, kind)
     ? `النسخة المجهزة من ${KINDS[kind]} موجودة بملفك.`
     : 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة، والنسخ المجهزة موجودة بملفك.';
-  if (summary.status === 'needs_confirmation') return 'المستندات محفوظة ومترابطة بملفك. منكمل مراجعة الخانات المستندية من الصفحات الموجودة والتوضيحات السابقة، وما في داعي تعيد الصور.';
+  if (summary.status === 'needs_confirmation') return documentConfirmationCopy(summary);
   const issues = [...(Array.isArray(summary.issues) ? summary.issues : []), ...(Array.isArray(summary.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
   const lines = [...new Set(issues.map(issue => ISSUE_COPY[issue?.code]).filter(Boolean))].slice(0, 2);
   return lines.length ? lines.join('\n') : 'تجهيز المستندات يحتاج مطابقة من الفريق قبل المتابعة. إذا في صورة ناقصة أو غير واضحة رح نحددها إلك.';
@@ -176,6 +177,10 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     }
     if (!request.kind && previous?.lastKind && pronounReference(normalize(text || '').replace(/\s+/g, ' '))) request = {...request, kind: previous.lastKind};
     const result = {handled: true, intent: request.intent, kind: request.kind};
+    if (['status','prepare_application'].includes(request.intent)) {
+      const progress=workflowProgressReply(store,customer,summary,now());
+      if(progress){remember(customer,summary);return {...result,reply:progress};}
+    }
     if (['prepare_application', 'will_send'].includes(request.intent)) {
       const currentCase = store?.data?.visaCases?.[customer], received = receivedDocuments(store, customer, summary, now());
       const products = currentCase?.applicants?.map(person => P.productFor(person)) || [];

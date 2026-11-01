@@ -443,3 +443,34 @@ test('protected applications migration never retries an explicit login or OTP re
   await f.dispatcher.recoverStoppedLogin();assert.equal(job.state,'portal_review_required');assert.equal(job.loginPolicyRecovery,'account_menu_diagnostic_v6');assert.equal(f.calls.length,0);
  }
 });
+
+async function expiredOtpFixture(overrides={}){
+ const f=fixture(),[job]=await f.activate();
+ const draft=f.dispatcher.dossier(job,f.fulfilment.getConfirmedFields(job.id));
+ job.state='portal_review_required';job.blockedReason='OTP_CHALLENGE_EXPIRED';
+ f.store.data.visaPortalRuns[job.id]={phase:'blocked',lastStage:'application_sms',draftFingerprint:draft.fingerprint};
+ f.env.RAAD_EXPIRED_OTP_RECOVERY_ENABLED='true';f.dispatcher.ownerNotificationReady=async()=>true;
+ f.setState({jobId:job.id,caseSignature:job.caseSignature,applicantIndex:job.applicantIndex,stage:'cancelled',phase:'done',saved:false,reference:null,submissionUncertain:false,paymentAttempted:false,ownedBrowserClosed:true,...overrides});
+ const request=f.dispatcher.request.bind(f.dispatcher);f.dispatcher.request=async(path,options)=>path==='/health'?{ready:true,production:{activeJob:false}}:request(path,options);
+ return {...f,job};
+}
+test('expired application OTP recovers once with current consent, exact dossier and remote unsaved cleanup proof',async()=>{
+ const f=await expiredOtpFixture(),consent=structuredClone(f.job.answerConfirmation);
+ await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.job.state,'ready');assert.equal(f.job.expiredOtpRecoveryAttempts,1);assert.deepEqual(f.job.answerConfirmation,consent);assert.equal(f.calls.filter(c=>c.path.endsWith('/cancel')).length,1);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
+ f.job.state='portal_review_required';f.job.blockedReason='OTP_CHALLENGE_EXPIRED';f.store.data.visaPortalRuns[f.job.id].phase='blocked';const count=f.calls.length;await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.calls.length,count);assert.equal(f.job.state,'portal_review_required');
+});
+test('expired OTP recovery refuses unknown, saved, uncertain or other-customer remote records',async()=>{
+ for(const override of [{saved:true},{reference:'E123456'},{submissionUncertain:true},{ownedBrowserClosed:false},{jobId:'other'},{caseSignature:'0'.repeat(64)},{applicantIndex:9},{stage:'running'},{paymentAttempted:true},{saved:undefined}]){
+  const f=await expiredOtpFixture(override);await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.job.state,'portal_review_required',JSON.stringify(override));assert.equal(f.job.expiredOtpRecoveryAttempts,undefined);assert.equal(f.calls.some(c=>c.path.endsWith('/cancel')),false);
+ }
+});
+test('expired OTP recovery is opt-in and requires current authorization, unchanged draft and available owner delivery',async()=>{
+ for(const mode of ['disabled','claimed','draft','owner','saved','lease','stage']){
+  const f=await expiredOtpFixture();if(mode==='disabled')f.env.RAAD_EXPIRED_OTP_RECOVERY_ENABLED='false';if(mode==='claimed')f.claim(true);if(mode==='draft')f.drafts[0].review.invalidated=true;if(mode==='owner')f.dispatcher.ownerNotificationReady=async()=>false;if(mode==='saved')f.job.portalSaved=true;if(mode==='lease')f.fulfilment.data().lease={jobId:'other'};if(mode==='stage')f.store.data.visaPortalRuns[f.job.id].lastStage='save';
+  await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.job.state,'portal_review_required',mode);assert.equal(f.job.expiredOtpRecoveryAttempts,undefined,mode);assert.equal(f.calls.length,0,mode);
+ }
+});
+test('expired OTP recovery cannot proceed with a busy worker, missing remote proof or failed checkpoint',async()=>{
+ for(const mode of ['busy','absent','save','changed']){const f=await expiredOtpFixture(),request=f.dispatcher.request.bind(f.dispatcher);f.dispatcher.request=async(path,options)=>{if(path==='/health'&&mode==='busy')return{ready:true,production:{activeJob:true}};if(path.includes('/internal/raad/jobs/')&&!path.endsWith('/cancel')&&mode==='absent')throw Object.assign(Error('not found'),{status:404});const result=await request(path,options);if(path.endsWith('/cancel')&&mode==='changed')f.drafts[0].review.invalidated=true;return result;};if(mode==='save'){const save=f.store.save;f.store.save=()=>{if(f.job.expiredOtpRecoveryAttempts===1)throw Error('disk');save();};}await f.dispatcher.recoverExpiredApplicationOtp();assert.equal(f.job.state,'portal_review_required',mode);assert.equal(f.job.expiredOtpRecoveryAttempts,undefined,mode);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false,mode);}
+});
+test('a recovered OTP job launches only once through the existing guarded dispatcher',async()=>{const f=await expiredOtpFixture();await f.dispatcher.tick();assert.equal(f.job.expiredOtpRecoveryAttempts,1);assert.equal(f.job.state,'running');assert.equal(f.calls.filter(c=>c.path==='/internal/raad/jobs'&&c.method==='POST').length,1);});

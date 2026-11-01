@@ -80,6 +80,32 @@ class VisaPortalDispatcher{
    job.state='ready';job.loginRecoveryAttempts=(job.loginRecoveryAttempts||0)+1;if(policyRetry)job.loginPolicyRecovery='protected_applications_v7';if(captchaTimeoutRetry)job.captchaTimeoutRecovery='bounded30s_v1';delete job.blockedReason;run.phase='retry_ready';this.store.save();
   }
  }
+ async recoverExpiredApplicationOtp(){
+  if(this.env.RAAD_EXPIRED_OTP_RECOVERY_ENABLED!=='true'||!this.configured())return;
+  for(const job of Object.values(this.fulfilment.data().jobs)){
+   const run=this.store.data.visaPortalRuns[job.id];
+   if(job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run?.phase!=='blocked'||run.lastStage!=='application_sms'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.expiredOtpRecoveryAttempts||0)>=1)continue;
+   const diagnostic=code=>{const key=job.id+':otp_recovery';if(this.reportedDiagnostics.get(key)===code)return;this.reportedDiagnostics.set(key,code);console.info('[VISA_OTP_RECOVERY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),code}));};
+   try{
+    const verify=expected=>{if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');let proof,draft;job.state='ready';try{this.fulfilment.guardJob(job.id);proof=this.fulfilment.getConfirmedFields(job.id);draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint||expected&&draft.fingerprint!==expected)throw Error('CURRENT_DOSSIER_REQUIRED');return draft.fingerprint;};
+    // Releasing a lease increments the job revision, so the old execution
+    // fingerprint cannot be reused. Independently verify current authorization
+    // and retain its new fingerprint across every asynchronous check.
+    const expectedFingerprint=verify();
+    if(typeof this.ownerNotificationReady!=='function'||await this.ownerNotificationReady()!==true){diagnostic('OWNER_NOTIFICATION_NOT_READY');continue;}
+    const remote=await this.request('/internal/raad/jobs/'+job.id);
+    // Cancellation scrubs the phase but retains save/uncertainty and binding
+    // proof. A missing record or an ambiguous save never permits a restart.
+    if(remote.jobId!==job.id||remote.caseSignature!==job.caseSignature||remote.applicantIndex!==job.applicantIndex||remote.saved!==false||remote.reference!==null||remote.submissionUncertain!==false||remote.paymentAttempted!==false||remote.ownedBrowserClosed!==true||!(remote.stage==='cancelled'&&remote.phase==='done'||remote.stage==='blocked'&&remote.phase==='application_sms'&&remote.blocker?.code==='OTP_CHALLENGE_EXPIRED')){diagnostic('REMOTE_UNSAVED_PROOF_REQUIRED');continue;}
+    const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
+    await this.cancelOwned(job.id);verify(expectedFingerprint);
+    const before={state:job.state,blockedReason:job.blockedReason,attempts:job.expiredOtpRecoveryAttempts,phase:run.phase};
+    job.expiredOtpRecoveryAttempts=1;job.state='ready';delete job.blockedReason;run.phase='retry_ready';
+    try{this.store.save();}catch{job.state=before.state;job.blockedReason=before.blockedReason;run.phase=before.phase;if(before.attempts===undefined)delete job.expiredOtpRecoveryAttempts;else job.expiredOtpRecoveryAttempts=before.attempts;throw Error('RECOVERY_SAVE_FAILED');}
+    diagnostic('READY_FOR_FRESH_OTP');
+   }catch(error){diagnostic(['CURRENT_DOSSIER_REQUIRED','CURRENT_JOB_REQUIRED','RECOVERY_SAVE_FAILED'].includes(error?.message)?error.message:'RECOVERY_CHECK_UNCONFIRMED');}
+  }
+ }
  async recoverMissingPreflight(){
   for(const job of Object.values(this.fulfilment.data().jobs)){
    const run=this.store.data.visaPortalRuns[job.id];
@@ -102,6 +128,7 @@ class VisaPortalDispatcher{
   await this.recoverPreflightLease();
   await this.recoverMissingPreflight();
   await this.recoverStoppedLogin();
+  await this.recoverExpiredApplicationOtp();
   await this.flushMessages();
   for(const job of Object.values(this.fulfilment.data().jobs)){
    if(!['queued','ready'].includes(job.state))continue;
