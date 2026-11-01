@@ -19,3 +19,10 @@ test('disabled, unavailable and unsaved diagnostics cannot dispatch a model requ
  await runDocumentSmoke({vision,store:{data:{},save(){throw Error('PRIVATE_KEY');}},env,report});
  assert.equal(calls,0);
 });
+
+test('an explicit higher diagnostic attempt runs once and cannot be replayed by lowering its number',async()=>{
+ let calls=0;const store={data:{documentVisionSmoke:{policy:POLICY_FINGERPRINT,state:'completed',attempt:1}},save(){}},vision={ready:()=>true,extract:async()=>{calls++;return{kind:'other',readable:false,fields:{}};}},options={store,vision,report:()=>{},env:{...env,RAAD_DOCUMENT_OCR_SMOKE_ATTEMPT:'2'}};
+ await runDocumentSmoke(options);await runDocumentSmoke(options);await runDocumentSmoke({...options,env});
+ assert.equal(calls,1);assert.equal(store.data.documentVisionSmoke.attempt,2);
+ await runDocumentSmoke({...options,env:{...env,RAAD_DOCUMENT_OCR_SMOKE_ATTEMPT:'4'}});assert.equal(calls,1);
+});

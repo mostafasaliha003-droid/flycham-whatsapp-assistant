@@ -43,7 +43,7 @@ async function buildMrzRequest({bytes, mimeType} = {}) {
   await validateMrzImage(bytes, mimeType);
   return {
     model: MODEL,
-    messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}, {type: 'text', text: 'Copy only the two complete MRZ lines from this crop.'}]}],
+    messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'text', text: 'Copy only the two complete MRZ lines from this crop.'}, {type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}]}],
     stream: false, temperature: 0, max_tokens: 512
   };
 }

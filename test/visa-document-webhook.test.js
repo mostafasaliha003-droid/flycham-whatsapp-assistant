@@ -67,7 +67,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
     }
     if (target.hostname === 'api.cline.bot') {
       assert.equal(target.pathname, '/api/v1/chat/completions'); assert.equal(options.headers.Authorization, 'Bearer '+GEMMA_KEY); assert.equal(options.redirect, 'error');
-      const request = JSON.parse(options.body), input = Buffer.from(request.messages[1].content[0].image_url.url.split(',')[1], 'base64'), metadata = await sharp(input).metadata(); assert.ok(metadata.width >= 1000); assert.ok(metadata.height >= 1000);
+      const request = JSON.parse(options.body), input = Buffer.from(request.messages[1].content[1].image_url.url.split(',')[1], 'base64'), metadata = await sharp(input).metadata(); assert.ok(metadata.width >= 1000); assert.ok(metadata.height >= 1000);
       const rgb = await sharp(input).extract({left: 0, top: 0, width: 1, height: 1}).removeAlpha().raw().toBuffer(), maximum = Math.max(rgb[0], rgb[1], rgb[2]);
       const kind = rgb[2] === maximum ? 'passport' : rgb[1] === maximum ? 'uae_id_front' : 'portrait'; roles.push(kind); visionCount++;
       if (visionCount === 1) { firstEnteredResolve(); await firstRelease; }

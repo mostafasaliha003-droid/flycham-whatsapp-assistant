@@ -6,6 +6,7 @@ const sharp = require('sharp');
 const {DOCUMENT_VISION_ERROR_CODES, DOCUMENT_FIELD_NAMES, SCHEMA_SECTIONS, SCHEMA_ISSUES} = require('./visa-document-vision');
 const VISION_REASONS = new Set(DOCUMENT_VISION_ERROR_CODES);
 function safeVisionReason(failure) { try { const code = failure?.code; return typeof code === 'string' && code.length <= 80 && VISION_REASONS.has(code) ? code : undefined; } catch { return undefined; } }
+function safeProviderStatus(failure) {try {const status=failure?.providerStatus;return Number.isInteger(status)&&status>=400&&status<=599?{providerStatus:status}:{};}catch{return {};}}
 function safeSchemaDiagnostics(failure, reason) {
   if (reason !== 'DOCUMENT_VISION_SCHEMA_INVALID') return {};
   try {
@@ -46,7 +47,7 @@ function createDocumentProbe({vision, now = Date.now} = {}) {
       const fieldsRead = Object.entries(EXPECTED).filter(([field, value]) => result?.fields?.[field]?.visible === true && result.fields[field].value === value).length;
       const ok = result?.kind === 'passport' && result?.readable === true && fieldsRead === Object.keys(EXPECTED).length;
       return {ok, synthetic: true, providerResponded: true, fieldsRead, expectedFields: Object.keys(EXPECTED).length, status: ok ? 200 : 422, ...(!ok ? {stage} : {})};
-    } catch (failure) { const reason = safeVisionReason(failure); return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503, stage, ...(reason ? {reason, ...safeSchemaDiagnostics(failure, reason)} : {})}; }
+    } catch (failure) { const reason = safeVisionReason(failure); return {ok: false, synthetic: true, error: 'DOCUMENT_PROBE_UNAVAILABLE', status: 503, stage, ...safeProviderStatus(failure), ...(reason ? {reason, ...safeSchemaDiagnostics(failure, reason)} : {})}; }
     finally { busy = false; }
   };
 }

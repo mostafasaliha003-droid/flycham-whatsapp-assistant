@@ -15,7 +15,7 @@ async function check({env = process.env, fetchImpl = fetch} = {}) {
   const result = await fetchImpl(base + '/document-ocr/probe', {method: 'POST', headers: {...headers, 'x-accountant-key': env.RAAD_ACCOUNTANT_KEY}, redirect: 'error', signal: AbortSignal.timeout(75000)});
   const data = await result.json();
   const safe = {http: result.status, provider: 'cline', model: documentOcr.model, ok: data.ok === true, synthetic: data.synthetic === true};
-  for (const name of ['fieldsRead', 'expectedFields', 'durationMs']) if (Number.isFinite(data[name])) safe[name] = data[name];
+  for (const name of ['fieldsRead', 'expectedFields', 'durationMs', 'providerStatus']) if (Number.isFinite(data[name])) safe[name] = data[name];
   for (const name of ['error', 'reason', 'stage', 'schemaSection', 'fieldName', 'schemaIssue']) if (typeof data[name] === 'string' && /^[A-Za-z_]{1,80}$/.test(data[name])) safe[name] = data[name];
   return safe;
 }
