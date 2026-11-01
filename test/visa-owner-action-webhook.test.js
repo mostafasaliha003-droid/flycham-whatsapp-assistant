@@ -13,7 +13,7 @@ const SECRET = 'synthetic-owner-action-webhook-secret';
 const source = readFileSync(require.resolve('../src/server'), 'utf8');
 const handler = source.slice(source.indexOf('async function handleWebhookPost('), source.indexOf('\nfunction customerSearchActive'));
 
-function fixture({ok = true} = {}) {
+function fixture({ok = true, operator = false} = {}) {
   const events = [], codes = [], sends = [], accepted = new Set();
   const store = {data: {}, save() {}};
   const journal = new ConversationJournal({store});
@@ -25,6 +25,7 @@ function fixture({ok = true} = {}) {
     recordDeliveryStatuses() {}, journal, complaints: {handleReceipt() {}}, assistant: {store},
     quoteJobs: {acceptMessage(id) { if (accepted.has(id)) return false; accepted.add(id); return true; }, save() {}},
     noteIncoming() { events.push('incoming'); },
+    visaOperatorNotices:{handles:message=>operator&&Boolean(message.visaOperatorAction),async receive(message){assert.equal(message.from,OWNER);assert.equal(message.contextId,'accepted-task-notice');assert.equal(message.visaOperatorAction.noticeId,CHALLENGE);assert.equal(journal.get(OWNER).messages.at(-1).text,'[متابعة إشعار التحقق المرئي]');events.push('operator-notice');return{ok:true};}},
     visaFulfilment: {
       recordDelivery() {}, otpOwner: () => OWNER,
       openOwnerAction(input) {
@@ -83,3 +84,5 @@ test('subsequent OTP reaches only the ephemeral consumer and is redacted before 
   assert.equal(f.codes.length, 1); assert.equal(f.codes[0].contextId, 'actual-otp-prompt'); assert.equal(f.codes[0].text, '418073');
   assert.equal(JSON.stringify(f.journal.data).includes('418073'), false);
 });
+
+test('visual-verification notice reply is signed, redacted and isolated from OTP and customer routing',async()=>{const f=fixture({operator:true}),message={...f.action('operator-action'),button:{payload:'visa_operator_action:'+CHALLENGE,text:'UNTRUSTED'}};assert.equal(await f.inbound(message),200);assert.deepEqual(f.events,['incoming','journal','operator-notice']);assert.equal(f.codes.length,0);assert.equal(f.sends.length,0);await f.inbound(message);assert.equal(f.events.filter(e=>e==='operator-notice').length,1);});

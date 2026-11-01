@@ -16,6 +16,7 @@ const {handleRaadRequest}=require('./raad-http');
 const {VisaFulfilment}=require('./visa-fulfilment');
 const {VisaPortalDispatcher}=require('./visa-portal-dispatcher');
 const {createVisaOperatorHttp}=require('./visa-operator-http');
+const {VisaOperatorNotifications}=require('./visa-operator-notifications');
 const {createVisaFulfilmentHttp}=require('./visa-fulfilment-http');
 const {createVisaWhatsAppAdapter}=require('./visa-whatsapp');
 const {createVisaSetup}=require('./visa-setup-http');
@@ -95,14 +96,15 @@ async function sendRequestChoiceMessage(to,text,choiceId){
 }
 const deliveries=new Map();
 const visaWhatsApp=createVisaWhatsAppAdapter({env:process.env,mediaStore:visaMedia,journal});
-let visaDispatcher;
+let visaDispatcher,visaOperatorNotices;
 const visaFulfilment=new VisaFulfilment({store:assistant.store,inbox,journal,mediaStore:visaMedia,raad,env:process.env,canAutomate:id=>!inbox.isHumanOwned(id),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata);const messageId=result?.messages?.[0]?.id;if(messageId&&journal.hasCustomer(to))journal.recordOutbound(to,{id:messageId,text:payload.type==='document'?'[نسخة طلب تأشيرة PDF]':payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),resumeOtp:input=>visaDispatcher.resumeOtp(input)});
 visaDocumentIntake=new VisaDocumentIntake({store:assistant.store,mediaStore:visaMedia,vision:documentVision,mrzVision:opticalMrz,raad,fulfilment:visaFulfilment,inbox,env:process.env,report:(code,metadata)=>{if(code==='DOCUMENT_BINDING_REVIEW')console.log(code,JSON.stringify(metadata));},onUpdate:customer=>{if(documentFeedbackAllowed(customer))Promise.resolve(visaDocumentNotifications?.update(customer)).then(()=>visaDocumentNotifications?.flush(customer)).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));wakeVisa();}});
 visaDocumentNotifications=new VisaDocumentNotifications({store:assistant.store,documentIntake:visaDocumentIntake,inbox,isInboundBusy:customer=>batcher.busy(customer),send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata),messageId=result?.messages?.[0]?.id;if(messageId)journal.recordOutbound(to,{id:messageId,text:payload.text,actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;})});
 const visaUploads=new VisaUploadService({store:assistant.store,mediaStore:visaMedia,documentIntake:visaDocumentIntake,inbox,env:process.env,onComplete:({customer,mediaIds})=>{for(const id of mediaIds){visaDocumentIntake.enqueue(customer,id);const file=visaMedia.get(id,{customer});if(file.mimeType==='application/pdf')visaPdfAuto.enqueue(customer,id);}visaDocumentIntake.wake();}});
 const visaPreparedDelivery=createVisaPreparedDelivery({store:assistant.store,mediaStore:visaMedia,documentIntake:visaDocumentIntake,inbox,journal,send:(to,payload,guard,metadata)=>orderedDelivery(to,async()=>{const result=await visaWhatsApp.send(to,payload,guard,metadata),messageId=result?.messages?.[0]?.id;if(messageId)journal.recordOutbound(to,{id:messageId,text:'[صورة المستند المجهزة]',actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;})});
 const visaDocumentConversation=createVisaDocumentConversation({store:assistant.store,documentIntake:visaDocumentIntake,createUploadLink:customer=>visaUploads.createLink(customer),sendPrepared:(customer,options)=>visaPreparedDelivery.sendPrepared(customer,options)});
-visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady()});
+visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady(),operatorNotice:async job=>{visaOperatorNotices.observe(job);await visaOperatorNotices.flush();}});
+visaOperatorNotices=new VisaOperatorNotifications({store:assistant.store,fulfilment:visaFulfilment,dispatcher:visaDispatcher,send:(input,guard)=>orderedDelivery(input.recipient,async()=>{const result=await visaWhatsApp.sendOperatorNotice(input,guard),messageId=result.messages?.[0]?.id||result.noticeMessageId;if(messageId&&journal.hasCustomer(input.recipient))journal.recordOutbound(input.recipient,{id:messageId,text:'[إشعار إكمال التحقق المرئي]',actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),report:metadata=>console.log('VISA_OPERATOR_NOTICE_'+JSON.stringify(metadata))});
 const handleVisaOperator=createVisaOperatorHttp({dispatcher:visaDispatcher,wake:()=>wakeVisa()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
@@ -318,6 +320,12 @@ async function handleWebhookPost(request, response) {
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
     quoteJobs.save();noteIncoming(assistant.store,message.from);
+    if(visaOperatorNotices.handles(message)){
+      journal.recordInbound(message.from,{id:message.id,text:'[متابعة إشعار التحقق المرئي]',timestamp:message.timestamp,name:message.name});
+      const result=await visaOperatorNotices.receive(message);message.text='';
+      if(result.reply)await rawSendTextMessage(message.from,result.reply).catch(()=>{});
+      continue;
+    }
     if(message.visaOwnerAction){
       journal.recordInbound(message.from,{id:message.id,text:'[متابعة إجراء التأشيرة]',timestamp:message.timestamp,name:message.name});
       const result=visaFulfilment.openOwnerAction({sender:message.from,challengeId:message.visaOwnerAction.challengeId,contextId:message.contextId});
@@ -505,7 +513,7 @@ function createServer() {
   });
   const sweep=setInterval(()=>{
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
-   if(visaEnabled()){visaMedia.prune();visaUploads.prune();visaPreparedDelivery.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
+   if(visaEnabled()){visaMedia.prune();visaUploads.prune();visaPreparedDelivery.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaOperatorNotices.flush().catch(()=>console.log('VISA_OPERATOR_NOTICE_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
    for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
@@ -513,6 +521,7 @@ function createServer() {
 }
 
 if (require.main === module) {
+  visaWhatsApp.notificationReadiness().then(status=>console.log('VISA_OPERATOR_NOTICE_CONFIGURATION_'+JSON.stringify({configured:Boolean(visaOperatorNotices.recipient()),templateReady:status.ownerTemplateApproved===true}))).catch(()=>console.log('VISA_OPERATOR_NOTICE_CONFIGURATION_UNAVAILABLE'));
   require('./visa-document-smoke').runDocumentSmoke({vision:documentVision,store:assistant.store}).catch(()=>console.log('DOCUMENT_VISION_SMOKE_UNAVAILABLE'));
   const startupConsultant=consultantEnabled(process.env)?runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE')):Promise.resolve();
   startupConsultant.then(()=>require('./cline-model-evaluation').runClineModelEvaluation({store:assistant.store})).catch(()=>console.log('CLINE_MODEL_EVAL_UNAVAILABLE'));
