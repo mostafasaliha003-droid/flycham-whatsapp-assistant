@@ -31,7 +31,8 @@ const {visaEnabled,activeService,incomingRevision,noteIncoming,routeService,isCo
 const {createMofaCaptchaBridge}=require('./mofa-captcha-bridge');
 const handleMofaCaptcha=createMofaCaptchaBridge().handler;
 const {GmailOTP,gmailHandler}=require('./gmail-otp');
-const handleGmail=gmailHandler(new GmailOTP());
+const gmailOtp=new GmailOTP();
+const handleGmail=gmailHandler(gmailOtp);
 
 
 const http = require('node:http');
@@ -521,6 +522,7 @@ function createServer() {
 }
 
 if (require.main === module) {
+  if(process.env.RAAD_GMAIL_ACCESS_HEALTH_ENABLED==='true')gmailOtp.accessHealth().then(status=>console.log('RAAD_GMAIL_ACCESS_HEALTH_'+JSON.stringify(status))).catch(()=>console.log('RAAD_GMAIL_ACCESS_HEALTH_UNAVAILABLE'));
   visaWhatsApp.notificationReadiness().then(status=>console.log('VISA_OPERATOR_NOTICE_CONFIGURATION_'+JSON.stringify({configured:Boolean(visaOperatorNotices.recipient()),templateReady:status.ownerTemplateApproved===true}))).catch(()=>console.log('VISA_OPERATOR_NOTICE_CONFIGURATION_UNAVAILABLE'));
   require('./visa-document-smoke').runDocumentSmoke({vision:documentVision,store:assistant.store}).catch(()=>console.log('DOCUMENT_VISION_SMOKE_UNAVAILABLE'));
   const startupConsultant=consultantEnabled(process.env)?runConsultantSmoke({env:process.env}).then(result=>{consultantSmoke=result;console.log('CONSULTANT_SMOKE_'+JSON.stringify(result));}).catch(()=>console.log('CONSULTANT_SMOKE_UNAVAILABLE')):Promise.resolve();
