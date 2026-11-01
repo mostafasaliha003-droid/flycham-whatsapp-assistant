@@ -42,7 +42,7 @@ test('successful document feedback works before payment without changing finance
 test('needs confirmation with awaiting payment tells the next step without unbound questions or payment claims', async () => {
   const f = fixture({status: 'needs_confirmation'}); f.raw.awaitingPayment = true;
   const item = f.service.update(CUSTOMER); await f.service.flush();
-  assert.match(item.payload.text, /نراجع الخانات المستندية من الصفحات الموجودة والتوضيحات السابقة/); assert.doesNotMatch(item.payload.text, /سنطلب منك تأكيدها/); assert.match(item.payload.text, /لن نملأها بالتخمين/);
+  assert.match(item.payload.text, /مراجعة بيانات المستندات لم تكتمل/); assert.doesNotMatch(item.payload.text, /منكمل مراجعة|اكتملت قراءة|يتابع تنفيذ/); assert.match(item.payload.text, /لم يتأكد حفظ الطلب/);
   assert.equal(item.payload.type, 'text'); assert.equal(Object.hasOwn(item.payload, 'token'), false);
   assert.equal(f.store.data.visaFulfilment, undefined); assert.equal(f.c.paymentStatus, 'unverified');
 });
