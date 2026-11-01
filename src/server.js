@@ -354,7 +354,16 @@ function claimJob(provider,{includeCatalog=true}={}){const j=quoteJobs.claim(pro
 
 function createServer() {
   const server=http.createServer(async (request, response) => {
-    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    let url;
+    try {
+      url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    } catch {
+      response.writeHead(400, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Connection': 'close'
+      }).end('Invalid request');
+      return;
+    }
     if(await handleMofaCaptcha(request,response,url,{readBody}))return;
     if(await handleGmail(request,response,url,{readBody}))return;
     if(await handleVoucherRequest(request,response,url,{readBody,sendImage:sendImageMessage}))return;
