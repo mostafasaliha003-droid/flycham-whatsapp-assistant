@@ -22,10 +22,10 @@ ARTIFACTS = ROOT / 'artifacts'
 APP = Path('/app')
 NODE = '/opt/node/bin/node'
 NPM = '/opt/node/lib/node_modules/npm/bin/npm-cli.js'
-COMMIT = '46963b57c5490afcd2e9da15468cce52234f931a'
-TREE = '3c67dbdd818448f102395581a8dac32004eca5d2'
-FINGERPRINT = 'a866c28ea01f64f8fdf90cb58de6953884b570bd3400d61e917eb5e74727ef5d'
-NONCE = 'raad-validation-20261031-v16-46963b5-01'
+COMMIT = 'ad16a50edb11f859102e3b91bf85db2fab9b5442'
+TREE = 'b9747bfbf28809cf0c1e470148169b192bd040e3'
+FINGERPRINT = '7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712'
+NONCE = 'raad-validation-20261101-ad16a50-01'
 BASE_DIGEST = 'sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e'
 
 
@@ -197,7 +197,7 @@ def probe(phase):
 def profile_controls():
     home = ROOT / 'profile-home'; temporary = ROOT / 'profile-tmp'
     for directory in [home, temporary]: directory.mkdir(exist_ok=False)
-    names = ['inbox-automation-transition', 'visa-document-intake-profiles', 'visa-mrz-composition', 'visa-mrz-consent', 'visa-mrz-durable-budget', 'visa-mrz-production', 'visa-mrz-profiles', 'visa-upload-consent', 'raad-machine-dossier', 'visa-upload-ui', 'visa-fulfilment', 'visa-fulfilment-http']
+    names = ['inbox-automation-transition', 'visa-document-intake-profiles', 'visa-mrz-composition', 'visa-mrz-consent', 'visa-mrz-durable-budget', 'visa-mrz-production', 'visa-mrz-profiles', 'visa-upload-consent', 'raad-machine-dossier', 'visa-upload-ui', 'visa-fulfilment', 'visa-fulfilment-http', 'saudi-visa-engine']
     command = [NODE, '--test', '--test-reporter=tap', '--test-concurrency=2', *['test/' + n + '.test.js' for n in names]]
     log = ARTIFACTS / 'profile-controls/test.log'
     step = run(command, clean_env(home, temporary), log, 120)
@@ -209,7 +209,7 @@ def profile_controls():
               'persistentMountClaimed': False, 'liveActions': 0}
     dump(ARTIFACTS / 'profile-controls/result.json', result)
     assert step['exitCode'] == 0 and not step['timedOut']
-    assert counts['tests'] == counts['pass'] == 275
+    assert counts['tests'] == counts['pass'] == 318
     assert all(counts[name] == 0 for name in ['fail', 'cancelled', 'skipped', 'todo'])
 
 
@@ -240,7 +240,7 @@ def finish(info):
     dump(ARTIFACTS / 'result.json', {'success': True, 'functionalCommit': COMMIT,
         'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 431,
         'buildNonce': NONCE, 'baselineChecks': 4, 'pdfChecks': 3, 'startupPassed': True,
-        'profileControlFiles': 12, 'profileControlsPassed': True,
+        'profileControlFiles': 13, 'profileControlsPassed': True,
         'freshInstallPassed': True, 'lockUnchanged': True, 'fullSuiteRerun': False,
         'validationNetwork': 'Dockerfile RUN --network=none', 'accuracyClaimed': False,
         'scope': 'derived_debian12_validation_not_platform_image_equivalence',
@@ -251,7 +251,7 @@ def finish(info):
         'buildNonce': NONCE, 'nodeVersion': 'v26.13.0', 'npmVersion': '11.20.0', 'debianVersion': '12',
         'glibcVersion': '2.36', 'pdfToolsVersion': '22.12.0', 'freshInstallPassed': True,
         'lockUnchanged': True, 'baselineChecks': 4, 'startupPassed': True, 'pdfChecks': 3,
-        'profileControlFiles': 12, 'profileControlsPassed': True,
+        'profileControlFiles': 13, 'profileControlsPassed': True,
         'baseImageDigest': BASE_DIGEST, 'sourceSnapshotSha256': info['sourceSnapshotSha256'],
         'evidenceSha256': digest, 'evidenceBytes': size, 'evidenceChunks': chunks,
         'scope': 'derived_debian12_validation_not_platform_image_equivalence',

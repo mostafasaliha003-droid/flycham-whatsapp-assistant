@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # TEST ONLY: a derived Debian/Node baseline, not Render native-image equivalence.
 FROM debian:bookworm-slim@sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e AS runtime-deps
-ARG RAAD_VALIDATION_NONCE=raad-validation-20261031-v16-46963b5-01
+ARG RAAD_VALIDATION_NONCE=raad-validation-20261101-ad16a50-01
 RUN printf '%s\n' "$RAAD_VALIDATION_NONCE" > /raad-validation-build-nonce \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 \

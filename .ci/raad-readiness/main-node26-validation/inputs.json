@@ -1,8 +1,8 @@
 {
-  "functionalCommit": "46963b57c5490afcd2e9da15468cce52234f931a",
-  "functionalTree": "3c67dbdd818448f102395581a8dac32004eca5d2",
-  "applicationFingerprintSha256": "a866c28ea01f64f8fdf90cb58de6953884b570bd3400d61e917eb5e74727ef5d",
-  "sourceSnapshotSha256": "1469392bf035bcb089711075742e9bb447952cef6d5c15da0a665d508ff2efe4",
+  "functionalCommit": "ad16a50edb11f859102e3b91bf85db2fab9b5442",
+  "functionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
+  "applicationFingerprintSha256": "7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712",
+  "sourceSnapshotSha256": "4b0a5e673f65fcfd940373f14186ca2eb591578315fb45f6e35e637174103c93",
   "files": {
     ".dockerignore": {
       "bytes": 619,
@@ -837,8 +837,8 @@
       "sha256": "c347302770c571a5438a81c2f1b848676b69521dc244e26405f3df3173361934"
     },
     "src/saudi-visa-engine.js": {
-      "bytes": 40453,
-      "sha256": "8041d4252d126f13f771b0f3237ea9cf2a2098f10df752d69977d5baba448fff"
+      "bytes": 40304,
+      "sha256": "ea23c37bf93a617dabad1b06c435b9a30bf98640d5160f7c1b3eab8b5daa1d71"
     },
     "src/saudi-visa-nlu.js": {
       "bytes": 12105,
@@ -1465,8 +1465,8 @@
       "sha256": "ba31403591457a09ee2da5d61c09ea7cf041d067e0eb0f9dc27ba8bb694f6ef2"
     },
     "test/saudi-visa-engine.test.js": {
-      "bytes": 23919,
-      "sha256": "78f21ece60e3e84e9da5203c1d572a0b6a1e4e21b3bd6cbc0b8dd5def97dbd49"
+      "bytes": 30080,
+      "sha256": "92bd033c2114bb163b2c64e1a1f1802dc331508845c78a7fdca36c6536f693e3"
     },
     "test/saudi-visa-nlu.test.js": {
       "bytes": 5427,
@@ -1729,24 +1729,24 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "buildNonce": "raad-validation-20261031-v16-46963b5-01",
   "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
   "nodeArchiveSha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
   "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
   "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
+  "firstPartyFiles": 445,
+  "buildNonce": "raad-validation-20261101-ad16a50-01",
   "toolFiles": {
-    "Dockerfile.validation": "b161385b53e468d06a55cffb3500be67763d059727f2cbdede5536be4b87565c",
+    "Dockerfile.validation": "eade1e657b088329b3675ec34dfc69f8385e0af612e18100918fadc618cab9e4",
     "Dockerfile.validation.dockerignore": "8222c6098ca87bea41c036cc56fc0267c7eb37e2b8fa82ef26b425a006ab8b36",
-    "build-gate.py": "a60306d16c0b4bf43cd5beed5c596fdbab73d0fac1b9c820664dd1d6d9db4a6d",
-    "expected-source-manifest.json": "7a2bcb7b297907f062ef47d404587740ea4b5dfd36251b8b64e54edf405dbbd7",
+    "build-gate.py": "31d5d9f0c4f3a33020e1648a708bb22b777eadcf4dd5456a6aa8756d5c1501ec",
+    "expected-source-manifest.json": "b461392380cec17bfd49fa07606bc17f13bb2d4606e4bb899a033339daac2588",
     "loopback-network-guard.cjs": "53438dae447b08fe1e341b0c1b5d6ab15a7e9576c18cd90bbfabe9abd44d8d0a",
     "main-native-smoke.cjs": "05a7c3c7921fc5af01ad41ceefb544581ee2085c4c0e7f8d6b7cf4fe2116d4de",
     "main-start-preload.cjs": "43ab76f7ab71488e69d93091c1ee645d27b75e5b3205bc154ec54d7144a5e78d",
     "native-probe.cjs": "6a7860d1a544def6798784eb6649be56d90b8c962c386413912bdd9a442c7efc",
-    "report-server.cjs": "d3a593aef0fd7e069d5a26c4bfa47ac6ec70d4c4979f320eea4879a8c845bc45",
-    "target-runtime-provenance.json": "466f28982f825905bbc6ea44b76656928700db8a0983bdf528c9adf101b203f3",
+    "report-server.cjs": "4b8812ccc0c70be1a781a1664c52b4f31faf5cd9a0772f782297c7e5d40d4f2e",
+    "target-runtime-provenance.json": "df3de97c28111e50e0f3094991be12841f5f556b830a97eecb7d24b81f13fea9",
     "verify-main-start.py": "e9f0608aea46ec7ce70ef6ac2b3e9324e8918891b1ecd0f0ad6009b0e74ed299"
   },
-  "firstPartyFiles": 445,
-  "sourceFreezeSha256": "b1eb26e5d25179e1e057e6ce7b6910a02cdea2e1bb6d5dcb12ab80701faabfb2"
+  "sourceFreezeSha256": "b67e5d8e5b6834a9c5b5cbc0d2326460d93a301d030edda18e9432fc86166845"
 }

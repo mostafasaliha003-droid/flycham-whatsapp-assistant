@@ -1,8 +1,8 @@
 {
-  "functionalCommit": "46963b57c5490afcd2e9da15468cce52234f931a",
-  "functionalTree": "3c67dbdd818448f102395581a8dac32004eca5d2",
-  "applicationFingerprintSha256": "a866c28ea01f64f8fdf90cb58de6953884b570bd3400d61e917eb5e74727ef5d",
-  "sourceSnapshotSha256": "1469392bf035bcb089711075742e9bb447952cef6d5c15da0a665d508ff2efe4",
+  "functionalCommit": "ad16a50edb11f859102e3b91bf85db2fab9b5442",
+  "functionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
+  "applicationFingerprintSha256": "7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712",
+  "sourceSnapshotSha256": "4b0a5e673f65fcfd940373f14186ca2eb591578315fb45f6e35e637174103c93",
   "files": {
     ".dockerignore": {
       "bytes": 619,
@@ -837,8 +837,8 @@
       "sha256": "c347302770c571a5438a81c2f1b848676b69521dc244e26405f3df3173361934"
     },
     "src/saudi-visa-engine.js": {
-      "bytes": 40453,
-      "sha256": "8041d4252d126f13f771b0f3237ea9cf2a2098f10df752d69977d5baba448fff"
+      "bytes": 40304,
+      "sha256": "ea23c37bf93a617dabad1b06c435b9a30bf98640d5160f7c1b3eab8b5daa1d71"
     },
     "src/saudi-visa-nlu.js": {
       "bytes": 12105,
@@ -1465,8 +1465,8 @@
       "sha256": "ba31403591457a09ee2da5d61c09ea7cf041d067e0eb0f9dc27ba8bb694f6ef2"
     },
     "test/saudi-visa-engine.test.js": {
-      "bytes": 23919,
-      "sha256": "78f21ece60e3e84e9da5203c1d572a0b6a1e4e21b3bd6cbc0b8dd5def97dbd49"
+      "bytes": 30080,
+      "sha256": "92bd033c2114bb163b2c64e1a1f1802dc331508845c78a7fdca36c6536f693e3"
     },
     "test/saudi-visa-nlu.test.js": {
       "bytes": 5427,
