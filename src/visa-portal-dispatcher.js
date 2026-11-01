@@ -23,7 +23,11 @@ class VisaPortalDispatcher{
   if(paused&&typeof this.notificationReadiness==='function'){try{this.fulfilment.requeueApprovedNotifications(await this.notificationReadiness());}catch{ /* Unverified templates do not authorize an automatic retry. */ }}
   for(const item of this.fulfilment.pendingMessages()){
    if(item.kind==='applicant_question'){const job=this.fulfilment.data().jobs[item.jobId],first=Object.values(job?.questions||{}).find(q=>q.state==='pending');if(first?.token!==item.payload.token)continue;const sibling=Object.values(this.fulfilment.data().jobs).find(j=>j.customer===item.customer&&j.applicantIndex<job.applicantIndex&&['awaiting_answers','awaiting_answer_confirmation','needs_followup'].includes(j.state));if(sibling)continue;}
-   await this.fulfilment.dispatchMessage(item.id);
+   const sent=await this.fulfilment.dispatchMessage(item.id);
+   if(['applicant_question','applicant_answer_summary','owner_otp_request'].includes(item.kind)){
+    const job=this.fulfilment.data().jobs[item.jobId];
+    console.info('[VISA_WORKFLOW_DELIVERY] '+JSON.stringify({caseHash:digest(String(job?.caseId||'')).slice(0,12),kind:item.kind,state:['accepted','delivered','cancelled','failed','uncertain'].includes(sent?.state)?sent.state:'unconfirmed'}));
+   }
   }
  }
  async cancelOwned(id){const result=await this.request('/internal/raad/jobs/'+id+'/cancel',{body:{}});if(result.stage!=='cancelled'||result.ownedBrowserClosed!==true)throw Error('RAAD_CANCEL_UNCONFIRMED');return result;}
@@ -113,13 +117,19 @@ class VisaPortalDispatcher{
     const expectedFingerprint=verify();
     phase='owner_delivery';if(typeof this.ownerNotificationReady!=='function'||await this.ownerNotificationReady()!==true){diagnostic('OWNER_NOTIFICATION_NOT_READY');continue;}
     phase='remote_record';
-    const remote=await this.request('/internal/raad/jobs/'+job.id);
+    let remote,recordMissing=false;
+    try{remote=await this.request('/internal/raad/jobs/'+job.id);}catch(error){if(error?.status===404&&refreshDocuments)recordMissing=true;else throw error;}
     // Cancellation scrubs the phase but retains save/uncertainty and binding
     // proof. A missing record or an ambiguous save never permits a restart.
-    if(remote.jobId!==job.id||remote.caseSignature!==job.caseSignature||remote.applicantIndex!==job.applicantIndex||remote.saved!==false||remote.reference!==null||remote.submissionUncertain!==false||remote.paymentAttempted!==false||remote.ownedBrowserClosed!==true||!(remote.stage==='cancelled'&&remote.phase==='done'||remote.stage==='blocked'&&remote.phase==='application_sms'&&remote.blocker?.code==='OTP_CHALLENGE_EXPIRED')){diagnostic('REMOTE_UNSAVED_PROOF_REQUIRED');continue;}
+    if(!recordMissing&&(remote.jobId!==job.id||remote.caseSignature!==job.caseSignature||remote.applicantIndex!==job.applicantIndex||remote.saved!==false||remote.reference!==null||remote.submissionUncertain!==false||remote.paymentAttempted!==false||remote.ownedBrowserClosed!==true||!(remote.stage==='cancelled'&&remote.phase==='done'||remote.stage==='blocked'&&remote.phase==='application_sms'&&remote.blocker?.code==='OTP_CHALLENGE_EXPIRED'))){diagnostic('REMOTE_UNSAVED_PROOF_REQUIRED');continue;}
     phase='worker_health';const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
     phase='remote_cleanup';
-    await this.cancelOwned(job.id);verify(expectedFingerprint);
+    const cleanup=await this.cancelOwned(job.id);
+    // An evicted remote record authorizes only local document restaging,
+    // never automatic execution. Require explicit absence/idle proof, renew
+    // applicant consent, and retain the worker's existing-application lookup.
+    if(recordMissing&&(cleanup.absent!==true||cleanup.jobId!==job.id)){diagnostic('REMOTE_ABSENCE_UNCONFIRMED');continue;}
+    verify(expectedFingerprint);
     if(refreshDocuments){
      // Changed document evidence invalidates the old consent. Restage only
      // after remote unsaved proof, and require a fresh applicant confirmation.
