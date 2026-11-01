@@ -7,7 +7,7 @@ const sharp = require('sharp');
 const {createHash} = require('node:crypto');
 const {parseTD3MRZ} = require('./raad-document-validation');
 
-const MODEL = 'gemma-4-26b-a4b-it';
+const MODEL = 'gemini-3.5-flash';
 const MRZ_VISION_POLICY = 'raad-td3-mrz-vision-2026-10-29.v1';
 const MAX_MRZ_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_MRZ_IMAGE_PIXELS = 4 * 1024 * 1024;

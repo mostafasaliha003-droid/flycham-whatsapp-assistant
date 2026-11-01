@@ -16,5 +16,5 @@ COPY .ci/security-fix-validation/report-server.cjs /report/report-server.cjs
 COPY .ci/security-fix-validation/source-manifest.json /report/source-manifest.json
 RUN useradd --user-group --create-home --uid 10001 remal-validator && chown -R remal-validator:remal-validator /app /report
 USER remal-validator
-RUN node /report/run-ci.cjs ed93013ee337afd0562415dda119a3bb0b08e8e3
+RUN node /report/run-ci.cjs c4b43c0935133a2b0979793943fa12f981b85e42
 CMD ["node", "/report/report-server.cjs"]
