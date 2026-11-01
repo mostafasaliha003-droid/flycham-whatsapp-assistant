@@ -68,7 +68,7 @@ for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCu
 const portalMonitor=new PortalMonitor();
 const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
-const documentVision=createDocumentVision({env:process.env,fetchImpl:(...args)=>fetch(...args)});
+const documentVision=createDocumentVision({env:process.env,budgetStore:assistant.store,fetchImpl:(...args)=>fetch(...args)});
 const opticalMrz=createOpticalMrz();
 if(documentVision.status().enabled&&(!Number.isFinite(assistant.store.data.visaDocumentFeedbackActivatedAt)||assistant.store.data.visaDocumentFeedbackPolicy!==DOCUMENT_POLICY_FINGERPRINT||!Number.isSafeInteger(assistant.store.data.visaDocumentFeedbackAfterSequence))){assistant.store.data.visaDocumentFeedbackActivatedAt=Date.now();assistant.store.data.visaDocumentFeedbackAfterSequence=Math.max(0,(journal.data.nextSequence||1)-1);assistant.store.data.visaDocumentFeedbackPolicy=DOCUMENT_POLICY_FINGERPRINT;assistant.store.save();}
 let visaDocumentIntake,visaDocumentNotifications;

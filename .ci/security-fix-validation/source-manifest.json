@@ -916,7 +916,7 @@
   },
   {
     "path": "src/server.js",
-    "sha": "a141aa72dac89f38917e4742f07a85fb6cedbd9b",
+    "sha": "e58a77e3b2f07f1d2f8c47e168cc7df9b105ab8f",
     "mode": "100644"
   },
   {
@@ -986,7 +986,7 @@
   },
   {
     "path": "src/visa-document-vision.js",
-    "sha": "66ab7dabd63274829c6ec12efae6eb7ec854cfc8",
+    "sha": "cb3f974b8825fb305f8f25f00997c2ca1186ac14",
     "mode": "100644"
   },
   {
@@ -1726,7 +1726,7 @@
   },
   {
     "path": "test/visa-document-vision.test.js",
-    "sha": "4e325a67b2d57dfa4cd1face241b574151da52e2",
+    "sha": "04404bc5c24488806e9e78e4a90aee3cb5cd70dc",
     "mode": "100644"
   },
   {
