@@ -1,77 +1,40 @@
 'use strict';
-// Fresh final image: aggregate-only stdlib reporter, no app or evidence routes.
-const http = require('node:http');
-const EXPECTED = Object.freeze({
-  "kind": "isolated_main_node26_validation",
+// Aggregate-only reporter: no application, evidence or UI routes.
+const http=require('node:http');
+const EXPECTED=Object.freeze({
+  "kind": "isolated_worker_image_validation",
   "functionalCommit": "ad16a50edb11f859102e3b91bf85db2fab9b5442",
   "functionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
   "applicationFingerprintSha256": "7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712",
   "applicationFiles": 431,
-  "buildNonce": "raad-validation-20261101-ad16a50-01",
-  "nodeVersion": "v26.13.0",
-  "npmVersion": "11.20.0",
-  "debianVersion": "12",
-  "glibcVersion": "2.36",
-  "pdfToolsVersion": "22.12.0",
+  "buildNonce": "raad-validation-20261101-ad16a50-worker-01",
+  "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
+  "baseImageTag": "mcr.microsoft.com/playwright:v1.64.0-noble",
+  "baseImageDigestObserved": false,
+  "sourceSnapshotSha256": "4b0a5e673f65fcfd940373f14186ca2eb591578315fb45f6e35e637174103c93",
   "freshInstallPassed": true,
   "lockUnchanged": true,
-  "baselineChecks": 4,
-  "startupPassed": true,
-  "pdfChecks": 3,
+  "nativeChecks": 12,
+  "raadOverrideHealthPassed": true,
   "profileControlFiles": 13,
+  "profileControlTests": 318,
   "profileControlsPassed": true,
-  "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
-  "sourceSnapshotSha256": "4b0a5e673f65fcfd940373f14186ca2eb591578315fb45f6e35e637174103c93",
-  "scope": "derived_debian12_validation_not_platform_image_equivalence",
+  "scope": "additive_original_worker_recipe_with_pre_tool_overlay_native_checks",
   "fullSuiteRerun": false,
   "mrzAccuracyClaimed": false,
   "buildOnly": true,
   "releaseReady": false,
   "liveActions": 0
 });
-const KEYS = Object.freeze(["kind", "functionalCommit", "functionalTree", "applicationFingerprintSha256", "applicationFiles", "buildNonce", "nodeVersion", "npmVersion", "debianVersion", "glibcVersion", "pdfToolsVersion", "freshInstallPassed", "lockUnchanged", "baselineChecks", "startupPassed", "pdfChecks", "profileControlFiles", "profileControlsPassed", "baseImageDigest", "sourceSnapshotSha256", "scope", "fullSuiteRerun", "mrzAccuracyClaimed", "buildOnly", "releaseReady", "liveActions", "evidenceSha256", "evidenceBytes", "evidenceChunks"]);
-const SHA256 = /^[a-f0-9]{64}$/;
-const INVALID = 'REPORT_SUMMARY_INVALID';
-function validateSummary(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
-      || Object.keys(value).length !== KEYS.length
-      || !KEYS.every(key => Object.hasOwn(value, key))) throw Error(INVALID);
-  for (const key of Object.keys(EXPECTED)) if (value[key] !== EXPECTED[key]) throw Error(INVALID);
-  if (typeof value.evidenceSha256 !== 'string' || !SHA256.test(value.evidenceSha256)
-      || !Number.isSafeInteger(value.evidenceBytes) || value.evidenceBytes < 1 || value.evidenceBytes > 262144
-      || !Number.isSafeInteger(value.evidenceChunks) || value.evidenceChunks < 1 || value.evidenceChunks > 342) throw Error(INVALID);
-  return Object.freeze({
-    kind: EXPECTED.kind,
-    functionalCommit: EXPECTED.functionalCommit,
-    functionalTree: EXPECTED.functionalTree,
-    applicationFingerprintSha256: EXPECTED.applicationFingerprintSha256,
-    applicationFiles: EXPECTED.applicationFiles,
-    buildNonce: EXPECTED.buildNonce,
-    nodeVersion: EXPECTED.nodeVersion,
-    npmVersion: EXPECTED.npmVersion,
-    debianVersion: EXPECTED.debianVersion,
-    glibcVersion: EXPECTED.glibcVersion,
-    pdfToolsVersion: EXPECTED.pdfToolsVersion,
-    freshInstallPassed: EXPECTED.freshInstallPassed,
-    lockUnchanged: EXPECTED.lockUnchanged,
-    baselineChecks: EXPECTED.baselineChecks,
-    startupPassed: EXPECTED.startupPassed,
-    pdfChecks: EXPECTED.pdfChecks,
-    profileControlFiles: EXPECTED.profileControlFiles,
-    profileControlsPassed: EXPECTED.profileControlsPassed,
-    baseImageDigest: EXPECTED.baseImageDigest,
-    sourceSnapshotSha256: EXPECTED.sourceSnapshotSha256,
-    scope: EXPECTED.scope,
-    fullSuiteRerun: EXPECTED.fullSuiteRerun,
-    mrzAccuracyClaimed: EXPECTED.mrzAccuracyClaimed,
-    buildOnly: EXPECTED.buildOnly,
-    releaseReady: EXPECTED.releaseReady,
-    liveActions: EXPECTED.liveActions,
-    evidenceSha256: value.evidenceSha256,
-    evidenceBytes: value.evidenceBytes,
-    evidenceChunks: value.evidenceChunks,
-  });
+const RUNTIME_KEYS=['nodeVersion','npmVersion','glibcVersion'];
+const KEYS=[...Object.keys(EXPECTED),...RUNTIME_KEYS,'evidenceSha256','evidenceBytes','evidenceChunks'];
+const INVALID='REPORT_SUMMARY_INVALID';
+function validateSummary(value){
+ if(!value||typeof value!=='object'||Array.isArray(value)||![Object.prototype,null].includes(Object.getPrototypeOf(value))||Object.keys(value).length!==KEYS.length||!KEYS.every(k=>Object.hasOwn(value,k)))throw Error(INVALID);
+ for(const [k,v]of Object.entries(EXPECTED))if(value[k]!==v)throw Error(INVALID);
+ if(!/^v\d{2}\.\d{1,3}\.\d{1,3}$/.test(value.nodeVersion)||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value.npmVersion)||!/^\d{1,3}\.\d{1,3}$/.test(value.glibcVersion))throw Error(INVALID);
+ if(!/^[a-f0-9]{64}$/.test(value.evidenceSha256)||!Number.isSafeInteger(value.evidenceBytes)||value.evidenceBytes<1||value.evidenceBytes>262144||!Number.isSafeInteger(value.evidenceChunks)||value.evidenceChunks<1||value.evidenceChunks>342)throw Error(INVALID);
+ return Object.freeze({...EXPECTED,nodeVersion:value.nodeVersion,npmVersion:value.npmVersion,glibcVersion:value.glibcVersion,evidenceSha256:value.evidenceSha256,evidenceBytes:value.evidenceBytes,evidenceChunks:value.evidenceChunks});
 }
 function parsePort(value) {
   if (value === undefined) return 10000;

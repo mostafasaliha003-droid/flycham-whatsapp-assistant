@@ -1729,24 +1729,25 @@
       "sha256": "6a91b9f1f5b8fc74e8cb590fbb3e689d3167a2f3f084d06371569a829825f291"
     }
   },
-  "baseImageDigest": "sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e",
-  "nodeArchiveSha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
-  "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
-  "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
   "firstPartyFiles": 445,
-  "buildNonce": "raad-validation-20261101-ad16a50-01",
+  "buildNonce": "raad-validation-20261101-ad16a50-worker-01",
   "toolFiles": {
-    "Dockerfile.validation": "eade1e657b088329b3675ec34dfc69f8385e0af612e18100918fadc618cab9e4",
-    "Dockerfile.validation.dockerignore": "8222c6098ca87bea41c036cc56fc0267c7eb37e2b8fa82ef26b425a006ab8b36",
-    "build-gate.py": "31d5d9f0c4f3a33020e1648a708bb22b777eadcf4dd5456a6aa8756d5c1501ec",
+    "Dockerfile.validation": "feee02bbc00b81a0fc4b136574dd658c1058d02abe34ea46d98384e64bdae018",
+    "Dockerfile.validation.dockerignore": "723197a1298ce2071ffcd881b923a2556f7682f9dec55fbb9615800098374b0e",
+    "build-gate.py": "ef5520c13dd19d57c63d96bb7053b1e8115f81e1cd31c29b5cf8a45f89be2cf1",
     "expected-source-manifest.json": "b461392380cec17bfd49fa07606bc17f13bb2d4606e4bb899a033339daac2588",
     "loopback-network-guard.cjs": "53438dae447b08fe1e341b0c1b5d6ab15a7e9576c18cd90bbfabe9abd44d8d0a",
-    "main-native-smoke.cjs": "05a7c3c7921fc5af01ad41ceefb544581ee2085c4c0e7f8d6b7cf4fe2116d4de",
+    "main-native-smoke.cjs": "5a32f16750066adc142f1a9b0dca40df2ca36a4d9ea4799e2ffb04ce16d6d29c",
     "main-start-preload.cjs": "43ab76f7ab71488e69d93091c1ee645d27b75e5b3205bc154ec54d7144a5e78d",
-    "native-probe.cjs": "6a7860d1a544def6798784eb6649be56d90b8c962c386413912bdd9a442c7efc",
-    "report-server.cjs": "4b8812ccc0c70be1a781a1664c52b4f31faf5cd9a0772f782297c7e5d40d4f2e",
-    "target-runtime-provenance.json": "df3de97c28111e50e0f3094991be12841f5f556b830a97eecb7d24b81f13fea9",
+    "native-probe.cjs": "0b7f8d40cba3a0d81eade2c98ba1097301a2e521b852cfacc296e74c977dc26d",
+    "report-server.cjs": "538a56ecf199cc7583c12d6581e2b7c08389f642528b42a78f21bbe254cd6453",
+    "target-runtime-provenance.json": "b233fc89d01fc2c60f6397984b0e0238b2141a4ee519564792a360f2015b95fc",
     "verify-main-start.py": "e9f0608aea46ec7ce70ef6ac2b3e9324e8918891b1ecd0f0ad6009b0e74ed299"
   },
-  "sourceFreezeSha256": "b67e5d8e5b6834a9c5b5cbc0d2326460d93a301d030edda18e9432fc86166845"
+  "sourceFreezeSha256": "b67e5d8e5b6834a9c5b5cbc0d2326460d93a301d030edda18e9432fc86166845",
+  "baseImageTag": "mcr.microsoft.com/playwright:v1.64.0-noble",
+  "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
+  "expectedProfileControlFiles": 13,
+  "expectedProfileControlTests": 318,
+  "expectedNativeChecks": 12
 }

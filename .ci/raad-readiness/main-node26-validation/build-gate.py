@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Derived Debian/Node validation only. No production state or entrypoint."""
+"""Worker-image targeted validation, after native proof; no live actions."""
+from pathlib import Path, PurePosixPath
 import base64
 import gzip
 import hashlib
@@ -7,8 +8,6 @@ import io
 import json
 import os
 import re
-from pathlib import Path, PurePosixPath
-import shutil
 import signal
 import subprocess
 import sys
@@ -16,267 +15,116 @@ import tarfile
 import time
 import traceback
 
-INPUT = Path('/validation-input')
-ROOT = Path('/validation-work')
-ARTIFACTS = ROOT / 'artifacts'
-APP = Path('/app')
-NODE = '/opt/node/bin/node'
-NPM = '/opt/node/lib/node_modules/npm/bin/npm-cli.js'
-COMMIT = 'ad16a50edb11f859102e3b91bf85db2fab9b5442'
-TREE = 'b9747bfbf28809cf0c1e470148169b192bd040e3'
-FINGERPRINT = '7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712'
-NONCE = 'raad-validation-20261101-ad16a50-01'
-BASE_DIGEST = 'sha256:a3bba7dc7dbcc1f37c2856c51fc9a7fac96608f50cb87b1b4e4d8b8c85ae988e'
+INPUT=Path('/validation-input'); ROOT=Path('/validation-work'); ARTIFACTS=ROOT/'artifacts'
+COMMIT='ad16a50edb11f859102e3b91bf85db2fab9b5442'
+TREE='b9747bfbf28809cf0c1e470148169b192bd040e3'
+FP='7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712'
+NONCE='raad-validation-20261101-ad16a50-worker-01'
 
-
-def sha(raw):
-    return hashlib.sha256(raw).hexdigest()
-
-
-def durable(path, raw):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('wb') as stream:
-        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    assert path.read_bytes() == raw
-
-
-def dump(path, value):
-    durable(path, (json.dumps(value, indent=2) + '\n').encode())
-
-
-def manifest(folder):
-    return {str(p.relative_to(folder)): {'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
-            for p in sorted(folder.rglob('*')) if p.is_file()}
-
-
-def config():
-    info = json.loads((INPUT / 'inputs.json').read_text())
-    assert info['functionalCommit'] == COMMIT and info['functionalTree'] == TREE
-    assert info['applicationFingerprintSha256'] == FINGERPRINT and len(info['files']) == 431
-    assert sha(json.dumps(info['files'], sort_keys=True, separators=(',', ':')).encode()) == FINGERPRINT
-    assert info['buildNonce'] == NONCE and info['baseImageDigest'] == BASE_DIGEST
-    assert Path('/raad-validation-build-nonce').read_text().strip() == NONCE
-    for name, digest in info['toolFiles'].items():
-        assert sha((INPUT / name).read_bytes()) == digest, name
-    return info
-
-
-def verify_source(info):
-    for name, record in info['files'].items():
-        path = APP / name
-        assert path.is_file() and not path.is_symlink()
-        assert path.stat().st_size == record['bytes'] and sha(path.read_bytes()) == record['sha256'], name
-
-
-def clean_env(home, temporary):
-    return {'PATH': '/opt/node/bin:/usr/bin:/bin', 'TMPDIR': str(temporary),
-            'LANG': 'C.UTF-8', 'TZ': 'UTC', 'NODE_ENV': 'production'}
-
-
-def run(command, env, log, timeout):
-    started = time.monotonic()
-    child = subprocess.Popen(command, cwd=APP, env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    timed_out = False
-    try:
-        raw, _ = child.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        try: os.killpg(child.pid, signal.SIGTERM)
-        except ProcessLookupError: pass
-        try: raw, _ = child.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            try: os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            raw, _ = child.communicate(timeout=5)
-    finally:
-        # Do not leave descendants alive merely because their parent exited.
-        try: os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError: pass
-    assert len(raw) <= 2 * 1024 * 1024, 'VALIDATION_LOG_LIMIT'
-    durable(log, raw)
-    return {'command': command, 'exitCode': child.returncode, 'timedOut': timed_out,
-            'seconds': round(time.monotonic() - started, 3), 'stdoutEof': True,
-            'bytes': len(raw), 'sha256': sha(raw)}
-
-
-def export_evidence(success):
-    files = sorted(p for p in ARTIFACTS.rglob('*') if p.is_file())
-    for path in files:
-        assert not path.is_symlink() and path.suffix in {'.json', '.log', '.jsonl'}
-        assert not any(part in {'src', 'node_modules', 'state', 'home', 'work'}
-                       for part in path.relative_to(ARTIFACTS).parts)
-    dump(ARTIFACTS / 'evidence-index.json', {'files': manifest(ARTIFACTS), 'selfExcluded': True})
-    files = sorted(p for p in ARTIFACTS.rglob('*') if p.is_file())
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode='w') as archive:
-        for path in files:
-            raw = path.read_bytes(); member = tarfile.TarInfo(str(path.relative_to(ARTIFACTS)))
-            member.mode = 0o600; member.mtime = 0; member.size = len(raw)
-            archive.addfile(member, io.BytesIO(raw))
-    compressed = gzip.compress(stream.getvalue(), mtime=0)
-    assert 0 < len(compressed) <= 262144
-    encoded = base64.b64encode(compressed).decode('ascii')
-    chunks = [encoded[index:index + 1024] for index in range(0, len(encoded), 1024)]
-    meta = {'tag': 'RAAD_MAIN_NODE26_EVIDENCE', 'event': 'begin', 'success': success,
-            'encoding': 'base64+gzip+tar', 'chunks': len(chunks), 'gzipBytes': len(compressed),
-            'encodedBytes': len(encoded), 'sha256': sha(compressed), 'functionalCommit': COMMIT,
-            'buildNonce': NONCE}
-    print(json.dumps(meta), flush=True)
-    for index, data in enumerate(chunks, 1):
-        print(json.dumps({'tag': meta['tag'], 'event': 'chunk', 'index': index, 'data': data}), flush=True)
-        time.sleep(0.03)
-    print(json.dumps({**meta, 'event': 'end', 'eof': True}), flush=True)
-    return len(compressed), len(chunks), sha(compressed)
-
-
-def install(info):
-    assert not (APP / 'node_modules').exists()
-    snapshot = (INPUT / 'source-snapshot.tar.gz').read_bytes()
-    assert sha(snapshot) == info['sourceSnapshotSha256']
-    APP.mkdir(exist_ok=False); seen = set()
-    with tarfile.open(fileobj=io.BytesIO(snapshot), mode='r:gz') as archive:
-        for member in archive:
-            relative = PurePosixPath(member.name)
-            assert member.isfile() and not relative.is_absolute() and '..' not in relative.parts
-            assert member.name in info['files'] and member.name not in seen
-            raw = archive.extractfile(member).read(); expected = info['files'][member.name]
-            assert len(raw) == expected['bytes'] and sha(raw) == expected['sha256']
-            target = APP / member.name; target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(raw); target.chmod(member.mode & 0o777); seen.add(member.name)
-    assert seen == set(info['files']); verify_source(info)
-    home = ROOT / 'install-home'; cache = ROOT / 'install-cache'; temporary = ROOT / 'install-tmp'
-    for directory in [home, cache, temporary]: directory.mkdir(parents=True, exist_ok=False)
-    for name in ['user.npmrc', 'global.npmrc']: (ROOT / name).write_text('')
-    env = clean_env(home, temporary)
-    env.update({'NPM_CONFIG_USERCONFIG': str(ROOT / 'user.npmrc'),
-                'NPM_CONFIG_GLOBALCONFIG': str(ROOT / 'global.npmrc'),
-                'NPM_CONFIG_CACHE': str(cache), 'NPM_CONFIG_REGISTRY': 'https://registry.npmjs.org/',
-                'NPM_CONFIG_STRICT_SSL': 'true', 'npm_config_audit': 'false',
-                'npm_config_fund': 'false', 'npm_config_update_notifier': 'false'})
-    step = run([NODE, NPM, 'install', '--omit=dev'], env, ARTIFACTS / 'install/npm-install.log', 300)
-    result = {'functionalCommit': COMMIT, 'functionalTree': TREE, 'exitCode': step['exitCode'],
-              'modelVerified': False, 'sourceMismatchesAfter': [], 'nodeVersion': 'v26.13.0',
-              'npmVersion': '11.20.0', 'effectiveCommand': 'npm install --omit=dev',
-              'freshCache': True, 'nodeModulesReused': False, 'lifecycleScriptsEnabled': True,
-              'tlsVerificationDisabled': False, 'customCertificateAdded': False,
-              'credentialsInherited': False, 'registry': 'https://registry.npmjs.org/',
-              'packageLockBefore': info['files']['package-lock.json']['sha256'], **step}
-    try:
-        verify_source(info)
-    except AssertionError:
-        result['sourceMismatchesAfter'] = ['SOURCE_OR_LOCK_CHANGED']
-    model = APP / 'var/mrz-model/mrz.traineddata'
-    result['modelVerified'] = model.is_file() and model.stat().st_size == 1452847 and sha(model.read_bytes()) == 'ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01'
-    result['packageLockAfter'] = sha((APP / 'package-lock.json').read_bytes())
-    dump(ARTIFACTS / 'install/result.json', result)
-    assert step['exitCode'] == 0 and not step['timedOut'] and result['modelVerified']
-    assert not result['sourceMismatchesAfter'] and result['packageLockBefore'] == result['packageLockAfter']
-
-
-def probe(phase):
-    home = ROOT / (phase + '-home'); temporary = ROOT / (phase + '-tmp')
-    for directory in [home, temporary]: directory.mkdir(exist_ok=False)
-    step = run([NODE, str(INPUT / 'native-probe.cjs'), phase], clean_env(home, temporary),
-               ARTIFACTS / phase / 'native-probe.log', 90)
-    dump(ARTIFACTS / phase / 'step.json', step)
-    assert step['exitCode'] == 0 and not step['timedOut']
-    raw = (ARTIFACTS / phase / 'native-probe.log').read_bytes()
-    result = json.loads(raw.decode().strip().split('\n')[-1])
-    expected = ['official-node26-debian12-runtime', 'patched-sharp-native-image', 'pinned-local-mrz-model',
-                'application-owned-js-wasm-ocr-child-blank-rejection'] if phase == 'baseline' else [
-                'explicit-poppler22-pdf-tools', 'application-two-page-pdf-rasterization',
-                'application-passport-and-identity-merge-retains-both-pages']
-    assert result['status'] == 'passed' and result['checks'] == expected and result['liveActions'] == 0
-    assert result['network']['interfaces'] == ['lo'] and result['network']['allInternal'] is True
-    assert result['accuracyClaimed'] is False
-    dump(ARTIFACTS / phase / 'result.json', result)
-    return result
-
-
-def profile_controls():
-    home = ROOT / 'profile-home'; temporary = ROOT / 'profile-tmp'
-    for directory in [home, temporary]: directory.mkdir(exist_ok=False)
-    names = ['inbox-automation-transition', 'visa-document-intake-profiles', 'visa-mrz-composition', 'visa-mrz-consent', 'visa-mrz-durable-budget', 'visa-mrz-production', 'visa-mrz-profiles', 'visa-upload-consent', 'raad-machine-dossier', 'visa-upload-ui', 'visa-fulfilment', 'visa-fulfilment-http', 'saudi-visa-engine']
-    command = [NODE, '--test', '--test-reporter=tap', '--test-concurrency=2', *['test/' + n + '.test.js' for n in names]]
-    log = ARTIFACTS / 'profile-controls/test.log'
-    step = run(command, clean_env(home, temporary), log, 120)
-    text = log.read_text()
-    counts = {name: int(re.findall(r'^# ' + name + r' (\d+)$', text, re.M)[-1])
-              for name in ['tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo']}
-    result = {**step, 'counts': counts, 'files': len(names), 'filesInvokedOnceEach': True, 'testFiles': ['test/' + n + '.test.js' for n in names],
-              'providerTransport': 'synthetic', 'securityScan': False,
-              'persistentMountClaimed': False, 'liveActions': 0}
-    dump(ARTIFACTS / 'profile-controls/result.json', result)
-    assert step['exitCode'] == 0 and not step['timedOut']
-    assert counts['tests'] == counts['pass'] == 318
-    assert all(counts[name] == 0 for name in ['fail', 'cancelled', 'skipped', 'todo'])
-
-
-def baseline(info):
-    verify_source(info); result = probe('baseline'); profile_controls()
-    command = ['python3', str(INPUT / 'verify-main-start.py'), '--source', '/app', '--node', NODE,
-               '--npm-cli', NPM, '--install-result', str(ARTIFACTS / 'install/result.json'),
-               '--work', str(ROOT / 'startup-work'), '--evidence', str(ARTIFACTS / 'startup')]
-    step = run(command, clean_env(ROOT / 'baseline-home', ROOT / 'baseline-tmp'),
-               ARTIFACTS / 'startup-driver.log', 90)
-    dump(ARTIFACTS / 'startup-step.json', step)
-    assert step['exitCode'] == 0 and not step['timedOut']
-    startup = json.loads((ARTIFACTS / 'startup/result.json').read_text())
-    assert startup['passed'] is True and startup['blockedAttempts'] == 0 and startup['stdoutEof'] is True
-    assert startup['observedGlibc'] == '2.36' and startup['platformImageParityClaimed'] is False
-    verify_source(info)
-
-
-def finish(info):
-    verify_source(info); pdf = probe('pdf')
-    baseline = json.loads((ARTIFACTS / 'baseline/result.json').read_text())
-    startup = json.loads((ARTIFACTS / 'startup/result.json').read_text())
-    assert json.loads((ARTIFACTS / 'profile-controls/result.json').read_text())['counts']['fail'] == 0
-    assert len(baseline['checks']) == 4 and len(pdf['checks']) == 3 and startup['passed'] is True
-    dump(ARTIFACTS / 'build-provenance.json', {key: info[key] for key in [
-        'functionalCommit', 'functionalTree', 'applicationFingerprintSha256', 'buildNonce',
-        'baseImageDigest', 'sourceSnapshotSha256', 'toolFiles']})
-    dump(ARTIFACTS / 'result.json', {'success': True, 'functionalCommit': COMMIT,
-        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 431,
-        'buildNonce': NONCE, 'baselineChecks': 4, 'pdfChecks': 3, 'startupPassed': True,
-        'profileControlFiles': 13, 'profileControlsPassed': True,
-        'freshInstallPassed': True, 'lockUnchanged': True, 'fullSuiteRerun': False,
-        'validationNetwork': 'Dockerfile RUN --network=none', 'accuracyClaimed': False,
-        'scope': 'derived_debian12_validation_not_platform_image_equivalence',
-        'releaseReady': False, 'liveActions': 0})
-    size, chunks, digest = export_evidence(True)
-    summary = {'kind': 'isolated_main_node26_validation', 'functionalCommit': COMMIT,
-        'functionalTree': TREE, 'applicationFingerprintSha256': FINGERPRINT, 'applicationFiles': 431,
-        'buildNonce': NONCE, 'nodeVersion': 'v26.13.0', 'npmVersion': '11.20.0', 'debianVersion': '12',
-        'glibcVersion': '2.36', 'pdfToolsVersion': '22.12.0', 'freshInstallPassed': True,
-        'lockUnchanged': True, 'baselineChecks': 4, 'startupPassed': True, 'pdfChecks': 3,
-        'profileControlFiles': 13, 'profileControlsPassed': True,
-        'baseImageDigest': BASE_DIGEST, 'sourceSnapshotSha256': info['sourceSnapshotSha256'],
-        'evidenceSha256': digest, 'evidenceBytes': size, 'evidenceChunks': chunks,
-        'scope': 'derived_debian12_validation_not_platform_image_equivalence',
-        'fullSuiteRerun': False, 'mrzAccuracyClaimed': False, 'buildOnly': True, 'releaseReady': False, 'liveActions': 0}
-    dump(ROOT / 'public/public-summary.json', summary)
-    print('RAAD_MAIN_NODE26_GATE_PASSED', flush=True)
-
-
-if __name__ == '__main__':
-    try:
-        phase = sys.argv[1]; assert phase in {'install', 'baseline', 'pdf'}
-        ROOT.mkdir(exist_ok=True); ARTIFACTS.mkdir(exist_ok=True)
-        info = config()
-        if phase == 'install': install(info)
-        elif phase == 'baseline': baseline(info)
-        else: finish(info)
-    except Exception:
-        try:
-            # Private synthetic diagnostics only; never sent by the reporter.
-            durable(ARTIFACTS / 'failure-traceback.log', traceback.format_exc().encode())
-            dump(ARTIFACTS / 'failure.json', {'success': False, 'phase': sys.argv[1],
-                'releaseReady': False, 'liveActions': 0, 'reason': 'MAIN_NODE26_VALIDATION_FAILED'})
-            export_evidence(False)
-        except Exception:
-            print('RAAD_MAIN_NODE26_FAILURE_EVIDENCE_INCOMPLETE', flush=True)
-        print('RAAD_MAIN_NODE26_GATE_FAILED', flush=True)
-        raise SystemExit(1)
-
+def sha(b):return hashlib.sha256(b).hexdigest()
+def durable(p,b):
+ p.parent.mkdir(parents=True,exist_ok=True)
+ with p.open('wb') as s:s.write(b);s.flush();os.fsync(s.fileno())
+ assert p.read_bytes()==b
+def dump(p,d):durable(p,(json.dumps(d,indent=2)+'\n').encode())
+def manifest(folder):return {str(p.relative_to(folder)):{'bytes':p.stat().st_size,'sha256':sha(p.read_bytes())} for p in sorted(folder.rglob('*')) if p.is_file()}
+def verify_source(folder,info):
+ for n,r in info['files'].items():
+  p=folder/n;assert p.is_file() and not p.is_symlink() and p.stat().st_size==r['bytes'] and sha(p.read_bytes())==r['sha256'],n
+def clean_env(tmp):return {'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','TMPDIR':str(tmp),'LANG':'C.UTF-8','TZ':'UTC','NODE_ENV':'test','PLAYWRIGHT_BROWSERS_PATH':'/ms-playwright'}
+def run(cmd,cwd,env,log,timeout):
+ start=time.monotonic();child=subprocess.Popen(cmd,cwd=cwd,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,start_new_session=True);timed=False
+ try:raw,_=child.communicate(timeout=timeout)
+ except subprocess.TimeoutExpired:
+  timed=True
+  try:os.killpg(child.pid,signal.SIGTERM)
+  except ProcessLookupError:pass
+  try:raw,_=child.communicate(timeout=5)
+  except subprocess.TimeoutExpired:
+   try:os.killpg(child.pid,signal.SIGKILL)
+   except ProcessLookupError:pass
+   raw,_=child.communicate(timeout=5)
+ finally:
+  try:os.killpg(child.pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+ assert len(raw)<2*1024*1024;durable(log,raw)
+ return {'command':cmd,'exitCode':child.returncode,'timedOut':timed,'seconds':round(time.monotonic()-start,3),'stdoutEof':True,'bytes':len(raw),'sha256':sha(raw)}
+def export(success):
+ dump(ARTIFACTS/'evidence-index.json',{'files':manifest(ARTIFACTS),'selfExcluded':True})
+ stream=io.BytesIO()
+ with tarfile.open(fileobj=stream,mode='w') as archive:
+  for p in sorted(ARTIFACTS.rglob('*')):
+   if not p.is_file():continue
+   rel=p.relative_to(ARTIFACTS);assert not p.is_symlink() and p.suffix in {'.json','.log'}
+   assert not any(x in {'src','node_modules','source','state','var','home'} for x in rel.parts)
+   b=p.read_bytes();m=tarfile.TarInfo(str(rel));m.mode=0o600;m.mtime=0;m.size=len(b);archive.addfile(m,io.BytesIO(b))
+ data=gzip.compress(stream.getvalue(),mtime=0);assert 0<len(data)<=262144
+ encoded=base64.b64encode(data).decode();chunks=[encoded[i:i+1024] for i in range(0,len(encoded),1024)]
+ meta={'tag':'RAAD_WORKER_IMAGE_EVIDENCE','event':'begin','success':success,'encoding':'base64+gzip+tar','chunks':len(chunks),'gzipBytes':len(data),'encodedBytes':len(encoded),'sha256':sha(data),'functionalCommit':COMMIT,'buildNonce':NONCE}
+ print(json.dumps(meta),flush=True)
+ for i,b in enumerate(chunks,1):print(json.dumps({'tag':meta['tag'],'event':'chunk','index':i,'data':b}),flush=True);time.sleep(.03)
+ print(json.dumps({**meta,'event':'end','eof':True}),flush=True)
+ return len(data),len(chunks),sha(data)
+def main():
+ ARTIFACTS.mkdir(exist_ok=False)
+ info=json.loads((INPUT/'inputs.json').read_text())
+ assert info['functionalCommit']==COMMIT and info['functionalTree']==TREE and info['applicationFingerprintSha256']==FP and len(info['files'])==431
+ assert sha(json.dumps(info['files'],sort_keys=True,separators=(',',':')).encode())==FP
+ assert info['buildNonce']==NONCE and Path('/raad-validation-build-nonce').read_text().strip()==NONCE
+ for n,s in info['toolFiles'].items():assert sha((INPUT/n).read_bytes())==s,n
+ snapshot=(INPUT/'source-snapshot.tar.gz').read_bytes();assert sha(snapshot)==info['sourceSnapshotSha256']
+ source=ROOT/'source';source.mkdir(exist_ok=False);seen=set()
+ with tarfile.open(fileobj=io.BytesIO(snapshot),mode='r:gz') as tar:
+  for m in tar:
+   rel=PurePosixPath(m.name);assert m.isfile() and not rel.is_absolute() and '..' not in rel.parts and m.name in info['files'] and m.name not in seen
+   b=tar.extractfile(m).read();r=info['files'][m.name];assert len(b)==r['bytes'] and sha(b)==r['sha256']
+   p=source/m.name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b);p.chmod(m.mode&0o777);seen.add(m.name)
+ assert seen==set(info['files']);verify_source(source,info)
+ recipe=(source/'Dockerfile.worker').read_text();derived=(INPUT/'Dockerfile.validation').read_text()
+ worker=derived.split('# RAAD_WORKER_BEGIN\n',1)[1].split('# RAAD_WORKER_END\n',1)[0];first,rest=worker.split('\n',1)
+ assert first.removesuffix(' AS worker')+'\n'+rest.split('# RAAD_CACHE_END\n',1)[1]==recipe
+ assert sha(recipe.encode())==info['workerRecipeSha256']
+ runtime={}
+ for n,r in info['files'].items():
+  rel=PurePosixPath(n)
+  if n.startswith('src/') and not rel.name.endswith(('.test.js','.test.cjs')) and not any(x in {'test','tests','fixtures'} for x in rel.parts[1:]):runtime[n[4:]]=r
+ assert manifest(Path('/app/src'))==runtime,'WORKER_RUNTIME_SOURCE_MISMATCH'
+ for n in ['package.json','package-lock.json','scripts/install-mrz-model.js','scripts/raad-readiness-check.js','THIRD_PARTY_MRZ_MODEL.md']:assert (Path('/app')/n).read_bytes()==(source/n).read_bytes(),n
+ native_path=Path('/tmp/raad-native-proof');native=json.loads((native_path/'native-proof.json').read_text())
+ assert native['passed'] and native['nativeChecks']==12 and native['liveActions']==0 and native['functionalCommit']==COMMIT and native['buildNonce']==NONCE
+ assert native['applicationFingerprintSha256']==FP and native['workerRecipeSha256']==info['workerRecipeSha256']
+ assert native['method']=='node_os_networkInterfaces' and native['observedInterfaces']==['lo'] and native['allInternal']
+ assert native['browserEnvironment']['imageBrowserPath']=='/ms-playwright' and native['browserEnvironment']['pathGuardPassed']
+ assert 'raad-source-entrypoint-disabled' in native['checks'] and native['runtimeMetadata']['uid']==0
+ raad=[x for x in native['entrypointChecks'] if x['kind']=='raad_override']
+ assert len(raad)==1 and raad[0]=={'command':'node src/raad-login-pilot/server.js','cwd':'/app','healthStatus':200,'kind':'raad_override','productionEnabled':False,'activeJob':False,'mode':None,'harnessSubmittedPortalJobs':0}
+ assert set(native['pdfTools'])=={'pdfinfo','pdftoppm'} and all(re.fullmatch(r'\d+\.\d+\.\d+',v) for v in native['pdfTools'].values())
+ raw=(native_path/'native-preflight.log').read_bytes();assert len(raw)==native['bytes'] and sha(raw)==native['sha256']
+ for n in ['native-preflight.log','native-proof.json','browser-environment.json']:durable(ARTIFACTS/'native'/n,(native_path/n).read_bytes())
+ node=run(['node','-p','process.execPath'],source,clean_env('/tmp'),ARTIFACTS/'node-path.log',5);assert node['exitCode']==0
+ node_path=(ARTIFACTS/'node-path.log').read_text().strip();assert node_path.startswith('/') and len(node_path)<256
+ (source/'node_modules').symlink_to('/app/node_modules',target_is_directory=True)
+ temporary=ROOT/'test-tmp';temporary.mkdir()
+ names=['inbox-automation-transition','visa-document-intake-profiles','visa-mrz-composition','visa-mrz-consent','visa-mrz-durable-budget','visa-mrz-production','visa-mrz-profiles','visa-upload-consent','raad-machine-dossier','visa-upload-ui','visa-fulfilment','visa-fulfilment-http','saudi-visa-engine']
+ command=[node_path,'--test','--test-reporter=tap','--test-concurrency=2',*['test/'+n+'.test.js' for n in names]]
+ step=run(command,source,clean_env(temporary),ARTIFACTS/'profile-controls/test.log',160)
+ text=(ARTIFACTS/'profile-controls/test.log').read_text();counts={n:int(re.findall(r'^# '+n+r' (\d+)$',text,re.M)[-1]) for n in ['tests','pass','fail','cancelled','skipped','todo']}
+ dump(ARTIFACTS/'profile-controls/result.json',{**step,'counts':counts,'files':13,'testFiles':['test/'+n+'.test.js' for n in names],'filesInvokedOnceEach':True,'providerTransport':'synthetic','securityScan':False,'liveActions':0})
+ assert step['exitCode']==0 and not step['timedOut'] and counts['tests']==counts['pass']==318 and all(counts[n]==0 for n in ['fail','cancelled','skipped','todo'])
+ verify_source(source,info);assert manifest(Path('/app/src'))==runtime
+ model=Path('/app/var/mrz-model/mrz.traineddata');assert model.stat().st_size==1452847 and sha(model.read_bytes())=='ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01'
+ dump(ARTIFACTS/'build-provenance.json',{k:info[k] for k in ['functionalCommit','functionalTree','applicationFingerprintSha256','buildNonce','workerRecipeSha256','baseImageTag','sourceSnapshotSha256','toolFiles']})
+ result={'success':True,'functionalCommit':COMMIT,'functionalTree':TREE,'applicationFingerprintSha256':FP,'applicationFiles':431,'buildNonce':NONCE,'workerRecipeSha256':info['workerRecipeSha256'],'baseImageTag':info['baseImageTag'],'baseImageDigestObserved':False,'sourceSnapshotSha256':info['sourceSnapshotSha256'],'freshInstallPassed':True,'lockUnchanged':True,'nativeChecks':12,'raadOverrideHealthPassed':True,'profileControlFiles':13,'profileControlTests':318,'profileControlsPassed':True,'scope':'additive_original_worker_recipe_with_pre_tool_overlay_native_checks','fullSuiteRerun':False,'mrzAccuracyClaimed':False,'buildOnly':True,'releaseReady':False,'liveActions':0}
+ result.update({k:native['runtimeMetadata'][k] for k in ['nodeVersion','npmVersion','glibcVersion']})
+ dump(ARTIFACTS/'result.json',result)
+ size,chunks,digest=export(True)
+ summary={k:v for k,v in result.items() if k!='success'};summary['kind']='isolated_worker_image_validation'
+ summary.update({'evidenceSha256':digest,'evidenceBytes':size,'evidenceChunks':chunks})
+ dump(ROOT/'public/public-summary.json',summary);print('RAAD_WORKER_IMAGE_GATE_PASSED',flush=True)
+if __name__=='__main__':
+ try:main()
+ except Exception:
+  try:
+   durable(ARTIFACTS/'failure-traceback.log',traceback.format_exc().encode());dump(ARTIFACTS/'failure.json',{'success':False,'reason':'WORKER_IMAGE_VALIDATION_FAILED','liveActions':0,'releaseReady':False});export(False)
+  except Exception:print('RAAD_WORKER_IMAGE_FAILURE_EVIDENCE_INCOMPLETE',flush=True)
+  print('RAAD_WORKER_IMAGE_GATE_FAILED',flush=True);sys.exit(1)

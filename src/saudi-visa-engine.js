@@ -40,7 +40,7 @@ function extractLocal(text,c){
  if(number)fields.applicantCount=number;
  const doc=/وثيقه|وثيقة|وثائق|travel document/.test(n)?'travel_document':/جواز|passport/.test(n)?'passport':null;
  if(ns.length===1&&!(doc==='travel_document'&&!/فلسطين/.test(n)))fields.nationality=ns[0];if(doc)fields.documentType=doc;
- if(ns.length>1&&/(?:انا|زوج|مرتي|امي|ابي|والد|ابني|بنتي)/.test(n)&&!doc){fields.applicants=ns.map(nationality=>({nationality}));fields.applicantCount=number||Math.max(c.applicantCount||0,ns.length);}
+ // Distinct nationality aliases identify countries, not people or their order.
  if(/كلنا|جميعنا|نحن.{0,10}سوريين|نحنا.{0,10}سوريين/.test(n)&&ns.length===1&&number)fields.applicants=Array.from({length:number},()=>({nationality:ns[0],...(doc?{documentType:doc}:{})}));
  if(/مصريه|مصري/.test(n)&&doc==='travel_document')fields.documentIssuer='مصر';else if(/لبنان/.test(n)&&doc==='travel_document')fields.documentIssuer='لبنان';else if(/سوريا|سوري/.test(n)&&doc==='travel_document')fields.documentIssuer='سوريا';
  if(/تحويل|حساب بنكي|حسابات|ايبان|iban|bank/.test(n))fields.paymentMethod='bank';else if(/تابي|tabby/.test(n))fields.paymentMethod='tabby';else if(/رابط الدفع|لينك|payment link/.test(n))fields.paymentMethod='link';

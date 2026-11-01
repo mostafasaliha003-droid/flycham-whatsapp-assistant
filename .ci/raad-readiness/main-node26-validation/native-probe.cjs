@@ -1,198 +1,157 @@
 'use strict';
-// Validation only: runs under Docker RUN --network=none. No customer input.
-const assert = require('node:assert/strict');
+// Build-time only; original worker UID=root, RUN --network=none, /app mounted RO.
 const fs = require('node:fs');
-const path = require('node:path');
+const crypto = require('node:crypto');
+const {spawn, spawnSync} = require('node:child_process');
 const os = require('node:os');
 const net = require('node:net');
-const crypto = require('node:crypto');
-const cp = require('node:child_process');
-const {createRequire} = require('node:module');
-const r = createRequire('/app/package.json');
-let sharp;
-const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const checks = [];
-let activePhase = 'unknown', activeCheck = 'not_started';
-const data = {syntheticOnly: true, liveActions: 0, accuracyClaimed: false};
-async function check(name, operation) {
-  activeCheck = name;
-  await operation(); checks.push(name); console.log('PASS ' + name);
-}
-function verifyLoopbackOnly(interfaces = os.networkInterfaces()) {
-  assert.deepEqual(Object.keys(interfaces), ['lo']);
-  assert.ok(Array.isArray(interfaces.lo) && interfaces.lo.length);
-  for (const item of interfaces.lo) {
-    assert.equal(item.internal, true);
-    const family = net.isIP(item.address);
-    assert.ok(family === 4 && /^127\./.test(item.address) && ['IPv4', 4].includes(item.family)
-      || family === 6 && ['::1', '0:0:0:0:0:0:0:1'].includes(item.address) && ['IPv6', 6].includes(item.family));
+const pathModule = require('node:path');
+function verifyLoopbackOnly(readInterfaces = os.networkInterfaces) {
+  const fail = () => { throw Error('RAAD_NATIVE_NETWORK_GUARD_FAILED'); };
+  let found;
+  try { found = readInterfaces(); } catch { return fail(); }
+  if (!found || typeof found !== 'object' || Array.isArray(found)
+      || Object.keys(found).length !== 1 || !Object.hasOwn(found, 'lo')
+      || !Array.isArray(found.lo) || found.lo.length === 0) return fail();
+  for (const item of found.lo) {
+    const address = item?.address, family = net.isIP(typeof address === 'string' ? address : '');
+    const ipv4 = family === 4 && /^127\./.test(address)
+      && ['IPv4', 4].includes(item.family);
+    const ipv6 = family === 6 && ['::1', '0:0:0:0:0:0:0:1'].includes(address)
+      && ['IPv6', 6].includes(item.family);
+    if (item?.internal !== true || (!ipv4 && !ipv6)) return fail();
   }
-  return {method: 'node_os_networkInterfaces', interfaces: ['lo'], allInternal: true};
+  return {method: 'node_os_networkInterfaces', observedInterfaces: ['lo'],
+    addressCount: found.lo.length, allInternal: true};
 }
-function syntheticPdf() {
-  const content = color => `${color} rg 0 0 300 200 re f\n0 0 0 rg 10 10 30 180 re f\n1 1 1 rg 260 10 30 180 re f\n`;
-  const red = content('1 0 0'), blue = content('0 0 1');
-  const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 5 0 R >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R >>',
-    `<< /Length ${Buffer.byteLength(red)} >>\nstream\n${red}endstream`,
-    `<< /Length ${Buffer.byteLength(blue)} >>\nstream\n${blue}endstream`,
-  ];
-  let pdf = '%PDF-1.4\n'; const offsets = [];
-  for (const [index, object] of objects.entries()) {
-    offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+function verifyBrowserCompatibility({imageBrowserPath, probe}) {
+  const fail = () => { throw Error('RAAD_IMAGE_BROWSER_COMPATIBILITY_FAILED'); };
+  try {
+    if (imageBrowserPath !== '/ms-playwright' || typeof probe !== 'function') return fail();
+    const withoutImageEnv = probe(false), withImageEnv = probe(true);
+    for (const value of [withoutImageEnv, withImageEnv]) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+          || Object.keys(value).sort().join(',') !== 'exists,path,realPath,version'
+          || typeof value.path !== 'string' || !pathModule.isAbsolute(value.path)
+          || value.path.length > 512 || typeof value.exists !== 'boolean'
+          || typeof value.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(value.version)
+          || value.exists && (typeof value.realPath !== 'string' || value.realPath.length > 512 || !pathModule.isAbsolute(value.realPath))
+          || !value.exists && value.realPath !== null) return fail();
+    }
+    if (!withImageEnv.exists || !withImageEnv.path.startsWith('/ms-playwright/')
+        || !withImageEnv.realPath.startsWith('/ms-playwright/')
+        || pathModule.resolve(withImageEnv.path) !== withImageEnv.path
+        || pathModule.resolve(withImageEnv.realPath) !== withImageEnv.realPath
+        || withoutImageEnv.version !== withImageEnv.version) return fail();
+    return {imageBrowserPath: '/ms-playwright', withoutImageEnv, withImageEnv,
+      pathGuardPassed: true, scope: 'read-only executable path metadata; launch still required'};
+  } catch { return fail(); }
+}
+function main() {
+const path = '/tmp/raad-native-proof';
+fs.mkdirSync(path, {recursive: true});
+const expected = ['operator-readiness-tool-and-model-notice', 'model-size-and-hash',
+  'sharp-native-image', 'qr-generation', 'tesseract-local-mrz-runtime',
+  'application-owned-optical-child-runtime', 'pdf-tools', 'synthetic-pdf-conversion',
+  'chromium-local-no-network', 'native-chromium-redirect-fence-before-follow',
+  'whatsapp-source-entrypoint-disabled', 'raad-source-entrypoint-disabled'];
+const input = JSON.parse(fs.readFileSync('/validation-input/inputs.json', 'utf8'));
+if(input.functionalCommit!=='ad16a50edb11f859102e3b91bf85db2fab9b5442'||input.functionalTree!=='b9747bfbf28809cf0c1e470148169b192bd040e3'||input.buildNonce!=='raad-validation-20261101-ad16a50-worker-01')throw Error('RAAD_WORKER_SOURCE_IDENTITY_INVALID');
+for(const [name,digest]of Object.entries(input.toolFiles))if(crypto.createHash('sha256').update(fs.readFileSync('/validation-input/'+name)).digest('hex')!==digest)throw Error('RAAD_WORKER_TOOL_IDENTITY_INVALID');
+const version=process.versions.node.split('.').map(Number);
+if(version[0]<22||version[0]===22&&version[1]<13)throw Error('RAAD_WORKER_NODE_ENGINE_UNSUPPORTED');
+const release=fs.readFileSync('/etc/os-release','utf8');
+if(!/^ID=ubuntu$/m.test(release)||!/^VERSION_CODENAME=noble$/m.test(release))throw Error('RAAD_WORKER_OS_UNEXPECTED');
+const npm=spawnSync('npm',['--version'],{encoding:'utf8',timeout:5000,env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+if(npm.status!==0||!/^\d+\.\d+\.\d+\s*$/.test(npm.stdout))throw Error('RAAD_WORKER_NPM_UNAVAILABLE');
+const runtimeMetadata={nodeVersion:process.version,npmVersion:npm.stdout.trim(),glibcVersion:process.report.getReport().header.glibcVersionRuntime,osId:'ubuntu',osCodename:'noble',nodeBinarySha256:crypto.createHash('sha256').update(fs.readFileSync(process.execPath)).digest('hex'),uid:process.getuid()};
+if(runtimeMetadata.uid!==0)throw Error('RAAD_WORKER_ORIGINAL_UID_UNEXPECTED');
+const networkObservation = verifyLoopbackOnly();
+const cleanEnv = {PATH: process.env.PATH, TMPDIR: '/tmp',
+  LANG: 'C.UTF-8', TZ: 'UTC', NODE_ENV: 'test'};
+const program = `const fs=require('node:fs');const{createRequire}=require('node:module');
+const r=createRequire('/app/package.json');const p=r('playwright').chromium.executablePath();
+const exists=fs.existsSync(p)&&fs.statSync(p).isFile();
+console.log(JSON.stringify({path:p,realPath:exists?fs.realpathSync(p):null,exists,version:r('playwright/package.json').version}));`;
+const observations = {};
+let browserEnvironment;
+try {
+browserEnvironment = verifyBrowserCompatibility({imageBrowserPath: process.env.PLAYWRIGHT_BROWSERS_PATH,
+  probe: includeImagePath => {
+    const result = spawnSync(process.execPath, ['-e', program], {cwd: '/app',
+      env: includeImagePath ? {...cleanEnv, PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright'} : cleanEnv,
+      timeout: 5000, maxBuffer: 8192, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+    if (result.error || result.status !== 0) throw Error();
+    const value = JSON.parse(result.stdout);
+    observations[includeImagePath ? 'withImageEnv' : 'withoutImageEnv'] = value;
+    return value;
+  }});
+} finally {
+  const safeObservation = value => value ? {
+    path: typeof value.path === 'string' && /^\/[\x20-\x7e]{0,511}$/.test(value.path) ? value.path : 'unavailable',
+    realPath: value.realPath === null ? null : typeof value.realPath === 'string' && /^\/[\x20-\x7e]{0,511}$/.test(value.realPath) ? value.realPath : 'unavailable',
+    exists: value.exists === true, version: typeof value.version === 'string' && /^\d+\.\d+\.\d+$/.test(value.version) ? value.version : 'unavailable',
+  } : null;
+  console.log(JSON.stringify({tag: 'RAAD_IMAGE_BROWSER_COMPATIBILITY',
+    imagePathAllowlisted: process.env.PLAYWRIGHT_BROWSERS_PATH === '/ms-playwright',
+    withoutImageEnv: safeObservation(observations.withoutImageEnv),
+    withImageEnv: safeObservation(observations.withImageEnv), pathGuardPassed: Boolean(browserEnvironment)}));
+}
+fs.writeFileSync(path + '/browser-environment.json', JSON.stringify(browserEnvironment, null, 2) + '\n');
+const child = spawn(process.execPath, ['/validation-input/main-native-smoke.cjs'], {
+  cwd: '/app', env: {...cleanEnv, PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright'},
+  stdio: ['ignore', 'pipe', 'pipe'], detached: true});
+let chunks = [], size = 0, overflow = false, timedOut = false;
+const killGroup = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+const add = bytes => {
+  size += bytes.length;
+  if (size > 128 * 1024) { overflow = true; killGroup(); return; }
+  chunks.push(bytes);
+};
+child.stdout.on('data', add); child.stderr.on('data', add);
+const timer = setTimeout(() => { timedOut = true; killGroup(); }, 180000);
+child.on('error', () => { console.error('RAAD_NATIVE_GATE_SPAWN_FAILED'); process.exitCode = 1; });
+child.on('close', async code => {
+  clearTimeout(timer);
+  const raw = Buffer.concat(chunks);
+  fs.writeFileSync(path + '/native-preflight.log', raw);
+  const encoded = raw.toString('base64'), parts = encoded.match(/.{1,1024}/g) || [];
+  const metadata = {tag: 'RAAD_WORKER_NATIVE_EVIDENCE', encoding: 'base64', bytes: raw.length,
+    sha256: crypto.createHash('sha256').update(raw).digest('hex'), chunks: parts.length};
+  console.log(JSON.stringify({...metadata, event: 'begin'}));
+  for (let index = 0; index < parts.length; index++) {
+    console.log(JSON.stringify({tag: metadata.tag, event: 'chunk', index: index + 1, data: parts[index]}));
+    await new Promise(resolve => setTimeout(resolve, 30));
   }
-  const xref = Buffer.byteLength(pdf);
-  pdf += 'xref\n0 7\n0000000000 65535 f \n';
-  for (const offset of offsets) pdf += String(offset).padStart(10, '0') + ' 00000 n \n';
-  pdf += `trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(pdf);
-}
-async function centerColor(bytes, topFraction, sharpImpl = sharp) {
-  const metadata = await sharpImpl(bytes).metadata();
-  const left = Math.floor(metadata.width * 0.4), top = Math.floor(metadata.height * topFraction);
-  // stats() observes its original input. Materialize this exact region first.
-  const region = await sharpImpl(bytes).extract({left, top, width: 8, height: 8}).removeAlpha().png().toBuffer();
-  const stats = await sharpImpl(region).stats();
-  return stats.channels.slice(0, 3).map(value => value.mean);
-}
-function assertColor(color, expected) {
-  assert.equal(color.length, 3);
-  assert.ok(color[expected] > 220 && color.every((value, index) => index === expected || value < 35));
-}
-async function baseline() {
-  await check('official-node26-debian12-runtime', async () => {
-    assert.equal(process.version, 'v26.13.0');
-    assert.equal(process.report.getReport().header.glibcVersionRuntime, '2.36');
-    const release = fs.readFileSync('/etc/os-release', 'utf8');
-    assert.match(release, /^ID=debian$/m); assert.match(release, /^VERSION_ID="12"$/m);
-    assert.match(release, /^VERSION_CODENAME=bookworm$/m);
-    assert.equal(sha(fs.readFileSync(process.execPath)), '0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b');
-    const npm = cp.execFileSync(process.execPath, ['/opt/node/lib/node_modules/npm/bin/npm-cli.js', '--version'],
-      {timeout: 5000, maxBuffer: 1024, encoding: 'utf8'}).trim();
-    assert.equal(npm, '11.20.0'); data.runtime = {node: process.version, npm, debian: '12', glibc: '2.36'};
-  });
-  await check('patched-sharp-native-image', async () => {
-    data.sharp = {sharp: sharp.versions.sharp, vips: sharp.versions.vips, rsvg: sharp.versions.rsvg};
-    assert.deepEqual(data.sharp, {sharp: '0.35.5', vips: '8.18.7', rsvg: '2.63.2'});
-    const image = await sharp({create: {width: 100, height: 80, channels: 3, background: 'white'}}).rotate(90).png().toBuffer();
-    const metadata = await sharp(image).metadata(); assert.equal(metadata.width, 80); assert.equal(metadata.height, 100);
-  });
-  await check('pinned-local-mrz-model', async () => {
-    const bytes = fs.readFileSync('/app/var/mrz-model/mrz.traineddata');
-    assert.equal(bytes.length, 1452847); assert.equal(sha(bytes), 'ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01');
-    data.model = {bytes: bytes.length, sha256: sha(bytes)};
-  });
-  await check('application-owned-js-wasm-ocr-child-blank-rejection', async () => {
-    const nativeFork = cp.fork; let forks = 0, ready = 0, closes = 0, currentPsm;
-    const pending = new Map(), parameters = [], recognitions = [];
-    cp.fork = function (file, args, options) {
-      assert.equal(path.resolve(file), '/app/src/visa-mrz-optical-worker.js'); forks++;
-      const child = nativeFork.call(this, file, args, options);
-      const send = child.send;
-      child.send = function (message, ...rest) {
-        // Observe only operation metadata; never retain image bytes or OCR text.
-        if (message.type === 'parameters' || message.type === 'recognize') {
-          assert.ok(Number.isSafeInteger(message.id) && !pending.has(message.id));
-          const psm = message.type === 'parameters' ? message.parameters?.tessedit_pageseg_mode : currentPsm;
-          assert.ok([6, 11].includes(psm)); pending.set(message.id, {operation: message.type, psm});
-        } else assert.equal(message.type, 'init');
-        return send.call(this, message, ...rest);
-      };
-      child.on('message', message => {
-        if (message?.type === 'ready') { ready++; return; }
-        assert.equal(message?.type, 'result'); assert.equal(message.ok, true);
-        const request = pending.get(message.id); assert.ok(request); pending.delete(message.id);
-        if (request.operation === 'parameters') {
-          currentPsm = request.psm; parameters.push(request.psm);
-        } else {
-          assert.equal(typeof message.text, 'string');
-          assert.ok(message.text.trim() === '', 'OCR_BLANK_RESULT_UNCONFIRMED');
-          recognitions.push(request.psm);
-        }
-      });
-      child.on('close', () => { closes++; });
-      return child;
-    };
-    try {
-      const {createOpticalMrz} = r('/app/src/visa-mrz-optical.js');
-      const reader = createOpticalMrz(); assert.equal(reader.status().configured, true);
-      const blank = await sharp({create: {width: 1000, height: 600, channels: 3, background: 'white'}}).png().toBuffer();
-      await assert.rejects(reader.extract({bytes: blank, mimeType: 'image/png', format: 'TD3', guard: async () => true}),
-        error => error.code === 'MRZ_OPTICAL_READ_FAILED');
-      assert.equal(forks, 1); assert.equal(ready, 1); assert.equal(closes, 1); assert.equal(pending.size, 0);
-      assert.deepEqual(parameters, [6, 11]); assert.deepEqual(recognitions, [6, 11]);
-      assert.equal(reader.status().busy, false); assert.equal(reader.status().ready, true);
-      data.ocr = {ownedChildCount: forks, readyCount: ready, closedChildCount: closes,
-        successfulParameterModes: parameters, successfulRecognitionModes: recognitions,
-        retainedTextOrImageBytes: false, rejectedBlank: true, accuracyClaimed: false};
-    } finally { cp.fork = nativeFork; }
-  });
-}
-async function pdf() {
-  await check('explicit-poppler22-pdf-tools', async () => {
-    data.pdfTools = {};
-    for (const tool of ['pdfinfo', 'pdftoppm']) {
-      const result = cp.spawnSync(tool, ['-v'], {encoding: 'utf8', timeout: 5000, maxBuffer: 8192});
-      assert.equal(result.status, 0); assert.equal(result.error, undefined);
-      const firstLine = (result.stdout + result.stderr).split('\n')[0];
-      assert.equal(firstLine, tool + ' version 22.12.0'); data.pdfTools[tool] = '22.12.0';
-    }
-  });
-  let pages;
-  await check('application-two-page-pdf-rasterization', async () => {
-    const {rasterizePdfPages} = r('/app/src/raad-pdf.js');
-    const rendered = await rasterizePdfPages(syntheticPdf()); assert.equal(rendered.pageCount, 2);
-    pages = rendered.pages; assert.deepEqual(pages.map(page => page.pageNumber), [1, 2]);
-    for (const page of pages) {
-      assert.equal(page.mimeType, 'image/png'); assert.equal(page.orientationVerified, false);
-      assert.equal(page.needsVisualReview, true); const metadata = await sharp(page.bytes).metadata();
-      assert.equal(metadata.width, 1800); assert.equal(metadata.height, 1200);
-    }
-    assertColor(await centerColor(pages[0].bytes, 0.5), 0); assertColor(await centerColor(pages[1].bytes, 0.5), 2);
-    data.pdf = {syntheticPages: 2, width: 1800, height: 1200, orderedColorMarkers: true};
-  });
-  await check('application-passport-and-identity-merge-retains-both-pages', async () => {
-    const {prepareDocumentImage, prepareResidenceImage} = r('/app/src/raad-attachments.js');
-    data.merges = [];
-    for (const kind of ['passport', 'residence']) {
-      const parts = pages.map(page => ({bytes: page.bytes, mimeType: page.mimeType}));
-      const result = kind === 'passport' ? await prepareDocumentImage(parts, {kind}) : await prepareResidenceImage(parts);
-      assert.ok(result.bytes.length > 0 && result.bytes.length <= 1000000);
-      assert.equal(result.needsVisualReview, true);
-      assert.ok(result.transformations.includes('combine_full_parts_on_white_with_gap'));
-      const metadata = await sharp(result.bytes).metadata(); assert.ok(['png', 'jpeg'].includes(metadata.format));
-      assert.ok(metadata.height > metadata.width); assertColor(await centerColor(result.bytes, 0.25), 0);
-      assertColor(await centerColor(result.bytes, 0.75), 2);
-      data.merges.push({kind, bytes: result.bytes.length, width: metadata.width, height: metadata.height,
-        orderedColorMarkers: true, needsVisualReview: true, sha256: sha(result.bytes)});
-    }
-  });
-}
-async function main() {
-  const phase = process.argv[2]; assert.ok(['baseline', 'pdf'].includes(phase));
-  activePhase = phase;
-  sharp = r('sharp');
-  data.network = verifyLoopbackOnly();
-  if (phase === 'baseline') await baseline(); else await pdf();
-  console.log(JSON.stringify({status: 'passed', phase, checks, ...data}));
-}
-function failureMetadata(error) {
-  // Preserve actionable private locations without error messages, values or OCR text.
-  const locations = String(error?.stack || '').split('\n').slice(1).flatMap(line => {
-    const match = line.match(/(?:^|[\/])([A-Za-z0-9._-]+\.c?js):(\d+):(\d+)\)?$/);
-    return match ? [{file: match[1], line: Number(match[2]), column: Number(match[3])}] : [];
-  }).slice(0, 8);
-  return {phase: ['baseline', 'pdf'].includes(activePhase) ? activePhase : 'unknown',
-    check: /^[a-z0-9-]{1,90}$/.test(activeCheck) ? activeCheck : 'unknown',
-    errorType: ['AssertionError', 'Error', 'TypeError', 'RangeError'].includes(error?.name) ? error.name : 'Error',
-    locations, responseBodyRetained: false};
-}
-module.exports = {verifyLoopbackOnly, syntheticPdf, assertColor, centerColor, failureMetadata};
-if (require.main === module) main().catch(error => {
-  console.error(JSON.stringify({tag: 'RAAD_MAIN_NODE26_NATIVE_FAILURE', ...failureMetadata(error)}));
-  console.error('MAIN_NODE26_NATIVE_PROBE_FAILED'); process.exitCode = 1;
+  console.log(JSON.stringify({...metadata, event: 'end', eof: true}));
+  let footer;
+  try { footer = JSON.parse(raw.toString('utf8').trim().split('\n').at(-1)); } catch {}
+  const passed = raw.toString('utf8').split('\n').filter(line => line.startsWith('PASS ')).map(line => line.slice(5));
+  if (code !== 0 || timedOut || overflow || JSON.stringify(passed) !== JSON.stringify(expected)
+      || footer?.status !== 'passed' || footer.liveActions !== 0
+      || JSON.stringify(footer.checks) !== JSON.stringify(expected)) {
+    console.error('RAAD_NATIVE_GATE_FAILED'); process.exitCode = 1; return;
+  }
+  fs.writeFileSync(path + '/native-proof.json', JSON.stringify({passed: true,
+    checks: expected, nativeChecks: expected.length, liveActions: 0,
+    functionalCommit: input.functionalCommit, applicationFingerprintSha256: input.applicationFingerprintSha256,
+    buildNonce: input.buildNonce, network: 'Dockerfile RUN --network=none',
+    ...networkObservation,
+    browserEnvironment,
+    runtime: 'additive original worker recipe before Python tooling installation',
+    runtimeMetadata, workerRecipeSha256: input.workerRecipeSha256, baseImageTag: input.baseImageTag, baseImageDigestObserved: false,
+    entrypointChecks: footer.entrypointChecks, pdfTools: footer.pdfTools,
+    user: 'root (original worker default)', applicationMount: 'read-only bind from worker stage',
+    stdoutEof: true, bytes: raw.length,
+    sha256: crypto.createHash('sha256').update(raw).digest('hex')}, null, 2) + '\n');
+  console.log('RAAD_NATIVE_GATE_PASSED');
 });
-
+}
+module.exports = {verifyLoopbackOnly, verifyBrowserCompatibility};
+if (require.main === module) {
+  try { main(); } catch (error) {
+    const safeCodes=new Set(['RAAD_IMAGE_BROWSER_COMPATIBILITY_FAILED','RAAD_NATIVE_NETWORK_GUARD_FAILED','RAAD_WORKER_SOURCE_IDENTITY_INVALID','RAAD_WORKER_TOOL_IDENTITY_INVALID','RAAD_WORKER_NODE_ENGINE_UNSUPPORTED','RAAD_WORKER_OS_UNEXPECTED','RAAD_WORKER_NPM_UNAVAILABLE','RAAD_WORKER_ORIGINAL_UID_UNEXPECTED']);
+    console.error(safeCodes.has(error?.message)?error.message:'RAAD_WORKER_NATIVE_SETUP_FAILED');
+    process.exitCode = 1;
+  }
+}

@@ -1,12 +1,26 @@
 {
-  "node": "v26.13.0",
-  "npm": "11.20.0",
-  "nodeBinarySha256": "0adde40d1b7dfa57c8bc83cbc319758c3ec6ebba21363bb2fa752ea6b267ad1b",
-  "npmCliSha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
-  "sourceManifestFunctionalCommit": "ad16a50edb11f859102e3b91bf85db2fab9b5442",
-  "sourceManifestFunctionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
-  "firstPartyFiles": 445,
-  "applicationFiles": 431,
-  "applicationFingerprintSha256": "7e1d7f516f077a26c26843bab5abf2b784af481f5a410f2574c549b14c82b712",
-  "sourceSnapshotSha256": "4b0a5e673f65fcfd940373f14186ca2eb591578315fb45f6e35e637174103c93"
+  "kind": "prepared_worker_runtime_target_not_observed_result",
+  "functionalCommit": "ad16a50edb11f859102e3b91bf85db2fab9b5442",
+  "functionalTree": "b9747bfbf28809cf0c1e470148169b192bd040e3",
+  "productionServiceId": "srv-dbgjdubbc2fs73c0dhq0",
+  "productionCommandOverride": "node src/raad-login-pilot/server.js",
+  "originalDefaultCmd": "node src/combined-worker.js",
+  "workerRecipeSha256": "0f7552726f37e9f4cdf433137057a6ee49e056a8775f2d7001d42e62a5e3e977",
+  "requestedImageTag": "mcr.microsoft.com/playwright:v1.64.0-noble",
+  "baseImageDigestObserved": false,
+  "historicalDigestNotCurrentProof": "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
+  "additions": [
+    "isolated clean npm configuration/cache and nonce",
+    "read-only network-none native proof",
+    "Python tooling only after native proof",
+    "targeted application tests",
+    "JSON-only final reporter"
+  ],
+  "retainedButNotExecutedTools": [
+    "loopback-network-guard.cjs",
+    "main-start-preload.cjs",
+    "verify-main-start.py"
+  ],
+  "nativeChildTool": "main-native-smoke.cjs contains the isolated worker native component and disabled-entrypoint checks; its former main-smoke name is retained only to minimize input-path changes.",
+  "claim": "Original worker instructions project byte-for-byte; actual base digest/runtime/native results remain unmeasured until Render execution."
 }
