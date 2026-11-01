@@ -3,15 +3,15 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const {createDocumentProbe} = require('../src/visa-document-probe');
 const {createDocumentVision} = require('../src/visa-document-vision');
 const {createVisaSetup} = require('../src/visa-setup-http');
-const FIELDS = {passportNumber:'ZT1234567',latinFirstName:'EXAMPLE',latinFamilyName:'TESTER',birthDate:'1990-04-03',expiryDate:'2035-11-30'};
+const FIELDS = {visiblePassportNumber:'ZT1234567',latinFirstName:'EXAMPLE',latinFamilyName:'TESTER',birthDate:'1990-04-03',expiryDate:'2035-11-30'};
 const extracted = () => ({version:1,kind:'passport',readable:true,rotation:0,mrzLines:[],fields:Object.fromEntries(Object.entries(FIELDS).map(([key,value])=>[key,{value,visible:true,confidence:.999}]))});
 
 test('fixed synthetic probe uses the real guarded adapter without cancelling its own busy request', async () => {
  let calls=0;
- const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async(url,options)=>{
-  calls++;assert.match(url,/generativelanguage\.googleapis\.com/);const request=JSON.parse(options.body);
-  assert.ok(request.contents[0].parts[0].inlineData.data.length>1000);
-  return new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(extracted())}]}}]}),{status:200,headers:{'Content-Type':'application/json'}});
+ const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-key'},fetchImpl:async(url,options)=>{
+  calls++;assert.equal(url,'https://api.cline.bot/api/v1/chat/completions');const request=JSON.parse(options.body);
+  assert.ok(request.messages[1].content[0].image_url.url.length>1000);
+  return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify(extracted())}}]}),{status:200,headers:{'Content-Type':'application/json'}});
  }});
  const probe=createDocumentProbe({vision});const result=await probe();
  assert.equal(result.ok,true);assert.equal(result.fieldsRead,5);assert.equal(calls,1);
@@ -50,7 +50,7 @@ test('probe exposes only known fixed vision reason codes and never raw provider 
 
 test('live-shaped strict schema rejection projects only its known section and field name', async () => {
  const value=extracted();value.fields.birthDate.value='PRIVATE_INVALID_DATE';
- const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:'```json\n'+JSON.stringify(value)+'\n```'}]}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
+ const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:'```json\n'+JSON.stringify(value)+'\n```'}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
  const result=await createDocumentProbe({vision})();
  assert.deepEqual(result,{ok:false,synthetic:true,error:'DOCUMENT_PROBE_UNAVAILABLE',status:503,stage:'infer',reason:'DOCUMENT_VISION_SCHEMA_INVALID',schemaSection:'fields',fieldName:'birthDate',schemaIssue:'value_format'});
  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
@@ -58,7 +58,7 @@ test('live-shaped strict schema rejection projects only its known section and fi
 
 test('synthetic five-field probe succeeds when absent father and grandfather fields use nullable provider forms', async () => {
  const value=extracted();value.fields.latinFatherName=null;value.fields.latinGrandfatherName={value:null,confidence:1,visible:true};value.fields.arabicFatherName={value:null,confidence:null,visible:null};
- const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(value)}]}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
+ const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-key'},fetchImpl:async()=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify(value)}}]}),{status:200,headers:{'Content-Type':'application/json'}})});
  const result=await createDocumentProbe({vision})();
  assert.equal(result.ok,true);assert.equal(result.fieldsRead,5);assert.equal(result.status,200);assert.equal(JSON.stringify(result).includes('ZT1234567'),false);
 });

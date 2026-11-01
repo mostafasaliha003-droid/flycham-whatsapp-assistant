@@ -91,14 +91,14 @@ test('actual vision adapter, matching and pixel preparation keep an unpaid dossi
   sourceIds.forEach(id=>this.get(id,{customer}));const checksum=sha(bytes),prior=Object.values(records).find(record=>record.customer===customer&&record.purpose===purpose&&record.kind===kind&&record.checksum===checksum&&JSON.stringify(record.sourceIds)===JSON.stringify(sourceIds));if(prior)return this.get(prior.id,{customer});
   const id=crypto.randomUUID();pixels.set(id,Buffer.from(bytes));records[id]={id,customer,type:'image',mimeType,size:bytes.length,checksum,purpose,kind,sourceIds:[...sourceIds],receivedAt:NOW,expiresAt:NOW+86400000};return this.get(id,{customer});
  }};
- const env={RAAD_DOCUMENT_OCR_ENABLED:'true',GEMINI_API_KEY:'synthetic-read-regression-google-key',RAAD_APPLICATION_PHONE:'+'+CUSTOMER,RAAD_CONTACT_EMAIL:'synthetic@example.test',RAAD_INSURANCE_PHONE:'+'+CUSTOMER,RAAD_POSTAL_CODE:'00000'};
+ const env={RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-read-regression-google-key',RAAD_APPLICATION_PHONE:'+'+CUSTOMER,RAAD_CONTACT_EMAIL:'synthetic@example.test',RAAD_INSURANCE_PHONE:'+'+CUSTOMER,RAAD_POSTAL_CODE:'00000'};
  const vision=createDocumentVision({env,now:()=>NOW,fetchImpl:async(url,options)=>{
-  assert.equal(new URL(url).hostname,'generativelanguage.googleapis.com');assert.equal(options.headers['x-goog-api-key'],env.GEMINI_API_KEY);const request=JSON.parse(options.body),bytes=Buffer.from(request.contents[0].parts[0].inlineData.data,'base64'),pixel=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer(),document=documents.find(item=>rgbById.get(item.mediaId).every((value,index)=>value===pixel[index]));assert.ok(document);calls++;
+  assert.equal(new URL(url).hostname,'api.cline.bot');assert.equal(options.headers.Authorization,'Bearer '+env.CLINE_API_KEY);const request=JSON.parse(options.body),bytes=Buffer.from(request.messages[1].content[0].image_url.url.split(',')[1],'base64'),pixel=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer(),document=documents.find(item=>rgbById.get(item.mediaId).every((value,index)=>value===pixel[index]));assert.ok(document);calls++;
   // Exercise the real adapter's discard-only projection too: an ambiguous
   // printed full-year slash date is private evidence, never a guessed ISO fact.
   const wire=structuredClone(document.extraction);
   for(const [printed,target]of [['printedPassportExpiry','expiryDate'],['printedResidenceExpiry','residenceExpiry']])if(wire.fields[printed]){wire.fields[target]=wire.fields[printed];delete wire.fields[printed];}
-  return Response.json({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(wire)}]}}]});
+  return Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify(wire)}}]});
  }});
  const realRaad=new RaadVisaWorkflow({store,mediaStore:media,env,now:()=>NOW,canAutomate:()=>true}),raad={get:(...args)=>realRaad.get(...args),applyMachineDossier(){applies++;throw Error('UNPAID_DOSSIER_MUST_NOT_APPLY');}},fulfilment={blocked:()=>null,data:()=>store.data.visaFulfilment,stageDocumentFacts(){stages++;throw Error('NO_CUSTOMER_JOB_MUST_NOT_STAGE_ANSWERS');}},lock={tryAcquire(){if(locked)return false;locked=true;return true;},release(){locked=false;},onRelease(){return()=>{};}};
  const intake=new VisaDocumentIntake({store,mediaStore:media,vision,raad,fulfilment,env,now:()=>NOW,lock});

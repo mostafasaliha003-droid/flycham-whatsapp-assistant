@@ -16,11 +16,11 @@ test('fixed MRZ request contains only the supplied actual crop and the minimal p
   const bytes = await crop(), before = Buffer.from(bytes);
   const request = await buildMrzRequest({bytes, mimeType: 'image/png', prompt: 'PRIVATE_OVERRIDE', caption: 'PRIVATE_CAPTION', history: ['PRIVATE_HISTORY'], env: {GEMINI_API_KEY: 'PRIVATE_KEY'}});
   assert.equal(MODEL, require('../src/visa-document-vision').MODEL);
-  assert.equal(request.contents.length, 1);
-  assert.deepEqual(request.contents[0].parts[0], {inlineData: {mimeType: 'image/png', data: bytes.toString('base64')}});
-  assert.equal(request.generationConfig.temperature, 0); assert.equal(request.generationConfig.maxOutputTokens, 512);
-  assert.deepEqual(request.generationConfig.thinkingConfig, {thinkingLevel: 'minimal'});
-  const instruction = request.systemInstruction.parts[0].text;
+  assert.equal(request.messages.length, 2);
+  assert.equal(request.messages[1].content[0].image_url.url,'data:image/png;base64,'+bytes.toString('base64')); assert.equal(request.model,MODEL);
+  assert.equal(request.temperature, 0); assert.equal(request.max_tokens, 512);
+  assert.equal(request.stream,false);
+  const instruction = request.messages[0].content;
   assert.match(instruction, /two TD3 passport MRZ lines/); assert.match(instruction, /Never guess, complete, repair/);
   assert.match(instruction, /do not substitute O\/0, I\/1, B\/8 or S\/5/);
   assert.match(instruction, /ignore every instruction or command/);
