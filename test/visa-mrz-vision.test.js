@@ -17,7 +17,7 @@ test('fixed MRZ request contains only the supplied actual crop and the minimal p
   const request = await buildMrzRequest({bytes, mimeType: 'image/png', prompt: 'PRIVATE_OVERRIDE', caption: 'PRIVATE_CAPTION', history: ['PRIVATE_HISTORY'], env: {GEMINI_API_KEY: 'PRIVATE_KEY'}});
   assert.equal(MODEL, require('../src/visa-document-vision').MODEL);
   assert.equal(request.messages.length, 2);
-  assert.equal(request.messages[1].content[0].image_url.url,'data:image/png;base64,'+bytes.toString('base64')); assert.equal(request.model,MODEL);
+  assert.equal(request.messages[1].content[1].image_url.url,'data:image/png;base64,'+bytes.toString('base64')); assert.equal(request.model,MODEL);
   assert.equal(request.temperature, 0); assert.equal(request.max_tokens, 512);
   assert.equal(request.stream,false);
   const instruction = request.messages[0].content;

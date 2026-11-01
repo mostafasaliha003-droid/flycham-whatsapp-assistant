@@ -59,7 +59,7 @@ test('real signed dialogue keeps one upload link, concise document turns and one
   }
   if(target.hostname==='api.cline.bot'){
    assert.equal(target.pathname,'/api/v1/chat/completions');assert.equal(options.headers.Authorization,'Bearer '+GEMMA_KEY);assert.equal(options.redirect,'error');
-   const body=JSON.parse(options.body),bytes=Buffer.from(body.messages[1].content[0].image_url.url.split(',')[1],'base64'),rgb=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer();
+   const body=JSON.parse(options.body),bytes=Buffer.from(body.messages[1].content[1].image_url.url.split(',')[1],'base64'),rgb=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer();
    const page=[...pages.values()].find(candidate=>candidate.rgb.every((channel,index)=>channel===rgb[index]));assert.ok(page,'Synthetic image must retain its known pixel marker');seenRoles.push(page.role);
    return Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify(extraction(page.role))}}]});
   }

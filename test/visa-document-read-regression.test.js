@@ -93,7 +93,7 @@ test('actual vision adapter, matching and pixel preparation keep an unpaid dossi
  }};
  const env={RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-read-regression-google-key',RAAD_APPLICATION_PHONE:'+'+CUSTOMER,RAAD_CONTACT_EMAIL:'synthetic@example.test',RAAD_INSURANCE_PHONE:'+'+CUSTOMER,RAAD_POSTAL_CODE:'00000'};
  const vision=createDocumentVision({env,now:()=>NOW,fetchImpl:async(url,options)=>{
-  assert.equal(new URL(url).hostname,'api.cline.bot');assert.equal(options.headers.Authorization,'Bearer '+env.CLINE_API_KEY);const request=JSON.parse(options.body),bytes=Buffer.from(request.messages[1].content[0].image_url.url.split(',')[1],'base64'),pixel=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer(),document=documents.find(item=>rgbById.get(item.mediaId).every((value,index)=>value===pixel[index]));assert.ok(document);calls++;
+  assert.equal(new URL(url).hostname,'api.cline.bot');assert.equal(options.headers.Authorization,'Bearer '+env.CLINE_API_KEY);const request=JSON.parse(options.body),bytes=Buffer.from(request.messages[1].content[1].image_url.url.split(',')[1],'base64'),pixel=await sharp(bytes).extract({left:0,top:0,width:1,height:1}).removeAlpha().raw().toBuffer(),document=documents.find(item=>rgbById.get(item.mediaId).every((value,index)=>value===pixel[index]));assert.ok(document);calls++;
   // Exercise the real adapter's discard-only projection too: an ambiguous
   // printed full-year slash date is private evidence, never a guessed ISO fact.
   const wire=structuredClone(document.extraction);

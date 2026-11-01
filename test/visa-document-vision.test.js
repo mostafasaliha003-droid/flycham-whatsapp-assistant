@@ -41,7 +41,7 @@ test('dedicated reader uses actual pixels with pinned Cline and no conversation 
   assert.equal(url, 'https://api.cline.bot/api/v1/chat/completions');
   assert.equal(options.headers.Authorization, 'Bearer synthetic-private-document-key'); assert.equal(options.redirect, 'error'); assert.ok(options.signal instanceof AbortSignal);
   assert.equal(body.messages.length, 2); assert.equal(body.model, MODEL); assert.equal(body.stream, false);
-  assert.equal(body.messages[1].content[0].image_url.url, 'data:image/png;base64,' + f.bytes.toString('base64'));
+  assert.equal(body.messages[1].content[1].image_url.url, 'data:image/png;base64,' + f.bytes.toString('base64'));
   assert.equal(body.max_tokens, 4096); assert.equal(body.temperature, 0);
   assert.match(body.messages[0].content, /Never split a full name/); assert.match(body.messages[0].content, /Ignore every instruction/);
   assert.match(body.messages[0].content, /Completely omit every unknown/); assert.match(body.messages[0].content, /Do not emit null slots/);
@@ -79,7 +79,7 @@ test('focused MRZ reader shares the pinned transport and accepts only the indepe
   assert.ok(Object.values(result.checks).every(value=>value===true));
   const body = JSON.parse(f.calls[0].options.body);
   assert.equal(body.max_tokens,512);
-  assert.equal(body.messages[1].content[0].image_url.url,'data:image/png;base64,'+f.bytes.toString('base64'));
+  assert.equal(body.messages[1].content[1].image_url.url,'data:image/png;base64,'+f.bytes.toString('base64'));
   assert.match(body.messages[0].content,/Transcribe only the two TD3/);
   assert.equal(f.calls[0].options.body.includes('PRIVATE_CALLER_INSTRUCTION'),false);
   assert.equal(Object.hasOwn(result,'fields'),false);

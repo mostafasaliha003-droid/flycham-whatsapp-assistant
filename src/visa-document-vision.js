@@ -296,7 +296,7 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     busy = true;
     try {
       await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
-      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}, {type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}]}], stream: false, temperature: 0, max_tokens: 4096};
+      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}, {type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}]}], stream: false, temperature: 0, max_tokens: 4096};
       await guardNow(guard);
       ledger.data.documentVisionBudget={day:day(),used:used()+1};
       try{ledger.save();}catch{throw failure('DOCUMENT_VISION_NOT_CONFIGURED');}
@@ -308,7 +308,7 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
         const status = Number(response?.status);
         if (status === 429) { cooldownUntil = now() + 60000; throw failure('DOCUMENT_VISION_RATE_LIMITED', 60000); }
         if ([401, 402, 403].includes(status)) { cooldownUntil = now() + 300000; throw failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE', 300000); }
-        throw failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE');
+        throw Object.assign(failure('DOCUMENT_VISION_PROVIDER_UNAVAILABLE'), {providerStatus: Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined});
       }
       let payload;
       try { payload = await readBoundedJSON(response); }

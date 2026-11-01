@@ -10,7 +10,7 @@ test('fixed synthetic probe uses the real guarded adapter without cancelling its
  let calls=0;
  const vision=createDocumentVision({env:{RAAD_DOCUMENT_OCR_ENABLED:'true',CLINE_API_KEY:'synthetic-key'},fetchImpl:async(url,options)=>{
   calls++;assert.equal(url,'https://api.cline.bot/api/v1/chat/completions');const request=JSON.parse(options.body);
-  assert.ok(request.messages[1].content[0].image_url.url.length>1000);
+  assert.ok(request.messages[1].content[1].image_url.url.length>1000);
   return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify(extracted())}}]}),{status:200,headers:{'Content-Type':'application/json'}});
  }});
  const probe=createDocumentProbe({vision});const result=await probe();
@@ -97,4 +97,11 @@ test('setup probe requires accountant authority and never accepts a caller-provi
  async function invoke(accountant){let status,data;await handle({method:'POST',headers:{'x-accountant-key':accountant},body:'untrusted customer data'}, {writeHead(code){status=code;return this;},end(value){data=JSON.parse(value);}},new URL('https://example.test/internal/assistant/visa-portal/document-ocr/probe'));return {status,data};}
  assert.equal((await invoke('wrong')).status,403);assert.equal(calls,0);
  const result=await invoke(key);assert.equal(result.status,200);assert.equal(result.data.synthetic,true);assert.equal(calls,1);
+});
+
+test('HTTP rejection diagnostics expose only a finite integer status without provider messages',async()=>{
+ for(const [providerStatus,expected]of [[500,500],['PRIVATE_SECRET',undefined],[NaN,undefined],[900,undefined]]){
+  const result=await createDocumentProbe({vision:{ready:()=>true,extract:async()=>{throw Object.assign(Error('PRIVATE_PROVIDER_MESSAGE'),{code:'DOCUMENT_VISION_PROVIDER_UNAVAILABLE',providerStatus});}}})();
+  assert.equal(result.providerStatus,expected);assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+ }
 });
