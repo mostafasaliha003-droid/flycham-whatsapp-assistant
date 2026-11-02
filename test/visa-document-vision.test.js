@@ -634,3 +634,9 @@ test('Gemini credentials never configure or receive document requests after the 
  assert.equal(f.calls.length,1);
  assert.equal(f.adapter.status().provider,'cline');
 });
+test('explicit Cline fallback handles confirmed server rejection and truncation once within the same durable quota',async()=>{
+ for(const mode of ['server','truncated']){let calls=0;const f=await setup({config:{RAAD_DOCUMENT_OCR_FALLBACK_ENABLED:'true'},fetchImpl:async()=>{calls++;if(calls===1)return mode==='server'?new Response('{}',{status:503}):response({choices:[{finish_reason:'length',message:{role:'assistant',content:'PARTIAL_NEVER_ACCEPTED'}}]});return response(envelope(page()));}});const out=await f.extract();assert.equal(out.kind,'passport');assert.equal(f.calls.length,2);assert.deepEqual(f.calls.map(c=>JSON.parse(c.options.body).model),[MODEL,'cline-pass/kimi-k3']);assert.equal(f.adapter.status().dailyUsed,2);}
+});
+test('fallback never bypasses refusal, authentication, rate limiting, uncertain transport, quota or a second failure',async()=>{
+ for(const mode of ['refusal','auth','rate','network','quota','twice']){const f=await setup({config:{RAAD_DOCUMENT_OCR_FALLBACK_ENABLED:'true',...(mode==='quota'?{RAAD_DOCUMENT_OCR_DAILY_LIMIT:'1'}:{})},fetchImpl:async()=>{if(mode==='network')throw Error('private');if(mode==='refusal')return response({choices:[{finish_reason:'length',message:{role:'assistant',content:'',refusal:'private refusal'}}]});return new Response('{}',{status:mode==='auth'?403:mode==='rate'?429:500});}});await assert.rejects(f.extract());assert.equal(f.calls.length,mode==='twice'?2:1,mode);assert.equal(f.adapter.status().dailyUsed,mode==='twice'?2:1,mode);}
+});

@@ -10,6 +10,7 @@ const {buildMrzRequest, parseMrzOutput, MRZ_POLICY_FINGERPRINT, MRZ_VISION_ERROR
 const {OPTICAL_POLICY_FINGERPRINT,MRZ_OPTICAL_ERROR_CODES}=require('./visa-mrz-optical');
 
 const MODEL = 'cline-pass/qwen3.8-max';
+const FALLBACK_MODEL='cline-pass/kimi-k3';
 const DOCUMENT_VISION_POLICY = 'raad-document-vision-2026-11-01.v18';
 const PARSING_POLICY = 'strict-object-with-one-outer-json-fence-v1';
 const ABSTENTION_POLICY = 'known-empty-hidden-or-passport-p-marker-to-unknown-v2';
@@ -297,11 +298,13 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     try {
       await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
       const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}, {type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}]}], stream: false, temperature: 0, max_tokens: 4096};
-      await guardNow(guard);
+      for(let attempt=0;attempt<2;attempt++){
+       await guardNow(guard);if(!remaining())throw failure('DOCUMENT_VISION_COOLDOWN',60000);
+       try{
       ledger.data.documentVisionBudget={day:day(),used:used()+1};
       try{ledger.save();}catch{throw failure('DOCUMENT_VISION_NOT_CONFIGURED');}
       let response;
-      try { response = await fetchImpl('https://api.cline.bot/api/v1/chat/completions', {method: 'POST', headers: {Authorization: 'Bearer ' + env.CLINE_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(request)}); }
+      try { response = await fetchImpl('https://api.cline.bot/api/v1/chat/completions', {method: 'POST', headers: {Authorization: 'Bearer ' + env.CLINE_API_KEY, 'Content-Type': 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(attempt===0?request:{...request,model:FALLBACK_MODEL})}); }
       catch (error) { throw failure(['TimeoutError', 'AbortError'].includes(error?.name) ? 'DOCUMENT_VISION_TIMEOUT' : 'DOCUMENT_VISION_NETWORK'); }
       await guardNow(guard);
       if (!response?.ok) {
@@ -316,9 +319,11 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
       await guardNow(guard);
       const envelope = payload?.choices ? payload : payload?.data;
       const choice = envelope?.choices?.[0], message = choice?.message;
-      if (payload?.success === false || envelope?.success === false || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1 || choice?.finish_reason !== 'stop' || !plain(message) || message.role !== 'assistant' || typeof message.content !== 'string' || message.refusal || message.tool_calls?.length || message.function_call) throw failure('DOCUMENT_VISION_INCOMPLETE');
+      if (payload?.success === false || envelope?.success === false || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1 || choice?.finish_reason !== 'stop' || !plain(message) || message.role !== 'assistant' || typeof message.content !== 'string' || message.refusal || message.tool_calls?.length || message.function_call) throw Object.assign(failure('DOCUMENT_VISION_INCOMPLETE'),{truncated:choice?.finish_reason==='length'&&!message?.refusal&&!message?.tool_calls?.length&&!message?.function_call});
       const output = message.content;
       const result = focused ? parseMrzOutput(output) : parseDocumentOutput(output, {deferPassportMrz: true}); await guardNow(guard); return result;
+       }catch(error){const fallback=attempt===0&&!focused&&env.RAAD_DOCUMENT_OCR_FALLBACK_ENABLED==='true'&&remaining()>0&&(error?.truncated===true||error?.code==='DOCUMENT_VISION_PROVIDER_UNAVAILABLE'&&error.providerStatus>=500&&error.providerStatus<=599);if(!fallback)throw error;}
+      }
     } finally { busy = false; }
   }
   return {extract: input => perform(input, false), extractMrz: input => perform(input, true), ready, status};

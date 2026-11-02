@@ -352,7 +352,21 @@ class VisaDocumentIntake{
   const result=await this.refresh(job.customer,{applicantIndex:job.applicantIndex});if(!result.readyForQuestions)return result;const current=this.fulfilment?.data?.()?.jobs?.[job.id],state=this.data().cases[job.customer],applicant=state?.applicants?.find(item=>item.applicantIndex===job.applicantIndex);
   return {...result,readyForQuestions:Boolean(current&&current.caseId===state.caseId&&current.caseSignature===state.caseSignature&&applicant?.applied&&applicant.stagedJobs?.[job.id]===applicant.id&&['ready','needs_confirmation'].includes(applicant.status))};
  }
+ recoverRequestedSources(){
+  const request=this.env.RAAD_DOCUMENT_RECOVERY_REQUEST,target=this.env.RAAD_DOCUMENT_RECOVERY_CASE_HASH;
+  if(!/^[a-f0-9]{32}$/.test(request||'')||!/^[a-f0-9]{12}$/.test(target||'')||this.busy)return;
+  if(!this.available()){if(this.recoveryWaitReported!==request){this.recoveryWaitReported=request;const remaining=this.vision.status?.()?.dailyRemaining;this.report('DOCUMENT_RECOVERY_WAITING',{caseHash:target,configured:this.configured(),...(Number.isInteger(remaining)&&remaining>=0&&remaining<=100?{dailyRemaining:remaining}:{})});}return;}
+  const matches=Object.entries(this.data().cases).filter(([customer,state])=>hash(state.caseId).slice(0,12)===target&&this.caseFor(customer)?.id===state.caseId);
+  if(matches.length!==1)return;const [customer,state]=matches[0];if(this.blockReason(customer)||state.status==='processing'||Object.values(this.data().jobs).some(j=>j.customer===customer&&j.caseId===state.caseId&&activeStatus(j.status)))return;
+  const failed=Object.values(this.data().jobs).filter(j=>j.customer===customer&&j.caseId===state.caseId&&j.policy===this.policyFingerprint&&j.status==='failed'&&!j.manualRereadKey&&(j.issues||[]).some(i=>['DOCUMENT_VISION_INCOMPLETE','DOCUMENT_VISION_PROVIDER_UNAVAILABLE'].includes(i.failureCode)));
+  if(!state.requestedRecoveries?.[request])this.commit(()=>{const current=this.data().cases[customer];current.requestedRecoveries||={};current.requestedRecoveries[request]={signature:current.caseSignature,sources:[...new Set(failed.map(j=>this.rawSource(customer,j.mediaId)?.checksum).filter(x=>SHA.test(x||'')))].slice(0,2),attempted:[]};});
+  const recovery=this.data().cases[customer].requestedRecoveries[request];if(recovery.signature!==visaCaseSignature(this.caseFor(customer)))return;
+  const candidate=this.rereadSources(customer,this.data().cases[customer]).find(source=>source.allowed&&recovery.sources.includes(source.sourceSha256)&&!recovery.attempted.includes(source.sourceSha256));if(!candidate)return;
+  this.commit(()=>{this.data().cases[customer].requestedRecoveries[request].attempted.push(candidate.sourceSha256);});
+  try{this.rereadSource(customer,candidate);this.report('DOCUMENT_RECOVERY',{caseHash:target,queued:true});}catch{this.report('DOCUMENT_RECOVERY',{caseHash:target,queued:false});}
+ }
  async tick(){
+  if(!this.stopped&&this.enabled())this.recoverRequestedSources();
   if(this.busy||this.stopped||!this.enabled())return false;this.busy=true;let acquired=false,processed=false;
   try{
    this.commit(()=>{this.retirePolicies();for(const customer of Object.keys(this.store.data.visaCases||{}))if(validCustomer(customer))this.syncCase(customer);this.bindWaiting();for(const job of Object.values(this.data().jobs)){if(job.status==='stale'||job.status==='waiting_case')continue;if(this.knownReceipt(job.customer,job.mediaId)){job.status='stale';job.pages={};delete job.activePage;continue;}const source=this.rawSource(job.customer,job.mediaId);if(!source||job.sourceSha256&&source.checksum&&job.sourceSha256!==source.checksum){job.status='failed';job.pages={};delete job.activePage;job.issues=[reason(source?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_SOURCE_UNAVAILABLE')];}}});this.backfill();
