@@ -4,9 +4,9 @@ const {createHash}=require('node:crypto');
 const LABELS=Object.freeze({passportType:'نوع الجواز',issueDate:'تاريخ إصدار الجواز',birthPlace:'مكان الولادة'});
 function documentClarificationCopy(summary){
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
- if(issues.some(i=>i?.code==='CASE_DATA_MISMATCH'&&i.field==='nationalityCode'))return 'في اختلاف بين الجنسية المذكورة بالمحادثة والجواز المرسل. هالجواز لنفس الشخص وبدنا نصحح جنسيته، أو التقديم لشخص تاني؟ المرفقات محفوظة وما في داعي تعيد إرسالها.';
+ if(issues.some(i=>i?.code==='CASE_DATA_MISMATCH'&&i.field==='nationalityCode'))return 'للتأكيد، الجواز المرسل لنفس الشخص اللي عم نقدّم له، أو لشخص تاني؟';
  const reviewed=(summary?.recovery?.attempts||Object.values(summary?.documentReviews||{}).map(r=>r.state)).some(state=>['completed','conflict','failed','uncertain'].includes(state));
- if(reviewed&&issues.some(i=>['PASSPORT_MRZ_DATE_AMBIGUOUS','SOURCE_CONFLICT'].includes(i?.code)))return 'بقي تأكيد بعض بيانات الجواز قبل استكمال الطلب. ابعت نسخة أوضح من صفحة بيانات الجواز بحجمها الأصلي، بحيث تاريخ الميلاد وتاريخ الانتهاء ظاهرين كاملين. الهوية وباقي المرفقات محفوظة؛ ما في داعي تعيد إرسالها.';
+ if(reviewed&&issues.some(i=>i?.code==='PASSPORT_MRZ_DATE_AMBIGUOUS'))return 'بقي تأكيد بعض بيانات الجواز قبل استكمال الطلب. ابعت نسخة أوضح من صفحة بيانات الجواز بحجمها الأصلي، بحيث تاريخ الميلاد وتاريخ الانتهاء ظاهرين كاملين. الهوية وباقي المرفقات محفوظة؛ ما في داعي تعيد إرسالها.';
  if(issues.some(i=>i?.code==='MULTIPLE_PASSPORTS'))return 'وصل أكثر من جواز مختلف. بدك تقديم لكل أصحاب الجوازات، أو في جواز محدد بدنا نستخدمه؟ المرفقات محفوظة.';
  return null;
 }
@@ -14,7 +14,8 @@ function documentConfirmationCopy(summary){
  const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
  const fields=Object.keys(LABELS).filter(field=>issues.some(i=>i?.code==='DOCUMENT_FIELD_REQUIRED'&&i.field===field)||(summary?.applicants||[]).some(a=>a?.clientFieldsRequired?.includes(field)));
- return 'المرفقات محفوظة، لكن مراجعة بيانات المستندات لم تكتمل بعد.'+(fields.length?' الخانات التي لم تتأكد قراءتها: '+fields.map(f=>LABELS[f]).join('، ')+'.':' توجد خانات مستندية تحتاج مطابقة من القسم.')+' لا داعي لإعادة إرسال كل الصور. لم يتأكد حفظ الطلب بعد.';
+ const questions={passportType:'شو نوع جواز السفر: عادي، دبلوماسي، خدمة، أو خاص؟',issueDate:'شو تاريخ إصدار الجواز؟',birthPlace:'شو مكان الولادة المكتوب بالجواز؟'};
+ return fields.length?'وصلت أوراقك، شكرًا إلك. '+questions[fields[0]]:'وصلت أوراقك، شكرًا إلك. منخبرك إذا احتجنا أي معلومة إضافية.';
 }
 // Only a current, accountant-approved job can supersede document status.
 // Never infer execution from received attachment counts or a model's prose.
@@ -27,15 +28,15 @@ function workflowProgressReply(store,customer,summary,now=Date.now()){
   // Multiple applicants must be reported individually by the existing workflow.
   if(jobs.length!==1)return null;const job=jobs[0],run=data.visaPortalRuns?.[job.id];
   if(job.state==='portal_review_required')return job.blockedReason==='OTP_CHALLENGE_EXPIRED'
-   ? 'توقف استكمال الطلب لأن صلاحية رمز التحقق انتهت. لم يتأكد حفظ الطلب. يلزم استئناف التحقق برمز جديد من المشرف؛ لا داعي لإعادة إرسال الأوراق.'
-   : 'توقف التنفيذ الآلي ويحتاج متابعة من القسم قبل الاستكمال. لم يتأكد إتمام الطلب؛ المرفقات محفوظة ولا داعي لإعادة إرسالها.';
+   ? 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.'
+   : 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.';
   if(['awaiting_answers','needs_followup'].includes(job.state))return 'استكمال الطلب بانتظار إجابات الأسئلة المرسلة لك في هذه المحادثة. جاوب على السؤال الحالي لنكمل على نفس الملف؛ لا داعي لإعادة إرسال الأوراق.';
   if(job.state==='awaiting_answer_confirmation')return 'بيانات الطلب بانتظار اعتمادك على ملخص الإجابات المرسل في هذه المحادثة. راجع الملخص وأكّد صحته لنكمل على نفس الملف.';
   const lease=data.visaFulfilment?.lease;
   if(!lease||lease.jobId!==job.id||lease.cancelled||lease.expiresAt<=now)return null;
-  if(job.state==='waiting_otp'&&run?.phase==='waiting_operator')return 'استكمال الطلب بانتظار التحقق المرئي من المشرف ضمن جلسة رعد الحالية. المرفقات محفوظة؛ لم يتأكد حفظ الطلب بعد.';
-  if(job.state==='waiting_otp'&&run?.phase==='waiting_otp')return 'استكمال الطلب بانتظار رمز تحقق صالح من المشرف. لم يتأكد حفظ الطلب بعد؛ لا داعي لإعادة إرسال الأوراق.';
-  if(job.state==='running'&&['starting','running'].includes(run?.phase))return 'رعد يتابع تنفيذ الطلب حاليًا. لم يتأكد حفظه بعد، وسنبلغك بالنتيجة المتحققة؛ لا داعي لإعادة إرسال الأوراق.';
+  if(job.state==='waiting_otp'&&run?.phase==='waiting_operator')return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
+  if(job.state==='waiting_otp'&&run?.phase==='waiting_otp')return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
+  if(job.state==='running'&&['starting','running'].includes(run?.phase))return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
  }catch{}
  return null;
 }

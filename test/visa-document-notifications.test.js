@@ -33,7 +33,7 @@ test('successful document feedback works before payment without changing finance
   const [result] = await f.service.flush(CUSTOMER);
   assert.equal(result.state, 'accepted'); assert.equal(result.messageId, 'synthetic-notice-accepted-1'); assert.notEqual(result.state, 'delivered');
   assert.equal(f.dispatched[0].customer, CUSTOMER); assert.equal(f.dispatched[0].metadata.customer, CUSTOMER); assert.equal(f.dispatched[0].metadata.kind, 'document_review');
-  assert.match(f.dispatched[0].payload.text, /اعتماد الدفعة من المحاسب/); assert.match(f.dispatched[0].payload.text, /تأكيدك للبيانات/);
+  assert.match(f.dispatched[0].payload.text, /ملفك جاهز/); assert.doesNotMatch(f.dispatched[0].payload.text, /المحاسب|رعد|قراءة|مطابقة/);
   const saved = JSON.stringify(f.store.data.visaDocumentNotifications);
   for (const forbidden of ['PRIVATE_PASSPORT', 'PRIVATE_NAME', '784199012345671', 'تم استلام دفعتك']) assert.equal(saved.includes(forbidden), false);
   assert.deepEqual(f.c, before);
@@ -42,7 +42,7 @@ test('successful document feedback works before payment without changing finance
 test('needs confirmation with awaiting payment tells the next step without unbound questions or payment claims', async () => {
   const f = fixture({status: 'needs_confirmation'}); f.raw.awaitingPayment = true;
   const item = f.service.update(CUSTOMER); await f.service.flush();
-  assert.match(item.payload.text, /مراجعة بيانات المستندات لم تكتمل/); assert.doesNotMatch(item.payload.text, /منكمل مراجعة|اكتملت قراءة|يتابع تنفيذ/); assert.match(item.payload.text, /لم يتأكد حفظ الطلب/);
+  assert.match(item.payload.text, /وصلت أوراقك، شكرًا إلك/); assert.doesNotMatch(item.payload.text, /منكمل مراجعة|اكتملت قراءة|يتابع تنفيذ/); assert.doesNotMatch(item.payload.text, /حفظ الطلب|المحاسب|التحويل|الخانات/);
   assert.equal(item.payload.type, 'text'); assert.equal(Object.hasOwn(item.payload, 'token'), false);
   assert.equal(f.store.data.visaFulfilment, undefined); assert.equal(f.c.paymentStatus, 'unverified');
 });
@@ -54,7 +54,7 @@ test('safe review copy uses at most three known issue actions and never provider
     {code: 'DOCUMENT_IDENTITY_MISMATCH'}, {code: 'RESIDENCE_MISSING'}, {code: 'ARBITRARY_CODE', message: 'SECRET_784199012345671'}
   ];
   const item = f.service.update(CUSTOMER); await f.service.flush();
-  assert.equal((item.payload.text.match(/•/g) || []).length, 1); assert.match(item.payload.text, /إعادة تصوير المستند/);
+  assert.equal((item.payload.text.match(/•/g) || []).length, 1); assert.match(item.payload.text, /صورة أوضح للمستند/);
   for (const forbidden of ['PRIVATE_PROVIDER_TEXT', 'WIRE MONEY', 'SECRET_', '784199012345671', 'ARBITRARY_CODE']) assert.equal(item.payload.text.includes(forbidden), false);
 });
 
@@ -63,7 +63,7 @@ test('invalid Emirates ID feedback identifies the field before generic gaps with
   f.raw.issues = [{code:'DOCUMENT_UNASSIGNED'}, {code:'PASSPORT_MRZ_INVALID'}, {code:'DOCUMENT_FIELD_REQUIRED'}, {code:'DOCUMENT_FIELD_INVALID', field:'emiratesId', message:'PRIVATE_ID_READING'}];
   const item = f.service.update(CUSTOMER); await f.service.flush();
   const lines = item.payload.text.split('\n');
-  assert.match(item.payload.text, /ما في داعي تعيد إرسال المرفقات/);assert.doesNotMatch(item.payload.text,/رقم الهوية|آلي|ربط بعض الصور|سيقارنه القسم/);
+  assert.match(item.payload.text, /منخبرك إذا احتجنا أي معلومة إضافية/);assert.doesNotMatch(item.payload.text,/رقم الهوية|آلي|ربط بعض الصور|سيقارنه القسم/);
   assert.equal((item.payload.text.match(/•/g) || []).length, 0);
   assert.doesNotMatch(item.payload.text, /PRIVATE_ID_READING|784199012345671|إعادة تصوير صفحة بيانات الجواز/);
   assert.equal(f.c.paymentStatus, 'unverified');
@@ -257,8 +257,8 @@ test('five new file/result snapshots cannot repeat the same review notice to the
   assert.equal(records.filter(item => item.state === 'accepted').length, 1);
   assert.equal(records.filter(item => item.failure === 'DUPLICATE_FEEDBACK').length, 4);
   const copy = f.dispatched[0].payload.text;
-  assert.match(copy, /وصلت المرفقات وحفظتها بملفك/);
-  assert.match(copy, /ما في داعي تعيد إرسال المرفقات/);
+  assert.match(copy, /وصلت أوراقك، شكرًا إلك/);
+  assert.match(copy, /منخبرك إذا احتجنا أي معلومة إضافية/);
   assert.doesNotMatch(copy,/مطابقة صور الهوية|آليًا|ربط بعض الصور/);
   assert.doesNotMatch(copy, /يرجى إرسال صفحة بيانات الجواز|يرجى إرسال صور الهوية/);
 });
@@ -324,3 +324,7 @@ test('receipt arrival invalidates the queued receipt request and subsequent noti
  const summary=f.intake.summary.bind(f.intake);f.intake.summary=customer=>({...summary(customer),recovery:{attempts:['completed']}});
  const item=f.service.update(CUSTOMER);assert.match(item.payload.text,/صفحة بيانات الجواز/);assert.doesNotMatch(item.payload.text,/إذا احتجنا منك/);await f.service.flush();assert.equal(f.count(),1);
  });
+
+test('a single missing passport fact is asked calmly before any payment instruction',async()=>{
+ const f=fixture({status:'needs_confirmation'});f.raw.issues=[{code:'DOCUMENT_FIELD_REQUIRED',field:'passportType'},{code:'DOCUMENT_FIELD_REQUIRED',field:'birthPlace'}];f.raw.awaitingPayment=true;const item=f.service.update(CUSTOMER);assert.match(item.payload.text,/شو نوع جواز السفر/);assert.equal((item.payload.text.match(/؟/g)||[]).length,1);assert.doesNotMatch(item.payload.text,/قراءة|مطابقة|الخانات|حفظ الطلب|المحاسب|التحويل|رعد|مكان الولادة/);
+});

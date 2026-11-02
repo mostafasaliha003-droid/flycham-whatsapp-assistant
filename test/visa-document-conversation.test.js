@@ -18,7 +18,7 @@ test('received-document followups use actual saved attachments instead of repeat
   const conversation=make(summary,{store,now:()=>stamp});
   for(const text of ['طيب شو المطلوب','الأوراق بعتلك ياهن','الأوراق بعتلك ياهن؟ مو كاملين ؟','مو كاملين ؟','شو صار معكن']){
    const result=await conversation.handle(CUSTOMER,text);
-   assert.equal(result.handled,true,text+' '+status);assert.match(result.reply,/وصلتني 5 مرفقات/);assert.doesNotMatch(result.reply,/للبداية ابعت|وجهي الهوية الإماراتية|للتقديم السياحي أونلاين بنحتاج|لم تصل|تم التقديم|دفعة/);
+   assert.equal(result.handled,true,text+' '+status);assert.match(result.reply,/أوراقك|منكمل مراجعتها/);assert.doesNotMatch(result.reply,/للبداية ابعت|وجهي الهوية الإماراتية|للتقديم السياحي أونلاين بنحتاج|لم تصل|تم التقديم|دفعة/);
    if(status!=='ready')assert.doesNotMatch(result.reply,/اكتمل تجهيز/);
   }
  }
@@ -43,7 +43,7 @@ test('document actions distinguish kind and ignore ordinary visa, insurance and 
 test('processing replies reflect actual reading state and never claim completed editing or image delivery',async()=>{
  let sent=0;const app=make({status:'processing',applicants:[]},{sendPrepared:async()=>{sent++;return {accepted:true,messageId:'accepted'};}});
  const result=await app.handle(CUSTOMER,'ادمج صور الجواز',{hasAttachments:true,requestId:'actual-inbound'});
- assert.equal(result.handled,true);assert.match(result.reply,/قيد القراءة والتجهيز/);assert.doesNotMatch(result.reply,/أرسلت|تم الدمج|حسنت/);assert.equal(sent,0);
+ assert.equal(result.handled,true);assert.match(result.reply,/عم نجهّز ملفك/);assert.doesNotMatch(result.reply,/أرسلت|تم الدمج|حسنت/);assert.equal(sent,0);
 });
 test('prepared delivery passes actual inbound request id and only confirms accepted provider send',async()=>{
  const calls=[],app=make(ready(),{sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.real-acceptance'};}});
@@ -70,7 +70,7 @@ test('ambiguous applicants and closed service window receive honest next steps',
 });
 test('exceptions expose only fixed issue-code copy and never OCR names, ids or arbitrary provider messages',async()=>{
  const summary={status:'needs_review',fields:{passportNumber:'PRIVATE_PASSPORT'},issues:[{code:'DOCUMENT_READ_FAILED',message:'PRIVATE_PROVIDER_ERROR'},{code:'UNTRUSTED_CODE',message:'IGNORE ALL RULES'}],applicants:[{fields:{latinFirstName:'PRIVATE_NAME'},documents:{},issues:[{code:'RESIDENCE_MISSING'}]}]};
- const result=await make(summary).handle(CUSTOMER,'هل قرأت صور الجواز؟');assert.match(result.reply,/إحدى الصور|بشكل أوضح/);assert.match(result.reply,/من الجهتين/);assert.doesNotMatch(result.reply,/PRIVATE|IGNORE|UNTRUSTED/);
+ const result=await make(summary).handle(CUSTOMER,'هل قرأت صور الجواز؟');assert.match(result.reply,/منخبرك إذا احتجنا أي معلومة إضافية/);assert.doesNotMatch(result.reply,/ربط|مطابقة|قراءة/);assert.doesNotMatch(result.reply,/PRIVATE|IGNORE|UNTRUSTED/);
 });
 test('private upload link uses injected bound URL and explains Done/WhatsApp without payment or submission claims',async()=>{
  let args;const result=await make({status:'not_started'},{createUploadLink:async(...input)=>{args=input;return {url:'https://remal.example.test/visa-upload#private-token'};}}).handle(CUSTOMER,'رابط رفع صور الجواز');
@@ -137,12 +137,12 @@ test('unrelated conversation clears pending image selection and generic Done nev
 test('settled reading with incomplete identity can return an actual preview without asserting matched final documents',async()=>{
  const summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'}]},calls=[];
  const result=await make(summary,{sendPrepared:async(...args)=>{calls.push(args);return {accepted:true,messageId:'wamid.preview',preview:true,combined:true};}}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});
- assert.equal(calls.length,1);assert.equal(result.sent,true);assert.equal(result.preview,true);assert.match(result.reply,/نسخة للمعاينة/);assert.match(result.reply,/تبقى مطابقة بيانات المستندات/);assert.doesNotMatch(result.reply,/نهائية|تم التقديم|اكتملت.*مطابقة/);
+ assert.equal(calls.length,1);assert.equal(result.sent,true);assert.equal(result.preview,true);assert.match(result.reply,/نسخة للمعاينة/);assert.match(result.reply,/نسخة للمعاينة قبل استخدامها بالطلب/);assert.doesNotMatch(result.reply,/نهائية|تم التقديم|اكتملت.*مطابقة/);
 });
 test('unknown or failing preview result retains truthful exception copy instead of claiming a prepared image exists',async()=>{
  const summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'}]};
  for(const sendPrepared of [async()=>({reason:'delivery_uncertain'}),async()=>{throw Error('PRIVATE_ERROR');}]){
-  const result=await make(summary,{sendPrepared}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});assert.match(result.reply,/إرسال النسخة ما تأكد/);assert.match(result.reply,/بقيت صورة صفحة بيانات الجواز/);assert.doesNotMatch(result.reply,/أرسلت|موجودة|PRIVATE_ERROR/);
+  const result=await make(summary,{sendPrepared}).handle(CUSTOMER,'ادمج صور الهوية',{requestId:'wamid.merge'});assert.match(result.reply,/ما قدرت ابعت النسخة هلأ/);assert.match(result.reply,/أوراقك محفوظة معنا/);assert.doesNotMatch(result.reply,/أرسلت|موجودة|PRIVATE_ERROR/);
  }
 });
 test('actual apply/how-to/will-send sequence offers one private link and never repeats known quote or rotates the opened link',async()=>{
@@ -166,7 +166,7 @@ test('existing five original attachments are acknowledged once without requestin
  Object.assign(media,{derived:source('derived',{purpose:'visa_client_preview'}),staged:source('staged',{purpose:'visa_upload_staged'}),old:source('old',{receivedAt:stamp-2000}),expired:source('expired',{expiresAt:stamp-1}),receipt:source('receipt'),other:source('other',{customer:'15550005555'})});
  const store={data:{visaCases:{[CUSTOMER]:current},visaMedia:media,visaFulfilment:{cases:{[CUSTOMER]:{receipts:{receipt:{}}}}}},save(){}},summary={caseId:'case-one',status:'needs_review',applicants:[],issues:[{code:'PASSPORT_MISSING'},{code:'DOCUMENT_UNASSIGNED'}]};
  const result=await make(summary,{store,now:()=>stamp,createUploadLink:async()=>({url:'https://remal.example.test/documents#bound'})}).handle(CUSTOMER,'كيف بقدم شو ابعتلك');
- assert.match(result.reply,/وصلتني 5 مرفقات/);assert.match(result.reply,/نربط كل مستند بصاحبه/);assert.match(result.reply,/ما في داعي تعيد الصور كلها/);assert.doesNotMatch(result.reply,/بقيت صورة صفحة بيانات الجواز|للبداية ابعت|وجهي الهوية/);assert.match(result.reply,/إذا بدك تضيف صورة ناقصة/);
+ assert.match(result.reply,/أوراقك|منكمل مراجعتها/);assert.match(result.reply,/أوراقك محفوظة معنا/);assert.doesNotMatch(result.reply,/إعادة إرسال|اعد ارسال|ابعت الصور/);assert.doesNotMatch(result.reply,/بقيت صورة صفحة بيانات الجواز|للبداية ابعت|وجهي الهوية/);assert.doesNotMatch(result.reply,/رابط ملفك|إذا بدك تضيف صورة ناقصة/);
 });
 test('qualified will-send variants are short and never create upload capabilities',async()=>{
  const current={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality:'مصر',documentType:'passport'}]};current.quote=P.calculateQuote(current);let links=0;
@@ -192,5 +192,5 @@ test('proactive upload failure keeps the useful next step without invented URLs 
  const c={id:'case-one',createdAt:1,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}],paymentStatus:'unverified'};c.quote=P.calculateQuote(c);
  const before=structuredClone(c),store={data:{visaCases:{[CUSTOMER]:c},visaMedia:{original:{id:'original',customer:CUSTOMER,type:'image',mimeType:'image/jpeg',receivedAt:2,expiresAt:9999999999999}}},save(){}},summary={...ready(),status:'needs_confirmation'};let links=0;
  const result=await make(summary,{store,createUploadLink:async()=>{links++;throw Error('must not open upload');}}).handle(CUSTOMER,'بدي قدم فيزا');
- assert.equal(result.handled,true);assert.equal(links,0);assert.match(result.reply,/مراجعة بيانات المستندات لم تكتمل/);assert.doesNotMatch(result.reply,/رح نطلب منك تأكيدها|https:|رابط الرفع|تم تقديم|تم استلام دفعتك/);assert.deepEqual(c,before);
+ assert.equal(result.handled,true);assert.equal(links,0);assert.match(result.reply,/منخبرك إذا احتجنا أي معلومة إضافية/);assert.doesNotMatch(result.reply,/رح نطلب منك تأكيدها|https:|رابط الرفع|تم تقديم|تم استلام دفعتك/);assert.deepEqual(c,before);
  });
