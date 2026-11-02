@@ -182,6 +182,24 @@ async function observeSavedCase(ctx,lookup){
  throw finite('SAVED_CASE_UNCONFIRMED');
 }
 
+async function observePortalTransition(ctx,from,expected,code){
+ for(let poll=0;poll<20;poll++){
+  await ctx.checkLease();const state=await ctx.locate();
+  if(expected.includes(state.path))return state;
+  if(!from.includes(state.path))throw finite(code);
+  if(poll<19)await ctx.wait(1000);
+ }
+ throw finite(code);
+}
+async function observeInsuranceQuotes(ctx,inspect){
+ for(let poll=0;poll<20;poll++){
+  await ctx.checkLease();const metadata=await inspect();
+  if(metadata?.insuranceQuotes?.available===true&&metadata.insuranceQuotes.offers?.length)return chooseCheapest(metadata);
+  if(poll<19)await ctx.wait(1000);
+ }
+ throw finite('INSURANCE_QUOTES_UNAVAILABLE');
+}
+
 async function observeSaveTransition(ctx,{allowConfirmation=false}={}){
  for(let poll=0;poll<20;poll++){
   await ctx.checkLease();const state=await ctx.locate();
@@ -212,7 +230,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
   required(f,'entryDate');if(f.visitPurpose!=='tourism'||f.residenceCountryCode!=='ARE')throw finite('SUPPORTED_WORKFLOW_REQUIRED',f.visitPurpose!=='tourism'?'visitPurpose':'residenceCountryCode');const born=new Date(f.birthDate+'T00:00:00Z'),entry=new Date(f.entryDate+'T00:00:00Z');let age=entry.getUTCFullYear()-born.getUTCFullYear();if(entry.getUTCMonth()<born.getUTCMonth()||entry.getUTCMonth()===born.getUTCMonth()&&entry.getUTCDate()<born.getUTCDate())age--;if(!Number.isFinite(age)||age<18||Object.values(f.guardian||{}).some(Boolean))throw finite('MANUAL_REVIEW_REQUIRED','guardian');if(f.gccResident!==true)throw finite('GCC_RESIDENCY_REQUIRED','gccResident');for(const key of ['previousNationality','travelledLastFiveYears'])if(f[key]===true)throw finite('MANUAL_REVIEW_REQUIRED',key);if(f.priorGccDeportation||f.priorGccRuleViolation)throw finite('ELIGIBLE_ROUTE_REVIEW_REQUIRED',f.priorGccDeportation?'priorGccDeportation':'priorGccRuleViolation');for(const key of HEALTH)if(typeof f.health?.[key]!=='boolean')throw finite('MISSING_FIELD','health.'+key);required(f,'emiratesId');required(f,'residenceExpiry');uaePhone(f.applicationPhone);
   await loginGovernmentAccount(ctx);r.phase='lookup';
   let metadata=await inspect();for(let nav=0;(await locate()).path!=='/SmartForm'&&nav<3;nav++){const links=(metadata.links||[]).filter(link=>link.path==='/SmartForm'&&/طلب|تأشير|تاشير|application|visa/i.test(link.label));if(links.length!==1)throw finite('CASE_LIST_LINK_UNAVAILABLE');await open(links[0]);metadata=await settle();}
-  const existing=await lookup();if(existing.matchCount){const match=existing.matches[0];if(!m.existingApplicationReference||match.applicationReference!==m.existingApplicationReference)throw finite('EXISTING_APPLICATION_REVIEW_REQUIRED');r.reference=match.applicationReference;r.saved=true;const continuations=match.continuations||[],link=continuations.find(item=>/^\/SmartForm\/HealthInsuranceInfo\/[0-9]+$/.test(item.path))||continuations.find(item=>/^\/SmartForm\/PayFee\/[0-9]+$/.test(item.path));if(!link)throw finite('SAVED_CONTINUATION_UNAVAILABLE');await open(link,{viewPaymentDetails:/\/PayFee\//.test(link.path)});}
+  const existing=m.existingApplicationReference?await observeSavedCase(ctx,lookup):await lookup();if(m.existingApplicationReference&&existing.matchCount!==1)throw finite('SAVED_CASE_UNCONFIRMED');if(existing.matchCount){const match=existing.matches[0];if(!m.existingApplicationReference||match.applicationReference!==m.existingApplicationReference)throw finite('EXISTING_APPLICATION_REVIEW_REQUIRED');r.reference=match.applicationReference;r.saved=true;const continuations=match.continuations||[],link=continuations.find(item=>/^\/SmartForm\/HealthInsuranceInfo\/[0-9]+$/.test(item.path))||continuations.find(item=>/^\/SmartForm\/PayFee\/[0-9]+$/.test(item.path));if(!link)throw finite('SAVED_CONTINUATION_UNAVAILABLE');await open(link,{viewPaymentDetails:/\/PayFee\//.test(link.path)});}
   else{if(m.existingApplicationReference||m.submissionUncertain)throw finite('SAVED_CASE_UNCONFIRMED');r.phase='agreements';metadata=await inspect();let link=(metadata.links||[]).filter(item=>item.path==='/SmartForm/Agreement'&&/إضافة طلب جديد|اضافة طلب جديد/i.test(item.label));if(link.length!==1)throw finite('NEW_APPLICATION_LINK_UNAVAILABLE');await open(link[0]);for(let step=0;step<3&&(await locate()).path!=='/SmartForm/TraditionalApp';step++){metadata=await inspect();const path=(await locate()).path;if(!['/SmartForm/Agreement','/SmartForm/ElectronicAgreement'].includes(path))throw finite('AGREEMENT_FLOW_UNCONFIRMED');const links=(metadata.links||[]).filter(item=>/^\/SmartForm\/(?:ElectronicAgreement|TraditionalApp)$/.test(item.path)&&/^(?:موافق|أوافق|اوافق|Agree|I Agree)$/i.test(item.label));if(links.length===1)await open(links[0],{acceptAgreement:true});else if(path==='/SmartForm/Agreement')await originalButton(metadata,'agreement');else throw finite('AGREEMENT_CONTROL_UNAVAILABLE');await wait(700);}
    if((await locate()).path!=='/SmartForm/TraditionalApp')throw finite('DRAFT_FORM_UNAVAILABLE');r.phase='draft';
    const control=async id=>{const data=await inspect(),all=(data.controls||[]).filter(c=>c.id===id&&!c.disabled);if(all.length!==1)throw finite('PORTAL_FIELD_UNAVAILABLE',id);return all[0];};
@@ -240,9 +258,9 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  let state=await locate();
  if(/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(state.path)){
   r.phase='health';for(const [id,key]of [['PostOfficeBox','postOfficeBox'],['City','city'],['ZipCode','postalCode'],['Email','contactEmail'],['Mobile','insurancePhone']])await fill({id,kind:'text',value:required(f,key)});await setDate('ExpectedEntryDate',required(f,'entryDate'));
-  const names=['DeclarationForms[0].Q1_IsReceivingEmergencyTreatment','DeclarationForms[0].Q2_HavePermenantInjury','DeclarationForms[0].Q3_HaveCongenitalDisorders'];for(let i=0;i<names.length;i++)await fill({kind:'radio',name:names[i],optionValue:String(f.health[HEALTH[i]]),value:true});await originalButton(await inspect(),'submit',[{id:'Email',kind:'text',expectedValue:f.contactEmail},...names.map((name,i)=>({kind:'radio',name,optionValue:String(f.health[HEALTH[i]]),expectedValue:true}))]);await wait(1200);state=await locate();
+  const names=['DeclarationForms[0].Q1_IsReceivingEmergencyTreatment','DeclarationForms[0].Q2_HavePermenantInjury','DeclarationForms[0].Q3_HaveCongenitalDisorders'];for(let i=0;i<names.length;i++)await fill({kind:'radio',name:names[i],optionValue:String(f.health[HEALTH[i]]),value:true});await originalButton(await inspect(),'submit',[{id:'Email',kind:'text',expectedValue:f.contactEmail},...names.map((name,i)=>({kind:'radio',name,optionValue:String(f.health[HEALTH[i]]),expectedValue:true}))]);state=await observePortalTransition(ctx,[state.path],['/SmartForm/HealthInsurance/'+state.path.split('/').pop()],'INSURANCE_PAGE_UNCONFIRMED');
  }
- if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=chooseCheapest(await inspect());await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);await wait(1000);state=await locate();}
+ if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=await observeInsuranceQuotes(ctx,inspect);await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);state=await observePortalTransition(ctx,[state.path],['/Payment/Summary'],'PAYMENT_SUMMARY_UNCONFIRMED');}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={observeSavedCase,observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={observePortalTransition,observeInsuranceQuotes,observeSavedCase,observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
