@@ -54,7 +54,7 @@ test('safe review copy uses at most three known issue actions and never provider
     {code: 'DOCUMENT_IDENTITY_MISMATCH'}, {code: 'RESIDENCE_MISSING'}, {code: 'ARBITRARY_CODE', message: 'SECRET_784199012345671'}
   ];
   const item = f.service.update(CUSTOMER); await f.service.flush();
-  assert.equal((item.payload.text.match(/•/g) || []).length, 3); assert.match(item.payload.text, /سيطابقها القسم/);
+  assert.equal((item.payload.text.match(/•/g) || []).length, 1); assert.match(item.payload.text, /إعادة تصوير المستند/);
   for (const forbidden of ['PRIVATE_PROVIDER_TEXT', 'WIRE MONEY', 'SECRET_', '784199012345671', 'ARBITRARY_CODE']) assert.equal(item.payload.text.includes(forbidden), false);
 });
 
@@ -63,8 +63,8 @@ test('invalid Emirates ID feedback identifies the field before generic gaps with
   f.raw.issues = [{code:'DOCUMENT_UNASSIGNED'}, {code:'PASSPORT_MRZ_INVALID'}, {code:'DOCUMENT_FIELD_REQUIRED'}, {code:'DOCUMENT_FIELD_INVALID', field:'emiratesId', message:'PRIVATE_ID_READING'}];
   const item = f.service.update(CUSTOMER); await f.service.flush();
   const lines = item.payload.text.split('\n');
-  assert.match(lines[1], /رقم الهوية.*المحفوظة قبل طلب أي صورة إضافية/);
-  assert.equal((item.payload.text.match(/•/g) || []).length, 3);
+  assert.match(item.payload.text, /ما في داعي تعيد إرسال المرفقات/);assert.doesNotMatch(item.payload.text,/رقم الهوية|آلي|ربط بعض الصور|سيقارنه القسم/);
+  assert.equal((item.payload.text.match(/•/g) || []).length, 0);
   assert.doesNotMatch(item.payload.text, /PRIVATE_ID_READING|784199012345671|إعادة تصوير صفحة بيانات الجواز/);
   assert.equal(f.c.paymentStatus, 'unverified');
 });
@@ -258,8 +258,8 @@ test('five new file/result snapshots cannot repeat the same review notice to the
   assert.equal(records.filter(item => item.failure === 'DUPLICATE_FEEDBACK').length, 4);
   const copy = f.dispatched[0].payload.text;
   assert.match(copy, /وصلت المرفقات وحفظتها بملفك/);
-  assert.match(copy, /لم تتأكد قراءة صفحة بيانات الجواز/);
-  assert.match(copy, /لم تكتمل مطابقة صور الهوية/);
+  assert.match(copy, /ما في داعي تعيد إرسال المرفقات/);
+  assert.doesNotMatch(copy,/مطابقة صور الهوية|آليًا|ربط بعض الصور/);
   assert.doesNotMatch(copy, /يرجى إرسال صفحة بيانات الجواز|يرجى إرسال صور الهوية/);
 });
 
