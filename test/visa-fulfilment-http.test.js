@@ -219,3 +219,12 @@ test('reread rejects extra fields, invalid JSON, incorrect methods and stale sou
  let calls=0;const f=fixture({documentIntake:{summary:()=>({status:'needs_review'}),rereadSource(){calls++;throw Object.assign(Error('DOCUMENT_REREAD_STALE'),{code:'DOCUMENT_REREAD_STALE'});}}}),path=BASE+'/'+CUSTOMER+'/reread-document',headers={authorization:'Bearer '+ADMIN_KEY},data={caseId:f.c.id,mediaId:RECEIPT,sourceSha256:'a'.repeat(64),generation:7};
  for(const raw of ['null','[]','not-json',JSON.stringify({...data,confirmIdentity:true}),JSON.stringify({...data,padding:'x'.repeat(1001)})]){const result=await f.invoke({path,headers,raw});assert.equal(result.status,400);assert.equal(result.data.error,'INVALID_BODY');}assert.equal(calls,0);assert.equal((await f.invoke({path,method:'GET',headers})).status,405);const stale=await f.invoke({path,headers,data});assert.equal(stale.status,409);assert.equal(stale.data.error,'DOCUMENT_REREAD_STALE');assert.equal(calls,1);assert.equal(f.calls.wake,0);assert.equal(f.calls.claim,0);assert.equal(f.calls.finance,0);
 });
+
+test('final previews bind selected media to customer, kind, current case and last attempt checksum',()=>{
+ const {preparedDocumentPreviews}=require('../src/visa-fulfilment-http');const f=fixture(),id=RECEIPT,job={id:'fake-job',caseId:f.c.id,applicantIndex:0};
+ const raw=f.store.data.visaMedia[id];Object.assign(raw,{purpose:'raad_portal_upload',kind:'residence'});f.store.data.raadApplications={[CUSTOMER]:{caseId:f.c.id,applicants:{0:{documents:{residence:{mediaId:id}}}}}};
+ assert.equal(preparedDocumentPreviews(f.store,f.mediaStore,CUSTOMER,[job])[0].selection,'current_prepared');
+ f.store.data.visaPortalRuns={[job.id]:{preparedDocuments:[{kind:'residence',mediaId:id,sha256:raw.checksum}]}};
+ assert.equal(preparedDocumentPreviews(f.store,f.mediaStore,CUSTOMER,[job])[0].selection,'last_attempt');
+ raw.checksum='changed';assert.deepEqual(preparedDocumentPreviews(f.store,f.mediaStore,CUSTOMER,[job]),[]);raw.checksum='a'.repeat(64);raw.customer=OTHER;assert.deepEqual(preparedDocumentPreviews(f.store,f.mediaStore,CUSTOMER,[job]),[]);raw.customer=CUSTOMER;job.caseId='stale';assert.deepEqual(preparedDocumentPreviews(f.store,f.mediaStore,CUSTOMER,[job]),[]);
+});

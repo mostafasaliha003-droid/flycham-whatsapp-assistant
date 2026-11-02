@@ -3,10 +3,26 @@ const {timingSafeEqual}=require('node:crypto');
 const {validCustomer}=require('./conversation-journal');
 const {validQueueKey}=require('./quote-jobs');
 function accountantAccess(request,env){const expected=env.RAAD_ACCOUNTANT_KEY,supplied=request.headers['x-accountant-key'];if(typeof expected!=='string'||expected.length<32||typeof supplied!=='string')return false;const a=Buffer.from(expected),b=Buffer.from(supplied);return a.length===b.length&&timingSafeEqual(a,b);}
+function preparedDocumentPreviews(store,mediaStore,customer,jobs){
+ const records=store.data.visaMedia||{}, result=[];
+ for(const job of jobs){
+  if(job.caseId!==store.data.visaCases?.[customer]?.id)continue;
+  const run=store.data.visaPortalRuns?.[job.id], attempted=Array.isArray(run?.preparedDocuments);
+  const container=store.data.raadApplications?.[customer],draft=container?.caseId===job.caseId?container.applicants?.[job.applicantIndex]:null;
+  const selected=attempted?run.preparedDocuments:Object.entries(draft?.documents||{}).map(([kind,value])=>({kind,mediaId:typeof value==='string'?value:value?.mediaId}));
+  for(const kind of ['passport','residence','photo']){
+   const chosen=selected.filter(doc=>doc.kind===kind);if(chosen.length!==1)continue;
+   const doc=chosen[0],record=records[doc.mediaId];
+   if(!record||record.customer!==customer||record.purpose!=='raad_portal_upload'||record.kind!==kind||!['image/jpeg','image/png'].includes(record.mimeType)||attempted&&record.checksum!==doc.sha256)continue;
+   try{const safe=mediaStore.get(doc.mediaId,{customer});result.push({kind,mediaId:safe.id,mimeType:safe.mimeType,size:safe.size,applicantIndex:job.applicantIndex,jobId:job.id,selection:attempted?'last_attempt':'current_prepared'});}catch{}
+  }
+ }
+ return result;
+}
 function createVisaFulfilmentHttp({fulfilment,inbox,journal,mediaStore,store,documentIntake,env=process.env,wake=()=>{}}){
  const locks=new Map();
  const capabilities=request=>({accountantConfigured:typeof env.RAAD_ACCOUNTANT_KEY==='string'&&env.RAAD_ACCOUNTANT_KEY.length>=32,accountantReview:accountantAccess(request,env),governmentPayment:false});
- const detail=customer=>{const item=fulfilment.get(customer),c=store.data.visaCases[customer],summary=journal.summary(customer);return {...item,jobs:item.jobs.map(job=>({...job,operatorRestartAvailable:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true'&&job.state==='portal_review_required'&&((['LOGIN_CAPTCHA_TIMEOUT','OPERATOR_CHALLENGE_EXPIRED','LOGIN_REJECTED','PILOT_UNAVAILABLE'].includes(job.blockedReason)&&store.data.visaPortalRuns?.[job.id]?.lastStage==='login')||(job.blockedReason==='PORTAL_START_UNCERTAIN'&&store.data.visaPortalRuns?.[job.id]?.phase==='cancelled'&&store.data.visaPortalRuns?.[job.id]?.lastStage==='preflight'))&&!job.portalSaved&&!job.applicationReference&&(job.diagnosticOnly===true?(job.diagnosticLoginRestarts||0)<5:(job.operatorManualStarts||0)<2),operatorAvailable:store.data.visaPortalRuns?.[job.id]?.phase==='waiting_operator'&&store.data.visaPortalRuns[job.id].operatorChallenge?.expiresAt>Date.now()})),name:summary?.name||'',applicantCount:c.applicantCount,quote:c.quote,visaCase:c,staffClaimed:inbox.isOperatorOwned(customer),governmentFees:{status:'unpaid'},media:mediaStore.list(customer),...(documentIntake?{documentReview:documentIntake.summary(customer)}:{})};};
+ const detail=customer=>{const item=fulfilment.get(customer),c=store.data.visaCases[customer],summary=journal.summary(customer);return {...item,jobs:item.jobs.map(job=>({...job,operatorRestartAvailable:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true'&&job.state==='portal_review_required'&&((['LOGIN_CAPTCHA_TIMEOUT','OPERATOR_CHALLENGE_EXPIRED','LOGIN_REJECTED','PILOT_UNAVAILABLE'].includes(job.blockedReason)&&store.data.visaPortalRuns?.[job.id]?.lastStage==='login')||(job.blockedReason==='PORTAL_START_UNCERTAIN'&&store.data.visaPortalRuns?.[job.id]?.phase==='cancelled'&&store.data.visaPortalRuns?.[job.id]?.lastStage==='preflight'))&&!job.portalSaved&&!job.applicationReference&&(job.diagnosticOnly===true?(job.diagnosticLoginRestarts||0)<5:(job.operatorManualStarts||0)<2),operatorAvailable:store.data.visaPortalRuns?.[job.id]?.phase==='waiting_operator'&&store.data.visaPortalRuns[job.id].operatorChallenge?.expiresAt>Date.now()})),name:summary?.name||'',applicantCount:c.applicantCount,quote:c.quote,visaCase:c,staffClaimed:inbox.isOperatorOwned(customer),governmentFees:{status:'unpaid'},preparedDocuments:preparedDocumentPreviews(store,mediaStore,customer,item.jobs),media:mediaStore.list(customer),...(documentIntake?{documentReview:documentIntake.summary(customer)}:{})};};
  return async function handle(request,response,url,readBody){
   const base='/internal/assistant/visa-workflow';if(url.pathname!==base&&!url.pathname.startsWith(base+'/'))return false;
   const reply=(status,data)=>response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff'}).end(JSON.stringify(data));
@@ -41,4 +57,4 @@ function createVisaFulfilmentHttp({fulfilment,inbox,journal,mediaStore,store,doc
   }catch(error){const status=Number(error.statusCode)||409,code=error.code||error.message;reply([400,403,404,409,422,503].includes(status)?status:503,{ok:false,error:/^[A-Z][A-Z0-9_]{2,80}$/.test(code||'')?code:'VISA_WORKFLOW_UNAVAILABLE'});}return true;
  };
 }
-module.exports={createVisaFulfilmentHttp,accountantAccess};
+module.exports={createVisaFulfilmentHttp,accountantAccess,preparedDocumentPreviews};
