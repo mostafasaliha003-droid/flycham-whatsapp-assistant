@@ -158,16 +158,18 @@ class VisaPortalDispatcher{
     phase='owner_delivery';if(typeof this.ownerNotificationReady!=='function'||await this.ownerNotificationReady()!==true){diagnostic('OWNER_NOTIFICATION_NOT_READY');continue;}
     phase='remote_record';
     let remote,recordMissing=false;
-    try{remote=await this.request('/internal/raad/jobs/'+job.id);}catch(error){if(error?.status===404&&refreshDocuments)recordMissing=true;else throw error;}
-    // Cancellation scrubs the phase but retains save/uncertainty and binding
-    // proof. A missing record or an ambiguous save never permits a restart.
+    try{remote=await this.request('/internal/raad/jobs/'+job.id);}catch(error){if(error?.status===404&&(refreshDocuments||explicitRetry))recordMissing=true;else throw error;}
+    // Cancellation retains save/uncertainty and binding proof. A missing
+    // record requires an explicit case-scoped retry (or document-only refresh).
+    // The worker always looks up existing applications before creating one.
     if(!recordMissing&&(remote.jobId!==job.id||remote.caseSignature!==job.caseSignature||remote.applicantIndex!==job.applicantIndex||remote.saved!==false||remote.reference!==null||remote.submissionUncertain!==false||remote.paymentAttempted!==false||remote.ownedBrowserClosed!==true||!(remote.stage==='cancelled'&&remote.phase==='done'||remote.stage==='blocked'&&remote.phase==='application_sms'&&remote.blocker?.code==='OTP_CHALLENGE_EXPIRED'))){diagnostic('REMOTE_UNSAVED_PROOF_REQUIRED');continue;}
     phase='worker_health';const health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false){diagnostic('WORKER_NOT_IDLE');continue;}
     phase='remote_cleanup';
     const cleanup=await this.cancelOwned(job.id);
-    // An evicted remote record authorizes only local document restaging,
-    // never automatic execution. Require explicit absence/idle proof, renew
-    // applicant consent, and retain the worker's existing-application lookup.
+    // Require absence and idle proof after eviction. Only the explicit
+    // operator request permits execution with current consent; ordinary
+    // eviction recovery remains document-only. Existing-application lookup
+    // in the worker refuses any matching request before creating another.
     if(recordMissing&&(cleanup.absent!==true||cleanup.jobId!==job.id)){diagnostic('REMOTE_ABSENCE_UNCONFIRMED');continue;}
     verify(expectedFingerprint);
     if(refreshDocuments){
