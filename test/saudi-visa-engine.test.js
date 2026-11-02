@@ -88,7 +88,7 @@ test('travel document issuer is not inferred nationality; missing issuer needs a
  const r=await e.handle('a','فلسطيني');assert.equal(r.quote.total,850);assert.match(r.reply,/أصل الجواز وأصل الهوية/);
 });
 test('ordinary Egyptian passport is single tourism, not a Palestinian Egyptian document',async()=>{
- const e=make();const r=await e.handle('a','مصري جواز عادي لحالي');assert.equal(r.quote.rows[0].product,'tourist_single');assert.equal(r.quote.total,700);
+ const e=make();const r=await e.handle('a','مصري جواز عادي لحالي');assert.equal(r.quote.rows[0].product,'tourist_single');assert.equal(r.quote.total,700);assert.match(r.reply,/حسب سياسة منصة التقديم الحالية/);assert.match(r.reply,/للجنسية المصرية خلال هذا الموسم/);assert.match(r.reply,/متعددة الدخول غير متاحة حاليًا/);
 });
 test('refund, cancellation and payment after issuance are distinct actions',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');assert.match((await e.handle('a','الدفع بعد الاصدار')).reply,/ما عنا دفع بعد الإصدار/);

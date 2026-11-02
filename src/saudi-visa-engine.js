@@ -7,6 +7,7 @@ const {redactVisaText}=require('./saudi-visa-nlu');
 const {detectDocumentStep}=require('./visa-document-conversation');
 const {referenceKey,applicationReference,conversationIntent}=require('./visa-conversation-intent');
 const INTRO='أهلاً وسهلاً فيك بمجموعة الرمال 🌷 أنا إسماعيل، المساعد الافتراضي المختص بفيز السعودية.';
+const EGYPT_SINGLE_COPY='حسب سياسة منصة التقديم الحالية، التأشيرة السياحية المتاحة للجنسية المصرية خلال هذا الموسم هي سفرة واحدة، والتأشيرة متعددة الدخول غير متاحة حاليًا.';
 const MONEY=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
 function countFrom(text){const n=P.normalize(text);if(/لحالي|لوحدي|شخص واحد|شخص بالغ|انا فقط|انا بس|one person|just me/.test(n))return 1;const m=n.match(/(?:نحن|نحنا|صرنا|عددنا|عدد الاشخاص|عدد المتقدمين)\s*(\d{1,2})|\b(\d{1,2})\s*(?:اشخاص|شخص|افراد|متقدم)/);if(m)return Number(m[1]||m[2]);if(/(?:ثلاثه|ثلاث|تلاته|تلات)\s*(?:اشخاص|افراد|متقدمين)|(?:نحن|نحنا|صرنا|عددنا)\s*(?:ثلاثه|ثلاث|تلاته|تلات)/.test(n))return 3;if(/شخصين|(?:نحن|نحنا|صرنا|عددنا)\s*(?:اتنين|اثنين)|انا و(?:مرتي|زوجتي)/.test(n))return /(?:ابني|بنتي|الولد|الطفل)/.test(n)?3:2;if(/اربعه اشخاص|اربع اشخاص/.test(n))return 4;if(/خمسه اشخاص|خمس اشخاص/.test(n))return 5;return null;}
 function isComplaint(text){const n=P.normalize(text);const accusation=/نصاب|نصبتم|نصبتو|نصبتوا|حراميه|سرقتو|سرقتوا/.test(n),existing=/قدمت|مقدم|معاملتي|معامله|دفعت|حولت|فلوسي|مصرياتي|مصاري|مبلغ|ترجعو|رجعتو/.test(n);return existing&&(accusation||/(?:ما|لم|مو|ليس).{0,25}(?:طلعت|صدرت|رجعت|رجعتو|رجعوا|رجعتوا|استلمت)|شكوي|اشتك/.test(n));}
@@ -27,7 +28,8 @@ function relativeReply(pending,{group=false}={}){
  const product=P.productFor(person);let lead='';
  if(product.code==='suspended'){pending.awaiting='scope';return 'حسب حالة التقديم الحالية عندنا، التقديم لهالجنسية متوقف. ما رح نطلب منه دفع أو نوعده بموعد فتح غير معتمد.';}
  if(person.nationality==='فلسطين')lead='بحسب مسار التقديم الحالي عندنا، الحالة الفلسطينية لمسار العمرة، وما في ضمان للموافقة.';
- else if(!person.documentType&&product.code==='tourist_single')lead='إذا معه جواز مصري عادي، المسار عندنا سياحية سفرة واحدة.';
+ else if(!person.documentType&&product.code==='tourist_single')lead='إذا معه جواز مصري عادي: '+EGYPT_SINGLE_COPY;
+ else if(product.code==='tourist_single')lead=EGYPT_SINGLE_COPY;
  else if(!person.documentType&&product.code==='tourist_multi')lead='إذا معه جواز عادي، المسار عندنا سياحية متعددة الدخول حسب سياسة المكتب.';
  else if(product.code==='unverified')lead='نوع التأشيرة لهالحالة يحتاج تحققًا قبل تأكيد الأهلية أو طلب الدفع.';
  else lead='حسب سياسة التقديم الحالية عندنا، المسار لهالحالة هو '+product.label+'، من دون ضمان للموافقة.';
@@ -73,6 +75,7 @@ function quoteText(q){
  if(!q)return '';
  if(q.requiresReview)return 'حتى نعطيك سعر الأطفال بشكل دقيق، بدنا نراجع تسعير الحالة قبل تأكيد المبلغ؛ ما رح نحسب الطفل تلقائياً بسعر البالغ.';
  let text='*عرض تأشيرات السعودية 🇸🇦*\n'+q.rows.map(r=>`• المتقدم ${r.applicant}: ${r.label} — ${MONEY(r.amount)} درهم`).join('\n');
+ if(q.rows.some(row=>row.product==='tourist_single'))text+='\n\n'+EGYPT_SINGLE_COPY;
  text+=`\n*إجمالي رسوم التأشيرات: ${MONEY(q.subtotal)} درهم*`;
  if(q.groupDiscount)text+='\nتم احتساب سعر المجموعة: 650 درهماً للشخص.';
  if(q.mixedGroupReview)text+='\nالمجموعة فيها أنواع تأشيرات مختلفة؛ أي خصم إضافي يحتاج سياسة معتمدة، ولم يُحتسب تلقائياً.';
@@ -256,7 +259,7 @@ class SaudiVisaEngine{
   else if(completion){
    const price=priceRequested;
    const known=products[0];
-   reply=(price?'السياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص، والعمرة 850 درهماً.\n\n'+P.REFUND_BENEFIT+'\n\n':known?.code==='umrah'?'حسب سياسة التقديم الحالية لدينا، المسار المناسب لهذه الحالة هو تأشيرة العمرة. ':known?.code==='tourist_single'?'حسب سياسة التقديم الحالية لدينا، السياحية لهذه الحالة سفرة واحدة. ':'')+completion;
+   reply=(price?'السياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص، والعمرة 850 درهماً.\n\n'+P.REFUND_BENEFIT+'\n\n':known?.code==='umrah'?'حسب سياسة التقديم الحالية لدينا، المسار المناسب لهذه الحالة هو تأشيرة العمرة. ':known?.code==='tourist_single'?EGYPT_SINGLE_COPY+' ':'')+completion;
   }else{
    if(!c.staffVerification?.decision&&c.submissionStatus!=='submitted'&&c.paymentStatus!=='verified')c.stage=c.paymentStatus==='awaiting_verification'?'payment_review':'quoted';c.lastQuestion=null;
    if(quoteUnchanged&&!priceRequested&&afterFacts===beforeFacts&&!c.quote?.requiresReview)reply='أنا معك، ومنكمل على نفس الطلب. إذا عندك سؤال عن الخطوة الحالية خبرني.';
