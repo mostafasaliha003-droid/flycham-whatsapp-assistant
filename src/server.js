@@ -27,6 +27,7 @@ const complaintTemplateReady=createComplaintTemplateGate();
 const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const PRIVATE_VISA_CONFIG=loadVisaPrivateConfig();
 const COMPLAINT_RECIPIENT=process.env.SAUDI_VISA_COMPLAINT_RECIPIENT||PRIVATE_VISA_CONFIG.complaintRecipient||'';
+const {conversationIntent}=require('./visa-conversation-intent');
 const {visaEnabled,activeService,incomingRevision,noteIncoming,routeService,isComplaint}=require('./service-routing');
 const {createMofaCaptchaBridge}=require('./mofa-captcha-bridge');
 const handleMofaCaptcha=createMofaCaptchaBridge().handler;
@@ -203,6 +204,7 @@ async function processCustomerMessages(sender,messages){
   const flightState=assistant.state(sender);
   const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
   if(route.selectedText){text=route.selectedText;messages=[{...messages.at(-1),text:route.selectedText}];}
+  if(route.service==='service_inquiry'){if(turnRevision!==incomingRevision(assistant.store,sender))return;await sendTextMessage(sender,route.reply);return;}
   if(route.service==='choose'){const pending=messages.filter(m=>m.media);if(pending.length){assistant.store.data.pendingVisaMedia||={};assistant.store.data.pendingVisaMedia[sender]=[...(assistant.store.data.pendingVisaMedia[sender]||[]),...pending].slice(-20);assistant.store.save();}await sendServiceMenu(sender,route,turnRevision);return;}
   if(route.service==='saudi_visa'){
     if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim())){
@@ -211,7 +213,7 @@ async function processCustomerMessages(sender,messages){
     if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
     const attachments=messages.filter(m=>m.media),mediaReplies=[];
     for(const m of attachments){const result=await receiveVisaMedia(sender,m);mediaReplies.push(result.reply);}
-    const compoundDocumentRequest=/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
+    const compoundDocumentRequest=Boolean(conversationIntent(text))||/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
     const documentCase=visa.getCase(sender),documentCaseId=documentCase?.id,documentCaseRevision=documentCase?.revision;
     let documentReply=documentCase&&!compoundDocumentRequest?await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id}):{handled:false};
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;

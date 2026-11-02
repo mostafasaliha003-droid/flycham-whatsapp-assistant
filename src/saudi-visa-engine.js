@@ -5,6 +5,7 @@ const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const {currentVisaEvidence}=require('./visa-case-signature');
 const {redactVisaText}=require('./saudi-visa-nlu');
 const {detectDocumentStep}=require('./visa-document-conversation');
+const {referenceKey,applicationReference,conversationIntent}=require('./visa-conversation-intent');
 const INTRO='أهلاً وسهلاً فيك بمجموعة الرمال 🌷 أنا إسماعيل، المساعد الافتراضي المختص بفيز السعودية.';
 const MONEY=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
 function countFrom(text){const n=P.normalize(text);if(/لحالي|لوحدي|شخص واحد|شخص بالغ|انا فقط|انا بس|one person|just me/.test(n))return 1;const m=n.match(/(?:نحن|نحنا|صرنا|عددنا|عدد الاشخاص|عدد المتقدمين)\s*(\d{1,2})|\b(\d{1,2})\s*(?:اشخاص|شخص|افراد|متقدم)/);if(m)return Number(m[1]||m[2]);if(/(?:ثلاثه|ثلاث|تلاته|تلات)\s*(?:اشخاص|افراد|متقدمين)|(?:نحن|نحنا|صرنا|عددنا)\s*(?:ثلاثه|ثلاث|تلاته|تلات)/.test(n))return 3;if(/شخصين|(?:نحن|نحنا|صرنا|عددنا)\s*(?:اتنين|اثنين)|انا و(?:مرتي|زوجتي)/.test(n))return /(?:ابني|بنتي|الولد|الطفل)/.test(n)?3:2;if(/اربعه اشخاص|اربع اشخاص/.test(n))return 4;if(/خمسه اشخاص|خمس اشخاص/.test(n))return 5;return null;}
@@ -107,6 +108,28 @@ class SaudiVisaEngine{
   }
   return null;
  }
+ conversationReply(id,c,text,reply){
+  c.revision++;c.history.push({role:'user',text:redactVisaText(text).slice(0,1500)},{role:'assistant',text:redactVisaText(reply).slice(0,2500)});c.history=c.history.slice(-16);this.save(id,c);return{reply,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage};
+ }
+ ownedApplications(id){
+  const cases=[this.getCase(id),...(this.store.data.visaCaseArchives?.[id]||[])].filter(Boolean);
+  return Object.values(this.store.data.visaFulfilment?.jobs||{}).filter(job=>job.customer===id&&job.applicationReference&&cases.some(c=>c.id===job.caseId&&currentVisaEvidence(c).signature===job.caseSignature));
+ }
+ followupReply(id,c,text,intent){
+  const jobs=this.ownedApplications(id),reference=applicationReference(text,{awaiting:c.followupAwaitingReference===true,known:jobs.map(job=>job.applicationReference)});
+  if(!reference&&intent!=='status'&&intent!=='existing_application')return null;
+  if(reference){const matches=jobs.filter(job=>referenceKey(job.applicationReference)===reference);if(matches.length!==1){c.followupAwaitingReference=true;return 'ما قدرت أربط رقم الطلب بملف مقدم من رقم واتسابك الحالي. تواصل من نفس الرقم اللي قدمت منه حتى نراجع الطلب الصحيح؛ ما في داعي تعيد الأوراق أو الدفع.';}delete c.followupAwaitingReference;return this.applicationUpdate(matches[0]);}
+  if(jobs.length===1){delete c.followupAwaitingReference;return this.applicationUpdate(jobs[0]);}
+  if(jobs.length>1){c.followupAwaitingReference=true;return 'عندك أكثر من طلب محفوظ معنا: '+jobs.map(job=>job.applicationReference).slice(0,10).join('، ')+'. أي رقم طلب حابب تتابع؟';}
+  if(c.paymentStatus==='verified'||c.submissionStatus==='submitted'||c.documents?.length||c.staffVerification?.decision)return null;
+  c.followupAwaitingReference=true;return 'أكيد، بساعدك بمتابعة طلبك. ابعت رقم الطلب، وتابع من نفس رقم واتساب اللي قدمت منه حتى نربطه بملفك الصحيح.';
+ }
+ applicationUpdate(job){
+  const c=[this.getCase(job.customer),...(this.store.data.visaCaseArchives?.[job.customer]||[])].find(c=>c?.id===job.caseId),evidence=c&&currentVisaEvidence(c),decision=c?.staffVerification?.decision;
+  if(decision?.caseSignature===evidence?.signature&&decision?.value==='approved')return 'طلبك رقم '+job.applicationReference+' مسجل عليه قرار موافقة من القسم. منتابع إرسال التأشيرة إلك.';
+  if(decision?.caseSignature===evidence?.signature&&decision?.value==='rejected')return 'طلبك رقم '+job.applicationReference+' مسجل عليه قرار رفض من القسم. منراجع معك الخطوة التالية حسب سياسة الخدمة.';
+  return 'طلبك رقم '+job.applicationReference+' محفوظ معنا، ومنتابع عليه. ما وصلنا تحديث مسجل بصدور التأشيرة بعد؛ أول ما تصدر بنبعتها إلك مباشرة.';
+ }
  async handle(id,text,{messages=[]}={}){
   text=String(text||'').trim().slice(0,12000);const n=P.normalize(text);let c=structuredClone(this.getCase(id)||this.newCase()),decision=null;
   const initialRevision=c.revision;
@@ -119,6 +142,18 @@ class SaudiVisaEngine{
   }
   // Do not overwrite a case updated by an operator while understanding ran.
   const latest=this.getCase(id);if(latest&&latest.revision!==initialRevision)return{reply:null,superseded:true,caseId:latest.id,revision:latest.revision,service:'saudi_visa'};
+  const localIntent=conversationIntent(text),intentForConversation=isComplaint(text)||decision?.intent==='complaint'?'complaint':localIntent||decision?.intent;
+  const confirmNew=c.pendingNewApplication&&c.pendingNewApplication.requestedAt+15*60000>this.now()&&c.history.at(-1)?.text.endsWith('تأكدلي: بدك نفتح طلب جديد؟')&&/^(?:نعم|اي|تمام|اوافق|موافق|اكد|نعم طلب جديد|طلب جديد مستقل|yes)(?:[.! ]*)$/.test(n);
+  if(c.pendingNewApplication&&/^(?:لا|الغاء|الغيه|خليك عالقديم|متابعه القديم)(?:[.! ]*)$/.test(n)){delete c.pendingNewApplication;return this.conversationReply(id,c,text,'تمام، منكمل على ملفك الحالي. شو حابب تعرف عن طلبك؟');}
+  if(confirmNew){
+   const jobs=Object.values(this.store.data.visaFulfilment?.jobs||{}).filter(job=>job.customer===id&&job.caseId===c.id),active=jobs.some(job=>!['saved_application','stale','cancelled'].includes(job.state));
+   if(active||c.paymentStatus==='verified'&&!jobs.some(job=>job.state==='saved_application'))return this.conversationReply(id,c,text,'سجلت رغبتك بطلب جديد مستقل. طلبك الحالي ما زال قيد الإجراء؛ يلزم تنسيق فتح الملف الجديد مع الفريق حتى نحافظ على المعاملة والدفعة الحالية.');
+   const facts=c.pendingNewApplication.facts;delete c.pendingNewApplication;this.store.data.visaCaseArchives||={};this.store.data.visaCaseArchives[id]||=[];this.store.data.visaCaseArchives[id].push(structuredClone(c));c=this.newCase();c.greeted=true;mergeFacts(c,facts);
+  }else if(intentForConversation==='new_application'&&this.getCase(id)&&!c.pendingRelative){
+   c.pendingNewApplication={requestedAt:this.now(),facts:extractLocal(text,this.newCase())};return this.conversationReply(id,c,text,'أكيد، فينا نبدأ طلب جديد مستقل مع الاحتفاظ بطلبك الحالي. تأكدلي: بدك نفتح طلب جديد؟');
+  }else{
+   const reply=intentForConversation==='complaint'?null:this.followupReply(id,c,text,intentForConversation);if(reply)return this.conversationReply(id,c,text,reply);
+  }
   const beforeFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost}),beforeCase=structuredClone(c);
   const aiFields=structuredClone(decision?.fields||decision?.facts||{}),localFields=extractLocal(text,c),awaiting=c.lastQuestion;
   if(Array.isArray(aiFields.applicants)&&aiFields.applicants.length){delete localFields.nationality;delete localFields.applicants;}
@@ -173,7 +208,7 @@ class SaudiVisaEngine{
   c.quote=P.calculateQuote(c,{feesEnabled:this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'});
   const previousQuestion=c.lastQuestion,previousAsked=[...c.askedQuestions],completion=this.nextQuestion(c),nextQuestion=c.lastQuestion,nextAsked=[...c.askedQuestions];
   c.lastQuestion=previousQuestion;c.askedQuestions=previousAsked;
-  const intent=({documents:'requirements',payment_after:'pay_after_issue',negotiation:'negotiate',bank:'bank_details',address:'address',payment:'payment_options'})[decision?.intent]||decision?.intent;
+  const intent=({documents:'requirements',payment_after:'pay_after_issue',negotiation:'negotiate',bank:'bank_details',address:'address',payment:'payment_options'})[decision?.intent]||localIntent||decision?.intent;
   const documentStep=detectDocumentStep(n),quoteUnchanged=Boolean(beforeCase.quote&&c.quote&&JSON.stringify(beforeCase.quote)===JSON.stringify(c.quote));
   const priceRequested=/سعر|تكلفه|بكم|قديش|رسوم/.test(n)||intent==='price';
   const substantiveCaption=hasAttachments&&semanticText&&(/[؟?]|حسابك|حسابكم|حساب بنكي|الحساب البنكي|ايبان|\bbank\b|كيف احول|بدي احول|كيف ادفع|طرق الدفع/.test(n)||['price','bank_details','payment_options','payment_receipt','pay_after_issue','refund','cancel','address','courier','processing_time','visa_duration'].includes(intent));

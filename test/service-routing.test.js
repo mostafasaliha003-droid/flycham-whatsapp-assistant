@@ -11,3 +11,10 @@ test('a returning visa greeting preserves service and real menu or flight choice
  assert.equal(routeService(s,'a','فيزا السعودية').service,'saudi_visa');
  assert.equal(routeService(s,'a','بدي طيران للشام').service,'flight');
 });
+test('followup without a service keyword routes to visa only with compatible customer context',()=>{
+ const s=make();assert.equal(routeService(s,'a','بدي تابع طلب').service,'saudi_visa');s.data.serviceSessions.b={service:'flight'};assert.equal(routeService(s,'b','شو صار بالطلب',{hasFlight:true}).service,'flight');
+});
+test('other service inquiry and its price followup remain separate from an active Saudi case',()=>{
+ const s=make();routeService(s,'a','فيزا السعودية');s.data.visaCases={a:{id:'original'}};
+ assert.equal(routeService(s,'a','بدي اسال عن فيزا تركيا').service,'service_inquiry');assert.equal(activeService(s,'a'),'saudi_visa');assert.equal(routeService(s,'a','قديش تكلفتها').service,'service_inquiry');assert.equal(s.data.visaCases.a.id,'original');assert.equal(routeService(s,'a','شو صار بطلبي').service,'saudi_visa');assert.equal(routeService(s,'a','فيزا السعودية').service,'saudi_visa');assert.equal(s.data.serviceSessions.a.serviceInquiry,undefined);
+});
