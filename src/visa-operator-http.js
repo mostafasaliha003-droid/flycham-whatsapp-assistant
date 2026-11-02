@@ -14,7 +14,8 @@ function createVisaOperatorHttp({dispatcher,env=process.env,wake=()=>{}}){
     const bytes=await readBody(request);if(bytes.length>1000)throw Error('OPERATOR_INPUT_INVALID');
     try{input=JSON.parse(bytes);}catch{throw Error('OPERATOR_INPUT_INVALID');}
     if(!input||typeof input!=='object'||Array.isArray(input))throw Error('OPERATOR_INPUT_INVALID');
-    if(Object.keys(input).join(',')==='resumeAfterDiagnostic'&&input.resumeAfterDiagnostic===true){send(200,await dispatcher.resumeAfterSaveDiagnostic(match[1]));wake();}
+    if(Object.keys(input).join(',')==='recoverExistingApplication'&&typeof input.recoverExistingApplication==='string'){send(200,await dispatcher.recoverExistingApplication(match[1],input.recoverExistingApplication));wake();}
+    else if(Object.keys(input).join(',')==='resumeAfterDiagnostic'&&input.resumeAfterDiagnostic===true){send(200,await dispatcher.resumeAfterSaveDiagnostic(match[1]));wake();}
     else if(Object.keys(input).join(',')==='diagnostic'&&input.diagnostic===true){send(200,await dispatcher.startSaveDiagnostic(match[1]));wake();}
     else if(Object.keys(input).join(',')==='restart'&&input.restart===true){send(200,await dispatcher.restartOperatorLogin(match[1]));wake();}
     else send(200,await dispatcher.operatorChallenge(match[1],input));

@@ -247,13 +247,35 @@
         };
       }catch{status.textContent='التحقق غير متاح حاليًا أو انتهت صلاحيته. حدّث الملف لمعرفة حالة رعد.';}
     }
+    function preparedDocumentPanel(item,dialog) {
+      const section=n('section','vj-prepared-documents'), grid=n('div','vj-prepared-grid'), epoch=state.epoch, urls=new Set();
+      section.append(n('h3','','الصور النهائية للتقديم'),n('p','vj-form-intro','معاينة النسخ بعد التحويل والتعديل ودمج صفحات المستند. يوضح كل ملف إن كان من آخر محاولة مسجلة أو من التجهيز الحالي.'));
+      dialog.addEventListener('close',()=>{for(const url of urls){URL.revokeObjectURL(url);state.urls.delete(url);}urls.clear();});
+      const labels={passport:'الجواز بعد التجهيز والدمج',residence:'الهوية أو الإقامة بعد الدمج',photo:'الصورة الشخصية بعد التجهيز'};
+      for(const doc of Array.isArray(item.preparedDocuments)?item.preparedDocuments:[]){
+        if(!labels[doc.kind]||typeof doc.mediaId!=='string'||!['image/jpeg','image/png'].includes(doc.mimeType))continue;
+        const card=n('article','vj-prepared-card'),status=n('p','vj-form-intro');
+        card.append(n('h4','',labels[doc.kind]+' · المتقدم '+((doc.applicantIndex||0)+1)),n('p','vj-form-intro',doc.selection==='last_attempt'?'النسخة المحددة لآخر محاولة رعد':'النسخة المجهزة حاليًا؛ لا يتوفر إثبات استخدامها في المحاولة السابقة'));
+        const show=button('عرض الصورة النهائية',async()=>{show.disabled=true;status.textContent='جارٍ تحميل النسخة المحمية…';try{
+          const blob=await media(doc.mediaId,item.customer);
+          if(epoch!==state.epoch||!dialog.open)return;
+          if(!blob||!['image/png','image/jpeg'].includes(blob.type)||blob.size>1000000)throw Error('INVALID_PREVIEW');
+          const url=URL.createObjectURL(blob);urls.add(url);state.urls.add(url);
+          const image=n('img','vj-prepared-image');image.alt=labels[doc.kind];image.src=url;
+          const full=n('a','button subtle','فتح بالحجم الكامل');full.href=url;full.target='_blank';full.rel='noopener';card.append(image,full);status.textContent='';show.remove();
+        }catch{if(epoch===state.epoch&&dialog.open){status.textContent='تعذرت معاينة النسخة النهائية. حدّث الملف ثم أعد المحاولة.';show.disabled=false;}}});
+        card.append(show,status);grid.append(card);
+      }
+      if(!grid.children.length)section.append(n('p','vj-form-intro','لم تُجهز نسخة نهائية مرتبطة بهذا الملف بعد.'));else section.append(grid);
+      return section;
+    }
     async function openCase(id) {
       const epoch = state.epoch, dialog = modal('تفاصيل رحلة التأشيرة', 'vj-case-dialog'), body = n('div', 'vj-dialog-body'); body.append(skeleton()); dialog.append(body); dialog.showModal();
       try { const item = await fetchCase(id); if (epoch !== state.epoch || !dialog.open) return; body.replaceChildren();
         const head = n('div', 'vj-detail-heading'); head.append(n('h3', '', item.name), statusBadge(item.stage)); body.append(head, n('p', 'vj-detail-id', 'ملف ' + item.id + ' · ' + (item.applicantCount || item.applicants.length || '—') + ' متقدم'), paymentCards(item));
         const next = n('div', 'vj-detail-next'); next.append(n('span', 'eyebrow', 'الخطوة التالية'), n('strong', '', nextStep(item))); body.append(next);
         if (item.blockers.length) { const blockers = n('section', 'vj-blockers'); blockers.append(n('h3', '', 'ما الذي ينتظر المعالجة؟')); const list = n('ul'); for (const b of item.blockers) list.append(n('li', '', blockerText(b))); blockers.append(list); body.append(blockers); }
-        body.append(documentReviewPanel(item, dialog));
+        body.append(documentReviewPanel(item, dialog),preparedDocumentPanel(item,dialog));
         body.append(n('h3', 'vj-subheading', 'متابعة المتقدمين')); const applicants = n('div', 'vj-applicants');
         const rows = item.applicants.length ? item.applicants : Array.from({length: item.applicantCount || 1}, (_, index) => ({index}));
         for (const [index, a] of rows.entries()) {
