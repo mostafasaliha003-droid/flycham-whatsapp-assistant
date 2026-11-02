@@ -256,7 +256,7 @@ test('saved application requires Return, no payment, exact customer PDF, and sen
   const saved = f.service.recordPortalResult(work.job.id, input);
   assert.equal(saved.status, 'saved_application'); assert.equal(saved.visaIssued, false); assert.equal(saved.governmentPaymentMade, false);
   assert.equal(f.c.submissionStatus, 'not_submitted'); assert.equal(f.service.data().lease, null); assert.equal(saved.message.recipient, CUSTOMER); assert.equal(saved.message.payload.mediaId, PDF);
-  assert.match(saved.message.payload.caption, /ليست تأشيرة صادرة/); assert.match(saved.message.payload.caption, /لم تُسدد الرسوم الحكومية/);
+  assert.equal(saved.message.payload.caption, `تم تسجيل طلب التأشيرة برقم ${saved.job.applicationReference} ✅\nرح نتابع طلبك، وأول ما تصدر التأشيرة بنبعتها إلك مباشرة.`);
   assert.equal((await f.service.dispatchMessage(saved.message.id)).state, 'accepted');
   assert.equal(f.service.recordPortalResult(work.job.id, input).duplicate, true);
 });
