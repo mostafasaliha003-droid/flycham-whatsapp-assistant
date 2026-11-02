@@ -1,6 +1,7 @@
 'use strict';
 
 const {parseTD3MRZ, validateApplicant, proposedEntryDate} = require('./raad-document-validation');
+const {corroboratedPassportDate}=require('./visa-document-review');
 const {parseTD1MRZ, matchesPrintedEmiratesId, resolvePrintedDate} = require('./visa-id-mrz');
 
 const THRESHOLD = 0.98;
@@ -159,10 +160,12 @@ function readDocument(document) {
     if (!plain(evidence) || typeof evidence.visible !== 'boolean' || !Number.isFinite(evidence.confidence) || evidence.confidence < 0 || evidence.confidence > 1 || (evidence.visible ? typeof evidence.value !== 'string' : evidence.value !== null)) { parsed.invalidFields.push(field); continue; }
     if (!evidence.visible) continue;
     const privateNumeric=parsed.kind==='passport'&&PRIVATE_PASSPORT_NUMERIC.has(field)&&validPrivateNumeric(field,evidence.value);
-    if (evidence.confidence < (privateNumeric?PRIVATE_NUMERIC_THRESHOLD:THRESHOLD)) { parsed.lowConfidence.push(field); continue; }
+    const corroboratedDate=corroboratedPassportDate(document,field);
+    if (evidence.confidence < (privateNumeric?PRIVATE_NUMERIC_THRESHOLD:THRESHOLD)&&!corroboratedDate) { parsed.lowConfidence.push(field); continue; }
     const value = normalizedValue(field, evidence.value);
     if (value === null) { parsed.invalidFields.push(field); continue; }
     parsed.fields[field] = value;
+    if(corroboratedDate){parsed.fieldProvenance||={};parsed.fieldProvenance[field]=[{...ref(document),method:'two_visible_full_dates_and_checked_td3',readerPolicy:document.reviewEvidence.policy}];}
   }
   if(parsed.kind==='passport'){
     // Keep literal visual/legacy observations separate from the number parsed
@@ -170,7 +173,7 @@ function readDocument(document) {
     parsed.passportNumberObservations=['passportNumber','visiblePassportNumber'].filter(field=>Object.hasOwn(parsed.fields,field)).map(field=>({...ref(parsed),evidenceField:field,value:extraction.fields[field].value,confidence:extraction.fields[field].confidence}));
     if(!parsed.fields.passportNumber&&parsed.fields.visiblePassportNumber){
       parsed.fields.passportNumber=parsed.fields.visiblePassportNumber;
-      parsed.fieldProvenance={passportNumber:[{...ref(parsed),evidenceField:'visiblePassportNumber',confidence:extraction.fields.visiblePassportNumber.confidence,method:'visible_unconfirmed'}]};
+      parsed.fieldProvenance={...parsed.fieldProvenance,passportNumber:[{...ref(parsed),evidenceField:'visiblePassportNumber',confidence:extraction.fields.visiblePassportNumber.confidence,method:'visible_unconfirmed'}]};
     }
   }
   if(parsed.kind==='uae_id_back'&&document.mrzFocusStatus==='checked'&&parseTD1MRZ(extraction.mrzLines).ok)parsed.nativeTd1Checked=true;
