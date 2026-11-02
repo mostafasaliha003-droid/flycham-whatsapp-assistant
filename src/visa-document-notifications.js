@@ -9,7 +9,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const COMPLETED = new Set(['ready', 'needs_confirmation', 'needs_review']);
 const IDENTITY = new Set(['passport', 'uae_id_front', 'uae_id_back']);
 const RETENTION_MS = 30 * 86400000, MAX_ITEMS = 2000, MAX_SOURCES = 100;
-const QUIET_MS = 12000, SEMANTIC_WINDOW_MS = 10 * 60000;
+const QUIET_MS = 12000;
 const clone = value => structuredClone(value);
 const phone = value => typeof value === 'string' && /^\+?[1-9]\d{7,14}$/.test(value) ? value.replace(/^\+/, '') : null;
 const original = value => value && !value.purpose && (value.type === 'image' && ['image/jpeg', 'image/png', 'image/webp'].includes(value.mimeType) || value.type === 'document' && value.mimeType === 'application/pdf');
@@ -53,11 +53,11 @@ const ISSUE_TEXT = Object.freeze({
   DOCUMENT_APPLY_PAUSED: 'قراءة المستندات محفوظة، وسيتابع القسم مطابقتها قبل الاستكمال.',
   DOCUMENT_APPLY_UNCONFIRMED: 'قراءة المستندات محفوظة، وسيتابع القسم مطابقتها قبل الاستكمال.'
 });
-function copyFor(status, issues) {
+function copyFor(status, issues, summary) {
   const prefix = 'معك إسماعيل من الرمال. ';
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
-  if (status === 'needs_confirmation') return prefix + documentConfirmationCopy({issues});
-  const clarification=documentClarificationCopy({issues});if(clarification)return clarification;
+  if (status === 'needs_confirmation') return prefix + documentConfirmationCopy({...summary,issues});
+  const clarification=documentClarificationCopy({...summary,issues});if(clarification)return clarification;
   const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED','DOCUMENT_SOURCE_UNAVAILABLE','MULTIPLE_PASSPORTS']);
   const lines=[...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue=>ISSUE_TEXT[issue.code]).filter(Boolean))].slice(0,3);
   return 'وصلت المرفقات وحفظتها بملفك. مراجعة بعض التفاصيل لم تكتمل بعد. '+(lines.length?'حتى نكمل:\n'+lines.map(line=>'• '+line).join('\n'):'إذا احتجنا منك توضيحًا أو مستندًا إضافيًا، منخبرك بالضبط شو المطلوب. ما في داعي تعيد إرسال المرفقات الآن.');
@@ -135,14 +135,15 @@ class VisaDocumentNotifications {
     // fingerprint while retaining every identity/evidence/manifest field.
     const applicants = raw.applicants.map(({applied, stagedJobs, ...applicant}) => applicant);
     const receiptFollowup=paymentReceiptFollowup(this.store,customer,{...summary,status:raw.status});
+    const noticeText=[copyFor(raw.status, issues,summary),receiptFollowup].filter(Boolean).join('\n\n');
     const binding = {customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, resultDigest: digest({documents: raw.documents, applicants, issues: issues.map(issue => ({code: issue?.code, field: issue?.field}))}), sources, policy: this.documentIntake.policyFingerprint || null};
-    return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, receiptFollowup}), binding, bindingFingerprint: digest(binding), text: [copyFor(raw.status, issues),receiptFollowup].filter(Boolean).join('\n\n'), expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
+    return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, receiptFollowup,noticeText}), binding, bindingFingerprint: digest(binding), text:noticeText, expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
   }
   // A source/result fingerprint binds evidence, but does not describe a new
   // customer-facing update: five new file IDs can produce the exact same copy.
   semanticKey(item) {
     if (!item?.binding || typeof item.payload?.text !== 'string') return null;
-    return digest({customer: item.customer, caseId: item.binding.caseId, caseSignature: item.binding.caseSignature, text: item.payload.text});
+    return digest({customer: item.customer, caseId: item.binding.caseId, text: item.payload.text});
   }
   duplicate(item) {
     const semanticKey = this.semanticKey(item); if (!semanticKey) return false;
@@ -152,7 +153,7 @@ class VisaDocumentNotifications {
       // same notice under a new evidence fingerprint or after a restart.
       if (previous.state !== 'accepted') return true;
       const at = previous.acceptedAt ?? previous.dispatchStartedAt ?? previous.updatedAt ?? previous.createdAt;
-      return Number.isFinite(at) && at <= this.now() && this.now() - at < SEMANTIC_WINDOW_MS;
+      return Number.isFinite(at) && at <= this.now() && previous.expiresAt > this.now();
     });
   }
   settled(item) {

@@ -862,3 +862,10 @@ test('weak front IDs and absent or invalid shared proof cannot qualify for symme
  }
  const f=logicalFrontAndBackCase();f.copies[0].extraction.mrzLines=residencePairTd1({number:'X12345679'});const result=run(f.documents);assert.equal(result.complete,false);assert.equal(result.applicants[0].identityReady,false);assert.ok(result.applicants[0].documents.residence.some(source=>source.mediaId===f.copies[0].mediaId));
 });
+
+ test('residence binding diagnosis exposes fixed comparisons without private values or mutation',()=>{
+ const {residenceBindingDiagnostic}=require('../src/visa-document-matching'),p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT'}),id=front({latinFullName:'SYNTHETIC PARENT EXAMPLE'}),docs=[p,id],before=structuredClone(docs);
+ const d=residenceBindingDiagnostic(docs,DAY);assert.equal(d.mrzChecked,true);assert.equal(d.residence[0].nameMatches,true);assert.equal(d.residence[0].birthDate,'equal');assert.equal(d.residence[0].backChecked,false);
+ const serialized=JSON.stringify(d);for(const privateValue of ['SYNTHETIC','PARENT','EXAMPLE','1990-01-15',IDS.passport,'N12345678'])assert(!serialized.includes(privateValue));assert.deepEqual(docs,before);
+ p.extraction.fields.latinFatherName.confidence='PRIVATE_CONFIDENCE';assert(!JSON.stringify(residenceBindingDiagnostic(docs,DAY)).includes('PRIVATE_CONFIDENCE'));
+ });
