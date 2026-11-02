@@ -687,7 +687,8 @@ class VisaFulfilment {
     if (artifact.mimeType !== 'application/pdf') fail('VISA_REQUEST_COPY_PDF_REQUIRED', 400);
     return this.commit(() => {
       job.state = 'saved_application'; job.revision++; job.applicationReference = reference; job.requestCopy = artifact; job.paymentAttempted = false; job.returnedFromPayment = true; job.savedAt = this.now(); this.data().lease = null;
-      const message = this.enqueue({key: 'request-copy:' + job.id + ':' + artifact.sha256, kind: 'application_request_copy', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, payload: {type: 'document', mediaId: artifact.mediaId, filename: 'saudi-application-' + (job.applicantIndex + 1) + '.pdf', mimeType: 'application/pdf', caption: `تم حفظ نسخة طلب المسافر ${job.applicantIndex + 1}، رقم ${reference}. هذه نسخة طلب وليست تأشيرة صادرة. لم تُسدد الرسوم الحكومية من خلال هذه الخطوة، ولا نؤكد اكتمال التقديم الرسمي أو صدور التأشيرة.`}});
+      const message = this.enqueue({key: 'request-copy:' + job.id + ':' + artifact.sha256, kind: 'application_request_copy', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, payload: {type: 'document', mediaId: artifact.mediaId, filename: 'saudi-application-' + (job.applicantIndex + 1) + '.pdf', mimeType: 'application/pdf', caption: `تم تسجيل طلب التأشيرة برقم ${reference} ✅
+رح نتابع طلبك، وأول ما تصدر التأشيرة بنبعتها إلك مباشرة.`}});
       this.audit('application_saved_without_payment', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, applicationReference: reference, artifactSha256: artifact.sha256});
       return {ok: true, status: 'saved_application', visaIssued: false, governmentPaymentMade: false, job, message};
     });
