@@ -1,4 +1,6 @@
 'use strict';
+const {QUESTION_CATALOG}=require('./visa-client-questions');
+const {documentClientAnswers}=require('./visa-document-client-answers');
 const {paymentReceiptFollowup}=require('./visa-payment-followup');
 const {documentClarificationCopy,documentConfirmationCopy}=require('./visa-workflow-progress');
 
@@ -103,6 +105,7 @@ class VisaDocumentNotifications {
     }
     sources.sort((a, b) => a.mediaId.localeCompare(b.mediaId));
     const issues = [...(Array.isArray(raw.issues) ? raw.issues : []), ...(Array.isArray(raw.applicants) ? raw.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
+    if(raw.status==='needs_confirmation'&&raw.awaitingPayment===false)return null;
     if (!Array.isArray(raw.applicants) || raw.applicants.some(applicant => !applicant || typeof applicant !== 'object' || Array.isArray(applicant))) return null;
     // Applying an already-read dossier and staging it for a paid job are
     // delivery bookkeeping, not a new document-reading result. Match intake's
@@ -110,14 +113,18 @@ class VisaDocumentNotifications {
     const applicants = raw.applicants.map(({applied, stagedJobs, ...applicant}) => applicant);
     const receiptFollowup=paymentReceiptFollowup(this.store,customer,{...summary,status:raw.status});
     const noticeText=[copyFor(raw.status, issues,summary),receiptFollowup].filter(Boolean).join('\n\n');
+    const choiceApplicant=raw.status==='needs_confirmation'&&raw.awaitingPayment===true?raw.applicants.find(app=>UUID.test(app.id||'')&&app.clientFieldsRequired?.includes('passportType')&&!documentClientAnswers(this.store,customer,app,this.now()).passportType):null;
     const binding = {customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, resultDigest: digest({documents: raw.documents, applicants, issues: issues.map(issue => ({code: issue?.code, field: issue?.field}))}), sources, policy: this.documentIntake.policyFingerprint || null};
-    return {key: digest({customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, receiptFollowup,noticeText}), binding, bindingFingerprint: digest(binding), text:noticeText, expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
+    const key=digest({customer,caseId:c.id,caseSignature:signature,generation:raw.generation,status:raw.status,resultFingerprint:raw.resultFingerprint,receiptFollowup,noticeText,choiceEvidence:choiceApplicant?.id||null});
+    const h=digest({customer,caseId:c.id,signature,generation:raw.generation,evidenceId:choiceApplicant?.id,purpose:'passport-type-list'}).slice(0,32),token=[h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');
+    const payload=choiceApplicant?{type:'question',text:'وصلت أوراقك، شكرًا إلك. اختار نوع جواز السفر من القائمة 👇',field:'passportType',token,applicantIndex:choiceApplicant.applicantIndex,options:clone(QUESTION_CATALOG.passportType.options)}:{type:'text',text:noticeText};
+    return {payload,key,binding, bindingFingerprint: digest(binding), text:noticeText, expiresAt: Math.min(this.now() + RETENTION_MS, ...sources.map(source => source.expiresAt))};
   }
   // A source/result fingerprint binds evidence, but does not describe a new
   // customer-facing update: five new file IDs can produce the exact same copy.
   semanticKey(item) {
     if (!item?.binding || typeof item.payload?.text !== 'string') return null;
-    return digest({customer: item.customer, caseId: item.binding.caseId, text: item.payload.text});
+    return digest({customer: item.customer, caseId: item.binding.caseId, text:item.payload.text,...(item.payload.type==='question'?{token:item.payload.token}:{})});
   }
   duplicate(item) {
     const semanticKey = this.semanticKey(item); if (!semanticKey) return false;
@@ -137,7 +144,7 @@ class VisaDocumentNotifications {
       return Number.isFinite(at) && at >= 0 && this.now() >= at + this.quietMs;
     } catch { return false; }
   }
-  current(item) { if (!item || item.kind !== 'document_review' || item.expiresAt <= this.now()) return false; const snapshot = this.snapshot(item.customer); return snapshot !== null && snapshot.key === item.key && snapshot.bindingFingerprint === item.bindingFingerprint && item.payload?.type === 'text' && item.payload.text === snapshot.text; }
+  current(item) { if (!item || item.kind !== 'document_review' || item.expiresAt <= this.now()) return false; const snapshot = this.snapshot(item.customer); return snapshot !== null && snapshot.key === item.key && snapshot.bindingFingerprint === item.bindingFingerprint && digest(item.payload)===digest(snapshot.payload); }
   update(customer) {
     this.prune();
     const snapshot = this.snapshot(customer); if (!snapshot) return null;
@@ -146,9 +153,21 @@ class VisaDocumentNotifications {
     if (Object.keys(this.data().items).length >= MAX_ITEMS) return null;
     return this.commit(() => {
       for (const item of Object.values(this.data().items)) if (item.customer === customer && ['pending', 'paused'].includes(item.state)) { item.state = 'cancelled'; item.failure = 'SUPERSEDED'; item.updatedAt = this.now(); }
-      const item = {key: snapshot.key, customer, kind: 'document_review', binding: snapshot.binding, bindingFingerprint: snapshot.bindingFingerprint, payload: {type: 'text', text: snapshot.text}, state: this.blocked(customer) ? 'paused' : 'pending', attempts: 0, createdAt: this.now(), updatedAt: this.now(), expiresAt: snapshot.expiresAt};
+      const item = {key: snapshot.key, customer, kind: 'document_review', binding: snapshot.binding, bindingFingerprint: snapshot.bindingFingerprint, payload:clone(snapshot.payload), state: this.blocked(customer) ? 'paused' : 'pending', attempts: 0, createdAt: this.now(), updatedAt: this.now(), expiresAt: snapshot.expiresAt};
       if (item.state === 'paused') this.pause(item, 'AUTOMATION_PAUSED'); this.data().items[item.key] = item; return item;
     });
+  }
+  receive(message){
+    const choice=message?.visaAnswer;if(!choice)return {handled:false};
+    const item=Object.values(this.data().items).find(item=>item.payload?.type==='question'&&item.payload.token===choice.token);if(!item)return {handled:false};
+    const stale=()=>({handled:true,ok:false,reply:'اختار من أحدث قائمة أرسلتها إلك لو سمحت.'});
+    if(this.blocked(item.customer))return {handled:true,ok:false,paused:true};
+    if(phone(message.from)!==item.customer||!messageId(message.id)||!this.inbound(item.customer).open)return stale();
+    if(item.answer)return {handled:true,ok:true,duplicate:true};
+    const current=this.snapshot(item.customer);if(item.state!=='accepted'||current?.payload?.type!=='question'||current.payload.token!==item.payload.token)return stale();
+    const option=QUESTION_CATALOG.passportType.options.find(option=>option.id===choice.option),raw=this.store.data.visaDocumentIntake?.cases?.[item.customer],app=raw?.applicants?.find(app=>app.applicantIndex===item.payload.applicantIndex);
+    if(!option||!app?.id||!app.clientFieldsRequired?.includes('passportType'))return stale();
+    try{this.commit(()=>{item.answer={field:'passportType',value:option.value,applicantIndex:app.applicantIndex,evidenceId:app.id,messageId:message.id,at:this.now()};});return {handled:true,ok:true,reply:'تمام، سجّلت اختيارك. شكرًا إلك.'};}catch{return {handled:true,ok:false,reply:'ما انحفظ الاختيار، جرّب تضغط عليه مرة تانية لو سمحت.'};}
   }
   reopen(customer) {
     if (!phone(customer) || this.blocked(customer)) return {requeued: 0, messageIds: []};

@@ -346,6 +346,7 @@ async function handleWebhookPost(request, response) {
     }
     if(message.text)message.text=journalSafeText(message.text);
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
+    const documentAnswer=visaDocumentNotifications.receive(message);if(documentAnswer.handled){if(documentAnswer.reply)await sendTextMessage(message.from,documentAnswer.reply);visaDocumentNotifications.update(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));wakeVisa();continue;}
     if(documentFeedbackAllowed(message.from)){visaDocumentNotifications.update(message.from);visaDocumentNotifications.reopen(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));}visaDocumentIntake.wake();
     const reopenedVisa=visaFulfilment.requeuePausedMessages(message.from);
     if(!inbox.isHumanOwned(message.from)){

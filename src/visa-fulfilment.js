@@ -426,6 +426,9 @@ class VisaFulfilment {
     if (typeof evidenceId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(evidenceId)) fail('VISA_DOCUMENT_EVIDENCE_INVALID', 400);
     const dossier = this.verifiedDocumentFacts(job, evidenceId), verifiedFields = dossier.fields;
     if (fields !== undefined && (!object(fields) || Object.keys(fields).some(field => !DOCUMENT_FACT_SET.has(field)) || documentFactsHash(fields) !== documentFactsHash(verifiedFields))) fail('VISA_DOCUMENT_FIELDS_INVALID', 400);
+    const rawApplicant=this.store.data.visaDocumentIntake?.cases?.[job.customer]?.applicants?.find(app=>app.id===evidenceId&&app.applicantIndex===job.applicantIndex);
+    const clientAnswers=require('./visa-document-client-answers').documentClientAnswers(this.store,job.customer,rawApplicant,this.now());
+    for(const [field,value]of Object.entries(clientAnswers)){for(const known of [job.confirmedFields,job.stagedFields])if(Object.hasOwn(known||{},field)&&documentFactValue(field,known[field])!==documentFactValue(field,value))fail('VISA_DOCUMENT_FACT_CONFLICT');}
     const fieldsFingerprint = documentFactsHash(verifiedFields);
     if (job.documentFacts?.evidenceId === evidenceId && job.documentFacts.evidenceFingerprint === dossier.evidenceFingerprint && job.documentFacts.fieldsFingerprint === fieldsFingerprint && hash(job.documentRequiredFields || []) === hash(dossier.clientFieldsRequired)) return clone({ok: true, duplicate: true, jobId, applicantIndex: job.applicantIndex, state: job.state, stagedFields: job.stagedFields || {}, clientFieldsRequired: dossier.clientFieldsRequired, documentEvidence: {id: evidenceId, evidenceFingerprint: dossier.evidenceFingerprint}});
     for (const [field, value] of Object.entries(verifiedFields)) {
@@ -434,7 +437,7 @@ class VisaFulfilment {
       if (staged !== undefined && documentFactValue(field, staged) !== documentFactValue(field, value) && documentFactValue(field, staged) !== documentFactValue(field, job.documentFacts?.fields?.[field])) fail('VISA_DOCUMENT_FACT_CONFLICT');
     }
     return this.commit(() => {
-      const staged = {...clone(job.confirmedFields), ...clone(job.stagedFields || {}), ...clone(verifiedFields)};
+      const staged = {...clone(clientAnswers),...clone(job.confirmedFields), ...clone(job.stagedFields || {}), ...clone(verifiedFields)};
       for (const nested of ['health', 'guardian']) if (job.confirmedFields[nested] || job.stagedFields?.[nested]) staged[nested] = {...job.confirmedFields[nested], ...job.stagedFields?.[nested]};
       job.stagedFields = staged; job.documentFacts = {evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, fieldsFingerprint, fields: clone(verifiedFields), stagedAt: this.now()};
       job.documentRequiredFields = [...dossier.clientFieldsRequired]; delete job.staffDocumentSupplement;
