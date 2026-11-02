@@ -326,7 +326,7 @@ test('receipt arrival invalidates the queued receipt request and subsequent noti
  });
 
 test('a single missing passport fact is asked calmly before any payment instruction',async()=>{
- const f=fixture({status:'needs_confirmation'});f.raw.issues=[{code:'DOCUMENT_FIELD_REQUIRED',field:'passportType'},{code:'DOCUMENT_FIELD_REQUIRED',field:'birthPlace'}];f.raw.awaitingPayment=true;const item=f.service.update(CUSTOMER);assert.match(item.payload.text,/شو نوع جواز السفر/);assert.equal((item.payload.text.match(/؟/g)||[]).length,1);assert.doesNotMatch(item.payload.text,/قراءة|مطابقة|الخانات|حفظ الطلب|المحاسب|التحويل|رعد|مكان الولادة/);
+ const f=fixture({status:'needs_confirmation'});f.raw.issues=[{code:'DOCUMENT_FIELD_REQUIRED',field:'passportType'},{code:'DOCUMENT_FIELD_REQUIRED',field:'birthPlace'}];f.raw.awaitingPayment=true;const item=f.service.update(CUSTOMER);assert.match(item.payload.text,/اختار نوع جواز السفر/);assert.equal((item.payload.text.match(/؟/g)||[]).length,0);assert.doesNotMatch(item.payload.text,/قراءة|مطابقة|الخانات|حفظ الطلب|المحاسب|التحويل|رعد|مكان الولادة/);
 });
 
 function choiceFixture(){const f=fixture({status:'needs_confirmation'});f.raw.awaitingPayment=true;f.raw.applicants[0].id='12345678-1234-4321-abcd-123456789a99';f.raw.applicants[0].clientFieldsRequired=['passportType'];f.raw.applicants[0].issues=[{code:'DOCUMENT_FIELD_REQUIRED',field:'passportType'}];return f;}
@@ -338,3 +338,5 @@ test('passport type is a four-row WhatsApp list and selection is bound to the ac
  f.raw.applicants[0].id='12345678-1234-4321-abcd-123456789a98';assert.deepEqual(require('../src/visa-document-client-answers').documentClientAnswers(f.store,CUSTOMER,f.raw.applicants[0],NOW),{});
 });
 test('old, unsent, foreign, invalid and staff-paused lists cannot record an answer; plain typing never selects',async()=>{for(const mode of ['case','source','unsent','invalid','staff','typed']){const f=choiceFixture(),item=f.service.update(CUSTOMER);if(mode!=='unsent')await f.service.flush();if(mode==='case')f.c.id='new-case';if(mode==='source')f.source.checksum='f'.repeat(64);if(mode==='staff')f.own(true);const message={from:CUSTOMER,id:'wamid.choice',visaAnswer:{token:item.payload.token,option:mode==='invalid'?'unknown':'ordinary'}};if(mode==='typed'){delete message.visaAnswer;message.text='عادي';}const r=f.service.receive(message);assert.notEqual(r.ok,true,mode);assert.equal(f.service.data().items[item.key].answer,undefined,mode);}});
+
+test('restart upgrades the existing open dossier to a list once and the same list never repeats',async()=>{const f=choiceFixture(),restarted=new VisaDocumentNotifications(f.options);assert.equal(Object.values(restarted.data().items).length,1);await restarted.flush();assert.equal(f.count(),1);const again=new VisaDocumentNotifications(f.options);await again.flush();assert.equal(f.count(),1);assert.equal(Object.values(again.data().items).filter(i=>i.state==='accepted').length,1);});

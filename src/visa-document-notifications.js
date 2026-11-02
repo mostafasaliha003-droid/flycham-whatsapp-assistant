@@ -52,6 +52,8 @@ class VisaDocumentNotifications {
       else if (item.state === 'sending') { item.state = 'uncertain'; item.failure = 'PROCESS_INTERRUPTED'; item.updatedAt = now(); changed = true; }
     }
     if (changed) store.save();
+    // Upgrade existing open dossiers once; the durable list token prevents repeats.
+    for(const [customer,state]of Object.entries(store.data.visaDocumentIntake?.cases||{}))if(state.status==='needs_confirmation'&&state.awaitingPayment===true&&state.applicants?.some(app=>app.clientFieldsRequired?.includes('passportType'))&&this.inbound(customer).open&&!this.blocked(customer))this.update(customer);
   }
   data() { return this.store.data.visaDocumentNotifications; }
   commit(change) { const previous = clone(this.data()); try { const value = change(); this.store.save(); return clone(value); } catch { this.store.data.visaDocumentNotifications = previous; throw error('DOCUMENT_NOTICE_STATE_FAILED'); } }

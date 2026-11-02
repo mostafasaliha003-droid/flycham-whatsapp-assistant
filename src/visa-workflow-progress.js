@@ -14,7 +14,7 @@ function documentConfirmationCopy(summary){
  const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
  const fields=Object.keys(LABELS).filter(field=>!((summary?.applicants||[]).some(a=>a?.clientFieldsRequired?.includes(field))&&(summary?.applicants||[]).filter(a=>a?.clientFieldsRequired?.includes(field)).every(a=>a?.clientConfirmedFields?.[field]))&&(issues.some(i=>i?.code==='DOCUMENT_FIELD_REQUIRED'&&i.field===field)||(summary?.applicants||[]).some(a=>a?.clientFieldsRequired?.includes(field))));
- const questions={passportType:'شو نوع جواز السفر: عادي، دبلوماسي، خدمة، أو خاص؟',issueDate:'شو تاريخ إصدار الجواز؟',birthPlace:'شو مكان الولادة المكتوب بالجواز؟'};
+ const questions={passportType:'اختار نوع جواز السفر من القائمة اللي أرسلتها إلك 👇',issueDate:'شو تاريخ إصدار الجواز؟',birthPlace:'شو مكان الولادة المكتوب بالجواز؟'};
  return fields.length?'وصلت أوراقك، شكرًا إلك. '+questions[fields[0]]:'وصلت أوراقك، شكرًا إلك. منخبرك إذا احتجنا أي معلومة إضافية.';
 }
 // Only a current, accountant-approved job can supersede document status.
