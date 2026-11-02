@@ -4,6 +4,9 @@ const {createHash}=require('node:crypto');
 const LABELS=Object.freeze({passportType:'نوع الجواز',issueDate:'تاريخ إصدار الجواز',birthPlace:'مكان الولادة'});
 function documentClarificationCopy(summary){
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
+ const prepared=summary?.applicants?.length>0&&summary.applicants.every(a=>['passport','residence','photo'].every(k=>a.documents?.[k]));
+ if(prepared&&summary.receiptPendingReview===true)return 'الجواز والهوية والصورة الشخصية جاهزين. إيصال التحويل وصل وبانتظار المراجعة، ومنأكد لك استلام الدفعة بعد التحقق.';
+ if(prepared&&summary.unidentifiedAttachment===true)return 'الجواز والهوية والصورة الشخصية جاهزين، وما في داعي تعيد إرسالهم.';
  if(issues.some(i=>i?.code==='CASE_DATA_MISMATCH'&&i.field==='nationalityCode'))return 'للتأكيد، الجواز المرسل لنفس الشخص اللي عم نقدّم له، أو لشخص تاني؟';
  const reviewed=(summary?.recovery?.attempts||Object.values(summary?.documentReviews||{}).map(r=>r.state)).some(state=>['completed','conflict','failed','uncertain'].includes(state));
  if(reviewed&&issues.some(i=>i?.code==='PASSPORT_MRZ_DATE_AMBIGUOUS'))return 'بقي تأكيد بعض بيانات الجواز قبل استكمال الطلب. ابعت نسخة أوضح من صفحة بيانات الجواز بحجمها الأصلي، بحيث تاريخ الميلاد وتاريخ الانتهاء ظاهرين كاملين. الهوية وباقي المرفقات محفوظة؛ ما في داعي تعيد إرسالها.';

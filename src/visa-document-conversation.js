@@ -41,6 +41,7 @@ function detectDocumentIntent(text, {hasAttachments = false, hasDocumentContext 
   const value = normalize(typeof text === 'string' ? text.slice(0, 12000) : '').replace(/\s+/g, ' ');
   if (!value) return null;
   const document = documentWords.test(value), kind = requestedKind(value);
+  if(hasDocumentContext&&(/^(?:(?:طيب|يعني|قصدك)\s+)?(?:اي|ايا|ايه)\s+(?:مستند|ملف|صوره|ورقه)(?:\s+(?:بالضبط|مو واضح|مش واضح|غير واضح|مو مقروء|غير مقروء))?[.!؟? ]*$/.test(value)||/شو\s+(?:(?:الي|اللي)\s+)?(?:مو|مش|غير)\s+(?:واضح|مقروء)/.test(value)))return {intent:'status',kind};
   const sentDocuments = /(?:^|\s)(?:بعتلك|بعتتلك|بعثتلك|ارسلتلك|ارسلت لكم|ارسلتها|بعتهم|بعتن|بعتلكم)(?=\s|$|[؟?!.،,])/.test(value);
   const completeness = /^(?:(?:طيب|هل|يعني)\s+)?(?:مو\s*كاملين|مش\s*كاملين|كاملين|مكتملين|شو\s+ناقص)[.!؟? ]*$/.test(value) || /^(?:الاوراق|المستندات|الصور)\s+(?:مو\s*كاملين|مش\s*كاملين|كامل[هه]|مكتمل[هه]|ناقص[هه])[.!؟? ]*$/.test(value);
   if ((document || hasDocumentContext) && (sentDocuments || completeness) && !/(?:رح|راح|سوف|بدي)\s+(?:ابعت|ابعث|ارسل)|لا\s+(?:تبعت|ترسل)/.test(value)) return {intent: 'status', kind};
