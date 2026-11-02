@@ -263,13 +263,13 @@ test('five new file/result snapshots cannot repeat the same review notice to the
   assert.doesNotMatch(copy, /يرجى إرسال صفحة بيانات الجواز|يرجى إرسال صور الهوية/);
 });
 
-test('a different meaningful review result can notify, while accepted equal copy is suppressed for ten minutes', async () => {
+test('a different meaningful review result can notify, while accepted equal copy stays suppressed for the same case', async () => {
   const f = fixture({status: 'needs_review'}); f.raw.issues = [{code: 'PASSPORT_MISSING'}];
   f.service.update(CUSTOMER); await f.service.flush();
   f.raw.status = 'ready'; f.raw.applicants[0].status = 'ready'; changeResult(f, 1);
   f.service.update(CUSTOMER); await f.service.flush(); assert.equal(f.count(), 2);
   changeResult(f, 2); f.service.update(CUSTOMER); await f.service.flush(); assert.equal(f.count(), 2);
-  f.advance(600001); f.inbound(); changeResult(f, 3); f.service.update(CUSTOMER); await f.service.flush(); assert.equal(f.count(), 3);
+  f.advance(600001); f.inbound(); changeResult(f, 3); f.service.update(CUSTOMER); await f.service.flush(); assert.equal(f.count(), 2);
   assert.equal(f.c.paymentStatus, 'unverified'); assert.equal(f.store.data.visaFulfilment, undefined);
 });
 
@@ -318,3 +318,9 @@ test('receipt arrival invalidates the queued receipt request and subsequent noti
  assert.equal(f.service.current(old),false);const next=f.service.update(CUSTOMER);assert.notEqual(next.key,old.key);assert.doesNotMatch(next.payload.text,/بعد التحويل ابعت إيصال التحويل/);
  await f.service.flush(CUSTOMER);assert.equal(f.dispatched.length,1);assert.doesNotMatch(f.dispatched[0].payload.text,/بعد التحويل ابعت إيصال التحويل/);
 });
+
+ test('completed automatic review reaches actionable clarification and is not lost in notification copy',async()=>{
+ const f=fixture({status:'needs_review'});f.raw.issues=[{code:'PASSPORT_MRZ_DATE_AMBIGUOUS'}];
+ const summary=f.intake.summary.bind(f.intake);f.intake.summary=customer=>({...summary(customer),recovery:{attempts:['completed']}});
+ const item=f.service.update(CUSTOMER);assert.match(item.payload.text,/صفحة بيانات الجواز/);assert.doesNotMatch(item.payload.text,/إذا احتجنا منك/);await f.service.flush();assert.equal(f.count(),1);
+ });

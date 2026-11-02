@@ -566,6 +566,17 @@ function passportGroups(documents, referenceDate) {
   return groups;
 }
 
+// Fixed enums and booleans only; never include an extracted value in logs.
+function residenceBindingDiagnostic(documents,referenceDate){
+ try{
+  const parsed=deduplicateDocuments(documents.filter(validateReference).map(readDocument)),passports=passportGroups(parsed.filter(d=>d.kind==='passport'),referenceDate);
+  if(passports.length!==1)return {passportCount:Math.min(30,passports.length)};
+  const p=passports[0],identity=identityFields(p),fronts=parsed.filter(d=>d.kind==='uae_id_front'),backs=parsed.filter(d=>d.kind==='uae_id_back');
+  const compare=(field,a,b)=>!a||!b?'unavailable':equivalent(field,a,b)?'equal':'different';
+  return {passportCount:1,mrzChecked:p.mrzChecked===true,passportFields:['latinFirstName','latinFatherName','latinFamilyName','passportType','birthPlace','issueDate'].map(name=>({name,accepted:Boolean(p.fields[name]),confidence:Number.isFinite(p.extraction.fields[name]?.confidence)&&p.extraction.fields[name].confidence>=0&&p.extraction.fields[name].confidence<=1?p.extraction.fields[name].confidence:null})),residence:fronts.slice(0,3).map(f=>({birthDate:compare('birthDate',p.fields.birthDate,f.fields.birthDate),sex:compare('sex',p.fields.sex,f.fields.sex),nationalityCode:compare('nationalityCode',p.fields.nationalityCode,f.fields.nationalityCode),nameMatches:exactIdentityNameMatch(identity,f.fields),printedNameMatches:fullName(f.fields)===labelledFullName(p.fields),backChecked:backs.some(b=>parseTD1MRZ(b.extraction.mrzLines).ok),pairMatches:backs.some(b=>Boolean(checkedResidencePair(p,f,b)))}))};
+ }catch{return {unavailable:true};}
+}
+
 function reconcileDocumentEvidence({documents, applicants, referenceDate = new Date().toISOString().slice(0, 10)} = {}) {
   if (!Array.isArray(documents) || documents.length > 100 || !Array.isArray(applicants) || applicants.length > 30 || !applicants.every(plain) || !realDate(referenceDate)) throw Object.assign(Error('DOCUMENT_MATCH_INPUT_INVALID'), {code:'DOCUMENT_MATCH_INPUT_INVALID'});
   const output = {version: 1, complete: false, applicants: applicants.map((person, applicantIndex) => ({applicantIndex, status:'needs_review', identityReady:false, clientFieldsRequired:[], fields:{}, documents:{passport:null, residence:[], photo:null}, issues:[], evidence:{passportMrzChecked:false, matchedResidence:false, authenticityVerified:false, fieldSources:{}}})), unassigned:[], issues:[]};
@@ -696,4 +707,4 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   return output;
 }
 
-module.exports = {reconcileDocumentEvidence, DOCUMENT_CONFIDENCE_THRESHOLD:THRESHOLD, DOCUMENT_MATCH_ISSUE_CODES:Object.freeze(Object.keys(MESSAGES))};
+module.exports = {residenceBindingDiagnostic,reconcileDocumentEvidence, DOCUMENT_CONFIDENCE_THRESHOLD:THRESHOLD, DOCUMENT_MATCH_ISSUE_CODES:Object.freeze(Object.keys(MESSAGES))};
