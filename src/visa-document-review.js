@@ -28,4 +28,16 @@ function corroboratedPassportDate(document,field){
   return a.value.slice(2).replace(/-/g,'')===parsed.fields[field+'Raw'];
  }catch{return false;}
 }
-module.exports={DOCUMENT_REVIEW_POLICY:POLICY,needsDocumentReview,mergeDocumentReview,corroboratedPassportDate};
+function corroboratedPassportVisibleField(document,field){
+ if(!['latinFirstName','latinFatherName','latinGrandfatherName','latinFamilyName','birthPlace','issueDate','passportType'].includes(field))return false;
+ const proof=document.reviewEvidence;if(!proof||proof.policy!==POLICY||proof.mediaId!==document.mediaId||proof.page!==document.page||proof.sha256!==document.sha256||proof.sourceSha256!==document.sourceSha256||!/^[a-f0-9]{64}$/.test(proof.sourceSha256||''))return false;
+ try{
+  const first=validateDocumentExtraction(document.reviewOriginalExtraction),second=validateDocumentExtraction(document.reviewSecondaryExtraction),current=validateDocumentExtraction(document.extraction);
+  if([first,second,current].some(v=>v.kind!=='passport'||!v.readable||v.rotation!==current.rotation))return false;
+  const a=first.fields[field],b=second.fields[field],shown=current.fields[field];if(a?.visible!==true||b?.visible!==true||shown?.visible!==true||a.confidence<0.90||b.confidence<0.90||a.value!==b.value||shown.value!==a.value)return false;
+  // The whole passport zone must independently check with explicit full dates.
+  const dates={};for(const name of ['birthDate','expiryDate']){const date=current.fields[name];if(date?.visible!==true||date.confidence<THRESHOLD&&!corroboratedPassportDate(document,name))return false;dates[name==='birthDate'?'confirmedBirthDate':'confirmedExpiryDate']=date.value;}
+  return parseTD3MRZ(current.mrzLines,{referenceDate:'2000-12-31',...dates}).ok===true;
+ }catch{return false;}
+}
+module.exports={DOCUMENT_REVIEW_POLICY:POLICY,needsDocumentReview,mergeDocumentReview,corroboratedPassportDate,corroboratedPassportVisibleField};

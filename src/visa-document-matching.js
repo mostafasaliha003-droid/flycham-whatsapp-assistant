@@ -1,7 +1,7 @@
 'use strict';
 
 const {parseTD3MRZ, validateApplicant, proposedEntryDate} = require('./raad-document-validation');
-const {corroboratedPassportDate}=require('./visa-document-review');
+const {corroboratedPassportDate,corroboratedPassportVisibleField}=require('./visa-document-review');
 const {parseTD1MRZ, matchesPrintedEmiratesId, resolvePrintedDate} = require('./visa-id-mrz');
 
 const THRESHOLD = 0.98;
@@ -160,12 +160,12 @@ function readDocument(document) {
     if (!plain(evidence) || typeof evidence.visible !== 'boolean' || !Number.isFinite(evidence.confidence) || evidence.confidence < 0 || evidence.confidence > 1 || (evidence.visible ? typeof evidence.value !== 'string' : evidence.value !== null)) { parsed.invalidFields.push(field); continue; }
     if (!evidence.visible) continue;
     const privateNumeric=parsed.kind==='passport'&&PRIVATE_PASSPORT_NUMERIC.has(field)&&validPrivateNumeric(field,evidence.value);
-    const corroboratedDate=corroboratedPassportDate(document,field);
-    if (evidence.confidence < (privateNumeric?PRIVATE_NUMERIC_THRESHOLD:THRESHOLD)&&!corroboratedDate) { parsed.lowConfidence.push(field); continue; }
+    const corroboratedDate=corroboratedPassportDate(document,field),corroboratedVisible=corroboratedPassportVisibleField(document,field);
+    if (evidence.confidence < (privateNumeric?PRIVATE_NUMERIC_THRESHOLD:THRESHOLD)&&!corroboratedDate&&!corroboratedVisible) { parsed.lowConfidence.push(field); continue; }
     const value = normalizedValue(field, evidence.value);
     if (value === null) { parsed.invalidFields.push(field); continue; }
     parsed.fields[field] = value;
-    if(corroboratedDate){parsed.fieldProvenance||={};parsed.fieldProvenance[field]=[{...ref(document),method:'two_visible_full_dates_and_checked_td3',readerPolicy:document.reviewEvidence.policy}];}
+    if(corroboratedDate||corroboratedVisible){parsed.fieldProvenance||={};parsed.fieldProvenance[field]=[{...ref(document),method:corroboratedDate?'two_visible_full_dates_and_checked_td3':'two_visible_field_reads_and_checked_td3',readerPolicy:document.reviewEvidence.policy}];}
   }
   if(parsed.kind==='passport'){
     // Keep literal visual/legacy observations separate from the number parsed

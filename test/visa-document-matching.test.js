@@ -869,3 +869,14 @@ test('weak front IDs and absent or invalid shared proof cannot qualify for symme
  const serialized=JSON.stringify(d);for(const privateValue of ['SYNTHETIC','PARENT','EXAMPLE','1990-01-15',IDS.passport,'N12345678'])assert(!serialized.includes(privateValue));assert.deepEqual(docs,before);
  p.extraction.fields.latinFatherName.confidence='PRIVATE_CONFIDENCE';assert(!JSON.stringify(residenceBindingDiagnostic(docs,DAY)).includes('PRIVATE_CONFIDENCE'));
  });
+
+function independentlyReviewedPassport(){
+ const p=passport({latinFirstName:'SYNTHETIC',latinFatherName:'PARENT'});for(const f of ['latinFatherName','birthPlace','issueDate'])p.extraction.fields[f].confidence=0.96;
+ p.sourceSha256='b'.repeat(64);p.reviewOriginalExtraction=structuredClone(p.extraction);p.reviewSecondaryExtraction=structuredClone(p.extraction);p.reviewEvidence={policy:require('../src/visa-document-review').DOCUMENT_REVIEW_POLICY,mediaId:p.mediaId,page:p.page,sha256:p.sha256,sourceSha256:p.sourceSha256};return p;
+}
+test('two bound visible readings retain printed patronymic and descriptive fields without increasing confidence',()=>{
+ const p=independentlyReviewedPassport(),before=structuredClone(p),r=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(r.complete,true);assert.equal(r.applicants[0].fields.latinFatherName,'PARENT');assert.equal(r.applicants[0].fields.issueDate,'2020-01-01');assert.equal(r.applicants[0].evidence.fieldSources.latinFatherName[0].method,'two_visible_field_reads_and_checked_td3');assert.deepEqual(p,before);
+});
+test('visible-field agreement never bypasses mismatched source, unreadable reader, disagreement or MRZ failure',()=>{
+ for(const change of [p=>p.reviewEvidence.sourceSha256='c'.repeat(64),p=>p.reviewSecondaryExtraction.readable=false,p=>p.reviewSecondaryExtraction.fields.latinFatherName.value='UNRELATED',p=>p.reviewSecondaryExtraction.fields.latinFatherName.confidence=0.89,p=>p.extraction.mrzLines[1]=p.extraction.mrzLines[1].slice(0,43)+'9']){const p=independentlyReviewedPassport();change(p);const r=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(r.complete,false);assert.equal(r.applicants[0].fields.latinFatherName,undefined);}
+});
