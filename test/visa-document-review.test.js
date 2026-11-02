@@ -1,0 +1,7 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const {needsDocumentReview,mergeDocumentReview}=require('../src/visa-document-review');
+const field=(value,confidence)=>({value,confidence,visible:true});
+const page=(confidence=0.95)=>({version:1,kind:'passport',readable:true,rotation:0,fields:{birthDate:field('1982-03-15',confidence),expiryDate:field('2030-01-16',confidence)},mrzLines:[],portraitBox:null});
+test('review adopts a strictly qualified independent reading without inventing confidence or dates',()=>{const first=page(),second=page(0.99),out=mergeDocumentReview(first,second);assert.equal(needsDocumentReview(first),true);assert.deepEqual(out.extraction.fields.birthDate,second.fields.birthDate);assert.equal(first.fields.birthDate.confidence,0.95);assert.equal(out.conflictField,undefined);assert.equal(mergeDocumentReview(first,page()).extraction.fields.birthDate.confidence,0.95);});
+test('conflicting trusted facts are not replaced and rotation or document-kind disagreement is rejected',()=>{const first=page(0.99),second=page(0.99);second.fields.birthDate.value='1983-03-15';const out=mergeDocumentReview(first,second);assert.equal(out.conflictField,'birthDate');assert.deepEqual(out.extraction,first);assert.throws(()=>mergeDocumentReview(first,{...second,rotation:90}),/DOCUMENT_REVIEW_UNCONFIRMED/);assert.equal(needsDocumentReview({...first,kind:'portrait'}),false);});
