@@ -47,3 +47,4 @@ test('save preflight refusals preserve exact blocker while dispatched or transpo
   assert.equal(record.saveDispatched,prior||!['PORTAL_BUTTON_VALIDATION_FAILED','PORTAL_BUTTON_READBACK_MISMATCH'].includes(code),code);
  }
 });
+test('diagnostic manifest independently forbids submission and SMS dispatch even if flow requests them',async()=>{for(const [action,data]of [['activate-control',{mode:'submit'}],['confirm-application',{}],['request-application-sms',{}],['enter-application-sms',{code:'123456'}]]){const t=setup({flow:async ctx=>{assert.equal(ctx.savePreflightOnly,true);await ctx.api(action,data);}});await t.worker.start(manifest({diagnosticOnly:true}));const result=await until(t.worker,'job_fake_1',s=>s.stage==='blocked');assert.equal(result.blocker.code,'DIAGNOSTIC_WRITE_FORBIDDEN');assert.equal(t.calls.length,0);assert.equal(result.saved,false);}});
