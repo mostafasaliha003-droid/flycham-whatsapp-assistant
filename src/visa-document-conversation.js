@@ -8,20 +8,9 @@ const KINDS = Object.freeze({passport: 'الجواز', residence: 'الهوية 
 const CONTEXT_MS = 15 * 60 * 1000;
 const IMAGE_INTENTS = new Set(['merge', 'enhance', 'send_prepared']);
 const ISSUE_COPY = Object.freeze({
-  DOCUMENT_UNREADABLE: 'إحدى الصور غير واضحة؛ ابعتها كاملة ومن دون انعكاس.',
-  DOCUMENT_READ_FAILED: 'إحدى الصور تحتاج إعادة تصوير بشكل أوضح.',
-  PASSPORT_MISSING: 'بقيت صورة صفحة بيانات الجواز.',
-  PASSPORT_MRZ_REQUIRED: 'بقي أن يظهر السطران أسفل صفحة بيانات الجواز بوضوح.',
-  PASSPORT_MRZ_INVALID: 'السطران أسفل صفحة بيانات الجواز يحتاجان صورة أوضح.',
-  RESIDENCE_MISSING: 'بقيت صور الهوية أو الإقامة من الجهتين.',
-  DOCUMENT_PORTRAIT_REQUIRED: 'بقيت صورة شخصية واضحة.',
-  DOCUMENT_IDENTITY_MISMATCH: 'بيانات الجواز والهوية تحتاج مطابقة من الفريق قبل المتابعة.',
-  PASSPORT_VIZ_MRZ_MISMATCH: 'بعض بيانات الجواز تحتاج مطابقة من الفريق قبل المتابعة.',
-  RESIDENCE_CONFLICT: 'صور الهوية تحتاج مطابقة من الفريق قبل المتابعة.',
-  DOCUMENT_UNASSIGNED: 'نحتاج تحديد صاحب بعض المستندات حتى ما تختلط الملفات.',
-  MULTIPLE_PASSPORTS: 'وصل أكثر من جواز مختلف؛ أي واحد هو الجواز الحالي للتقديم؟',
-  DOCUMENT_FIELD_REQUIRED: 'بقيت بيانات أساسية غير ظاهرة بوضوح في المستند.',
-  DOCUMENT_IMAGE_UNSUITABLE: 'إحدى الصور تحتاج نسخة أوضح بحجمها الأصلي.'
+  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس؟',
+  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي؟',
+  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية واضحة بخلفية بيضاء؟'
 });
 const documentWords = /صور(?:ه|تين)?|الصور|اوراق|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
 function detectDocumentStep(text) {
@@ -97,24 +86,25 @@ function receivedCopy(received) {
 function preparationCopy(summary, received) {
   if (!received.exists) return 'للبداية ابعت صفحة بيانات الجواز كاملة، وجهي الهوية الإماراتية، وصورة شخصية واضحة بخلفية بيضاء. الصور أو PDF مناسبين، وإذا المستند صفحتين ابعتهن سوا.';
   const issues = [...(Array.isArray(summary?.issues) ? summary.issues : []), ...(Array.isArray(summary?.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
-  if (issues.some(issue => ['DOCUMENT_UNASSIGNED', 'APPLICANT_REQUIRED', 'MULTIPLE_PASSPORTS'].includes(issue?.code))) return receivedCopy(received) + ' بقي نربط كل مستند بصاحبه ونطابق البيانات قبل المتابعة. ما في داعي تعيد الصور كلها.';
+  const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
   if (!summary || ['not_started', 'waiting_case', 'disabled'].includes(summary.status)) return receivedCopy(received) + ' منكمل مراجعتها، وإذا بقي جزء ناقص رح نحدده إلك. ما في داعي تعيد الصور كلها.';
-  return receivedCopy(received) + ' ' + statusReply(summary);
+  return statusReply(summary);
 }
 function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
   if (!summary || ['disabled', 'not_started', 'waiting_case'].includes(summary.status)) return hasAttachments
     ? 'منكمل تجهيز هالصور ضمن ملفك. إذا عندك صفحتين لنفس الجواز أو وجهي الهوية، ابعتهن كاملين هون حتى يترتبوا مع بعض.'
     : 'ابعث صور الجواز والهوية من الجهتين والصورة الشخصية هون، ومنرتّب كل مستند بملفك. إذا المستند صورتين، ابعتهن كاملين.';
-  if (['processing', 'queued', 'running', 'retry'].includes(summary.status)) return 'ملف الصور قيد القراءة والتجهيز. إذا في أكثر من صفحة، منربطها بالمستند وصاحبه قبل تجهيز النسخة.';
+  if (['processing', 'queued', 'running', 'retry'].includes(summary.status)) return 'وصلت أوراقك، شكرًا إلك. عم نجهّز ملفك.';
   const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
   if (kind && summary.status === 'ready' && !hasPrepared(summary, kind)) return `نسخة ${KINDS[kind]} لسه ما تأكد تجهيزها ضمن ملفك. منراجع المستند المطلوب قبل إرسال نسخة منه.`;
   if (summary.status === 'ready') return kind && hasPrepared(summary, kind)
     ? `النسخة المجهزة من ${KINDS[kind]} موجودة بملفك.`
-    : 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة، والنسخ المجهزة موجودة بملفك.';
+    : 'أوراقك جاهزة، ومنكمل معك الخطوة التالية.';
   if (summary.status === 'needs_confirmation') return documentConfirmationCopy(summary);
   const issues = [...(Array.isArray(summary.issues) ? summary.issues : []), ...(Array.isArray(summary.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
-  const lines = [...new Set(issues.map(issue => ISSUE_COPY[issue?.code]).filter(Boolean))].slice(0, 2);
-  return lines.length ? lines.join('\n') : 'تجهيز المستندات يحتاج مطابقة من الفريق قبل المتابعة. إذا في صورة ناقصة أو غير واضحة رح نحددها إلك.';
+  const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED']);
+  const lines = [...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue => ISSUE_COPY[issue.code]).filter(Boolean))].slice(0, 1);
+  return lines.length ? lines.join('\n') : 'أوراقك محفوظة معنا، ومنخبرك إذا احتجنا أي معلومة إضافية.';
 }
 function accepted(result) {
   if (!result || result.paused || result.dryRun || result.uncertain || result.ok === false) return false;
@@ -194,7 +184,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         : 'تمام، ابعتهن هون لما تجهز، وأنا معك ومنكمل على نفس الطلب.'};
       let reply = preparationCopy(summary, received);
       const documentsPresent = ['ready','needs_confirmation'].includes(summary?.status) && ['passport','residence','photo'].every(kind => hasPrepared(summary,kind));
-      if (documentsPresent) return {...result, reply:[reply,paymentReceiptFollowup(store,customer,summary)].filter(Boolean).join('\n\n')};
+      if (documentsPresent || received.exists) return {...result, reply:[reply,paymentReceiptFollowup(store,customer,summary)].filter(Boolean).join('\n\n')};
       const recentlyOffered = Number.isFinite(previous?.uploadOfferedAt) && now() - previous.uploadOfferedAt <= CONTEXT_MS;
       if (recentlyOffered) reply += received.exists ? '\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط الرفع اللي أرسلته قبل شوي.' : '\nفيك تستخدم رابط الرفع اللي أرسلته قبل شوي، أو تبعت الصور هون.';
       else if (typeof createUploadLink === 'function') {
@@ -221,14 +211,14 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
         try {
           const sent = await sendPrepared(customer, {kind: request.kind, intent: request.intent, requestId});
           if (accepted(sent)) return {...result, sent: true, ...(sent.preview === true ? {preview: true} : {}), reply: sent.preview === true
-            ? `أرسلت لك نسخة للمعاينة من ${KINDS[request.kind]} هنا. هذه معاينة للصور، وتبقى مطابقة بيانات المستندات قبل اعتمادها.`
+            ? `أرسلت لك نسخة للمعاينة من ${KINDS[request.kind]} هنا. هاي نسخة للمعاينة قبل استخدامها بالطلب.`
             : `أرسلت لك النسخة المجهزة من ${KINDS[request.kind]} هنا.`};
           if (sent?.reason === 'kind_required') return {...result, reply: 'أي نسخة تقصد: الجواز، الهوية، أو الصورة الشخصية؟'};
           if (['not_ready','still_processing','preview_review_required'].includes(sent?.reason)) return {...result, reply: statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})};
           if (['applicant_required','multiple_applicants'].includes(sent?.reason)) return {...result, reply: 'لأي متقدم بدك النسخة؟ حتى نرسل المستند الصحيح بدون خلط الملفات.'};
           if (sent?.paused || sent?.reason === 'service_window_closed') return {...result, reply: 'إرسال النسخة بانتظار استكمال المتابعة على نفس المحادثة.'};
-          return {...result, reply: 'إرسال النسخة ما تأكد بعد. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})};
-        } catch { return {...result, reply: 'إرسال النسخة ما تأكد بعد. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})}; }
+          return {...result, reply: 'ما قدرت ابعت النسخة هلأ. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})};
+        } catch { return {...result, reply: 'ما قدرت ابعت النسخة هلأ. ' + statusReply(snapshot(documentIntake, customer), {...request, hasAttachments})}; }
       }
     }
     const received = request.intent === 'status' ? receivedDocuments(store, customer, summary, now()) : null;

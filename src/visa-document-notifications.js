@@ -21,46 +21,20 @@ const error = (code, notDispatched = false) => Object.assign(Error(code), {code,
 // All customer text is fixed application copy. OCR/provider explanations and
 // extracted names, identifiers, dates and arbitrary issue messages never enter it.
 const ISSUE_TEXT = Object.freeze({
-  DOCUMENT_UNREADABLE: 'يرجى إعادة تصوير المستند كاملًا وبوضوح، دون قص أو انعكاس.',
-  INVALID_EXTRACTION: 'لم تتأكد نتيجة قراءة أحد المستندات؛ سيراجع القسم النسخة المحفوظة أولًا.',
-  DOCUMENT_READ_FAILED: 'تعذرت قراءة أحد المستندات آليًا؛ نسخته محفوظة لمراجعة القسم.',
-  PASSPORT_MISSING: 'لم تتأكد قراءة صفحة بيانات الجواز من المرفقات بعد؛ نحتاج توضيحها فقط قبل المتابعة.',
-  PASSPORT_MRZ_REQUIRED: 'يرجى إظهار السطرين أسفل صفحة بيانات الجواز بوضوح في الصورة.',
-  PASSPORT_MRZ_INVALID: 'لم تتأكد مطابقة قراءة السطرين أسفل الجواز؛ سيعيد القسم فحص الصورة المحفوظة قبل طلب بديل.',
-  PASSPORT_MRZ_DATE_AMBIGUOUS: 'تاريخ في الجواز غير واضح بالكامل؛ سيطابقه القسم قبل المتابعة.',
-  RESIDENCE_MISSING: 'لم تكتمل مطابقة صور الهوية أو الإقامة مع الجواز بعد؛ المرفقات محفوظة بملفك.',
-  DOCUMENT_PORTRAIT_REQUIRED: 'الصورة الشخصية داخل المستند غير كافية للتجهيز؛ يرجى إرسال صورة شخصية واضحة.',
-  DOCUMENT_IMAGE_UNSUITABLE: 'يرجى إرسال صورة أوضح وبحجمها الأصلي للمستند.',
-  DOCUMENT_PDF_UNSUPPORTED: 'تعذر تجهيز ملف PDF؛ يرجى إرسال صفحات المستند المطلوبة كصور واضحة.',
-  DOCUMENT_SOURCE_UNAVAILABLE: 'أحد المرفقات لم يعد متاحًا؛ يرجى إعادة إرساله.',
-  DOCUMENT_SOURCE_CHANGED: 'تغيرت نسخة أحد المستندات؛ سيطابق القسم النسخة الحالية قبل المتابعة.',
-  SOURCE_CONFLICT: 'تغيرت نسخة أحد المستندات؛ سيطابق القسم النسخة الحالية قبل المتابعة.',
-  DOCUMENT_IDENTITY_MISMATCH: 'ظهرت بيانات غير متطابقة بين الجواز والهوية؛ سيطابقها القسم قبل المتابعة.',
-  CASE_DATA_MISMATCH: 'توجد بيانات تختلف عن الملف المسجل؛ سيطابقها القسم قبل المتابعة.',
-  PASSPORT_VIZ_MRZ_MISMATCH: 'توجد قراءة غير متطابقة داخل صفحة الجواز؛ سيطابقها القسم قبل المتابعة.',
-  RESIDENCE_CONFLICT: 'ظهرت بيانات مختلفة بين صور الهوية أو الإقامة؛ سيطابقها القسم قبل المتابعة.',
-  RESIDENCE_MRZ_INVALID: 'لم تكتمل قراءة سطور الهوية الآلية كما هي مطبوعة؛ يلزم التحقق من النسخة الأصلية للهوية فقط.',
-  MULTIPLE_PASSPORTS: 'وصل أكثر من جواز مختلف؛ يرجى تحديد الجواز الحالي المطلوب استخدامه.',
-  DOCUMENT_UNASSIGNED: 'بقي ربط بعض الصور بصاحب الطلب؛ سيطابقها القسم من المرفقات المحفوظة.',
-  APPLICANT_REQUIRED: 'يلزم تحديد صاحب كل مستند وعدد المتقدمين قبل استكمال المطابقة.',
-  DOCUMENT_FIELD_REQUIRED: 'توجد بيانات أساسية غير ظاهرة بوضوح؛ سيطابق القسم المستند قبل المتابعة.',
-  DOCUMENT_FIELD_INVALID: 'توجد بيانات أساسية تحتاج إلى توضيح من المستند قبل المتابعة.',
-  PASSPORT_VALIDITY: 'صلاحية الجواز تحتاج مراجعة مقابل موعد السفر قبل استكمال الطلب.',
-  RESIDENCE_VALIDITY: 'صلاحية الإقامة تحتاج مراجعة قبل استكمال الطلب.',
-  DOCUMENT_SOURCE_LIMIT: 'عدد المرفقات يحتاج إلى تنظيم ومراجعة من القسم قبل المتابعة.',
-  DOCUMENT_PROVIDER_UNAVAILABLE: 'تعذرت القراءة الآلية حاليًا؛ الملف محفوظ لمتابعة القسم.',
-  DOCUMENT_OCR_INTERRUPTED: 'لم تكتمل قراءة أحد المستندات؛ الملف محفوظ لمتابعة القسم.',
-  DOCUMENT_APPLY_PAUSED: 'قراءة المستندات محفوظة، وسيتابع القسم مطابقتها قبل الاستكمال.',
-  DOCUMENT_APPLY_UNCONFIRMED: 'قراءة المستندات محفوظة، وسيتابع القسم مطابقتها قبل الاستكمال.'
+  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس؟',
+  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي؟',
+  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية واضحة بخلفية بيضاء؟',
+  DOCUMENT_SOURCE_UNAVAILABLE:'ممكن تعيد إرسال المرفق الأخير؟',
+  MULTIPLE_PASSPORTS:'الجوازات المرسلة كلها للتقديم؟'
 });
 function copyFor(status, issues, summary) {
-  const prefix = 'معك إسماعيل من الرمال. ';
-  if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
+  const prefix = '';
+  if (status === 'ready') return prefix + 'وصلت أوراقك، شكرًا إلك. ملفك جاهز لنكمل إجراءات الطلب.';
   if (status === 'needs_confirmation') return prefix + documentConfirmationCopy({...summary,issues});
   const clarification=documentClarificationCopy({...summary,issues});if(clarification)return clarification;
   const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED','DOCUMENT_SOURCE_UNAVAILABLE','MULTIPLE_PASSPORTS']);
-  const lines=[...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue=>ISSUE_TEXT[issue.code]).filter(Boolean))].slice(0,3);
-  return 'وصلت المرفقات وحفظتها بملفك. مراجعة بعض التفاصيل لم تكتمل بعد. '+(lines.length?'حتى نكمل:\n'+lines.map(line=>'• '+line).join('\n'):'إذا احتجنا منك توضيحًا أو مستندًا إضافيًا، منخبرك بالضبط شو المطلوب. ما في داعي تعيد إرسال المرفقات الآن.');
+  const lines=[...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue=>ISSUE_TEXT[issue.code]).filter(Boolean))].slice(0,1);
+  return 'وصلت أوراقك، شكرًا إلك. '+(lines.length?'حتى نكمل:\n'+lines.map(line=>'• '+line).join('\n'):'منخبرك إذا احتجنا أي معلومة إضافية.');
 }
 
 class VisaDocumentNotifications {
