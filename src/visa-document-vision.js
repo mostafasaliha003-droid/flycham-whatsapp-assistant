@@ -287,7 +287,8 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
   const ready = () => enabled() && configured() && remaining()>0 && !busy && now() >= cooldownUntil;
   const status = () => ({enabled: enabled(), configured: configured(), provider: 'cline', model: MODEL, ready: ready(), busy, dailyLimit:dailyLimit(),dailyUsed:used(),dailyRemaining:remaining(), ...(cooldownUntil > now() ? {retryAfterMs: cooldownUntil - now()} : {})});
   const guardNow = async guard => { try { if (typeof guard !== 'function' || await guard() === false) throw Error(); } catch { throw failure('DOCUMENT_VISION_STALE'); } };
-  async function perform({bytes, mimeType, guard} = {}, focused = false) {
+  async function perform({bytes, mimeType, guard} = {}, focused = false, reviewOnly=false) {
+    if(reviewOnly&&env.RAAD_DOCUMENT_REVIEW_ENABLED!=='true')throw failure('DOCUMENT_VISION_DISABLED');
     if (!enabled()) throw failure('DOCUMENT_VISION_DISABLED');
     if (env.RAAD_DOCUMENT_OCR_MODEL && env.RAAD_DOCUMENT_OCR_MODEL !== MODEL) throw failure('DOCUMENT_VISION_MODEL_NOT_ALLOWED');
     if (!configured()) throw failure('DOCUMENT_VISION_NOT_CONFIGURED');
@@ -297,7 +298,7 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
     busy = true;
     try {
       await guardNow(guard); if (!focused) await validateImage(bytes, mimeType); await guardNow(guard);
-      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}, {type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}]}], stream: false, temperature: 0, max_tokens: 4096};
+      const request = focused ? await buildMrzRequest({bytes, mimeType}) : {model: reviewOnly?FALLBACK_MODEL:MODEL, messages: [{role: 'system', content: PROMPT}, {role: 'user', content: [{type: 'text', text: 'Inspect this one page. Return only the specified JSON document-reading object.'}, {type: 'image_url', image_url: {url: 'data:' + mimeType + ';base64,' + bytes.toString('base64')}}]}], stream: false, temperature: 0, max_tokens: 4096};
       for(let attempt=0;attempt<2;attempt++){
        await guardNow(guard);if(!remaining())throw failure('DOCUMENT_VISION_COOLDOWN',60000);
        try{
@@ -322,11 +323,11 @@ function createDocumentVision({env = process.env, fetchImpl = fetch, now = Date.
       if (payload?.success === false || envelope?.success === false || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1 || choice?.finish_reason !== 'stop' || !plain(message) || message.role !== 'assistant' || typeof message.content !== 'string' || message.refusal || message.tool_calls?.length || message.function_call) throw Object.assign(failure('DOCUMENT_VISION_INCOMPLETE'),{truncated:choice?.finish_reason==='length'&&!message?.refusal&&!message?.tool_calls?.length&&!message?.function_call});
       const output = message.content;
       const result = focused ? parseMrzOutput(output) : parseDocumentOutput(output, {deferPassportMrz: true}); await guardNow(guard); return result;
-       }catch(error){const fallback=attempt===0&&!focused&&env.RAAD_DOCUMENT_OCR_FALLBACK_ENABLED==='true'&&remaining()>0&&(error?.truncated===true||error?.code==='DOCUMENT_VISION_PROVIDER_UNAVAILABLE'&&error.providerStatus>=500&&error.providerStatus<=599);if(!fallback)throw error;}
+       }catch(error){const fallback=attempt===0&&!focused&&!reviewOnly&&env.RAAD_DOCUMENT_OCR_FALLBACK_ENABLED==='true'&&remaining()>0&&(error?.truncated===true||env.RAAD_DOCUMENT_REVIEW_ENABLED==='true'&&['DOCUMENT_VISION_INVALID_JSON','DOCUMENT_VISION_SCHEMA_INVALID','DOCUMENT_VISION_INVALID_OUTPUT'].includes(error?.code)||error?.code==='DOCUMENT_VISION_PROVIDER_UNAVAILABLE'&&error.providerStatus>=500&&error.providerStatus<=599);if(!fallback)throw error;}
       }
     } finally { busy = false; }
   }
-  return {extract: input => perform(input, false), extractMrz: input => perform(input, true), ready, status};
+  return {extract: input => perform(input, false),extractReview:input=>perform(input,false,true), extractMrz: input => perform(input, true), ready, status};
 }
 
 module.exports = {createDocumentVision, validateDocumentExtraction, parseDocumentOutput, DOCUMENT_FIELD_NAMES, FIELD_NAMES: DOCUMENT_FIELD_NAMES, DOCUMENT_VISION_POLICY, ABSTENTION_POLICY, WIRE_PROJECTION_POLICY, POLICY_FINGERPRINT, COMPATIBLE_PREVIOUS_POLICIES, COMPATIBLE_COMPLETED_FAILURE_POLICIES, RETRYABLE_CODES, DOCUMENT_VISION_ERROR_CODES, SCHEMA_SECTIONS, SCHEMA_ISSUES, MODEL, MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES};

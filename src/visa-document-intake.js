@@ -1,6 +1,7 @@
 'use strict';
 const {createHash,randomUUID}=require('node:crypto');
 const sharp=require('sharp');
+const {DOCUMENT_REVIEW_POLICY,needsDocumentReview,mergeDocumentReview}=require('./visa-document-review');
 const {validCustomer}=require('./conversation-journal');
 const {visaCaseSignature,currentVisaEvidence}=require('./visa-case-signature');
 const {preparePortalImage,prepareResidenceImage,prepareDocumentImage}=require('./raad-attachments');
@@ -226,9 +227,10 @@ class VisaDocumentIntake{
    const duplicate=!job.mrzFocusOnly&&Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&other.sourceSha256===file.sha256&&other.status==='ready');
    if(duplicate){if(this.pageCount(job.customer,job.caseId)-Object.keys(job.pages||{}).length+Object.keys(duplicate.pages).length>MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.pages=Object.fromEntries(Object.entries(duplicate.pages).map(([page,value])=>[page,{...clone(value),mediaId:job.mediaId}]));job.status='ready';job.updatedAt=this.now();});return;}
    for(let page=1;page<=10;page++){
-    this.guard(snap);job=this.data().jobs[snap.id];if(job.mrzFocusOnly&&!job.pages[page]||job.pages[page]&&!job.pages[page].mrzFocusPending)continue;failedPage=page;
+    this.guard(snap);job=this.data().jobs[snap.id];if(job.mrzFocusOnly&&!job.pages[page]||job.pages[page]&&!job.pages[page].mrzFocusPending&&!job.pages[page].reviewPending)continue;failedPage=page;
     let image,normalized;try{image=await this.pageBytes(file,page,()=>this.guard(snap));this.guard(snap);}catch(error){if(page>1&&error?.code==='PDF_INVALID')break;if(page>1&&error?.code==='DOCUMENT_NO_PAGE')break;throw error;}
     try{
+     if(job.pages[page]?.reviewPending){await this.reviewDocumentPage(snap,page,image);continue;}
      if(job.pages[page]?.mrzFocusPending){if(await this.focusMrzPage(snap,page,image))return;continue;}
      if(this.pageCount(job.customer,job.caseId)>=MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});this.guard(snap);const pageSha=hash(normalized.bytes);
      const cached=Object.values(this.data().jobs).flatMap(other=>other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy?Object.values(other.pages||{}):[]).find(result=>result.sourceSha256===file.sha256&&result.page===page&&result.sha256===pageSha);
@@ -352,6 +354,36 @@ class VisaDocumentIntake{
   const result=await this.refresh(job.customer,{applicantIndex:job.applicantIndex});if(!result.readyForQuestions)return result;const current=this.fulfilment?.data?.()?.jobs?.[job.id],state=this.data().cases[job.customer],applicant=state?.applicants?.find(item=>item.applicantIndex===job.applicantIndex);
   return {...result,readyForQuestions:Boolean(current&&current.caseId===state.caseId&&current.caseSignature===state.caseSignature&&applicant?.applied&&applicant.stagedJobs?.[job.id]===applicant.id&&['ready','needs_confirmation'].includes(applicant.status))};
  }
+ queueAutomaticDocumentReview(){
+  const since=Date.parse(this.env.RAAD_DOCUMENT_REVIEW_START_AT||'');
+  if(this.env.RAAD_DOCUMENT_REVIEW_ENABLED!=='true'||!Number.isFinite(since)||typeof this.vision.extractReview!=='function'||!this.available())return;
+  for(const [customer,state]of Object.entries(this.data().cases)){
+   const c=this.caseFor(customer);if(!c||state.caseId!==c.id||state.caseSignature!==visaCaseSignature(c)||state.status!=='needs_review'||this.blockReason(customer))continue;
+   const jobs=Object.values(this.data().jobs).filter(j=>j.customer===customer&&j.caseId===c.id&&j.policy===this.policyFingerprint);
+   if(jobs.some(j=>activeStatus(j.status)))continue;
+   const used=Object.values(state.documentReviews||{}).filter(r=>r.policy===DOCUMENT_REVIEW_POLICY).length;if(used>=2)continue;
+   for(const job of jobs){
+    const source=this.rawSource(customer,job.mediaId);if(job.status!=='ready'||!source||source.checksum!==job.sourceSha256||source.receivedAt<since&&hash(c.id).slice(0,12)!==this.env.RAAD_DOCUMENT_REVIEW_CASE_HASH)continue;
+    for(const [page,checkpoint]of Object.entries(job.pages||{})){
+     if(!needsDocumentReview(checkpoint.extraction))continue;
+     const key=digest({sourceSha256:source.checksum,page:Number(page),pageSha256:checkpoint.sha256,policy:DOCUMENT_REVIEW_POLICY});if(state.documentReviews?.[key])continue;
+     this.commit(()=>{const current=this.data().cases[customer];current.documentReviews||={};current.documentReviews[key]={policy:DOCUMENT_REVIEW_POLICY,state:'queued',requestedAt:this.now()};this.data().jobs[job.id].pages[page].reviewPending=key;this.data().jobs[job.id].status='queued';this.data().jobs[job.id].updatedAt=this.now();current.status='processing';});return;
+    }
+   }
+  }
+ }
+ async reviewDocumentPage(snap,page,image){
+  const guard=()=>{const result=this.guard(snap);if(this.blockReason(snap.customer))throw finite('DOCUMENT_REREAD_PAUSED');return result;};guard();let checkpoint=this.data().jobs[snap.id].pages[page],key=checkpoint.reviewPending,record=this.data().cases[snap.customer].documentReviews?.[key];if(!record)return;
+  if(record.state!=='queued'){this.commit(()=>{guard();if(this.data().cases[snap.customer].documentReviews[key].state==='running')this.data().cases[snap.customer].documentReviews[key].state='uncertain';delete this.data().jobs[snap.id].pages[page].reviewPending;});return;}
+  let normalized;
+  try{
+   normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});guard();if(hash(normalized.bytes)!==checkpoint.sha256)throw finite('DOCUMENT_SOURCE_CHANGED');
+   this.commit(()=>{guard();this.data().cases[snap.customer].documentReviews[key].state='running';});
+   const secondary=validateDocumentExtraction(await this.vision.extractReview({bytes:normalized.bytes,mimeType:normalized.mimeType,guard}));guard();checkpoint=this.data().jobs[snap.id].pages[page];const merged=mergeDocumentReview(checkpoint.extraction,secondary);
+   this.commit(()=>{guard();const current=this.data().jobs[snap.id].pages[page];current.reviewOriginalExtraction=clone(current.extraction);current.extraction=merged.extraction;if(merged.conflictField)current.readReviewIssue={code:'SOURCE_CONFLICT',field:merged.conflictField,message:'اختلفت قراءتان موثوقتان للمستند نفسه؛ يلزم توضيح البيانات قبل المتابعة.'};delete current.reviewPending;this.data().cases[snap.customer].documentReviews[key].state=merged.conflictField?'conflict':'completed';});
+  }catch(error){try{guard();this.commit(()=>{guard();delete this.data().jobs[snap.id].pages[page].reviewPending;this.data().cases[snap.customer].documentReviews[key].state='failed';});}catch{}}
+  finally{normalized?.bytes?.fill(0);}
+ }
  recoverRequestedSources(){
   const request=this.env.RAAD_DOCUMENT_RECOVERY_REQUEST,target=this.env.RAAD_DOCUMENT_RECOVERY_CASE_HASH;
   if(!/^[a-f0-9]{32}$/.test(request||'')||!/^[a-f0-9]{12}$/.test(target||'')||this.busy)return;
@@ -369,7 +401,7 @@ class VisaDocumentIntake{
   if(!this.stopped&&this.enabled())this.recoverRequestedSources();
   if(this.busy||this.stopped||!this.enabled())return false;this.busy=true;let acquired=false,processed=false;
   try{
-   this.commit(()=>{this.retirePolicies();for(const customer of Object.keys(this.store.data.visaCases||{}))if(validCustomer(customer))this.syncCase(customer);this.bindWaiting();for(const job of Object.values(this.data().jobs)){if(job.status==='stale'||job.status==='waiting_case')continue;if(this.knownReceipt(job.customer,job.mediaId)){job.status='stale';job.pages={};delete job.activePage;continue;}const source=this.rawSource(job.customer,job.mediaId);if(!source||job.sourceSha256&&source.checksum&&job.sourceSha256!==source.checksum){job.status='failed';job.pages={};delete job.activePage;job.issues=[reason(source?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_SOURCE_UNAVAILABLE')];}}});this.backfill();
+   this.commit(()=>{this.retirePolicies();for(const customer of Object.keys(this.store.data.visaCases||{}))if(validCustomer(customer))this.syncCase(customer);this.bindWaiting();for(const job of Object.values(this.data().jobs)){if(job.status==='stale'||job.status==='waiting_case')continue;if(this.knownReceipt(job.customer,job.mediaId)){job.status='stale';job.pages={};delete job.activePage;continue;}const source=this.rawSource(job.customer,job.mediaId);if(!source||job.sourceSha256&&source.checksum&&job.sourceSha256!==source.checksum){job.status='failed';job.pages={};delete job.activePage;job.issues=[reason(source?'DOCUMENT_SOURCE_CHANGED':'DOCUMENT_SOURCE_UNAVAILABLE')];}}});this.backfill();this.queueAutomaticDocumentReview();
    if(!this.lock.tryAcquire())return false;acquired=true;
    const externalAvailable=this.available(),job=Object.values(this.data().jobs).filter(item=>item.policy===this.policyFingerprint&&['queued','retry'].includes(item.status)&&(!item.nextAttemptAt||item.nextAttemptAt<=this.now())&&this.caseFor(item.customer)?.id===item.caseId&&(item.mrzFocusOnly||externalAvailable)).sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))[0];
    if(job&&(job.mrzFocusOnly||this.available())){await this.process(job);processed=true;}
@@ -379,7 +411,8 @@ class VisaDocumentIntake{
  }
  summary(customer){
   const state=validCustomer(customer)?this.data().cases[customer]:null,waiting=!state&&Object.values(this.data().jobs).some(job=>job.customer===customer&&job.status==='waiting_case');
-  return {enabled:this.enabled(),configured:this.configured(),status:!this.enabled()?'disabled':state?.status||(waiting?'waiting_case':'not_started'),...(state?{caseId:state.caseId,caseSignature:state.caseSignature,generation:state.generation,awaitingPayment:state.awaitingPayment===true,resultFingerprint:state.resultFingerprint||null,updatedAt:state.updatedAt,rereadSources:this.rereadSources(customer,state),applicants:state.applicants.map(app=>({applicantIndex:app.applicantIndex,evidenceId:app.id,status:app.status,awaitingPayment:state.awaitingPayment===true,identityReady:app.identityReady===true,clientFieldsRequired:clone(app.clientFieldsRequired||[]),fields:clone(app.fields),documents:clone(app.documents),issues:clone(app.issues||[]),evidence:clone(app.evidence)})),issues:clone(state.issues||[])}:{updatedAt:null,applicants:[],issues:waiting?[reason('DOCUMENT_WAITING_CASE')]:[]})};
+  const budget=this.vision.status?.()?.dailyRemaining,recovery={enabled:this.env.RAAD_DOCUMENT_REVIEW_ENABLED==='true',...(Number.isInteger(budget)&&budget>=0&&budget<=100?{remainingCalls:budget}:{}),attempts:Object.values(state?.documentReviews||{}).filter(r=>r.policy===DOCUMENT_REVIEW_POLICY).slice(0,2).map(r=>['queued','running','completed','conflict','failed','uncertain'].includes(r.state)?r.state:'uncertain')};
+  return {recovery,enabled:this.enabled(),configured:this.configured(),status:!this.enabled()?'disabled':state?.status||(waiting?'waiting_case':'not_started'),...(state?{caseId:state.caseId,caseSignature:state.caseSignature,generation:state.generation,awaitingPayment:state.awaitingPayment===true,resultFingerprint:state.resultFingerprint||null,updatedAt:state.updatedAt,rereadSources:this.rereadSources(customer,state),applicants:state.applicants.map(app=>({applicantIndex:app.applicantIndex,evidenceId:app.id,status:app.status,awaitingPayment:state.awaitingPayment===true,identityReady:app.identityReady===true,clientFieldsRequired:clone(app.clientFieldsRequired||[]),fields:clone(app.fields),documents:clone(app.documents),issues:clone(app.issues||[]),evidence:clone(app.evidence)})),issues:clone(state.issues||[])}:{updatedAt:null,applicants:[],issues:waiting?[reason('DOCUMENT_WAITING_CASE')]:[]})};
  }
  status(){return {enabled:this.enabled(),configured:this.configured(),running:this.busy,cases:Object.keys(this.data().cases).length,queued:Object.values(this.data().jobs).filter(job=>activeStatus(job.status)).length};}
 }

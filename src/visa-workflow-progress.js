@@ -5,6 +5,8 @@ const LABELS=Object.freeze({passportType:'نوع الجواز',issueDate:'تار
 function documentClarificationCopy(summary){
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
  if(issues.some(i=>i?.code==='CASE_DATA_MISMATCH'&&i.field==='nationalityCode'))return 'في اختلاف بين الجنسية المذكورة بالمحادثة والجواز المرسل. هالجواز لنفس الشخص وبدنا نصحح جنسيته، أو التقديم لشخص تاني؟ المرفقات محفوظة وما في داعي تعيد إرسالها.';
+ const reviewed=(summary?.recovery?.attempts||Object.values(summary?.documentReviews||{}).map(r=>r.state)).some(state=>['completed','conflict','failed','uncertain'].includes(state));
+ if(reviewed&&issues.some(i=>['PASSPORT_MRZ_DATE_AMBIGUOUS','SOURCE_CONFLICT'].includes(i?.code)))return 'بقي تأكيد بعض بيانات الجواز قبل استكمال الطلب. ابعت نسخة أوضح من صفحة بيانات الجواز بحجمها الأصلي، بحيث تاريخ الميلاد وتاريخ الانتهاء ظاهرين كاملين. الهوية وباقي المرفقات محفوظة؛ ما في داعي تعيد إرسالها.';
  if(issues.some(i=>i?.code==='MULTIPLE_PASSPORTS'))return 'وصل أكثر من جواز مختلف. بدك تقديم لكل أصحاب الجوازات، أو في جواز محدد بدنا نستخدمه؟ المرفقات محفوظة.';
  return null;
 }

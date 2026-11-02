@@ -151,6 +151,7 @@ function readDocument(document) {
     parsed.kind = 'other'; parsed.issues.push(issue('INVALID_EXTRACTION')); return parsed;
   }
   parsed.kind = extraction.kind;
+  if(document.readReviewIssue?.code==='SOURCE_CONFLICT'&&ALL_FIELDS.has(document.readReviewIssue.field))parsed.issues.push(issue('SOURCE_CONFLICT',document.readReviewIssue.field));
   if (!extraction.readable) { parsed.issues.push(issue('DOCUMENT_UNREADABLE')); return parsed; }
   for (const field of ALL_FIELDS) {
     if (!Object.hasOwn(extraction.fields, field)) continue;
