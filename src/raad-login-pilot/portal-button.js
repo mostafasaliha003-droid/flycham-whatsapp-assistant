@@ -19,14 +19,14 @@ function inspectPortalButton(args){
   if(target.origin!==location.origin||target.username||target.password||/logout|logoff|signout|delete|cancel|payment|card|pay|خروج|حذف|إلغاء|الغاء|دفع|سداد|بطاق/i.test(caption+' '+target.pathname))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   for(const [key,value]of target.searchParams)if(/logout|logoff|signout|delete|cancel|payment|card|pay|خروج|حذف|الغاء|إلغاء|دفع|سداد/i.test(key+' '+value))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
   if(agreement?!/^(?:أوافق|موافق|التالي|agree|i agree)$/i.test(caption):args.mode==='next'?!/^(?:next|continue|التالي|متابعة)$/i.test(caption):!/^(?:save|submit|حفظ|إرسال|ارسال|تقديم|حفظ الطلب|تقديم الطلب)$/i.test(caption))return {error:'PORTAL_BUTTON_UNAVAILABLE'};
-  for(const field of args.expectedFields){
-   const matches=field.kind==='radio'?Array.from(document.querySelectorAll('input[type="radio"]')).filter(el=>el.tagName==='INPUT'&&el.type==='radio'&&el.name===field.name&&el.getAttribute('value')===field.optionValue):Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===field.id);if(matches.length!==1)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};const el=matches[0];if(!el.isConnected||(el.form||null)!==form||!form&&el.ownerDocument!==document)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
-   if(field.kind==='radio'){if(field.id&&el.id!==field.id||el.ownerDocument!==document||!visible(el)||el.disabled||typeof el.matches==='function'&&el.matches(':disabled')||el.getAttribute('aria-disabled')==='true'||el.checked!==true)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
-   else if(field.kind==='check'){if(el.tagName!=='INPUT'||!['checkbox','radio'].includes(el.type)||el.checked!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
-   else if(field.kind==='select'){if(el.tagName!=='SELECT'||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};}
-   else if(!((el.tagName==='INPUT'&&['text','email','tel','number','date','datetime-local','month','week','time','url'].includes(el.type))||el.tagName==='TEXTAREA')||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH'};
+  for(const [fieldIndex,field]of args.expectedFields.entries()){
+   const matches=field.kind==='radio'?Array.from(document.querySelectorAll('input[type="radio"]')).filter(el=>el.tagName==='INPUT'&&el.type==='radio'&&el.name===field.name&&el.getAttribute('value')===field.optionValue):Array.from(document.querySelectorAll('[id]')).filter(el=>el.id===field.id);if(matches.length!==1)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};const el=matches[0];if(!el.isConnected||(el.form||null)!==form||!form&&el.ownerDocument!==document)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};
+   if(field.kind==='radio'){if(field.id&&el.id!==field.id||el.ownerDocument!==document||!visible(el)||el.disabled||typeof el.matches==='function'&&el.matches(':disabled')||el.getAttribute('aria-disabled')==='true'||el.checked!==true)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};}
+   else if(field.kind==='check'){if(el.tagName!=='INPUT'||!['checkbox','radio'].includes(el.type)||el.checked!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};}
+   else if(field.kind==='select'){if(el.tagName!=='SELECT'||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};}
+   else if(!((el.tagName==='INPUT'&&['text','email','tel','number','date','datetime-local','month','week','time','url'].includes(el.type))||el.tagName==='TEXTAREA')||el.value!==field.expectedValue)return {error:'PORTAL_BUTTON_READBACK_MISMATCH',fieldIndex};
   }
-  if(args.mode==='submit'&&button.type==='submit'&&(typeof form.checkValidity!=='function'||!form.checkValidity()))return {error:'PORTAL_BUTTON_VALIDATION_FAILED'};
+  if(args.mode==='submit'&&button.type==='submit'&&(args.probe?Array.from(form.elements||[]).some(el=>el.willValidate&&el.validity?.valid!==true):(typeof form.checkValidity!=='function'||!form.checkValidity())))return {error:'PORTAL_BUTTON_VALIDATION_FAILED'};
   if(!args.attempts||typeof args.attempts.has!=='function')return {error:'PORTAL_BUTTON_UNAVAILABLE'};if(args.attempts.has(button))return {error:'PORTAL_BUTTON_ALREADY_ATTEMPTED'};
   if(args.mark){args.attempts.add(button);return {ok:true};}return {button,form};
  }catch{return {error:'PORTAL_BUTTON_UNAVAILABLE'};}
@@ -36,7 +36,7 @@ async function attemptsFor(page){
  if(previous){let same=false;try{same=await documentHandle.evaluate((doc,old)=>doc===old,previous.document);}catch{}if(same){await documentHandle.dispose();return previous.attempts;}await previous.document.dispose().catch(()=>{});await previous.attempts.dispose().catch(()=>{});}
  const attempts=await page.evaluateHandle(()=>new WeakSet());attemptContexts.set(page,{document:documentHandle,attempts});return attempts;
 }
-async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
+function validateButtonInput({id,label,mode,expectedFields=[]}={}){
  if(id!==undefined&&id!==''&&(typeof id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(id))||typeof label!=='string'||!label||label.length>120||!['next','submit','agreement'].includes(mode)||!Array.isArray(expectedFields)||expectedFields.length>40||mode==='submit'&&!expectedFields.length)throw finite('PORTAL_BUTTON_INPUT_INVALID');
  const seen=new Map(),radioNames=new Set();for(const field of expectedFields){
   if(!field||typeof field!=='object'||Array.isArray(field))throw finite('PORTAL_BUTTON_INPUT_INVALID');
@@ -48,6 +48,9 @@ async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
    if(Object.keys(field).sort().join(',')!=='expectedValue,id,kind'||typeof field.id!=='string'||!/^[A-Za-z_][A-Za-z0-9_.:-]{0,119}$/.test(field.id)||seen.has(field.id)||!['text','select','check'].includes(field.kind)||mode==='agreement'&&field.kind!=='check'||(field.kind==='check'?typeof field.expectedValue!=='boolean':typeof field.expectedValue!=='string'||field.expectedValue.length>4096))throw finite('PORTAL_BUTTON_INPUT_INVALID');seen.set(field.id,field.kind);
   }
  }
+}
+async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
+ validateButtonInput({id,label,mode,expectedFields});
  let raw,button,form,started=false;
  const guard=()=>{const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.username||u.password||!main||main.url()!==page.url())throw finite('PORTAL_BUTTON_UNAVAILABLE');};
  try{
@@ -57,4 +60,12 @@ async function activatePortalButton(page,{id,label,mode,expectedFields=[]}={}){
   started=true;await button.focus();if(await button.evaluate(el=>el.isConnected&&!el.disabled&&document.activeElement===el)!==true)throw finite('PORTAL_BUTTON_ACTIVATION_UNCONFIRMED');await button.press('Enter',{timeout:10000,noWaitAfter:true});guard();return {activationDispatched:true,mode};
  }catch(error){if(started)throw finite('PORTAL_BUTTON_ACTIVATION_UNCONFIRMED');throw finite(error?.code);}finally{if(form)await form.dispose().catch(()=>{});if(button)await button.dispose().catch(()=>{});if(raw)await raw.dispose().catch(()=>{});}
 }
-module.exports={activatePortalButton,inspectPortalButton};
+
+async function preflightPortalButton(page,{id,label,mode='submit',expectedFields=[]}={}){
+ validateButtonInput({id,label,mode,expectedFields});
+ if(mode!=='submit')throw finite('PORTAL_BUTTON_INPUT_INVALID');
+ const guard=()=>{const u=new URL(page.url()),main=page.mainFrame();if(u.origin!==ORIGIN||u.pathname!=='/SmartForm/TraditionalApp'||u.username||u.password||!main||main.url()!==page.url())throw finite('PORTAL_BUTTON_UNAVAILABLE');};
+ let raw;
+ try{guard();raw=await page.evaluateHandle(inspectPortalButton,{id,label,mode,expectedFields,attempts:await attemptsFor(page),probe:true});const out=await raw.evaluate(result=>({ready:!result.error,reason:result.error||null,...(Number.isInteger(result.fieldIndex)?{fieldIndex:result.fieldIndex}:{})}));guard();return{ready:out.ready===true,reason:CODES.has(out.reason)?out.reason:out.ready?'SAVE_PREFLIGHT_PASSED':'PORTAL_BUTTON_UNAVAILABLE',...(Number.isInteger(out.fieldIndex)&&out.fieldIndex>=0&&out.fieldIndex<expectedFields.length?{fieldIndex:out.fieldIndex}:{})};}finally{await raw?.dispose().catch(()=>{});}
+}
+module.exports={activatePortalButton,inspectPortalButton,preflightPortalButton};
