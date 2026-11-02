@@ -1,6 +1,6 @@
 'use strict';
 const {paymentReceiptFollowup}=require('./visa-payment-followup');
-const {documentConfirmationCopy,workflowProgressReply}=require('./visa-workflow-progress');
+const {documentClarificationCopy,documentConfirmationCopy,workflowProgressReply}=require('./visa-workflow-progress');
 
 const P = require('./saudi-visa-policy');
 const {normalize} = P;
@@ -106,6 +106,7 @@ function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
     ? 'منكمل تجهيز هالصور ضمن ملفك. إذا عندك صفحتين لنفس الجواز أو وجهي الهوية، ابعتهن كاملين هون حتى يترتبوا مع بعض.'
     : 'ابعث صور الجواز والهوية من الجهتين والصورة الشخصية هون، ومنرتّب كل مستند بملفك. إذا المستند صورتين، ابعتهن كاملين.';
   if (['processing', 'queued', 'running', 'retry'].includes(summary.status)) return 'ملف الصور قيد القراءة والتجهيز. إذا في أكثر من صفحة، منربطها بالمستند وصاحبه قبل تجهيز النسخة.';
+  const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
   if (kind && summary.status === 'ready' && !hasPrepared(summary, kind)) return `نسخة ${KINDS[kind]} لسه ما تأكد تجهيزها ضمن ملفك. منراجع المستند المطلوب قبل إرسال نسخة منه.`;
   if (summary.status === 'ready') return kind && hasPrepared(summary, kind)
     ? `النسخة المجهزة من ${KINDS[kind]} موجودة بملفك.`

@@ -2,7 +2,14 @@
 const {visaCaseSignature}=require('./visa-case-signature');
 const {createHash}=require('node:crypto');
 const LABELS=Object.freeze({passportType:'نوع الجواز',issueDate:'تاريخ إصدار الجواز',birthPlace:'مكان الولادة'});
+function documentClarificationCopy(summary){
+ const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
+ if(issues.some(i=>i?.code==='CASE_DATA_MISMATCH'&&i.field==='nationalityCode'))return 'في اختلاف بين الجنسية المذكورة بالمحادثة والجواز المرسل. هالجواز لنفس الشخص وبدنا نصحح جنسيته، أو التقديم لشخص تاني؟ المرفقات محفوظة وما في داعي تعيد إرسالها.';
+ if(issues.some(i=>i?.code==='MULTIPLE_PASSPORTS'))return 'وصل أكثر من جواز مختلف. بدك تقديم لكل أصحاب الجوازات، أو في جواز محدد بدنا نستخدمه؟ المرفقات محفوظة.';
+ return null;
+}
 function documentConfirmationCopy(summary){
+ const clarification=documentClarificationCopy(summary);if(clarification)return clarification;
  const issues=[...(summary?.issues||[]),...(summary?.applicants||[]).flatMap(a=>a?.issues||[])];
  const fields=Object.keys(LABELS).filter(field=>issues.some(i=>i?.code==='DOCUMENT_FIELD_REQUIRED'&&i.field===field)||(summary?.applicants||[]).some(a=>a?.clientFieldsRequired?.includes(field)));
  return 'المرفقات محفوظة، لكن مراجعة بيانات المستندات لم تكتمل بعد.'+(fields.length?' الخانات التي لم تتأكد قراءتها: '+fields.map(f=>LABELS[f]).join('، ')+'.':' توجد خانات مستندية تحتاج مطابقة من القسم.')+' لا داعي لإعادة إرسال كل الصور. لم يتأكد حفظ الطلب بعد.';
@@ -30,4 +37,4 @@ function workflowProgressReply(store,customer,summary,now=Date.now()){
  }catch{}
  return null;
 }
-module.exports={documentConfirmationCopy,workflowProgressReply};
+module.exports={documentClarificationCopy,documentConfirmationCopy,workflowProgressReply};

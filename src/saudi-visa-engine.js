@@ -5,6 +5,7 @@ const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const {currentVisaEvidence}=require('./visa-case-signature');
 const {redactVisaText}=require('./saudi-visa-nlu');
 const {detectDocumentStep}=require('./visa-document-conversation');
+const {documentClarificationCopy}=require('./visa-workflow-progress');
 const {referenceKey,applicationReference,conversationIntent}=require('./visa-conversation-intent');
 const INTRO='أهلاً وسهلاً فيك بمجموعة الرمال 🌷 أنا إسماعيل، المساعد الافتراضي المختص بفيز السعودية.';
 const EGYPT_SINGLE_COPY='حسب سياسة منصة التقديم الحالية، التأشيرة السياحية المتاحة للجنسية المصرية خلال هذا الموسم هي سفرة واحدة، والتأشيرة متعددة الدخول غير متاحة حاليًا.';
@@ -122,8 +123,10 @@ class SaudiVisaEngine{
   const jobs=this.ownedApplications(id),reference=applicationReference(text,{awaiting:c.followupAwaitingReference===true,known:jobs.map(job=>job.applicationReference)});
   if(!reference&&intent!=='status'&&intent!=='existing_application')return null;
   if(reference){const matches=jobs.filter(job=>referenceKey(job.applicationReference)===reference);if(matches.length!==1){c.followupAwaitingReference=true;return 'ما قدرت أربط رقم الطلب بملف مقدم من رقم واتسابك الحالي. تواصل من نفس الرقم اللي قدمت منه حتى نراجع الطلب الصحيح؛ ما في داعي تعيد الأوراق أو الدفع.';}delete c.followupAwaitingReference;return this.applicationUpdate(matches[0]);}
-  if(jobs.length===1){delete c.followupAwaitingReference;return this.applicationUpdate(jobs[0]);}
-  if(jobs.length>1){c.followupAwaitingReference=true;return 'عندك أكثر من طلب محفوظ معنا: '+jobs.map(job=>job.applicationReference).slice(0,10).join('، ')+'. أي رقم طلب حابب تتابع؟';}
+  const currentJobs=jobs.filter(job=>job.caseId===c.id);
+  if(currentJobs.length===1){delete c.followupAwaitingReference;return this.applicationUpdate(currentJobs[0]);}
+  if(currentJobs.length>1){c.followupAwaitingReference=true;return 'عندك أكثر من طلب محفوظ معنا: '+currentJobs.map(job=>job.applicationReference).slice(0,10).join('، ')+'. أي رقم طلب حابب تتابع؟';}
+  const review=this.store.data.visaDocumentIntake?.cases?.[id];if(review?.caseId===c.id&&review.caseSignature===currentVisaEvidence(c).signature&&!['processing','queued'].includes(review.status)){const clarification=documentClarificationCopy(review);if(clarification)return clarification;}
   if(c.paymentStatus==='verified'||c.submissionStatus==='submitted'||c.documents?.length||c.staffVerification?.decision)return null;
   c.followupAwaitingReference=true;return 'أكيد، بساعدك بمتابعة طلبك. ابعت رقم الطلب، وتابع من نفس رقم واتساب اللي قدمت منه حتى نربطه بملفك الصحيح.';
  }

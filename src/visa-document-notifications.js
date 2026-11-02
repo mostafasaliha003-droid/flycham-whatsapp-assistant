@@ -1,6 +1,6 @@
 'use strict';
 const {paymentReceiptFollowup}=require('./visa-payment-followup');
-const {documentConfirmationCopy}=require('./visa-workflow-progress');
+const {documentClarificationCopy,documentConfirmationCopy}=require('./visa-workflow-progress');
 
 const {createHash} = require('node:crypto');
 const {visaCaseSignature} = require('./visa-case-signature');
@@ -57,6 +57,7 @@ function copyFor(status, issues) {
   const prefix = 'معك إسماعيل من الرمال. ';
   if (status === 'ready') return prefix + 'اكتملت قراءة المستندات ومطابقة بياناتها المتاحة وتجهيزها. بعد تأكيدك للبيانات واعتماد الدفعة من المحاسب ينتقل الملف إلى رعد لاستكمال الطلب.';
   if (status === 'needs_confirmation') return prefix + documentConfirmationCopy({issues});
+  const clarification=documentClarificationCopy({issues});if(clarification)return clarification;
   const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED','DOCUMENT_SOURCE_UNAVAILABLE','MULTIPLE_PASSPORTS']);
   const lines=[...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue=>ISSUE_TEXT[issue.code]).filter(Boolean))].slice(0,3);
   return 'وصلت المرفقات وحفظتها بملفك. مراجعة بعض التفاصيل لم تكتمل بعد. '+(lines.length?'حتى نكمل:\n'+lines.map(line=>'• '+line).join('\n'):'إذا احتجنا منك توضيحًا أو مستندًا إضافيًا، منخبرك بالضبط شو المطلوب. ما في داعي تعيد إرسال المرفقات الآن.');
