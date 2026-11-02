@@ -7,6 +7,7 @@ const {VisaPdfAutoPreparer}=require('./visa-pdf-auto');
 const {createDocumentVision,POLICY_FINGERPRINT:DOCUMENT_POLICY_FINGERPRINT}=require('./visa-document-vision');
 const {createOpticalMrz}=require('./visa-mrz-optical');
 const {VisaDocumentIntake}=require('./visa-document-intake');
+const {VisaReceiptNotifications}=require('./visa-receipt-notifications');
 const {VisaDocumentNotifications}=require('./visa-document-notifications');
 const {VisaUploadService}=require('./visa-upload');
 const {createVisaDocumentConversation}=require('./visa-document-conversation');
@@ -75,11 +76,11 @@ const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>f
 const documentVision=createDocumentVision({env:process.env,budgetStore:assistant.store,fetchImpl:(...args)=>fetch(...args)});
 const opticalMrz=createOpticalMrz();
 if(documentVision.status().enabled&&(!Number.isFinite(assistant.store.data.visaDocumentFeedbackActivatedAt)||assistant.store.data.visaDocumentFeedbackPolicy!==DOCUMENT_POLICY_FINGERPRINT||!Number.isSafeInteger(assistant.store.data.visaDocumentFeedbackAfterSequence))){assistant.store.data.visaDocumentFeedbackActivatedAt=Date.now();assistant.store.data.visaDocumentFeedbackAfterSequence=Math.max(0,(journal.data.nextSequence||1)-1);assistant.store.data.visaDocumentFeedbackPolicy=DOCUMENT_POLICY_FINGERPRINT;assistant.store.save();}
-let visaDocumentIntake,visaDocumentNotifications;
+let visaDocumentIntake,visaDocumentNotifications,visaReceiptNotices;
 function documentFeedbackAllowed(customer){const baseline=assistant.store.data.visaDocumentFeedbackAfterSequence;return documentVision.status().enabled&&activeService(assistant.store,customer)==='saudi_visa'&&Number.isSafeInteger(baseline)&&(journal.get(customer)?.messages||[]).some(message=>message.direction==='in'&&message.actor==='customer'&&message.status==='received'&&message.source!=='legacy'&&Number.isSafeInteger(message.seq)&&message.seq>baseline);}
 const visaPdfAuto=new VisaPdfAutoPreparer({media:visaMedia,store:assistant.store,report:code=>console.log(code)});
 if(visaEnabled())visaPdfAuto.start();
-async function receiveVisaMedia(customer,message){const result=await visaMedia.receive(customer,message);if(result.ok&&result.media?.mimeType==='application/pdf'){try{visaPdfAuto.enqueue(customer,result.media.id);}catch{console.log('PDF_AUTO_ENQUEUE_FAILED');}}if(result.ok&&['image/jpeg','image/png','image/webp','application/pdf'].includes(result.media?.mimeType)){try{if(visaDocumentIntake?.enqueue(customer,result.media.id))result.reply='وصل المرفق، وجارٍ قراءته وتحديد نوعه ومطابقة بيانات المستندات لاستكمال ملفك.';}catch{console.log('DOCUMENT_INTAKE_ENQUEUE_FAILED');}}return result;}
+async function receiveVisaMedia(customer,message){const result=await visaMedia.receive(customer,message);if(result.ok&&visaReceiptNotices?.ingest(customer,message,result.media)){result.reply='وصل إيصال التحويل، شكرًا إلك. منأكد لك استلام الدفعة بعد المراجعة.';visaReceiptNotices.flush().catch(()=>console.log('VISA_RECEIPT_NOTICE_PAUSED'));return result;}if(result.ok&&result.media?.mimeType==='application/pdf'){try{visaPdfAuto.enqueue(customer,result.media.id);}catch{console.log('PDF_AUTO_ENQUEUE_FAILED');}}if(result.ok&&['image/jpeg','image/png','image/webp','application/pdf'].includes(result.media?.mimeType)){try{if(visaDocumentIntake?.enqueue(customer,result.media.id))result.reply='وصل المرفق، وجارٍ قراءته وتحديد نوعه ومطابقة بيانات المستندات لاستكمال ملفك.';}catch{console.log('DOCUMENT_INTAKE_ENQUEUE_FAILED');}}return result;}
 const raad=new RaadVisaWorkflow({store:assistant.store,mediaStore:visaMedia,env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{},canAutomate:id=>!inbox.isHumanOwned(id)&&!inbox.isBlocked(id)});
 const raadProvider=new RaadTinyFishProfile({env:process.env,privateConfig:PRIVATE_VISA_CONFIG.raad||{}});
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
@@ -107,6 +108,7 @@ const visaPreparedDelivery=createVisaPreparedDelivery({store:assistant.store,med
 const visaDocumentConversation=createVisaDocumentConversation({store:assistant.store,documentIntake:visaDocumentIntake,createUploadLink:customer=>visaUploads.createLink(customer),sendPrepared:(customer,options)=>visaPreparedDelivery.sendPrepared(customer,options)});
 visaDispatcher=new VisaPortalDispatcher({fulfilment:visaFulfilment,raad,mediaStore:visaMedia,store:assistant.store,documentIntake:visaDocumentIntake,notificationReadiness:()=>visaWhatsApp.notificationReadiness(),ownerNotificationReady:()=>visaWhatsApp.ownerNotificationReady(),operatorNotice:async job=>{visaOperatorNotices.observe(job);await visaOperatorNotices.flush();}});
 visaOperatorNotices=new VisaOperatorNotifications({store:assistant.store,fulfilment:visaFulfilment,dispatcher:visaDispatcher,send:(input,guard)=>orderedDelivery(input.recipient,async()=>{const result=await visaWhatsApp.sendOperatorNotice(input,guard),messageId=result.messages?.[0]?.id||result.noticeMessageId;if(messageId&&journal.hasCustomer(input.recipient))journal.recordOutbound(input.recipient,{id:messageId,text:'[إشعار إكمال التحقق المرئي]',actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}),report:metadata=>console.log('VISA_OPERATOR_NOTICE_'+JSON.stringify(metadata))});
+visaReceiptNotices=new VisaReceiptNotifications({store:assistant.store,fulfilment:visaFulfilment,journal,send:(input,guard)=>orderedDelivery(input.recipient,()=>visaWhatsApp.sendReceiptNotice(input,guard)),report:metadata=>console.log('VISA_RECEIPT_NOTICE_'+JSON.stringify(metadata))});
 const handleVisaOperator=createVisaOperatorHttp({dispatcher:visaDispatcher,wake:()=>wakeVisa()});
 inbox.accountantWorkflowRequired=true;
 const wakeVisa=()=>{setImmediate(()=>visaDispatcher.tick()).unref?.();};
@@ -327,6 +329,7 @@ async function handleWebhookPost(request, response) {
   for(const message of extractIncomingMessages(payload)){
     if(!quoteJobs.acceptMessage(message.id))continue;
     quoteJobs.save();noteIncoming(assistant.store,message.from);
+    if(visaReceiptNotices.handles(message)){journal.recordInbound(message.from,{id:message.id,text:'[مراجعة إيصال تحويل]',timestamp:message.timestamp});const result=await visaReceiptNotices.receive(message);if(result.reply)await rawSendTextMessage(message.from,result.reply).catch(()=>{});continue;}
     if(visaOperatorNotices.handles(message)){
       journal.recordInbound(message.from,{id:message.id,text:'[متابعة إشعار التحقق المرئي]',timestamp:message.timestamp,name:message.name});
       const result=await visaOperatorNotices.receive(message);message.text='';
@@ -346,6 +349,7 @@ async function handleWebhookPost(request, response) {
     }
     if(message.text)message.text=journalSafeText(message.text);
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
+    visaReceiptNotices.observeMessage(message);
     const documentAnswer=visaDocumentNotifications.receive(message);if(documentAnswer.handled){if(documentAnswer.reply)await sendTextMessage(message.from,documentAnswer.reply);visaDocumentNotifications.update(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));wakeVisa();continue;}
     if(documentFeedbackAllowed(message.from)){visaDocumentNotifications.update(message.from);visaDocumentNotifications.reopen(message.from);visaDocumentNotifications.flush(message.from).catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));}visaDocumentIntake.wake();
     const reopenedVisa=visaFulfilment.requeuePausedMessages(message.from);
@@ -521,7 +525,7 @@ function createServer() {
   });
   const sweep=setInterval(()=>{
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
-   if(visaEnabled()){visaMedia.prune();visaUploads.prune();visaPreparedDelivery.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaOperatorNotices.flush().catch(()=>console.log('VISA_OPERATOR_NOTICE_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
+   if(visaEnabled()){visaMedia.prune();visaUploads.prune();visaPreparedDelivery.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaOperatorNotices.flush().catch(()=>console.log('VISA_OPERATOR_NOTICE_PAUSED'));visaReceiptNotices.flush().catch(()=>console.log('VISA_RECEIPT_NOTICE_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));
    for(const c of quoteJobs.comparisons.values())sendSearchWaiting(c.id).catch(()=>console.log('WHATSAPP_WAITING_NOTICE_FAILED'));
    for(const result of quoteJobs.dueComparisons())deliverComparison(result.id).catch(()=>console.log('WHATSAPP_COMPARISON_DELIVERY_FAILED'));
