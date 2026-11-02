@@ -692,4 +692,4 @@ function reconcileDocumentEvidence({documents, applicants, referenceDate = new D
   return output;
 }
 
-module.exports = {reconcileDocumentEvidence, DOCUMENT_CONFIDENCE_THRESHOLD:THRESHOLD};
+module.exports = {reconcileDocumentEvidence, DOCUMENT_CONFIDENCE_THRESHOLD:THRESHOLD, DOCUMENT_MATCH_ISSUE_CODES:Object.freeze(Object.keys(MESSAGES))};
