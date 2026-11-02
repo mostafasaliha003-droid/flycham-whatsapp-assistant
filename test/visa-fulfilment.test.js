@@ -775,3 +775,10 @@ test('assisted portal rejects absent consent, changed draft facts, extra facts, 
  (f,p)=>{f.c.paymentStatus='unverified';}
  ]){const f=await confirmedAssistedFixture(),proof=f.service.getConfirmedFields(f.jobId);mutate(f,proof);assert.equal(f.raad.portalDossier(CUSTOMER,{clientProof:proof}).ready,false);}
 });
+
+test('a bound document-list answer stages as a customer answer and is included in final consent without repeating the question',async()=>{
+ const f=await machineFactsFixture({missing:['passportType']}),raw=f.store.data.visaDocumentIntake.cases[CUSTOMER],now=f.options.now();
+ f.store.data.visaDocumentNotifications={items:{list:{customer:CUSTOMER,state:'accepted',expiresAt:now+60000,payload:{type:'question',field:'passportType',applicantIndex:0},binding:{caseId:f.c.id,caseSignature:visaCaseSignature(f.c),generation:raw.generation},answer:{field:'passportType',value:'ordinary',applicantIndex:0,evidenceId:f.ids.evidence,messageId:'wamid.list-choice',at:now}}}};
+ const before=structuredClone(f.c),staged=f.service.stageDocumentFacts(f.jobId,{evidenceId:f.ids.evidence});assert.equal(staged.stagedFields.passportType,'ordinary');assert.equal(f.applicant.fields.passportType,undefined);assert.deepEqual(f.c,before);
+ const asked=answerRemainingMachineQuestions(f);assert(!asked.questions.some(q=>q.field==='passportType'));const summary=f.service.job(f.jobId).summary;assert.equal(summary.answers.passportType,'ordinary');assert.equal(f.service.job(f.jobId).state,'awaiting_answer_confirmation');f.service.confirmAnswers({sender:CUSTOMER,token:summary.token,confirm:true,messageId:'list-answer-final-consent'});const proof=f.service.getConfirmedFields(f.jobId);assert.equal(proof.complete,true);assert.equal(proof.fields.passportType,'ordinary');
+});
