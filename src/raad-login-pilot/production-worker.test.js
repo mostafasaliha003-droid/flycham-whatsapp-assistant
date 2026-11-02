@@ -48,3 +48,11 @@ test('save preflight refusals preserve exact blocker while dispatched or transpo
  }
 });
 test('diagnostic manifest independently forbids submission and SMS dispatch even if flow requests them',async()=>{for(const [action,data]of [['activate-control',{mode:'submit'}],['confirm-application',{}],['request-application-sms',{}],['enter-application-sms',{code:'123456'}]]){const t=setup({flow:async ctx=>{assert.equal(ctx.savePreflightOnly,true);await ctx.api(action,data);}});await t.worker.start(manifest({diagnosticOnly:true}));const result=await until(t.worker,'job_fake_1',s=>s.stage==='blocked');assert.equal(result.blocker.code,'DIAGNOSTIC_WRITE_FORBIDDEN');assert.equal(t.calls.length,0);assert.equal(result.saved,false);}});
+
+test('Save transition tolerates slow route or delayed known confirmation without replaying any write',async()=>{
+ const {observeSaveTransition}=require('./production-worker'),known='345d81b52b2519097ac1f02e4c8b884d9c96030440ac04a730df6f908184054e';
+ for(const mode of ['route','modal','timeout','unknown_modal','lease_lost']){let reads=0,waits=0,leases=0;const apiCalls=[];const ctx={checkLease:async()=>{leases++;if(mode==='lease_lost')throw finite('LEASE_REVOKED');},locate:async()=>({path:mode==='route'&&++reads>=4?'/SmartForm/HealthInsuranceInfo/123':'/SmartForm/TraditionalApp'}),wait:async()=>{waits++;},api:async(action)=>{apiCalls.push(action);if(mode==='modal'&&apiCalls.length>=4)return{confirmation:{confirmationHash:known}};if(mode==='unknown_modal')return{confirmation:{confirmationHash:'0'.repeat(64)}};throw finite('PORTAL_CONFIRM_UNAVAILABLE');}};
+  if(['route','modal'].includes(mode)){const result=await observeSaveTransition(ctx,{allowConfirmation:true});assert.equal(Boolean(result.confirmation),mode==='modal');assert.ok(waits>=3);}else await assert.rejects(observeSaveTransition(ctx,{allowConfirmation:true}),e=>e.code===(mode==='lease_lost'?'LEASE_REVOKED':mode==='unknown_modal'?'APPLICATION_PLEDGE_UNCONFIRMED':'SAVE_UNCERTAIN'));
+  assert.ok(apiCalls.every(x=>x==='inspect-confirmation'));assert.ok(waits<=19);assert.ok(leases<=20);
+ }
+});

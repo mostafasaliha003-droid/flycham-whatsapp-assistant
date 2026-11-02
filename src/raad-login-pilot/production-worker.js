@@ -172,6 +172,17 @@ async function loginGovernmentAccount(ctx){
  throw finite(otpSubmitted?'LOGIN_EMAIL_OTP_UNCONFIRMED':lastStage==='result_unverified'?'LOGIN_ACCOUNT_UI_UNCONFIRMED':'LOGIN_UNCONFIRMED');
 }
 
+async function observeSaveTransition(ctx,{allowConfirmation=false}={}){
+ for(let poll=0;poll<20;poll++){
+  await ctx.checkLease();const state=await ctx.locate();
+  if(/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(state?.path||''))return{path:state.path};
+  if(state?.path!=='/SmartForm/TraditionalApp')throw finite('SAVE_UNCERTAIN');
+  if(allowConfirmation){try{const result=await ctx.api('inspect-confirmation',{},false);if(result?.confirmation?.confirmationHash){if(result.confirmation.confirmationHash!==KNOWN_PLEDGE)throw finite('APPLICATION_PLEDGE_UNCONFIRMED');return{path:state.path,confirmation:result.confirmation};}}catch(error){if(!['PILOT_UNAVAILABLE','PILOT_OPERATION_UNCONFIRMED','PORTAL_CONFIRM_UNAVAILABLE'].includes(error?.code))throw error;}}
+  if(poll<19)await ctx.wait(1000);
+ }
+ throw finite('SAVE_UNCERTAIN');
+}
+
 async function runGovernmentJob(ctx,{resume=false}={}){
  const {record:r,manifest:m,api,wait}=ctx,f=m.facts;
  const inspect=async()=>{const result=await api('inspect-page',{},false);if(!result.inspection)throw finite('PORTAL_INSPECTION_UNAVAILABLE');return result.inspection;};
@@ -211,7 +222,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
    r.phase='application_sms';const sms=await api('inspect-application-sms',{},false);const buttons=(sms.verification?.buttons||[]).filter(button=>!button.disabled&&/send|request|ارسال|إرسال/i.test([button.id,button.name,button.label,button.title,button.ariaLabel].join(' '))&&!/resend|اعادة|إعادة/i.test([button.id,button.name,button.label,button.title,button.ariaLabel].join(' ')));if(buttons.length!==1)throw finite('APPLICATION_SMS_CONTROL_UNAVAILABLE');const requested=await api('request-application-sms',{id:buttons[0].id||undefined,label:buttons[0].label});if(!requested.activationDispatched)throw finite('APPLICATION_SMS_REQUEST_UNCONFIRMED');r.stage='waiting_otp';r.challengeId=crypto.randomUUID();r.challengeExpiresAt=ctx.now()+8*60*1000;return;
   }
  }
- if(resume){r.phase='application_sms';let code=r.pendingCode;r.pendingCode='';try{if(typeof code!=='string')throw finite('OTP_CHALLENGE_STALE');const result=await api('enter-application-sms',{code});if(!result.codeEntered)throw finite('APPLICATION_SMS_ENTRY_UNCONFIRMED');}finally{code='';}r.phase='save';await api('refresh-form-captcha');if(ctx.operatorCaptcha){const answer=await ctx.awaitOperator('form');try{await api('enter-form-captcha',{code:answer.value,imageId:answer.imageId});}finally{answer.value='';}}else await api('solve-form-captcha');const meta=await inspect();if(!Array.isArray(r.expectedDraft)||r.expectedDraft.length>40)throw finite('DRAFT_READBACK_UNCONFIRMED');await originalButton(meta,'submit',r.expectedDraft);await wait(1000);let path=(await locate()).path;if(path==='/SmartForm/TraditionalApp'){const confirmation=await api('inspect-confirmation',{},false);if(confirmation.confirmation?.confirmationHash!==KNOWN_PLEDGE)throw finite('APPLICATION_PLEDGE_UNCONFIRMED');await api('confirm-application',{label:'استمرار',confirmationHash:KNOWN_PLEDGE,expectedFields:[{id:'PASSPORTnumber',kind:'text',expectedValue:f.passportNumber}]});await wait(1200);path=(await locate()).path;}if(!/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(path))throw finite('SAVE_UNCERTAIN');r.savedRoute=path;
+ if(resume){r.phase='application_sms';let code=r.pendingCode;r.pendingCode='';try{if(typeof code!=='string')throw finite('OTP_CHALLENGE_STALE');const result=await api('enter-application-sms',{code});if(!result.codeEntered)throw finite('APPLICATION_SMS_ENTRY_UNCONFIRMED');}finally{code='';}r.phase='save';await api('refresh-form-captcha');if(ctx.operatorCaptcha){const answer=await ctx.awaitOperator('form');try{await api('enter-form-captcha',{code:answer.value,imageId:answer.imageId});}finally{answer.value='';}}else await api('solve-form-captcha');const meta=await inspect();if(!Array.isArray(r.expectedDraft)||r.expectedDraft.length>40)throw finite('DRAFT_READBACK_UNCONFIRMED');await originalButton(meta,'submit',r.expectedDraft);let outcome=await observeSaveTransition(ctx,{allowConfirmation:true});if(outcome.confirmation){await api('confirm-application',{label:'استمرار',confirmationHash:KNOWN_PLEDGE,expectedFields:[{id:'PASSPORTnumber',kind:'text',expectedValue:f.passportNumber}]});outcome=await observeSaveTransition(ctx);}let path=outcome.path;r.savedRoute=path;
   // The list was observed before creating this draft. Revisit it read-only and
   // prove the unique passport row, then restore the original Health view with
   // native history. This records a saved draft even if insurance later blocks.
@@ -224,4 +235,4 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=chooseCheapest(await inspect());await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);await wait(1000);state=await locate();}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
