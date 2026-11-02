@@ -77,8 +77,8 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
    const code=/^[A-Z][A-Z0-9_]{1,99}$/.test(error?.code||'')?error.code:'PRODUCTION_UNCONFIRMED';
    record.stage=code==='LEASE_REVOKED'?'lease_lost':'blocked';record.blocker={code,...(error?.field?{field:error.field}:{})};
    if(record.saveDispatched&&!record.saved){record.submissionUncertain=true;if(code!=='LEASE_REVOKED')record.blocker={code:'SAVE_UNCERTAIN'};}
-   const saveReasons=new Set(['PORTAL_BUTTON_INPUT_INVALID','PORTAL_BUTTON_UNAVAILABLE','PORTAL_BUTTON_VALIDATION_FAILED','PORTAL_BUTTON_READBACK_MISMATCH','PORTAL_BUTTON_ACTIVATION_UNCONFIRMED','APPLICATION_SMS_CODE_REQUIRED','PORTAL_DATES_DATE_UNCONFIRMED','PORTAL_CAPTCHA_UNAVAILABLE','PORTAL_CAPTCHA_IMAGE_CHANGED','APPLICATION_PLEDGE_UNCONFIRMED','PORTAL_CONFIRM_READBACK_MISMATCH','PORTAL_CONFIRM_ACTIVATION_UNCONFIRMED','SAVE_UNCERTAIN']);
-   if(record.phase==='save')console.info('[RAAD_SAVE_DIAGNOSTIC] '+JSON.stringify({reason:saveReasons.has(code)?code:'UNCONFIRMED',activationPossible:record.saveDispatched===true,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true}));
+   const saveReasons=new Set(['PORTAL_BUTTON_INPUT_INVALID','PORTAL_BUTTON_UNAVAILABLE','PORTAL_BUTTON_VALIDATION_FAILED','PORTAL_BUTTON_READBACK_MISMATCH','PORTAL_BUTTON_ACTIVATION_UNCONFIRMED','APPLICATION_SMS_CODE_REQUIRED','PORTAL_DATES_DATE_UNCONFIRMED','PORTAL_CAPTCHA_UNAVAILABLE','PORTAL_CAPTCHA_IMAGE_CHANGED','APPLICATION_PLEDGE_UNCONFIRMED','PORTAL_CONFIRM_READBACK_MISMATCH','PORTAL_CONFIRM_ACTIVATION_UNCONFIRMED','SAVE_UNCERTAIN','CASE_LOOKUP_UNCONFIRMED','CASE_LOOKUP_AMBIGUOUS','SAVED_CASE_UNCONFIRMED','SAVED_REFERENCE_MISMATCH','PORTAL_CASE_LOOKUP_UNAVAILABLE']);
+   if(['save','lookup'].includes(record.phase))console.info('[RAAD_SAVE_DIAGNOSTIC] '+JSON.stringify({phase:record.phase,knownSaveRoute:typeof record.savedRoute==='string',reason:saveReasons.has(code)?code:'UNCONFIRMED',activationPossible:record.saveDispatched===true,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true}));
    await closeOwned(record);scrub(record);
   }finally{if(record.cancelled&&record.artifact?.buffer){record.artifact.buffer.fill(0);record.artifact=null;}record.running=false;}
  }
@@ -172,6 +172,16 @@ async function loginGovernmentAccount(ctx){
  throw finite(otpSubmitted?'LOGIN_EMAIL_OTP_UNCONFIRMED':lastStage==='result_unverified'?'LOGIN_ACCOUNT_UI_UNCONFIRMED':'LOGIN_UNCONFIRMED');
 }
 
+async function observeSavedCase(ctx,lookup){
+ for(let poll=0;poll<20;poll++){
+  await ctx.checkLease();let result;
+  try{result=await lookup();}catch(error){if(error?.code!=='CASE_LOOKUP_UNCONFIRMED')throw error;}
+  if(result){if(result.matchCount>1||result.matches?.length>1)throw finite('CASE_LOOKUP_AMBIGUOUS');if(result.matchCount===1&&result.matches?.length===1)return result;if(result.matchCount!==0||(result.matches||[]).length)throw finite('CASE_LOOKUP_UNCONFIRMED');}
+  if(poll<19)await ctx.wait(1000);
+ }
+ throw finite('SAVED_CASE_UNCONFIRMED');
+}
+
 async function observeSaveTransition(ctx,{allowConfirmation=false}={}){
  for(let poll=0;poll<20;poll++){
   await ctx.checkLease();const state=await ctx.locate();
@@ -193,7 +203,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  const originalButton=async(inspection,mode,expectedFields=[])=>{const pattern=mode==='submit'?/^(?:حفظ|حفظ الطلب|Save)$/i:mode==='agreement'?/^(?:موافق|أوافق|اوافق|Agree|I Agree)$/i:/^(?:التالي|متابعة|Next|Continue)$/i;const matches=(inspection.buttons||[]).filter(button=>!button.disabled&&pattern.test(button.label));if(matches.length!==1)throw finite('PORTAL_BUTTON_AMBIGUOUS');const saving=mode==='submit'&&(await locate()).path==='/SmartForm/TraditionalApp',prior=r.saveDispatched===true;if(saving)r.saveDispatched=true;try{return await api('activate-control',{label:matches[0].label,mode,expectedFields});}catch(error){const rejectedBeforeDispatch=new Set(['PORTAL_BUTTON_INPUT_INVALID','PORTAL_BUTTON_UNAVAILABLE','PORTAL_BUTTON_VALIDATION_FAILED','PORTAL_BUTTON_READBACK_MISMATCH','APPLICATION_SMS_CODE_REQUIRED','PORTAL_DATES_DATE_UNCONFIRMED','PORTAL_CAPTCHA_UNAVAILABLE','PORTAL_CAPTCHA_IMAGE_CHANGED']);if(saving&&!prior&&rejectedBeforeDispatch.has(error?.code))r.saveDispatched=false;throw error;}};
  const open=async(link,extra={})=>{if(!link)throw finite('PORTAL_LINK_UNAVAILABLE');return api('open-page',{path:link.path,label:link.label,...extra});};
  const lookup=async()=>{if((await locate()).path!=='/SmartForm')throw finite('CASE_LOOKUP_PAGE_REQUIRED');const result=await api('lookup-applications',{passportNumber:f.passportNumber},false);if(!result.lookupSupported||result.matchCount>1||result.matches?.length>1)throw finite('CASE_LOOKUP_UNCONFIRMED');return result;};
- const returnToList=async()=>{let metadata=await inspect();const links=(metadata.links||[]).filter(link=>link.path==='/SmartForm'&&/^(?:عودة|العودة|رجوع|Back|Return)$/i.test(link.label));if(links.length!==1)throw finite('OBSERVED_RETURN_UNAVAILABLE');await open(links[0]);if((await locate()).path!=='/SmartForm')throw finite('RETURN_UNCONFIRMED');return lookup();};
+ const returnToList=async()=>{let metadata=await inspect();const links=(metadata.links||[]).filter(link=>link.path==='/SmartForm'&&/^(?:عودة|العودة|رجوع|Back|Return)$/i.test(link.label));if(links.length!==1)throw finite('OBSERVED_RETURN_UNAVAILABLE');await open(links[0]);if((await locate()).path!=='/SmartForm')throw finite('RETURN_UNCONFIRMED');return observeSavedCase(ctx,lookup);};
  const finish=async()=>{r.phase='return';const matches=await returnToList();if(matches.matchCount!==1)throw finite('SAVED_CASE_UNCONFIRMED');const match=matches.matches[0];if(r.reference&&r.reference!==match.applicationReference)throw finite('SAVED_REFERENCE_MISMATCH');r.reference=match.applicationReference;r.saved=true;r.returnedFromPayment=true;r.phase='print';await ctx.checkLease();const artifact=await ctx.withPage(page=>ctx.capturePdf(page,{applicationReference:r.reference,passportNumber:f.passportNumber,guard:ctx.checkLease,signal:r.controller.signal}));if(!artifact||!Buffer.isBuffer(artifact.buffer)||artifact.applicationReference!==r.reference||artifact.buffer.length>10000000||artifact.buffer.subarray(0,5).toString()!=='%PDF-'||crypto.createHash('sha256').update(artifact.buffer).digest('hex')!==artifact.sha256)throw finite('ARTIFACT_PROOF_INVALID');r.artifact=artifact;};
  if(!resume){
   // Validate human facts before opening a government session. Missing grandparent
@@ -226,7 +236,7 @@ async function runGovernmentJob(ctx,{resume=false}={}){
   // The list was observed before creating this draft. Revisit it read-only and
   // prove the unique passport row, then restore the original Health view with
   // native history. This records a saved draft even if insurance later blocks.
-  r.phase='lookup';await ctx.checkLease();await ctx.withPage(async page=>{await ctx.checkLease();await page.goto(ORIGIN+'/SmartForm',{waitUntil:'domcontentloaded',timeout:30000});});const verified=await lookup();if(verified.matchCount!==1)throw finite('SAVED_CASE_UNCONFIRMED');r.reference=verified.matches[0].applicationReference;r.saved=true;await ctx.checkLease();await ctx.withPage(async page=>{await ctx.checkLease();await page.goBack({waitUntil:'domcontentloaded',timeout:30000});});if((await locate()).path!==path)throw finite('SAVED_CONTINUATION_UNCONFIRMED');}
+  r.phase='lookup';await ctx.checkLease();await ctx.withPage(async page=>{await ctx.checkLease();await page.goto(ORIGIN+'/SmartForm',{waitUntil:'domcontentloaded',timeout:30000});});const verified=await observeSavedCase(ctx,lookup);r.reference=verified.matches[0].applicationReference;r.saved=true;await ctx.checkLease();await ctx.withPage(async page=>{await ctx.checkLease();await page.goBack({waitUntil:'domcontentloaded',timeout:30000});});if((await locate()).path!==path)throw finite('SAVED_CONTINUATION_UNCONFIRMED');}
  let state=await locate();
  if(/^\/SmartForm\/HealthInsuranceInfo\/[0-9]{1,20}$/.test(state.path)){
   r.phase='health';for(const [id,key]of [['PostOfficeBox','postOfficeBox'],['City','city'],['ZipCode','postalCode'],['Email','contactEmail'],['Mobile','insurancePhone']])await fill({id,kind:'text',value:required(f,key)});await setDate('ExpectedEntryDate',required(f,'entryDate'));
@@ -235,4 +245,4 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=chooseCheapest(await inspect());await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);await wait(1000);state=await locate();}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={observeSavedCase,observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
