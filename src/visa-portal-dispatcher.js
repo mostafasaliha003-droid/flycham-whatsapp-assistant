@@ -21,6 +21,12 @@ class VisaPortalDispatcher{
    return{challengeId:id,kind:result.kind,expiresAt:run.operatorChallenge.expiresAt,imageId:result.imageId,image:result.image};
   }finally{if(input)input.value='';}
  }
+ async resumeAfterSaveDiagnostic(jobId){
+  const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId];
+  const verify=()=>{if(job.state!=='portal_review_required'||job.blockedReason!=='SAVE_PREFLIGHT_PASSED'||run?.phase!=='blocked'||run.lastStage!=='save_preflight'||job.diagnosticOnly!==true||job.saveAfterDiagnosticResumed===true||job.portalSaved||job.applicationReference||this.fulfilment.data().lease)throw Error('SAVE_DIAGNOSTIC_RESUME_UNAVAILABLE');let proof,draft;job.state='ready';try{proof=this.fulfilment.getConfirmedFields(jobId);draft=this.dossier(job,proof);}finally{if(job.state==='ready')job.state='portal_review_required';}if(!proof.complete||!draft.ready||!draft.fingerprint)throw Error('SAVE_DIAGNOSTIC_RESUME_UNAVAILABLE');return draft.fingerprint;};
+  const fingerprint=verify(),health=await this.request('/health');if(health.ready!==true||health.production?.activeJob!==false||health.production?.operatorCaptcha!==true||health.production?.savePreflightSupported!==true)throw Error('SAVE_DIAGNOSTIC_RESUME_UNAVAILABLE');await this.cancelOwned(jobId);if(verify()!==fingerprint)throw Error('SAVE_DIAGNOSTIC_RESUME_UNAVAILABLE');
+  const before={reason:job.blockedReason,phase:run.phase};job.state='ready';job.diagnosticOnly=false;job.saveAfterDiagnosticResumed=true;delete job.blockedReason;run.phase='retry_ready';try{this.store.save();}catch{job.state='portal_review_required';job.diagnosticOnly=true;delete job.saveAfterDiagnosticResumed;job.blockedReason=before.reason;run.phase=before.phase;throw Error('SAVE_DIAGNOSTIC_RESUME_UNCONFIRMED');}return{resumeQueued:true};
+ }
  async startSaveDiagnostic(jobId){
   if(this.env.RAAD_OPERATOR_CAPTCHA_ENABLED!=='true')throw Error('OPERATOR_UNAVAILABLE');
   const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId];
