@@ -8,7 +8,11 @@ function documentClientAnswers(store,customer,app,now=Date.now()){
  const fields={};
  for(const item of Object.values(store.data.visaDocumentNotifications?.items||{})){
   const a=item?.answer,b=item?.binding;
-  if(item.customer!==customer||item.state!=='accepted'||!Number.isFinite(item.expiresAt)||item.expiresAt<=now||item.payload?.type!=='question'||item.payload.field!=='passportType'||item.payload.applicantIndex!==app.applicantIndex||!a||a.field!=='passportType'||a.applicantIndex!==app.applicantIndex||a.evidenceId!==app.id||b?.caseId!==c.id||b.caseSignature!==state.caseSignature||b.generation!==state.generation||!app.clientFieldsRequired?.includes(a.field))continue;
+  const sourceList=values=>Array.isArray(values)&&values.length>0&&values.length<=100&&values.every(v=>v&&/^[a-f0-9-]{36}$/i.test(v.mediaId||'')&&/^[a-f0-9]{64}$/.test(v.sha256||''))?values.map(v=>[v.mediaId,v.sha256]).sort((a,b)=>a[0].localeCompare(b[0])):null;
+  const currentSources=sourceList(app.sourceManifest),answeredSources=sourceList(b?.sources);
+  const unchangedSingleApplicant=c.applicantCount===1&&state.applicants?.length===1&&app.applicantIndex===0&&currentSources&&answeredSources&&JSON.stringify(currentSources)===JSON.stringify(answeredSources);
+
+  if(item.customer!==customer||item.state!=='accepted'||!Number.isFinite(item.expiresAt)||item.expiresAt<=now||item.payload?.type!=='question'||item.payload.field!=='passportType'||item.payload.applicantIndex!==app.applicantIndex||!a||a.field!=='passportType'||a.applicantIndex!==app.applicantIndex||a.evidenceId!==app.id&&!unchangedSingleApplicant||b?.caseId!==c.id||b.caseSignature!==state.caseSignature||b.generation!==state.generation||!app.clientFieldsRequired?.includes(a.field))continue;
   try{const value=validateAnswer(a.field,a.value);if(fields[a.field]&&fields[a.field]!==value)return {};fields[a.field]=value;}catch{}
  }
  return fields;
