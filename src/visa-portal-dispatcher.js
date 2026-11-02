@@ -126,13 +126,15 @@ class VisaPortalDispatcher{
   if(this.env.RAAD_EXPIRED_OTP_RECOVERY_ENABLED!=='true'||!this.configured())return;
   for(const job of Object.values(this.fulfilment.data().jobs)){
    const run=this.store.data.visaPortalRuns[job.id];
-   if(job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run?.phase!=='blocked'||run.lastStage!=='application_sms'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||(job.expiredOtpRecoveryAttempts||0)>=1)continue;
+   const retryRequest=this.env.RAAD_EXPIRED_OTP_RETRY_REQUEST;
+   const explicitRetry=/^[a-f0-9]{32}$/.test(retryRequest||'')&&this.env.RAAD_EXPIRED_OTP_RETRY_CASE_HASH===digest(String(job.caseId)).slice(0,12)&&job.expiredOtpRetryRequest!==retryRequest;
+   if(job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run?.phase!=='blocked'||run.lastStage!=='application_sms'||job.portalSaved||job.applicationReference||this.fulfilment.data().lease||((job.expiredOtpRecoveryAttempts||0)>=1&&!explicitRetry))continue;
    const diagnostic=code=>{const key=job.id+':otp_recovery';if(this.reportedDiagnostics.get(key)===code)return;this.reportedDiagnostics.set(key,code);console.info('[VISA_OTP_RECOVERY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),code}));};
    let phase='authorization',refreshDocuments=false;
    try{
     const verify=expected=>{
      phase='authorization';
-     if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||(job.expiredOtpRecoveryAttempts||0)>=1)throw Error('CURRENT_JOB_REQUIRED');
+     if(this.fulfilment.data().lease||job.state!=='portal_review_required'||job.blockedReason!=='OTP_CHALLENGE_EXPIRED'||run.phase!=='blocked'||job.portalSaved||job.applicationReference||((job.expiredOtpRecoveryAttempts||0)>=1&&!explicitRetry))throw Error('CURRENT_JOB_REQUIRED');
      let proof,draft,requiresRefresh=false;
      job.state='ready';
      try{
@@ -172,15 +174,15 @@ class VisaPortalDispatcher{
      // Changed document evidence invalidates the old consent. Restage only
      // after remote unsaved proof, and require a fresh applicant confirmation.
      const before=structuredClone(job),previousPhase=run.phase;
-     job.expiredOtpRecoveryAttempts=1;job.state='queued';job.revision++;delete job.blockedReason;delete job.answerConfirmation;run.phase='followup';
+     job.expiredOtpRecoveryAttempts=(job.expiredOtpRecoveryAttempts||0)+1;if(explicitRetry)job.expiredOtpRetryRequest=retryRequest;job.state='queued';job.revision++;delete job.blockedReason;delete job.answerConfirmation;run.phase='followup';
      try{this.store.save();}catch{for(const key of Object.keys(job))delete job[key];Object.assign(job,before);run.phase=previousPhase;throw Error('RECOVERY_SAVE_FAILED');}
      try{phase='document_refresh';const result=await this.documentIntake.refresh(job.customer,{applicantIndex:job.applicantIndex});if(result?.readyForQuestions!==true)throw Error('DOCUMENT_REFRESH_REVIEW_REQUIRED');if(!job.stagedFields)job.stagedFields=structuredClone(job.confirmedFields);this.fulfilment.askQuestions(job.id);diagnostic('DOCUMENTS_REBOUND_CONFIRMATION_REQUIRED');}
      catch{job.state='portal_review_required';job.blockedReason='DOCUMENTS_REVIEW_REQUIRED';run.phase='blocked';this.store.save();diagnostic('DOCUMENT_REFRESH_REVIEW_REQUIRED');}
      continue;
     }
-    const before={state:job.state,blockedReason:job.blockedReason,attempts:job.expiredOtpRecoveryAttempts,phase:run.phase};
-    job.expiredOtpRecoveryAttempts=1;job.state='ready';delete job.blockedReason;run.phase='retry_ready';
-    try{this.store.save();}catch{job.state=before.state;job.blockedReason=before.blockedReason;run.phase=before.phase;if(before.attempts===undefined)delete job.expiredOtpRecoveryAttempts;else job.expiredOtpRecoveryAttempts=before.attempts;throw Error('RECOVERY_SAVE_FAILED');}
+    const before={state:job.state,blockedReason:job.blockedReason,attempts:job.expiredOtpRecoveryAttempts,retryRequest:job.expiredOtpRetryRequest,phase:run.phase};
+    job.expiredOtpRecoveryAttempts=(job.expiredOtpRecoveryAttempts||0)+1;if(explicitRetry)job.expiredOtpRetryRequest=retryRequest;job.state='ready';delete job.blockedReason;run.phase='retry_ready';
+    try{this.store.save();}catch{job.state=before.state;job.blockedReason=before.blockedReason;run.phase=before.phase;if(before.retryRequest===undefined)delete job.expiredOtpRetryRequest;else job.expiredOtpRetryRequest=before.retryRequest;if(before.attempts===undefined)delete job.expiredOtpRecoveryAttempts;else job.expiredOtpRecoveryAttempts=before.attempts;throw Error('RECOVERY_SAVE_FAILED');}
     diagnostic('READY_FOR_FRESH_OTP');
    }catch(error){const codes=['CURRENT_DOSSIER_REQUIRED','CURRENT_JOB_REQUIRED','RECOVERY_SAVE_FAILED','VISA_DOCUMENT_EVIDENCE_STALE','VISA_DOCUMENT_EVIDENCE_UNVERIFIED','VISA_PAYMENT_NOTICE_UNCONFIRMED','VISA_JOB_STALE','HUMAN_OWNERSHIP'];const code=error?.code||error?.message;diagnostic(codes.includes(code)?code:error?.status===404&&phase==='remote_record'?'REMOTE_RECORD_NOT_FOUND':'CHECK_'+phase.toUpperCase()+'_UNCONFIRMED');}
   }
