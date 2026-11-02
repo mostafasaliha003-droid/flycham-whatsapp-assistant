@@ -211,18 +211,22 @@ async function processCustomerMessages(sender,messages){
       visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
     }
     if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
-    const attachments=messages.filter(m=>m.media),mediaReplies=[];
-    for(const m of attachments){const result=await receiveVisaMedia(sender,m);mediaReplies.push(result.reply);}
-    const compoundDocumentRequest=Boolean(conversationIntent(text))||/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
+    const attachments=messages.filter(m=>m.media),mediaReplies=[],priorVisaCase=visa.getCase(sender),holdNewMedia=Boolean(priorVisaCase&&(conversationIntent(text)==='new_application'||priorVisaCase.pendingNewApplication));
+    if(holdNewMedia&&attachments.length){assistant.store.data.pendingNewVisaMedia||={};const queued=assistant.store.data.pendingNewVisaMedia[sender],previous=queued?.sourceCaseId===priorVisaCase.id?queued:null;assistant.store.data.pendingNewVisaMedia[sender]={sourceCaseId:priorVisaCase.id,createdAt:Date.now(),messages:[...(previous?.messages||[]),...attachments].slice(-20)};assistant.store.save();mediaReplies.push('وصلت مرفقات الطلب الجديد، ومنربطها فيه بعد تأكيد فتح ملفه المستقل.');}
+    for(const m of holdNewMedia?[]:attachments){const result=await receiveVisaMedia(sender,m);mediaReplies.push(result.reply);}
+    const caseConversation=Boolean(conversationIntent(text))||Boolean(visa.getCase(sender)?.pendingNewApplication);
+    const compoundDocumentRequest=caseConversation||/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
     const documentCase=visa.getCase(sender),documentCaseId=documentCase?.id,documentCaseRevision=documentCase?.revision;
     let documentReply=documentCase&&!compoundDocumentRequest?await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id}):{handled:false};
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     const result=documentReply.handled?visa.recordDocumentTurn(sender,text,documentReply.reply,{caseId:documentCaseId,expectedRevision:documentCaseRevision,hasAttachments:attachments.length>0}):await visa.handle(sender,text,{messages});
+    if(holdNewMedia&&visa.getCase(sender)?.id!==priorVisaCase.id){const pending=assistant.store.data.pendingNewVisaMedia?.[sender];if(pending?.sourceCaseId===priorVisaCase.id){delete assistant.store.data.pendingNewVisaMedia[sender];assistant.store.save();for(const m of pending.messages||[])await receiveVisaMedia(sender,m);}}
+    else if(holdNewMedia&&!visa.getCase(sender)?.pendingNewApplication){delete assistant.store.data.pendingNewVisaMedia?.[sender];assistant.store.save();}
     visaDocumentIntake.wake();
     if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
     if(result.superseded||!result.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
-    if(!documentReply.handled){documentReply=await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id});if(documentReply.handled){const c=visa.getCase(sender);if(c?.id!==result.caseId||c?.revision!==result.revision)return;const last=c.history?.at(-1);if(last?.role==='assistant'){last.text=redactVisaText(journalSafeText((compoundDocumentRequest?result.reply+'\n\n':'')+documentReply.reply));assistant.store.save();}}}
+    if(!documentReply.handled&&!caseConversation){documentReply=await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id});if(documentReply.handled){const c=visa.getCase(sender);if(c?.id!==result.caseId||c?.revision!==result.revision)return;const last=c.history?.at(-1);if(last?.role==='assistant'){last.text=redactVisaText(journalSafeText((compoundDocumentRequest?result.reply+'\n\n':'')+documentReply.reply));assistant.store.save();}}}
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     const semanticText=text.replace(/\[(?:صورة|مستند|مرفق)[^\]]*\]/gu,'').replace(/[،\s]+/g,' ').trim();
     const parts=attachments.length?[...new Set(mediaReplies)]:[];
