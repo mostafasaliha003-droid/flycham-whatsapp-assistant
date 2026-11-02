@@ -201,3 +201,31 @@ test('document utility turns record the actual answer without replacing the subj
  const r=engine.recordDocumentTurn('document-customer','ادمجهم',reply,{caseId:c.id,expectedRevision:c.revision});assert.equal(r.reply,reply);const after=engine.getCase('document-customer');assert.equal(after.stage,before.stage);assert.equal(visaCaseSignature(after),visaCaseSignature(before));assert.equal(after.history.at(-1).text,reply);assert.equal(after.history.at(-2).text,'ادمجهم');assert.equal(after.revision,before.revision+1);
  assert.equal(engine.recordDocumentTurn('document-customer','الهوية','answer',{caseId:c.id,expectedRevision:before.revision}).superseded,true);
 });
+
+function savedConversation(e,id,reference='828000001'){
+ const c=e.newCase();c.greeted=true;c.applicantCount=1;c.applicants=[{nationality:'سوريا',documentType:'passport'}];c.paymentStatus='verified';e.save(id,c);e.store.data.visaFulfilment||={jobs:{}};e.store.data.visaFulfilment.jobs['job-'+id+'-'+reference]={id:'job-'+id+'-'+reference,customer:id,caseId:c.id,caseSignature:visaCaseSignature(c),createdAt:Date.now(),state:'saved_application',applicationReference:reference};return c;
+}
+test('returning customer references select only their own saved application, including Arabic digits and E prefix',async()=>{
+ const e=make(),c=savedConversation(e,'a');savedConversation(e,'b','828000002');
+ for(const text of ['شو صار بطلبي','رقم الطلب E٨٢٨٠٠٠٠٠١','828000001']){const r=await e.handle('a',text);assert.match(r.reply,/828000001/);assert.doesNotMatch(r.reply,/أوراق|الدفعة|نفس رقم الشركة/);assert.equal(e.getCase('a').id,c.id);}
+ const wrong=await e.handle('a','رقم الطلب 828000002');assert.doesNotMatch(wrong.reply,/828000002|موافقة|محفوظ معنا/);assert.match(wrong.reply,/نفس الرقم/);
+});
+test('unknown followup requests the reference rather than starting nationality questions',async()=>{
+ const e=make();assert.match((await e.handle('new','بدي تابع طلب')).reply,/ابعت رقم الطلب/);assert.equal(e.getCase('new').lastQuestion,undefined);
+ assert.match((await e.handle('new','٨٢٨٠٠٠٠٠٣')).reply,/ما قدرت أربط/);assert.equal(e.getCase('new').applicantCount,null);
+});
+test('multiple owned applications require exact choice, never leak another customer or guess latest',async()=>{
+ const e=make(),c=savedConversation(e,'a');e.store.data.visaFulfilment.jobs.second={customer:'a',caseId:c.id,caseSignature:visaCaseSignature(c),createdAt:Date.now(),state:'saved_application',applicationReference:'828000009'};
+ assert.match((await e.handle('a','حالة الطلب')).reply,/أكثر من طلب/);assert.match((await e.handle('a','E828000009')).reply,/828000009 محفوظ معنا/);
+});
+test('separate new application confirms and archives completed case without reusing payment, documents or nationality',async()=>{
+ const e=make(),c=savedConversation(e,'a');assert.match((await e.handle('a','بدي قدم طلب جديد')).reply,/طلب جديد مستقل/);assert.equal(e.getCase('a').id,c.id);
+ await e.handle('a','نعم');const next=e.getCase('a');assert.notEqual(next.id,c.id);assert.equal(next.paymentStatus,'unverified');assert.equal(next.applicantCount,null);assert.deepEqual(next.documents,[]);assert.equal(e.store.data.visaCaseArchives.a[0].id,c.id);
+ assert.match((await e.handle('a','رقم الطلب 828000001')).reply,/828000001 محفوظ معنا/);assert.equal(e.getCase('a').id,next.id);
+});
+test('new request while current execution is active stays staged and cannot replace a paid application',async()=>{
+ const e=make(),c=savedConversation(e,'a');e.store.data.visaFulfilment.jobs[Object.keys(e.store.data.visaFulfilment.jobs)[0]].state='running';await e.handle('a','بدي طلب تاني');await e.handle('a','نعم');assert.equal(e.getCase('a').id,c.id);assert.ok(e.getCase('a').pendingNewApplication);assert.equal(e.getCase('a').paymentStatus,'verified');
+ assert.equal((await e.handle('a','شكوى بخصوص رقم الطلب 828000001 وما رجعتوا فلوسي')).complaint,true);
+});
+test('a status interruption cannot turn a later unrelated yes into a new application',async()=>{const e=make(),c=savedConversation(e,'a');await e.handle('a','بدي طلب جديد');await e.handle('a','شو صار بطلبي');await e.handle('a','نعم');assert.equal(e.getCase('a').id,c.id);assert.equal(e.store.data.visaCaseArchives?.a,undefined);});
+test('pending new request attachments expire independently and are removed on privacy deletion',()=>{const now=Date.now(),store=new AssistantState({file:null,now:()=>now}),e=make({store});store.data.pendingNewVisaMedia={a:{createdAt:now,messages:[{id:'synthetic'}]},old:{createdAt:now-86400001,messages:[]}};store.prune();assert.ok(store.data.pendingNewVisaMedia.a);assert.equal(store.data.pendingNewVisaMedia.old,undefined);e.delete('a');assert.equal(store.data.pendingNewVisaMedia.a,undefined);});

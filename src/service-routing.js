@@ -1,5 +1,8 @@
 'use strict';
 const {normalize}=require('./arabic-dates');
+const {conversationIntent,applicationReference}=require('./visa-conversation-intent');
+const visaPolicy=require('./saudi-visa-policy');
+const {naturalDate}=require('./arabic-dates');
 const {randomUUID}=require('node:crypto');
 const SERVICE_MENU='*أهلاً وسهلاً فيك بمجموعة الرمال 🌷*\nخلّينا نوصلك للمختص بطلبك:\n\n✈️ *طيران إلى سوريا*\nمع أحمد لمقارنة الرحلات والأسعار.\n\n🇸🇦 *فيزا السعودية*\nمع إسماعيل لمعرفة نوع التأشيرة والمتطلبات والتكلفة.\n\n*شو حابب نساعدك فيه اليوم؟* اختار من الأزرار تحت، أو اكتب طلبك مباشرة.';
 function serviceMenu(store,id,prefix=''){store.data.serviceSessions||={};const s=store.data.serviceSessions[id]||{revision:0};s.awaitingService=true;s.menuId=randomUUID();s.at=Date.now();store.data.serviceSessions[id]=s;store.save();return{service:'choose',menuId:s.menuId,reply:(prefix?prefix+'\n\n':'')+SERVICE_MENU};}
@@ -14,8 +17,15 @@ function routeService(store,id,text,{env=process.env,media=false,hasFlight=false
  if(serviceChoice){if(s?.awaitingService&&s.menuId===serviceChoice.id&&['flight','saudi_visa'].includes(serviceChoice.service)){setService(store,id,serviceChoice.service);return{service:serviceChoice.service,selectedText:serviceChoice.service==='flight'?'طيران إلى سوريا':'فيزا السعودية'};}return serviceMenu(store,id,'القائمة السابقة لم تعد نشطة. اختار الخدمة من القائمة الحالية ومنكمل معك.');}
  if(s?.awaitingService&&/^(?:1|الاول|الخيار الاول|الاول طيران)$/.test(t)){setService(store,id,'flight');return{service:'flight',selectedText:'طيران إلى سوريا'};}
  if(s?.awaitingService&&/^(?:2|الثاني|التاني|الخيار الثاني|الخيار التاني)$/.test(t)){setService(store,id,'saudi_visa');return{service:'saudi_visa',selectedText:'فيزا السعودية'};}
+ const otherService=t.match(/(?:فيزا|فيزه|تاشيره|تاشير|رحله|بكيج|بكج|سفر)\s+(?:الي?\s+)?(تركيا|عمان|الكويت|تايلاند|تنزانيا|فيتنام|اندونيسيا|الهند|شنغن|بريطانيا)|(?:تخفيض|تخفي ض)\s+غرامات/);
+ if(otherService){const requestedService=otherService[1]||'تخفيض الغرامات';store.data.serviceSessions||={};const session=store.data.serviceSessions[id]||{revision:0};session.serviceInquiry={service:requestedService,at:Date.now()};store.data.serviceSessions[id]=session;store.save();return{service:'service_inquiry',reply:'أكيد، سجلت استفسارك عن '+requestedService+'. شو حابب تعرف: المتطلبات، التكلفة أو طريقة التقديم؟ تفاصيل هالخدمة تحتاج مراجعة المختص، وطلبك الحالي بيضل محفوظ.'};}
+ if(!s?.awaitingService&&(conversationIntent(t)==='status'||applicationReference(t,{known:Object.values(store.data.visaFulfilment?.jobs||{}).filter(job=>job.customer===id).map(job=>job.applicationReference)}))&&(s?.service==='saudi_visa'||!s?.service&&!hasFlight)){setService(store,id,'saudi_visa');return{service:'saudi_visa'};}
+ if(s?.serviceInquiry&&!/السعوديه|السعودية|سعودي|اسماعيل|احمد|طيران|فلاي شام|حلب|دمشق|الشام|القائمه|الخدمات/.test(t)&&!conversationIntent(t)&&!applicationReference(t,{awaiting:true})){
+  const inquiry=s.serviceInquiry,nationalities=visaPolicy.nationalities(t);if(nationalities.length===1&&!/مقيم|اقامه|زيارة|سفر|الى|الي/.test(t))inquiry.nationality=nationalities[0];if(/\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(t)){const dates=naturalDate(t);if(dates.dates?.length===1&&!dates.invalid)inquiry.travelDate=dates.dates[0];}inquiry.status='needs_specialist';store.save();return{service:'service_inquiry',reply:'استفسارك عن '+inquiry.service+' محفوظ بشكل منفصل. '+(!inquiry.nationality?'شو جنسية المسافر؟':!inquiry.travelDate?'جنسية المسافر محفوظة. شو تاريخ السفر المطلوب؟':'حفظت الجنسية وتاريخ السفر للمراجعة مع المختص؛ ما في سعر أو شروط معتمدة لهالخدمة عند المساعد حاليًا.')};
+ }
+ if(s?.serviceInquiry&&/السعوديه|السعودية|سعودي|اسماعيل|احمد|طيران|فلاي شام|حلب|دمشق|الشام|القائمه|الخدمات/.test(t)){delete s.serviceInquiry;store.save();}
  const generic=/^(?:(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير|لو سمحت|ممكن|عندي استفسار|ممكن استفسار|بدي استفسر|شو عندكن|شو عندكم|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاحه|القائمه|الخدمات)[،,!؟?. 🌷]*)+$/i.test(t);
- const explicitMenu=/^(?:القائم[هة]|الخدمات|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاح[هة])$/.test(t);
+ const explicitMenu=/^(?:القائم[هة]|الخدمات|شو خدماتكم|شو خدماتكن|شو الخيارات|شو الخيارات المتاح[هة]|بدي خدم[هة] جديد[هة]|بدي (?:اسال|استفسر) عن خدم[هة] (?:جديد[هة]|تاني[هة]|ثاني[هة]))$/.test(t);
  if(explicitMenu)return serviceMenu(store,id);
  // A greeting within a visa conversation belongs to that same conversation.
  // The customer can still open the menu or explicitly choose another service.
