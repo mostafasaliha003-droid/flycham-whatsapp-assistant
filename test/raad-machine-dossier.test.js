@@ -212,12 +212,19 @@ test('staff-reviewed drafts and contradictory manual or document choices remain 
  const g=fixture();g.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary'},confirm:true});g.store.data.raadApplications[CUSTOMER].applicants[0].review.reviewedAt=NOW;const previous=structuredClone(g.store.data.raadApplications);assert.throws(()=>g.apply({expectedRevision:1}),{code:'RAAD_MANUAL_DRAFT_PROTECTED'});assert.deepEqual(g.store.data.raadApplications,previous);
 });
 
-test('stale staff drafts are never carried into current case evidence',()=>{
- const f=fixture();f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary'},confirm:true});f.store.data.raadApplications[CUSTOMER].applicants[0].caseSignature='f'.repeat(64);const before=structuredClone(f.store.data.raadApplications);
- assert.throws(()=>f.apply({expectedRevision:1}),{code:'RAAD_MANUAL_DRAFT_PROTECTED'});assert.deepEqual(f.store.data.raadApplications,before);
+test('stale unreviewed drafts are archived and never carried into verified current fields',()=>{
+ const f=fixture();f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{arabicFirstName:'قديم'},confirm:true});f.store.data.raadApplications[CUSTOMER].applicants[0].caseSignature='f'.repeat(64);const old=structuredClone(f.store.data.raadApplications[CUSTOMER].applicants[0]);
+ const fresh=f.apply({expectedRevision:1});assert.equal(fresh.ok,true);assert.notEqual(f.workflow.get(CUSTOMER).caseSignature,old.caseSignature);assert.notEqual(f.workflow.get(CUSTOMER).fields.arabicFirstName,'قديم');assert.deepEqual(f.store.data.raadDraftArchives[CUSTOMER][0].draft,old);assert.equal(f.c.submissionStatus,'not_submitted');
 });
 
 test('payment confirmation refreshes an otherwise unchanged manual draft without marking it staff reviewed',()=>{
  const f=fixture({gaps:['passportType','issueDate']});f.c.paymentStatus='unverified';f.workflow.prepare(CUSTOMER,{expectedRevision:0,fields:{passportType:'ordinary',issueDate:'2025-01-01'},confirm:true});
  f.c.paymentStatus='verified';assert.equal(f.workflow.get(CUSTOMER).state,'stale');const result=f.apply({expectedRevision:1});assert.equal(result.staffReviewRequired,true);const draft=f.workflow.get(CUSTOMER);assert.notEqual(draft.state,'stale');assert.equal(draft.fields.passportType,'ordinary');assert.equal(draft.review.complete,false);assert.equal(f.c.submissionStatus,'not_submitted');
+});
+
+test('current operator review is explicitly attributed and cannot impersonate a client or another operator',()=>{
+ const f=fixture();f.apply();const proof=f.proof(),job=f.store.data.visaFulfilment.jobs[proof.jobId];
+ Object.assign(proof.confirmation,{actor:'operator',sender:'971507993145',representedCustomer:CUSTOMER,verifiedAnswers:true});job.coordination={recipient:'971507993145',actor:'operator'};job.answerConfirmation=structuredClone(proof.confirmation);
+ assert.equal(f.workflow.portalDossier(CUSTOMER,{clientProof:proof}).ready,true);
+ for(const patch of [{sender:OTHER},{representedCustomer:OTHER},{verifiedAnswers:false}]){const bad=structuredClone(proof);Object.assign(bad.confirmation,patch);job.answerConfirmation=structuredClone(bad.confirmation);const r=f.workflow.portalDossier(CUSTOMER,{clientProof:bad});assert.equal(r.ready,false);assert(r.issues.some(i=>i.code==='RAAD_CLIENT_CONSENT_REQUIRED'));}
 });

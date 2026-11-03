@@ -37,7 +37,7 @@ async function images() {
 }
 const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {status, headers: {'content-type': 'application/json'}});
 
-test('signed document uploads traverse encrypted media, real Gemma adapter, matcher, preparation and private dashboard while unpaid', {timeout: 45000}, async () => {
+test('signed document uploads traverse encrypted media, real Cline adapter, matcher, preparation and private dashboard while unpaid', {timeout: 45000}, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'visa-document-webhook-')), file = path.join(directory, 'state.enc'), sourceImages = await images();
   Object.assign(process.env, {NODE_ENV: 'test', ASSISTANT_STATE_PATH: file, ASSISTANT_STATE_KEY: STATE_KEY, WHATSAPP_APP_SECRET: SECRET, ASSISTANT_ADMIN_KEY: ADMIN, WHATSAPP_ACCESS_TOKEN: TOKEN, WHATSAPP_PHONE_NUMBER_ID: '123456789', WHATSAPP_GRAPH_API_VERSION: 'v23.0', DRY_RUN: 'false', SAUDI_VISA_ENABLED: 'true', RAAD_DOCUMENT_OCR_ENABLED: 'true', GEMINI_API_KEY: GEMMA_KEY, ASSISTANT_AI_PROVIDER: 'disabled', CLINE_API_KEY: GEMMA_KEY, OPENAI_API_KEY: '', ASSISTANT_DEBOUNCE_MS: '0', CONSULTANT_ORCHESTRATOR_ENABLED: 'false', FARE_CATALOG_ENABLED: 'false', AIR_ARABIA_QUOTE_QUEUE_ENABLED: 'false', FLYCHAM_PORTAL_ENABLED: 'false', RAAD_VISA_AUTOMATION_ENABLED: 'false', RAAD_BROWSER_WORKER_URL: '', RAAD_JOB_BRIDGE_KEY: 'synthetic-document-bridge-key-xxxxxxxxxxxxxxxx', SAUDI_VISA_WABA_ID: '', RAAD_OTP_REQUEST_TEMPLATE: '', RAAD_VISA_PAYMENT_TEMPLATE: '', RAAD_APPLICATION_PHONE: '+' + CUSTOMER, RAAD_CONTACT_EMAIL: 'synthetic@example.test', RAAD_INSURANCE_PHONE: '+' + CUSTOMER, RAAD_POSTAL_CODE: '00000'});
   const {AssistantState} = require('../src/assistant-state');
@@ -102,7 +102,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
     const inFlight = readState(); assert.equal(visaCaseSignature(inFlight.visaCases[CUSTOMER]), initialSignature); assert.deepEqual(inFlight.visaCases[CUSTOMER].documents, initialDocuments); assert.deepEqual(inFlight.visaCases[CUSTOMER].quote, initialQuote);
     firstReleaseResolve();
     const snapshot = await waitFor(() => { const state = readState(), review = state.visaDocumentIntake?.cases?.[CUSTOMER]; return review?.status === 'ready' && review.awaitingPayment === true ? state : null; }, 'Unpaid document intake should become ready without an interrupted/manual OCR dead end');
-    await waitFor(() => posts.some(message => /اكتملت قراءة المستندات/.test(message.text?.body || '')), 'Current-client document feedback should be accepted');
+    await waitFor(() => posts.some(message => /عم نجهّز ملفك/.test(message.text?.body || '')), 'Current-client document feedback should be accepted');
     assert.equal(new ConversationJournal({store:{data:readState(),save(){}}}).summary(CUSTOMER).lastInboundAt,Number(providerTimestamp)*1000,'same-second provider timestamp stays unchanged while actual arrival sequence permits feedback');
     const response = await call('/internal/assistant/visa-workflow/' + CUSTOMER); assert.equal(response.status, 200); const item = response.json.item, review = item.documentReview;
     assert.equal(review.status, 'ready'); assert.equal(review.awaitingPayment, true); assert.equal(review.applicants.length, 1); assert.equal(review.applicants[0].evidence.passportMrzChecked, true); assert.equal(review.applicants[0].evidence.matchedResidence, true); assert.equal(review.applicants[0].fields.passportNumber, DOC_FIELDS.passportNumber);
@@ -118,7 +118,7 @@ test('signed document uploads traverse encrypted media, real Gemma adapter, matc
       const metadata = await sharp(content.bytes).metadata(); assert.ok(metadata.width >= 300 && metadata.height >= 300); if (manifest.kind !== 'photo') assert.ok(Math.max(metadata.width, metadata.height) >= 1200);
       const ciphertext = fs.readFileSync(path.join(directory, 'visa-media', manifest.mediaId + '.enc')); assert.notDeepEqual(ciphertext.subarray(0, 8), content.bytes.subarray(0, 8));
     }
-    assert.ok(posts.length > 0); assert.ok(posts.every(message => message.to === CUSTOMER)); assert.equal(posts.filter(message => /اكتملت قراءة المستندات/.test(message.text?.body || '')).length, 1);
+    assert.ok(posts.length > 0); assert.ok(posts.every(message => message.to === CUSTOMER)); assert.equal(posts.filter(message => /عم نجهّز ملفك/.test(message.text?.body || '')).length, 1);
     assert.doesNotMatch(JSON.stringify(posts), /N12345678|784199000000001|تم تأكيد استلام دفعتك|ليست تأشيرة صادرة/); assert.equal(posts.some(message => ['template', 'document'].includes(message.type)), false);
     assert.deepEqual(rejectedRequests, []); assert.ok(requests.every(request => ['graph.facebook.com', 'lookaside.fbsbx.com', 'api.cline.bot'].includes(request.host)));
     assert.equal(fs.readFileSync(file).includes(Buffer.from(DOC_FIELDS.passportNumber)), false);

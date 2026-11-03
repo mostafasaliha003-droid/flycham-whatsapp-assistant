@@ -880,3 +880,10 @@ test('two bound visible readings retain printed patronymic and descriptive field
 test('visible-field agreement never bypasses mismatched source, unreadable reader, disagreement or MRZ failure',()=>{
  for(const change of [p=>p.reviewEvidence.sourceSha256='c'.repeat(64),p=>p.reviewSecondaryExtraction.readable=false,p=>p.reviewSecondaryExtraction.fields.latinFatherName.value='UNRELATED',p=>p.reviewSecondaryExtraction.fields.latinFatherName.confidence=0.89,p=>p.extraction.mrzLines[1]=p.extraction.mrzLines[1].slice(0,43)+'9']){const p=independentlyReviewedPassport();change(p);const r=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);assert.equal(r.complete,false);assert.equal(r.applicants[0].fields.latinFatherName,undefined);}
 });
+
+test('Arabic labelled names use independently bound readings without transliteration, token splitting or confidence inflation',()=>{
+ const {corroboratedPassportVisibleField}=require('../src/visa-document-review');const p=independentlyReviewedPassport();
+ for(const extraction of [p.extraction,p.reviewOriginalExtraction,p.reviewSecondaryExtraction])for(const [name,value]of Object.entries({arabicFirstName:'تجريبي',arabicFatherName:'اختبار',arabicFamilyName:'مثال'}))extraction.fields[name]={value,visible:true,confidence:0.96};
+ const before=structuredClone(p),result=run([p,front({latinFullName:'SYNTHETIC PARENT EXAMPLE'})]);for(const name of ['arabicFirstName','arabicFatherName','arabicFamilyName']){assert.equal(corroboratedPassportVisibleField(p,name),true);assert.equal(result.applicants[0].fields[name],p.extraction.fields[name].value);}
+ assert.deepEqual(p,before);p.reviewSecondaryExtraction.fields.arabicFirstName.value='مختلف';assert.equal(corroboratedPassportVisibleField(p,'arabicFirstName'),false);p.reviewEvidence.sha256='e'.repeat(64);assert.equal(corroboratedPassportVisibleField(p,'arabicFamilyName'),false);
+});

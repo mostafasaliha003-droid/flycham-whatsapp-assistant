@@ -260,13 +260,25 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     const notice=await dispatch(recipient,{type:'template',template:{name:template.name,language:{code:template.language},components:[{type:'body',parameters:[{type:'text',text:jobId},{type:'text',text:noticeId}]},{type:'button',sub_type:'quick_reply',index:'0',parameters:[{type:'payload',payload:'visa_receipt_action:'+noticeId}]}]}},guard,credentials(env),false);
     return{...paused('owner_action_required'),noticeMessageId:notice.messages[0].id};
   }
+  async function sendCoordinationNotice(input,guard){
+    const recipient=recipientNumber('971507993145'),jobId=identifier(input.jobId),noticeId=identifier(input.noticeId),body=string(input.text,4096);
+    if(recipientNumber(input.recipient)!==recipient)throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
+    await guardNow(guard);if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return{dryRun:true};
+    if(windowOpen(recipient))return input.questionOnly?{windowOpen:true}:dispatch(recipient,{type:'text',text:{preview_url:false,body}},guard,credentials(env),true);
+    if(input.noticeMessageId)return{...paused('owner_action_required'),noticeMessageId:string(input.noticeMessageId,500,{multiline:false})};
+    let approved=false;try{approved=await gate()===true;}catch{}if(!approved)return paused('approved_utility_template_required');
+    await guardNow(guard);const template=visaTemplateConfig(env);visaTemplateRequest(template);
+    const notice=await dispatch(recipient,{type:'template',template:{name:template.name,language:{code:template.language},components:[{type:'body',parameters:[{type:'text',text:jobId},{type:'text',text:noticeId}]},{type:'button',sub_type:'quick_reply',index:'0',parameters:[{type:'payload',payload:'visa_coordination_action:'+noticeId}]}]}},guard,credentials(env),false);
+    return{...paused('owner_action_required'),noticeMessageId:notice.messages[0].id};
+  }
   async function send(to, payload, guard, metadata = {}) {
     const recipient = recipientNumber(to), rendered = renderPayload(payload);
     if (metadata?.kind === 'owner_otp_request') {
       if (payload.type !== 'text') throw failure('VISA_WHATSAPP_PAYLOAD_INVALID');
       return sendOperatorOtp({recipient, jobId: metadata.jobId, challengeId: metadata.challengeId, text: payload.text}, guard, metadata);
     }
-    if (recipientNumber(metadata?.customer) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
+    const operatorCoordination=metadata?.coordination?.actor==='operator' && recipient===recipientNumber('971507993145') && metadata.coordination.recipient===recipient && ['applicant_question','applicant_answer_summary'].includes(metadata.kind) && ['question','answer_summary'].includes(payload.type);
+    if (!operatorCoordination && recipientNumber(metadata?.customer) !== recipient) throw failure('VISA_WHATSAPP_RECIPIENT_MISMATCH');
     await guardNow(guard);
     if (String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false') return {dryRun: true};
     if (!windowOpen(recipient)) {
@@ -363,7 +375,7 @@ function createVisaWhatsAppAdapter({env = process.env, fetchImpl = (...args) => 
     } catch {}
     return templateReady(visaTemplateConfig, visaTemplateRequest, gate);
   }
-  return {send, sendOperatorOtp, sendOperatorNotice, sendReceiptNotice, notificationReadiness, ownerNotificationReady, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
+  return {send, sendOperatorOtp, sendOperatorNotice, sendReceiptNotice, sendCoordinationNotice, notificationReadiness, ownerNotificationReady, templateStatus: () => gate.status?.() || {state: 'unverified', approved: false}, paymentTemplateStatus: () => paymentGate.status?.() || {state: 'unverified', approved: false}};
 }
 
 module.exports = {createVisaWhatsAppAdapter, createVisaTemplateGate, visaTemplateConfig, visaTemplateRequest, OTP_TEMPLATE_BODY, createVisaPaymentTemplateGate, visaPaymentTemplateConfig, visaPaymentTemplateRequest, PAYMENT_TEMPLATE_BODY};

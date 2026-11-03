@@ -406,3 +406,18 @@ test('visual verification notice uses its dedicated recipient and does not chang
 test('visual notice uses approved utility action outside the window and withholds free text',async()=>{const f=fixture({env:{RAAD_OPERATOR_NOTICE_WHATSAPP:OWNER,RAAD_OTP_REQUEST_TEMPLATE:'synthetic_otp_request'},templateGate:async()=>true});f.windows.delete(OWNER);const result=await f.adapter.sendOperatorNotice({recipient:OWNER,jobId:JOB,noticeId:TOKEN,text:'PRIVATE-FREE-TEXT'},ok);assert.equal(result.paused,true);assert.equal(result.noticeMessageId,'wamid.synthetic.1');const payload=JSON.parse(f.calls[0].request.body);assert.equal(payload.to,OWNER);assert.equal(payload.type,'template');assert.equal(payload.template.components[1].parameters[0].payload,'visa_operator_action:'+TOKEN);assert.doesNotMatch(f.calls[0].request.body,/PRIVATE-FREE-TEXT/);await f.adapter.sendOperatorNotice({recipient:OWNER,jobId:JOB,noticeId:TOKEN,text:'text',noticeMessageId:result.noticeMessageId},ok);assert.equal(f.calls.length,1);});
 
 test('visual action quick replies preserve exact notice identity and never become an OTP answer',()=>{const event={id:'operator-reply',from:OWNER,timestamp:'1792886400',context:{id:'notice-context'},type:'button',button:{payload:'visa_operator_action:'+TOKEN,text:'UNTRUSTED'}};const [message]=extractIncomingMessages(webhook([event]));assert.deepEqual(message.visaOperatorAction,{noticeId:TOKEN});assert.equal(message.visaOwnerAction,undefined);assert.equal(message.contextId,'notice-context');assert.doesNotMatch(message.text,/UNTRUSTED/);assert.deepEqual(extractIncomingMessages(webhook([{...event,button:{payload:'visa_operator_action:'+TOKEN+':extra'}}])),[]);});
+
+test('operator coordination permits only bounded questions and summaries to the approved owner',async()=>{
+ const owner='971507993145',f=fixture({windows:[owner]});
+ const meta={customer:CUSTOMER,kind:'applicant_question',coordination:{actor:'operator',recipient:owner}};
+ await f.adapter.send(owner,question(),ok,meta);assert.equal(f.calls.length,1);assert.equal(JSON.parse(f.calls[0].request.body).to,owner);
+ await assert.rejects(()=>f.adapter.send(OTHER,question(),ok,{...meta,coordination:{actor:'operator',recipient:OTHER}}),/RECIPIENT_MISMATCH/);
+ await assert.rejects(()=>f.adapter.send(owner,{type:'text',text:'arbitrary'},ok,meta),/RECIPIENT_MISMATCH/);
+ const closed=fixture({windows:[]});const r=await closed.adapter.send(owner,question(),ok,meta);assert.equal(r.paused,true);assert.equal(closed.calls.length,0);
+});
+test('coordination utility notices require Meta approval and parse separately from receipt and OTP actions',async()=>{
+ const owner='971507993145',f=fixture({windows:[],templateGate:async()=>true,env:{RAAD_OTP_REQUEST_TEMPLATE:'test_utility',SAUDI_VISA_WABA_ID:'100000000001'}});
+ const r=await f.adapter.sendCoordinationNotice({recipient:owner,jobId:JOB,noticeId:TOKEN,text:'متابعة ملف تجريبي'},ok);assert.equal(r.paused,true);assert.equal(r.noticeMessageId,'wamid.synthetic.1');
+ const wire=JSON.parse(f.calls[0].request.body);assert.equal(wire.template.components[1].parameters[0].payload,'visa_coordination_action:'+TOKEN);
+ const events=extractIncomingMessages({entry:[{changes:[{field:'messages',value:{messages:[{from:owner,id:'inbound-action',type:'button',button:{payload:'visa_coordination_action:'+TOKEN,text:'متابعة المهمة'},context:{id:r.noticeMessageId}}]}}]}]});assert.equal(events[0].visaCoordinationAction.noticeId,TOKEN);assert.equal(events[0].visaReceiptAction,undefined);
+});
