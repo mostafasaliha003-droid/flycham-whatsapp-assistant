@@ -2,6 +2,7 @@
 const crypto=require('node:crypto');
 const {createOperatorGate}=require('./operator-challenge');
 const {captureCaptcha}=require('./captcha-image');
+const {captureLiveFrame}=require('./production-live');
 const {FIELD_ALLOWLIST}=require('../raad-visa-workflow');
 const {captureApplicationPdf}=require('./portal-print');
 const JOB=/^[A-Za-z0-9_-]{1,100}$/,REF=/^[A-Z]{0,3}[0-9]{3,20}$/;
@@ -57,6 +58,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   if(record.cancelled||record.controller.signal.aborted)throw finite('JOB_CANCELLED');if(!current)throw finite('LEASE_REVOKED');
  }
  async function closeOwned(record){
+  record.liveFrame=null;
   if(record.ownedBrowserClosed)return true;let closed=false;try{closed=await adapter.close(record.reservation,record.sessionId)===true;}catch{}
   if(closed){record.ownedBrowserClosed=true;try{await adapter.release?.(record.reservation);}catch{}if(active===record)active=null;}return closed;
  }
@@ -99,16 +101,30 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
  async function otp(id,input){const record=records.get(id);if(!record)throw finite('JOB_NOT_FOUND');if(record.stage!=='waiting_otp'||record.running||record.challengeId!==input?.challengeId||now()>record.challengeExpiresAt)throw finite('OTP_CHALLENGE_STALE');if(typeof input.code!=='string'||! /^[0-9]{4,8}$/.test(input.code))throw finite('OTP_INPUT_INVALID');await checkLease(record);if(record.stage!=='waiting_otp'||record.running||record.challengeId!==input?.challengeId||now()>record.challengeExpiresAt)throw finite('OTP_CHALLENGE_STALE');clearTimeout(record.otpTimer);record.pendingCode=input.code;record.challengeId=null;record.challengeExpiresAt=null;void execute(record,true);return {accepted:true,...status(record)};}
  async function cancel(id){if(typeof id!=='string'||!JOB.test(id))throw finite('JOB_ID_INVALID');const record=records.get(id)||(active?.id===id?active:null);if(!record)return {jobId:id,stage:'cancelled',ownedBrowserClosed:true,absent:true};record.cancelled=true;clearTimeout(record.otpTimer);record.controller.abort();if(record.pendingCode)record.pendingCode='';if(!await closeOwned(record)){record.stage='blocked';record.blocker={code:'OWNED_BROWSER_CLEANUP_UNCONFIRMED'};throw finite('OWNED_BROWSER_CLEANUP_UNCONFIRMED');}record.stage='cancelled';record.phase='done';record.blocker=null;record.challengeId=null;record.challengeExpiresAt=null;if(record.artifact?.buffer)record.artifact.buffer.fill(0);record.artifact=null;scrub(record);return status(record);}
  function get(id){const record=records.get(id);if(!record)throw finite('JOB_NOT_FOUND');return status(record);}
+ async function live(id){
+  const r=records.get(id);if(!r)throw finite('JOB_NOT_FOUND');
+  const inactive=()=>({active:false,readOnly:true,jobId:r.id,caseSignature:r.caseSignature,applicantIndex:r.applicantIndex,phase:r.phase});
+  if(active!==r||r.cancelled||r.ownedBrowserClosed||TERMINAL.has(r.stage)||!r.reservation||!r.sessionId){r.liveFrame=null;return inactive();}
+  await checkLease(r);
+  if(r.liveFrame&&r.liveFrame.phase===r.phase&&now()-r.liveFrame.capturedAt<2500)return {...r.liveFrame,jobId:r.id,caseSignature:r.caseSignature,applicantIndex:r.applicantIndex};
+  if(r.livePending)return r.livePending;
+  const phase=r.phase;
+  const pending=adapter.withPage(r.reservation,r.sessionId,page=>captureLiveFrame(page,{phase,now,guard:()=>checkLease(r)}),()=>checkLease(r)).then(frame=>{
+   if(active!==r||r.cancelled||r.ownedBrowserClosed||TERMINAL.has(r.stage)||r.phase!==phase)throw finite('LIVE_VIEW_UNAVAILABLE');
+   r.liveFrame=frame;return {...frame,jobId:r.id,caseSignature:r.caseSignature,applicantIndex:r.applicantIndex};
+  }).finally(()=>{if(r.livePending===pending)r.livePending=null;});r.livePending=pending;return pending;
+ }
  function artifact(id){const record=records.get(id);if(!record)throw finite('JOB_NOT_FOUND');if(record.stage!=='completed'||!record.saved||!record.returnedFromPayment||!record.artifact?.buffer)throw finite('ARTIFACT_NOT_READY');return record.artifact;}
  const authorized=value=>{if(!configured())return false;const wanted=Buffer.from('Bearer '+env.RAAD_JOB_BRIDGE_KEY),actual=Buffer.from(typeof value==='string'?value:'');return wanted.length===actual.length&&crypto.timingSafeEqual(wanted,actual);};
  async function handler(req,res,url,{readBody}={}){
   if(!url.pathname.startsWith('/internal/raad/'))return false;
   const send=(code,obj)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(obj));};
   if(!authorized(req.headers.authorization)){send(401,{error:'UNAUTHORIZED'});return true;}
-  const route=url.pathname.match(/^\/internal\/raad\/jobs(?:\/([A-Za-z0-9_-]{1,100})(?:\/(otp|artifact|cancel|operator))?)?$/);if(!route||url.search||url.hash){send(404,{error:'NOT_FOUND'});return true;}
+  const route=url.pathname.match(/^\/internal\/raad\/jobs(?:\/([A-Za-z0-9_-]{1,100})(?:\/(otp|artifact|cancel|operator|live))?)?$/);if(!route||url.search||url.hash){send(404,{error:'NOT_FOUND'});return true;}
   let input;try{
    const [,id,action]=route;
    if(req.method==='GET'&&id&&action==='artifact'){const item=artifact(id),bytes=Buffer.from(item.buffer);res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="application.pdf"','Content-Length':bytes.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Artifact-Sha256':item.sha256});res.end(bytes,()=>bytes.fill(0));}
+   else if(req.method==='GET'&&id&&action==='live')send(200,await live(id));
    else if(req.method==='GET'&&id&&action==='operator'){const r=records.get(id);if(!r)throw finite('JOB_NOT_FOUND');send(200,await operatorGate.image(r));}
    else if(req.method==='GET'&&id&&!action)send(200,get(id));
    else if(req.method==='POST'&&(!id||action==='otp'||action==='cancel'||action==='operator')){input=await readBody(req,!id?4200000:2048);if(!id)send(202,await start(input));else if(action==='operator'){const r=records.get(id);if(!r)throw finite('JOB_NOT_FOUND');send(202,await operatorGate.submit(r,input));}else if(action==='otp')send(202,await otp(id,input));else send(200,await cancel(id));}
@@ -117,7 +133,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   finally{if(input?.value)input.value='';if(input?.code)input.code='';if(Array.isArray(input?.documents))for(const doc of input.documents)doc.data='';}
   return true;
  }
- return {start,status:get,otp,cancel,artifact,handler,health:()=>({enabled:configured(),activeJob:active!==null,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true',savePreflightSupported:true}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
+ return {start,status:get,otp,cancel,artifact,live,handler,health:()=>({enabled:configured(),activeJob:active!==null,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true',savePreflightSupported:true,liveViewSupported:true}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
 }
 
 const TEXT_FIELDS={latinFirstName:'EFIRSTNAME',latinFatherName:'EFATHER',latinGrandfatherName:'EGRAND',latinFamilyName:'EFAMILY',arabicFirstName:'AFIRSTNAME',arabicFatherName:'AFATHER',arabicGrandfatherName:'AGRAND',arabicFamilyName:'AFAMILY',passportNumber:'PASSPORTnumber',birthPlace:'BIRTH_PLACE',saudiAddress:'ADDRESS_HOME',emiratesId:'TourismEVisaIqamaOrVisaNo'};
