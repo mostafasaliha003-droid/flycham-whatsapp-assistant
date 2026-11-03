@@ -37,20 +37,20 @@ function validateManifest(input,now=Date.now()){
  for(const [key,value]of Object.entries(answers)){if(key==='health'){fields.health={...fields.health,...value};}else{if(Object.hasOwn(fields,key)&&JSON.stringify(fields[key])!==JSON.stringify(value))throw finite('MANIFEST_FACT_CONFLICT',key);fields[key]=value;}}
  const facts={...defaults,...fields,health:{...defaults.health,...fields.health}};if(!facts.entryDate&&facts.proposedEntryDate)facts.entryDate=facts.proposedEntryDate;
  if(typeof facts.passportNumber!=='string'||!/^[A-Z0-9]{5,12}$/.test(facts.passportNumber))throw finite('MANIFEST_PASSPORT_REQUIRED','passportNumber');
- const existing=input.existingApplicationReference;if(existing!==undefined&&existing!==null&&!REF.test(existing))throw finite('MANIFEST_REFERENCE_INVALID');
+ const existing=input.existingApplicationReference;if(input.printExistingOnly===true&&(!existing||input.diagnosticOnly===true))throw finite('PRINT_EXISTING_REFERENCE_REQUIRED');if(existing!==undefined&&existing!==null&&!REF.test(existing))throw finite('MANIFEST_REFERENCE_INVALID');
  if(!Array.isArray(input.documents)||input.documents.length>3||!existing&&input.documents.length!==3)throw finite('MANIFEST_DOCUMENTS_INVALID');
  const roles=new Set();const documents=input.documents.map(doc=>{
   if(!plain(doc)||!['passport','residence','portrait'].includes(doc.role)||roles.has(doc.role)||!['image/jpeg','image/png'].includes(doc.mimeType)||typeof doc.data!=='string'||doc.data.length>1333336||! /^[A-Za-z0-9+/]*={0,2}$/.test(doc.data)||! /^[a-f0-9]{64}$/i.test(doc.sha256||''))throw finite('MANIFEST_DOCUMENTS_INVALID');
   const bytes=Buffer.from(doc.data,'base64');try{if(!bytes.length||bytes.length>1000000||bytes.toString('base64')!==doc.data||crypto.createHash('sha256').update(bytes).digest('hex')!==doc.sha256.toLowerCase())throw finite('MANIFEST_DOCUMENT_DIGEST_INVALID');}finally{bytes.fill(0);}roles.add(doc.role);return {role:doc.role,mimeType:doc.mimeType,data:doc.data,sha256:doc.sha256.toLowerCase()};
  });
- return {jobId:input.jobId,leaseToken:input.leaseToken,caseId:input.caseId,applicantIndex:input.applicantIndex,caseSignature:input.caseSignature,clientConsent:{...consent},facts,documents,existingApplicationReference:existing||null,submissionUncertain:input.submissionUncertain===true,diagnosticOnly:input.diagnosticOnly===true};
+ return {jobId:input.jobId,leaseToken:input.leaseToken,caseId:input.caseId,applicantIndex:input.applicantIndex,caseSignature:input.caseSignature,clientConsent:{...consent},facts,documents,existingApplicationReference:existing||null,submissionUncertain:input.submissionUncertain===true,diagnosticOnly:input.diagnosticOnly===true,printExistingOnly:input.printExistingOnly===true};
 }
 function uaePhone(value){if(typeof value!=='string'||!/^\+?[0-9 ()-]{7,25}$/.test(value))throw finite('MISSING_FIELD','applicationPhone');let digits=value.replace(/[^0-9]/g,'');if(digits.startsWith('00971'))digits=digits.slice(5);else if(digits.startsWith('971')&&digits.length===12)digits=digits.slice(3);if(digits.startsWith('0')&&digits.length===10)digits=digits.slice(1);if(!/^5[0-9]{8}$/.test(digits))throw finite('PHONE_FORMAT_UNCONFIRMED','applicationPhone');return digits;}
 function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Date.now,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),runFlow=runGovernmentJob}={}){
  if(!adapter||typeof adapter.reserve!=='function'||typeof adapter.call!=='function')throw finite('WORKER_ADAPTER_REQUIRED');
  let active=null,admitting=false;const records=new Map();
  const configured=()=>{try{const u=new URL(env.RAAD_MAIN_URL||MAIN_ORIGIN);return typeof env.RAAD_JOB_BRIDGE_KEY==='string'&&env.RAAD_JOB_BRIDGE_KEY.length>=32&&u.origin===MAIN_ORIGIN&&u.pathname==='/'&&!u.search&&!u.hash&&!u.username&&!u.password;}catch{return false;}};
- const status=record=>({jobId:record.id,stage:record.stage,phase:record.phase,reference:record.reference||null,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true,requiresOperator:record.stage==='waiting_operator',operatorChallenge:record.operator?{id:record.operator.id,kind:record.operator.kind,expiresAt:record.operator.expiresAt}:null,requiresOtp:record.stage==='waiting_otp',challengeId:record.stage==='waiting_otp'?record.challengeId:null,challengeExpiresAt:record.stage==='waiting_otp'?record.challengeExpiresAt:null,artifactReady:record.stage==='completed'&&Boolean(record.artifact)&&record.saved&&record.returnedFromPayment,blocker:record.blocker||null,paymentAttempted:false,returnedFromPayment:record.returnedFromPayment===true,ownedBrowserClosed:record.ownedBrowserClosed===true,caseSignature:record.caseSignature,applicantIndex:record.applicantIndex,artifactSha256:record.artifact?.sha256||null});
+ const status=record=>({jobId:record.id,stage:record.stage,phase:record.phase,reference:record.reference||null,saved:record.saved===true,submissionUncertain:record.submissionUncertain===true,requiresOperator:record.stage==='waiting_operator',operatorChallenge:record.operator?{id:record.operator.id,kind:record.operator.kind,expiresAt:record.operator.expiresAt}:null,requiresOtp:record.stage==='waiting_otp',challengeId:record.stage==='waiting_otp'?record.challengeId:null,challengeExpiresAt:record.stage==='waiting_otp'?record.challengeExpiresAt:null,artifactReady:record.stage==='completed'&&Boolean(record.artifact)&&record.saved&&(record.returnedFromPayment||record.printExistingOnly&&record.printVerified),printExistingOnly:record.printExistingOnly===true,blocker:record.blocker||null,paymentAttempted:false,returnedFromPayment:record.returnedFromPayment===true,ownedBrowserClosed:record.ownedBrowserClosed===true,caseSignature:record.caseSignature,applicantIndex:record.applicantIndex,artifactSha256:record.artifact?.sha256||null});
  const scrub=record=>{if(Array.isArray(record.expectedDraft))for(const field of record.expectedDraft)if(field&&typeof field==='object')field.expectedValue='';record.expectedDraft=null;if(record.manifest){for(const doc of record.manifest.documents||[])doc.data='';record.manifest.facts={};record.manifest.documents=[];record.manifest.clientConsent=null;record.manifest.leaseToken='';record.manifest=null;}};
  async function checkLease(record){
   if(record.cancelled||record.controller.signal.aborted)throw finite('JOB_CANCELLED');
@@ -63,7 +63,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   if(closed){record.ownedBrowserClosed=true;try{await adapter.release?.(record.reservation);}catch{}if(active===record)active=null;}return closed;
  }
  const operatorGate=createOperatorGate({now,checkLease,capture:(r,kind)=>adapter.withPage(r.reservation,r.sessionId,async page=>{const u=new URL(page.url());if(u.origin!==ORIGIN||u.pathname!==(kind==='login'?'/Account/Loginindividuals':'/SmartForm/TraditionalApp'))throw finite('OPERATOR_PAGE_UNCONFIRMED');return captureCaptcha(page);},()=>checkLease(r))});
- const apiFor=record=>async(action,data={},mutation=true)=>{if(record.manifest?.diagnosticOnly===true&&(['request-application-sms','enter-application-sms','confirm-application'].includes(action)||action==='activate-control'&&data.mode==='submit'))throw finite('DIAGNOSTIC_WRITE_FORBIDDEN');if(mutation)await checkLease(record);if(record.cancelled)throw finite('JOB_CANCELLED');return adapter.call(action,{...data,...(record.sessionId?{sessionId:record.sessionId}:{})},{reservation:record.reservation,signal:record.controller.signal});};
+ const apiFor=record=>async(action,data={},mutation=true)=>{if(record.printExistingOnly){const allowed=new Set(['start','close','submit','auto-login','current','auto-verify','inspect-account-menu','inspect-page','lookup-applications','open-page']);if(!allowed.has(action)||action==='open-page'&&(data.path!=='/SmartForm'||Object.keys(data).some(k=>!['path','label'].includes(k)))||action==='lookup-applications'&&data.passportNumber!==record.manifest?.facts?.passportNumber)throw finite('PRINT_ONLY_WRITE_FORBIDDEN');}if(record.manifest?.diagnosticOnly===true&&(['request-application-sms','enter-application-sms','confirm-application'].includes(action)||action==='activate-control'&&data.mode==='submit'))throw finite('DIAGNOSTIC_WRITE_FORBIDDEN');if(mutation)await checkLease(record);if(record.cancelled)throw finite('JOB_CANCELLED');return adapter.call(action,{...data,...(record.sessionId?{sessionId:record.sessionId}:{})},{reservation:record.reservation,signal:record.controller.signal});};
  async function execute(record,resume=false){
   if(record.running)return;record.running=true;record.stage='running';record.blocker=null;
   try{
@@ -72,7 +72,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
    await runFlow(context,{resume});
    if(record.cancelled)throw finite('JOB_CANCELLED');
    if(record.stage==='waiting_otp'){const challenge=record.challengeId;clearTimeout(record.otpTimer);record.otpTimer=setTimeout(()=>{void expireOtp(record,challenge);},Math.max(1,record.challengeExpiresAt-now()));record.otpTimer.unref?.();return;}
-   if(!record.artifact||!record.saved||!record.returnedFromPayment)throw finite('COMPLETION_PROOF_REQUIRED');
+   if(!record.artifact||!record.saved||!(record.returnedFromPayment||record.printExistingOnly&&record.printVerified))throw finite('COMPLETION_PROOF_REQUIRED');
    if(!await closeOwned(record))throw finite('OWNED_BROWSER_CLEANUP_UNCONFIRMED');record.stage='completed';record.phase='done';scrub(record);
   }catch(error){
    if(record.cancelled)return;
@@ -93,7 +93,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
    if(active||old&&!TERMINAL.has(old.stage))throw finite('WORKER_BUSY');
    const reservation=await adapter.reserve(manifest.jobId);if(!reservation)throw finite('WORKER_BUSY');
    if(old?.artifact?.buffer)old.artifact.buffer.fill(0);
-   const record={id:manifest.jobId,caseId:manifest.caseId,caseSignature:manifest.caseSignature,applicantIndex:manifest.applicantIndex,leaseToken:manifest.leaseToken,fingerprint,manifest,reservation,sessionId:null,stage:'running',phase:'preflight',saved:false,reference:manifest.existingApplicationReference,returnedFromPayment:false,ownedBrowserClosed:false,controller:new AbortController(),running:false,createdAt:now(),blocker:null};active=record;records.set(record.id,record);
+   const record={id:manifest.jobId,caseId:manifest.caseId,caseSignature:manifest.caseSignature,applicantIndex:manifest.applicantIndex,leaseToken:manifest.leaseToken,fingerprint,manifest,reservation,sessionId:null,stage:'running',phase:'preflight',saved:false,reference:manifest.existingApplicationReference,printExistingOnly:manifest.printExistingOnly===true,returnedFromPayment:false,ownedBrowserClosed:false,controller:new AbortController(),running:false,createdAt:now(),blocker:null};active=record;records.set(record.id,record);
    for(const [id,item]of records)if(records.size>8&&item!==active){item.artifact?.buffer?.fill(0);records.delete(id);}
    void execute(record);return status(record);
   }finally{admitting=false;}
@@ -114,7 +114,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
    r.liveFrame=frame;return {...frame,jobId:r.id,caseSignature:r.caseSignature,applicantIndex:r.applicantIndex};
   }).finally(()=>{if(r.livePending===pending)r.livePending=null;});r.livePending=pending;return pending;
  }
- function artifact(id){const record=records.get(id);if(!record)throw finite('JOB_NOT_FOUND');if(record.stage!=='completed'||!record.saved||!record.returnedFromPayment||!record.artifact?.buffer)throw finite('ARTIFACT_NOT_READY');return record.artifact;}
+ function artifact(id){const record=records.get(id);if(!record)throw finite('JOB_NOT_FOUND');if(record.stage!=='completed'||!record.saved||!(record.returnedFromPayment||record.printExistingOnly&&record.printVerified)||!record.artifact?.buffer)throw finite('ARTIFACT_NOT_READY');return record.artifact;}
  const authorized=value=>{if(!configured())return false;const wanted=Buffer.from('Bearer '+env.RAAD_JOB_BRIDGE_KEY),actual=Buffer.from(typeof value==='string'?value:'');return wanted.length===actual.length&&crypto.timingSafeEqual(wanted,actual);};
  async function handler(req,res,url,{readBody}={}){
   if(!url.pathname.startsWith('/internal/raad/'))return false;
@@ -133,7 +133,7 @@ function createProductionWorker({env=process.env,adapter,leaseFetch=fetch,now=Da
   finally{if(input?.value)input.value='';if(input?.code)input.code='';if(Array.isArray(input?.documents))for(const doc of input.documents)doc.data='';}
   return true;
  }
- return {start,status:get,otp,cancel,artifact,live,handler,health:()=>({enabled:configured(),activeJob:active!==null,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true',savePreflightSupported:true,liveViewSupported:true}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
+ return {start,status:get,otp,cancel,artifact,live,handler,health:()=>({enabled:configured(),activeJob:active!==null,operatorCaptcha:env.RAAD_OPERATOR_CAPTCHA_ENABLED==='true',savePreflightSupported:true,liveViewSupported:true,printExistingSupported:true}),async shutdown(){if(active)try{await cancel(active.id);}catch{}}};
 }
 
 const TEXT_FIELDS={latinFirstName:'EFIRSTNAME',latinFatherName:'EFATHER',latinGrandfatherName:'EGRAND',latinFamilyName:'EFAMILY',arabicFirstName:'AFIRSTNAME',arabicFatherName:'AFATHER',arabicGrandfatherName:'AGRAND',arabicFamilyName:'AFAMILY',passportNumber:'PASSPORTnumber',birthPlace:'BIRTH_PLACE',saudiAddress:'ADDRESS_HOME',emiratesId:'TourismEVisaIqamaOrVisaNo'};
@@ -227,7 +227,26 @@ async function observeSaveTransition(ctx,{allowConfirmation=false}={}){
  throw finite('SAVE_UNCERTAIN');
 }
 
+async function printExistingApplication(ctx){
+ const {record:r,manifest:m}=ctx,reference=m.existingApplicationReference,passportNumber=m.facts.passportNumber;
+ if(!reference||r.reference!==reference)throw finite('PRINT_EXISTING_REFERENCE_REQUIRED');
+ await loginGovernmentAccount(ctx);r.phase='lookup';
+ for(let nav=0;(await ctx.locate()).path!=='/SmartForm'&&nav<3;nav++){
+  const meta=(await ctx.api('inspect-page',{},false)).inspection;
+  const links=(meta?.links||[]).filter(l=>l.path==='/SmartForm'&&/طلب|تأشير|تاشير|application|visa/i.test(l.label));
+  if(links.length!==1)throw finite('CASE_LIST_LINK_UNAVAILABLE');await ctx.api('open-page',{path:links[0].path,label:links[0].label});await ctx.wait(1200);
+ }
+ if((await ctx.locate()).path!=='/SmartForm')throw finite('CASE_LOOKUP_PAGE_REQUIRED');
+ const found=await ctx.api('lookup-applications',{passportNumber},false);
+ if(found.lookupSupported!==true||found.matchCount!==1||found.matches?.length!==1||found.matches[0].applicationReference!==reference)throw finite('SAVED_REFERENCE_MISMATCH');
+ r.phase='print';await ctx.checkLease();
+ const artifact=await ctx.withPage(page=>ctx.capturePdf(page,{applicationReference:reference,passportNumber,manualCompletion:true,guard:ctx.checkLease,signal:r.controller.signal}));
+ await ctx.checkLease();
+ if(!artifact||!Buffer.isBuffer(artifact.buffer)||artifact.applicationReference!==reference||artifact.buffer.length>10000000||artifact.buffer.subarray(0,5).toString()!=='%PDF-'||crypto.createHash('sha256').update(artifact.buffer).digest('hex')!==artifact.sha256)throw finite('ARTIFACT_PROOF_INVALID');
+ r.reference=reference;r.saved=true;r.printVerified=true;r.artifact=artifact;
+}
 async function runGovernmentJob(ctx,{resume=false}={}){
+ if(ctx.manifest.printExistingOnly===true){if(resume)throw finite('PRINT_ONLY_RESUME_FORBIDDEN');return printExistingApplication(ctx);}
  const {record:r,manifest:m,api,wait}=ctx,f=m.facts;
  const inspect=async()=>{const result=await api('inspect-page',{},false);if(!result.inspection)throw finite('PORTAL_INSPECTION_UNAVAILABLE');return result.inspection;};
  const locate=async()=>{const state=await ctx.locate();if(!state||typeof state.path!=='string')throw finite('PORTAL_LOCATION_UNAVAILABLE');return state;};
@@ -279,4 +298,4 @@ async function runGovernmentJob(ctx,{resume=false}={}){
  if(/^\/SmartForm\/HealthInsurance\/[0-9]{1,20}$/.test(state.path)){r.phase='insurance';const first=await observeInsuranceQuotes(ctx,inspect);await wait(900);const second=chooseCheapest(await inspect());if(first.fingerprint!==second.fingerprint)throw finite('INSURANCE_QUOTES_CHANGED');await fill({kind:'radio',name:'CompanyNumber',optionValue:first.choice,value:true});await originalButton(await inspect(),'submit',[{kind:'radio',name:'CompanyNumber',optionValue:first.choice,expectedValue:true}]);state=await observePortalTransition(ctx,[state.path],['/Payment/Summary'],'PAYMENT_SUMMARY_UNCONFIRMED');}
  if(state.path!=='/Payment/Summary')throw finite('PAYMENT_SUMMARY_UNCONFIRMED');await finish();
 }
-module.exports={observePortalTransition,observeInsuranceQuotes,observeSavedCase,observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
+module.exports={printExistingApplication,observePortalTransition,observeInsuranceQuotes,observeSavedCase,observeSaveTransition,loginPageEvidence,loginDiagnosticEvidence,loginGovernmentAccount,createProductionWorker,validateManifest,runGovernmentJob,chooseCheapest,uaePhone,readbackForField,finite};
