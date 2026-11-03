@@ -16,38 +16,38 @@ test('office policy exact nationality and document classification does not guess
 });
 test('fixed quote maths validates actual group type, minors and explicit payment fee activation',()=>{
  const c={applicantCount:3,applicants:[tourist,tourist,tourist],paymentMethod:'link'};
- assert.equal(P.calculateQuote(c).subtotal,1950);assert.equal(P.calculateQuote(c).total,1950);assert.equal(P.calculateQuote(c).feePending,true);
- assert.equal(P.calculateQuote(c,{feesEnabled:true}).total,2047.5);
- assert.equal(P.calculateQuote({...c,paymentMethod:'tabby'},{feesEnabled:true}).total,2125.5);
- assert.equal(P.calculateQuote({...c,applicants:[tourist,tourist,{nationality:'العراق',documentType:'passport'}]}).total,2250);
+ assert.equal(P.calculateQuote(c).subtotal,1920);assert.equal(P.calculateQuote(c).total,1920);assert.equal(P.calculateQuote(c).feePending,true);
+ assert.equal(P.calculateQuote(c,{feesEnabled:true}).total,2016);
+ assert.equal(P.calculateQuote({...c,paymentMethod:'tabby'},{feesEnabled:true}).total,2092.8);
+ assert.equal(P.calculateQuote({...c,applicants:[tourist,tourist,{nationality:'العراق',documentType:'passport'}]}).total,2130);
  assert.equal(P.calculateQuote({...c,hasMinors:true}).requiresReview,true);
  assert.equal(P.calculateQuote({...c,applicantCount:null}),null);
 });
 test('Ismail greets once and keeps flight state fully independent',async()=>{
- const e=make();e.store.set('a',{flight:'untouched'});const r=await e.handle('a','سوري جواز عادي لحالي');assert.match(r.reply,/إسماعيل.*الافتراضي/);assert.equal(r.quote.total,700);
+ const e=make();e.store.set('a',{flight:'untouched'});const r=await e.handle('a','سوري جواز عادي لحالي');assert.match(r.reply,/إسماعيل.*الافتراضي/);assert.equal(r.quote.total,640);
  assert.deepEqual(e.store.get('a'),{flight:'untouched',at:e.store.get('a').at});assert.doesNotMatch((await e.handle('a','شكرا')).reply,/أنا إسماعيل/);
 });
 test('missing count is asked, then numeric shorthand completes without repeating nationality',async()=>{
  const e=make();assert.match((await e.handle('a','أنا سوري جواز عادي')).reply,/كم شخص/);
- const r=await e.handle('a','1');assert.equal(r.quote.total,700);assert.doesNotMatch(r.reply,/شو جنسية|معه جواز/);
+ const r=await e.handle('a','1');assert.equal(r.quote.total,640);assert.doesNotMatch(r.reply,/شو جنسية|معه جواز/);
 });
 test('second applicant answer never overwrites primary nationality',async()=>{
  const e=make();await e.handle('a','نحنا شخصين انا سوري جواز عادي');assert.equal(e.getCase('a').lastQuestion,'nationality_1');
  await e.handle('a','مصرية');assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(e.getCase('a').applicants[1].nationality,'مصر');
- await e.handle('a','جواز عادي');assert.equal(e.getCase('a').quote.total,1400);assert.equal(e.getCase('a').quote.rows[1].product,'tourist_single');
+ await e.handle('a','جواز عادي');assert.equal(e.getCase('a').quote.total,1280);assert.equal(e.getCase('a').quote.rows[1].product,'tourist_single');
 });
 test('a bank information answer does not invent an unsent outstanding question',async()=>{
  const e=make();const r=await e.handle('a','بدي حساباتكم');assert.match(r.reply,/AE800500000000019198423/);assert.equal(e.getCase('a').lastQuestion,undefined);assert.deepEqual(e.getCase('a').askedQuestions,[]);
 });
-test('same-nationality explicit group gets 650 each without invented discounts',async()=>{
- const e=make();const r=await e.handle('a','نحنا 3 كلنا سوريين جواز عادي');assert.equal(r.quote.total,1950);assert.match((await e.handle('a','زبطنا ب600')).reply,/ما في خصم إضافي/);assert.equal(e.getCase('a').quote.total,1950);
+test('same-nationality explicit group gets 640 each without invented discounts',async()=>{
+ const e=make();const r=await e.handle('a','نحنا 3 كلنا سوريين جواز عادي');assert.equal(r.quote.total,1920);assert.match((await e.handle('a','زبطنا ب600')).reply,/ما في خصم إضافي/);assert.equal(e.getCase('a').quote.total,1920);
 });
 test('each actionable visa quote includes its price, official-refusal refund and next step together',async()=>{
  for(const {text,total,price,product,cta}of [
-  {text:'سوري جواز عادي لحالي',total:700,price:/700 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/},
-  {text:'مصري جواز عادي لحالي',total:700,price:/700 درهم/,product:'tourist_single',cta:/ابعت صور المستندات المطلوبة هون/},
-  {text:'عراقي جواز عادي لحالي',total:850,price:/850 درهم/,product:'umrah',cta:/المكتب، أو ننسّق استلامهم عبر زاجل برسوم 35 درهماً/},
-  {text:'نحنا 3 كلنا سوريين جواز عادي',total:1950,price:/1,950 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/}
+  {text:'سوري جواز عادي لحالي',total:640,price:/640 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/},
+  {text:'مصري جواز عادي لحالي',total:640,price:/640 درهم/,product:'tourist_single',cta:/ابعت صور المستندات المطلوبة هون/},
+  {text:'عراقي جواز عادي لحالي',total:850,price:/850 درهم/,product:'umrah',cta:/شو تاريخ السفر/},
+  {text:'نحنا 3 كلنا سوريين جواز عادي',total:1920,price:/1,920 درهم/,product:'tourist_multi',cta:/ابعت صور المستندات المطلوبة هون/}
  ]){
   const e=make(),r=await e.handle('a',text);assert.equal(r.quote.total,total);assert.equal(r.quote.rows[0].product,product);
   assert.match(r.reply,price);assert.match(r.reply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);assert.equal((r.reply.match(/مستردة بالكامل/g)||[]).length,1);
@@ -57,20 +57,20 @@ test('each actionable visa quote includes its price, official-refusal refund and
 });
 test('incomplete price inquiry and negotiations include the refund benefit exactly once',async()=>{
  const e=make(),price=await e.handle('price','بكم فيزا السعودية');
- assert.equal(price.quote,null);assert.match(price.reply,/700.*650.*850/);assert.match(price.reply,/شو جنسية/);
+ assert.equal(price.quote,null);assert.match(price.reply,/640.*850/);assert.match(price.reply,/شو جنسية/);
  const unknown=await e.handle('unknown','في خصم؟');assert.equal(unknown.quote,null);assert.match(unknown.reply,/نراجع إمكانية الخصم/);assert.equal(e.getCase('unknown').operatorIntervention.reason,'discount');
- await e.handle('known','سوري جواز عادي لحالي');const known=await e.handle('known','في خصم؟');assert.equal(known.quote.total,700);
+ await e.handle('known','سوري جواز عادي لحالي');const known=await e.handle('known','في خصم؟');assert.equal(known.quote.total,640);
  for(const r of [price,unknown,known]){assert.match(r.reply,/مستردة بالكامل في حال الرفض الرسمي/);assert.equal((r.reply.match(/مستردة بالكامل/g)||[]).length,1);}
 });
 test('refund covers visa fees while payment method totals and separate fee disclosure remain intact',async()=>{
  for(const {method,enabled,fee,total}of [
-  {method:'رابط الدفع',enabled:true,fee:35,total:735},
-  {method:'تابي',enabled:true,fee:63,total:763},
-  {method:'رابط الدفع',enabled:false,fee:35,total:735}
+  {method:'رابط الدفع',enabled:true,fee:32,total:672},
+  {method:'تابي',enabled:true,fee:57.6,total:697.6},
+  {method:'رابط الدفع',enabled:false,fee:32,total:672}
  ]){
   const e=make({env:{SAUDI_VISA_PAYMENT_FEES_ENABLED:String(enabled)}}),r=await e.handle('a','سوري جواز عادي لحالي '+method);
-  assert.equal(r.quote.subtotal,700);assert.equal(r.quote.paymentFee,fee);assert.equal(r.quote.total,total);assert.equal(r.quote.feePending,false);
-  assert.match(r.reply,/إجمالي رسوم التأشيرات: 700 درهم/);assert.match(r.reply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);
+  assert.equal(r.quote.subtotal,640);assert.equal(r.quote.paymentFee,fee);assert.equal(r.quote.total,total);assert.equal(r.quote.feePending,false);
+  assert.match(r.reply,/إجمالي رسوم التأشيرات: 640 درهم/);assert.match(r.reply,/رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي/);
   assert.match(r.reply,/رسوم وسيلة الدفع وأي خدمات إضافية تُوضح منفصلة قبل الاتفاق/);
   assert.match(r.reply,new RegExp('المجموع بهذه الطريقة: '+total+' درهم'));
  }
@@ -81,14 +81,14 @@ test('refund promotion stays out of suspended intake, child pricing review, comp
  }
 });
 test('suspended intake does not ask payment or promise an opening date',async()=>{
- const e=make();const r=await e.handle('a','افغاني جواز عادي لحالي');assert.equal(r.quote,null);assert.match(r.reply,/متوقف/);assert.doesNotMatch(r.reply,/700|850|ابعث.*دفع/);
+ const e=make();const r=await e.handle('a','افغاني جواز عادي لحالي');assert.equal(r.quote,null);assert.match(r.reply,/متوقف/);assert.doesNotMatch(r.reply,/640|850|ابعث.*دفع/);
 });
 test('travel document issuer is not inferred nationality; missing issuer needs an actual answer',async()=>{
  const e=make();await e.handle('a','معي وثيقة لبنانية لحالي');assert.equal(e.getCase('a').applicants[0].nationality,undefined);assert.equal(e.getCase('a').applicants[0].documentIssuer,'لبنان');
  const r=await e.handle('a','فلسطيني');assert.equal(r.quote.total,850);assert.match(r.reply,/أصل الجواز وأصل الهوية/);
 });
 test('ordinary Egyptian passport is single tourism, not a Palestinian Egyptian document',async()=>{
- const e=make();const r=await e.handle('a','مصري جواز عادي لحالي');assert.equal(r.quote.rows[0].product,'tourist_single');assert.equal(r.quote.total,700);assert.match(r.reply,/حسب سياسة منصة التقديم الحالية/);assert.match(r.reply,/للجنسية المصرية خلال هذا الموسم/);assert.match(r.reply,/متعددة الدخول غير متاحة حاليًا/);
+ const e=make();const r=await e.handle('a','مصري جواز عادي لحالي');assert.equal(r.quote.rows[0].product,'tourist_single');assert.equal(r.quote.total,640);assert.match(r.reply,/حسب سياسة منصة التقديم الحالية/);assert.match(r.reply,/للجنسية المصرية خلال هذا الموسم/);assert.match(r.reply,/متعددة الدخول غير متاحة حاليًا/);
 });
 test('refund, cancellation and payment after issuance are distinct actions',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');assert.match((await e.handle('a','الدفع بعد الاصدار')).reply,/ما عنا دفع بعد الإصدار/);
@@ -98,7 +98,7 @@ test('refund, cancellation and payment after issuance are distinct actions',asyn
 });
 test('payment receipt does not prove payment and repeated receipt cannot downgrade staff confirmation',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');await e.handle('a','حولت');assert.equal(e.getCase('a').paymentStatus,'awaiting_verification');
- const sig=visaCaseSignature(e.getCase('a'));Object.assign(e.getCase('a'),{paymentStatus:'verified',submissionStatus:'submitted',stage:'submitted',staffVerification:{payment:{amount:700,reference:'ref',caseSignature:sig},submission:{reference:'submitted-ref',caseSignature:sig}}});
+ const sig=visaCaseSignature(e.getCase('a'));Object.assign(e.getCase('a'),{paymentStatus:'verified',submissionStatus:'submitted',stage:'submitted',staffVerification:{payment:{amount:640,reference:'ref',caseSignature:sig},submission:{reference:'submitted-ref',caseSignature:sig}}});
  await e.handle('a','دفعت');assert.equal(e.getCase('a').paymentStatus,'verified');assert.equal(e.getCase('a').stage,'submitted');
  await e.handle('a','شكرا');assert.equal(e.getCase('a').stage,'submitted');
  assert.match((await e.handle('a','حالة الطلب')).reply,/تم تقديم المعاملة فعلياً/);
@@ -113,7 +113,7 @@ test('complaint bypass is not confused with quoting an accusation about reputati
 });
 test('model cannot inject money, official eligibility or payment status',async()=>{
  const e=make({understand:async()=>({intent:'price',fields:{nationality:'سوريا',documentType:'passport',applicantCount:1,total:1,paymentStatus:'verified'},reply:'تم التقديم والموافقة بسعر1'})});
- const r=await e.handle('a','سعر الفيزا');assert.equal(r.quote.total,700);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.doesNotMatch(r.reply,/تم التقديم والموافقة/);
+ const r=await e.handle('a','سعر الفيزا');assert.equal(r.quote.total,640);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.doesNotMatch(r.reply,/تم التقديم والموافقة/);
 });
 test('model correction overrides stale multi-nationality extraction',async()=>{
  const e=make({understand:async()=>({intent:'price',correction:true,fields:{nationality:'مصر',documentType:'passport',applicantCount:1}})});
@@ -133,8 +133,8 @@ test('unknown children price is not silently quoted as adults',async()=>{
  const e=make();const r=await e.handle('a','سوري جواز عادي شخص واحد طفل');assert.equal(r.quote.requiresReview,true);assert.match(r.reply,/تسعير الحالة/);
 });
 test('amendments after verified payment preserve original paid case and record a review proposal',async()=>{
- const e=make();await e.handle('a','سوري جواز عادي لحالي');const c=e.getCase('a');c.paymentStatus='verified';c.stage='payment_verified';c.staffVerification={payment:{amount:700,reference:'confirmed',caseSignature:visaCaseSignature(c)}};
- const r=await e.handle('a','صاروا 3 اشخاص');assert.match(r.reply,/حفظنا التعديل للمراجعة/);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,700);assert.equal(e.getCase('a').paymentStatus,'verified');assert.equal(e.getCase('a').pendingAmendment.facts.applicantCount,3);
+ const e=make();await e.handle('a','سوري جواز عادي لحالي');const c=e.getCase('a');c.paymentStatus='verified';c.stage='payment_verified';c.staffVerification={payment:{amount:640,reference:'confirmed',caseSignature:visaCaseSignature(c)}};
+ const r=await e.handle('a','صاروا 3 اشخاص');assert.match(r.reply,/حفظنا التعديل للمراجعة/);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,640);assert.equal(e.getCase('a').paymentStatus,'verified');assert.equal(e.getCase('a').pendingAmendment.facts.applicantCount,3);
 });
 test('attachment captions reach understanding as redacted text and remain in conversation history',async()=>{
  const calls=[],e=make({understand:async(text,context)=>{calls.push({text,context});return null;}});
@@ -155,9 +155,9 @@ test('friend nationality fragments and questions preserve the primary applicant 
  const egyptian=await e.handle('a','مصري');assert.match(egyptian.reply,/جواز مصري عادي.*سفرة واحدة/);assert.match(egyptian.reply,/جواز سفر عادي أو وثيقة سفر/);
  assert.match((await e.handle('a','وعندي صديق تاني فلسطيني')).reply,/الفلسطينية.*العمرة/);
  assert.match((await e.handle('a','كمان بدن يقدمو')).reply,/نفس المجموعة.*ملف مستقل/);
- const details=await e.handle('a','شو التفاصيل بعد اذنك');assert.match(details.reply,/الفلسطينية.*العمرة/);assert.doesNotMatch(details.reply,/700|إجمالي رسوم/);
- const question=await e.handle('a','حتى الفلسطيني بتطلع لو؟');assert.match(question.reply,/العمرة/);assert.match(question.reply,/ما في ضمان للموافقة/);assert.doesNotMatch(question.reply,/إجمالي رسوم|700|أكيد بتطلع/);
- assert.deepEqual(e.getCase('a').applicants,original);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,700);assert.equal(visaCaseSignature(e.getCase('a')),signature);
+ const details=await e.handle('a','شو التفاصيل بعد اذنك');assert.match(details.reply,/الفلسطينية.*العمرة/);assert.doesNotMatch(details.reply,/640|إجمالي رسوم/);
+ const question=await e.handle('a','حتى الفلسطيني بتطلع لو؟');assert.match(question.reply,/العمرة/);assert.match(question.reply,/ما في ضمان للموافقة/);assert.doesNotMatch(question.reply,/إجمالي رسوم|640|أكيد بتطلع/);
+ assert.deepEqual(e.getCase('a').applicants,original);assert.equal(e.getCase('a').applicantCount,1);assert.equal(e.getCase('a').quote.total,640);assert.equal(visaCaseSignature(e.getCase('a')),signature);
 });
 test('a friend is added only by explicit same-group instruction after own document answer',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');await e.handle('a','عندي صديق مصري');await e.handle('a','جواز عادي');
@@ -178,19 +178,19 @@ test('an attachment plus bank request answers bank details without repeating the
 });
 test('returning visa greetings keep the current question without repeating a price or checklist',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي');assert.equal(e.getCase('a').lastQuestion,'applicantCount');
- const r=await e.handle('a','مرحبا');assert.match(r.reply,/نفس طلب التأشيرة/);assert.doesNotMatch(r.reply,/700|نسخة جواز|إجمالي رسوم/);assert.equal(e.getCase('a').lastQuestion,'applicantCount');
+ const r=await e.handle('a','مرحبا');assert.match(r.reply,/نفس طلب التأشيرة/);assert.doesNotMatch(r.reply,/640|نسخة جواز|إجمالي رسوم/);assert.equal(e.getCase('a').lastQuestion,'applicantCount');
 });
 test('visa erasure clears upload capabilities and prepared-delivery records for this customer only',async()=>{
  const e=make({store:{data:{},save(){}}});await e.handle('a','سوري جواز عادي لحالي');e.store.data.visaUpload={sessions:{one:{customer:'a'},two:{customer:'b'}}};e.store.data.visaPreparedDeliveries={items:{one:{customer:'a'},two:{customer:'b'}}};
  e.delete('a');assert.deepEqual(e.store.data.visaUpload.sessions,{two:{customer:'b'}});assert.deepEqual(e.store.data.visaPreparedDeliveries.items,{two:{customer:'b'}});
 });
 test('known quote is not repeated for actual apply/how-to/will-send followups while direct price remains available',async()=>{
- const e=make(),initial=await e.handle('a','سوري جواز عادي لحالي');assert.match(initial.reply,/700/);const signature=visaCaseSignature(e.getCase('a'));
- const apply=await e.handle('a','هلا، بدي قدم فيزا السعودية لو سمحت');assert.match(apply.reply,/نسخة جواز|صور المستندات|جواز/);assert.doesNotMatch(apply.reply,/700|إجمالي رسوم/);
- const how=await e.handle('a','كيف بقدم شو ابعتلك');assert.match(how.reply,/جواز|الهوية/);assert.doesNotMatch(how.reply,/700|إجمالي رسوم/);
- const future=await e.handle('a','طيب رح ابعتلك');assert.match(future.reply,/^تمام، ابعتهن هون/);assert.doesNotMatch(future.reply,/700|جواز|إجمالي رسوم/);
- const acknowledged=await e.handle('a','اوكي');assert.doesNotMatch(acknowledged.reply,/700|إجمالي رسوم/);assert.equal(visaCaseSignature(e.getCase('a')),signature);
- const price=await e.handle('a','شو السعر؟');assert.match(price.reply,/700/);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(e.getCase('a').submissionStatus,'not_submitted');
+ const e=make(),initial=await e.handle('a','سوري جواز عادي لحالي');assert.match(initial.reply,/640/);const signature=visaCaseSignature(e.getCase('a'));
+ const apply=await e.handle('a','هلا، بدي قدم فيزا السعودية لو سمحت');assert.match(apply.reply,/نسخة جواز|صور المستندات|جواز/);assert.doesNotMatch(apply.reply,/640|إجمالي رسوم/);
+ const how=await e.handle('a','كيف بقدم شو ابعتلك');assert.match(how.reply,/جواز|الهوية/);assert.doesNotMatch(how.reply,/640|إجمالي رسوم/);
+ const future=await e.handle('a','طيب رح ابعتلك');assert.match(future.reply,/^تمام، ابعتهن هون/);assert.doesNotMatch(future.reply,/640|جواز|إجمالي رسوم/);
+ const acknowledged=await e.handle('a','اوكي');assert.doesNotMatch(acknowledged.reply,/640|إجمالي رسوم/);assert.equal(visaCaseSignature(e.getCase('a')),signature);
+ const price=await e.handle('a','شو السعر؟');assert.match(price.reply,/640/);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(e.getCase('a').submissionStatus,'not_submitted');
 });
 test('how-to apply colloquial variant preserves original-document Umrah requirements',async()=>{
  const e=make();await e.handle('a','فلسطيني جواز عادي لحالي');const r=await e.handle('a','كيف بقدم شو ابعتلك');assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.doesNotMatch(r.reply,/850|إجمالي رسوم/);
@@ -230,3 +230,18 @@ test('new request while current execution is active stays staged and cannot repl
 test('a status interruption cannot turn a later unrelated yes into a new application',async()=>{const e=make(),c=savedConversation(e,'a');await e.handle('a','بدي طلب جديد');await e.handle('a','شو صار بطلبي');await e.handle('a','نعم');assert.equal(e.getCase('a').id,c.id);assert.equal(e.store.data.visaCaseArchives?.a,undefined);});
 test('pending new request attachments expire independently and are removed on privacy deletion',()=>{const now=Date.now(),store=new AssistantState({file:null,now:()=>now}),e=make({store});store.data.pendingNewVisaMedia={a:{createdAt:now,messages:[{id:'synthetic'}]},old:{createdAt:now-86400001,messages:[]}};store.prune();assert.ok(store.data.pendingNewVisaMedia.a);assert.equal(store.data.pendingNewVisaMedia.old,undefined);e.delete('a');assert.equal(store.data.pendingNewVisaMedia.a,undefined);});
 test('current document conflict is not answered with an archived application reference and never silently changes nationality',async()=>{const e=make(),old=savedConversation(e,'a');e.store.data.visaCaseArchives={a:[structuredClone(old)]};const current=e.newCase();current.applicantCount=1;current.applicants=[{nationality:'مصر',documentType:'passport'}];current.documents=[{id:'synthetic-new-passport'}];e.save('a',current);e.store.data.visaDocumentIntake={cases:{a:{caseId:current.id,caseSignature:visaCaseSignature(current),status:'needs_review',applicants:[{issues:[{code:'CASE_DATA_MISMATCH',field:'nationalityCode'}]}]}}};const reply=await e.handle('a','شو صار بطلبي');assert.match(reply.reply,/طلبك معنا/);assert.doesNotMatch(reply.reply,/لنفس الشخص|شخص تاني|CASE_DATA/);assert.doesNotMatch(reply.reply,/828000001/);assert.equal(e.getCase('a').applicants[0].nationality,'مصر');assert.match((await e.handle('a','رقم الطلب 828000001')).reply,/828000001 محفوظ معنا/);});
+
+test('Palestinian tourism objections get a trained original-document Umrah explanation instead of unknown escalation or guaranteed refusal',async()=>{
+ const e=make();await e.handle('consult','فلسطيني وثيقة سفر سورية لحالي');
+ for(const text of ['ليش عمره','مافينا نقدمه سياحيه','فينا نحاول سياحية؟']){
+  const r=await e.handle('consult',text);assert.match(r.reply,/850/);assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.match(r.reply,/خسارة/);assert.match(r.reply,/مستردة بالكامل/);assert.doesNotMatch(r.reply,/رح تنرفض|حسب الخارجية|يراجعه المسؤول|التقديم عنا أونلاين/);assert.equal(e.getCase('consult').operatorIntervention,undefined);
+ }
+});
+test('current price is 640 tourist and 850 Umrah while an already paid 700 quote remains unchanged',async()=>{
+ const e=make(),r=await e.handle('legacy','سوري جواز عادي لحالي');assert.equal(r.quote.total,640);assert.equal(P.PRICES.umrah,850);
+ const c=e.getCase('legacy');c.quote.total=700;c.quote.subtotal=700;c.quote.rows[0].amount=700;c.paymentStatus='verified';c.staffVerification={payment:{amount:700,reference:'old-price',caseSignature:visaCaseSignature(c)}};
+ await e.handle('legacy','شو السعر؟');assert.equal(e.getCase('legacy').quote.total,700);assert.equal(e.getCase('legacy').paymentStatus,'verified');
+});
+test('untrained questions including visa terminology are escalated even without model understanding',async()=>{
+ const e=make();await e.handle('unknown','سوري جواز عادي لحالي');const r=await e.handle('unknown','شو نظام أولوية التأشيرة الاستثنائي؟');assert.equal(e.getCase('unknown').operatorIntervention.reason,'untrained_request');assert.match(r.reply,/جواب دقيق/);assert.doesNotMatch(r.reply,/تم التقديم|700/);
+});

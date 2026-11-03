@@ -37,12 +37,14 @@ class VisaConversationScope {
     if(messages.some(m=>m.media)){this.store.data.pendingNewVisaMedia||={};const old=this.store.data.pendingNewVisaMedia[id];this.store.data.pendingNewVisaMedia[id]={sourceCaseId:c.id,createdAt:this.now(),messages:[...(old?.sourceCaseId===c.id?old.messages:[]),...messages.filter(m=>m.media)].slice(-20)};}
     const out=this.engine.conversationReply(id,c,text,'أكيد، فينا نبدأ طلب جديد مستقل مع الاحتفاظ بطلبك الحالي. تأكدلي: بدك نفتح طلب جديد؟');return{handled:true,reply:out.reply};
    }
-   if(/فلسطين/.test(P.normalize(text))&&/سوري|سوريا/.test(P.normalize(text))&&!/وثيق|جواز/.test(P.normalize(text)))return{handled:true,reply:'أكيد 🌷 للتأكد من المسار الصحيح: معه جواز سفر سوري، أو وثيقة سفر فلسطينية صادرة من سوريا؟'};
-   const token=s.token,local={data:{visaCases:{[id]:s.inquiry}},save:()=>{}};
+   if(/فلسطين/.test(P.normalize(text))&&/سوري|سوريا/.test(P.normalize(text))&&!/وثيق|جواز/.test(P.normalize(text))){s.awaitingPalestinianDocument=true;this.store.save();return{handled:true,reply:'أكيد 🌷 للتأكد من المسار الصحيح: معه جواز سفر سوري، أو وثيقة سفر فلسطينية صادرة من سوريا؟'};}
+   if(s.awaitingPalestinianDocument&&/سفر|سوري|سوريا/.test(P.normalize(text))&&!/وثيق|جواز/.test(P.normalize(text)))return{handled:true,reply:'تقصد وثيقة سفر فلسطينية صادرة من سوريا، أو جواز سفر سوري؟ هالتفصيل بيحدد طريقة التقديم المناسبة إلك 🌷'};
+   if(s.awaitingPalestinianDocument&&/وثيق/.test(P.normalize(text))){text='فلسطيني معه وثيقة سفر '+text;s.awaitingPalestinianDocument=false;}else if(s.awaitingPalestinianDocument&&/جواز/.test(P.normalize(text)))s.awaitingPalestinianDocument=false;
+   const previousIntervention=JSON.stringify(s.inquiry?.operatorIntervention||null),token=s.token,local={data:{visaCases:{[id]:s.inquiry}},save:()=>{}};
    const isolated=new SaudiVisaEngine({store:local,now:this.now,env:this.engine.env,privateConfig:this.engine.privateConfig,understand:this.engine.understand?async(...args)=>{const d=await this.engine.understand(...args);return d&&['status','existing_application'].includes(d.intent)?{...d,intent:'other'}:d;}:null});
    const out=await isolated.handle(id,text,{messages:[]});
    if(this.current(id)?.token!==token)return{handled:true,reply:null};
-   s=this.current(id);s.inquiry=local.data.visaCases[id];s.expiresAt=this.now()+TTL;this.store.save();return{handled:true,reply:out.reply};
+   s=this.current(id);s.inquiry=local.data.visaCases[id];s.expiresAt=this.now()+TTL;this.store.save();const intervention=s.inquiry?.operatorIntervention;return{handled:true,reply:out.reply,...(intervention&&JSON.stringify(intervention)!==previousIntervention?{intervention:{...intervention,question:require('./saudi-visa-nlu').redactVisaText(text).slice(0,500)},scopeToken:token}:{})};
   }
   if(s?.mode==='choice')return{handled:true,reply:PROMPT,scopeMenu:{token:s.token}};
   if(/استفسار جديد|سوال جديد|القائمه|خيارات/.test(P.normalize(text)))return this.menu(id,'');

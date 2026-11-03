@@ -218,6 +218,7 @@ async function processCustomerMessages(sender,messages){
     const scoped=await visaConversationScope.handle(sender,text,{messages});
     if(scoped.handled){
       if(!scoped.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
+      if(scoped.intervention){visaCoordinationNotices.queue(sender,scoped.intervention.reason,'inquiry:'+scoped.scopeToken+':'+scoped.intervention.revision,{inquiry:true,question:scoped.intervention.question});visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));}
       if(scoped.scopeMenu){const sent=await rawSendVisaScopeMenu(sender,{text:scoped.reply,token:scoped.scopeMenu.token}),messageId=sent?.messages?.[0]?.id;if(messageId){visaConversationScope.bind(sender,scoped.scopeMenu.token,messageId);if(journal.hasCustomer(sender))journal.recordOutbound(sender,{id:messageId,text:scoped.reply,actor:'assistant',timestamp:Date.now(),status:'accepted'});}}
       else await sendTextMessage(sender,scoped.reply);return;
     }
