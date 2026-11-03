@@ -51,6 +51,15 @@ async function sendRequestChoiceMessage(to,{text,choiceId}={},env=process.env){
  ]}}},env);
 }
 
+async function sendVisaScopeMenu(to,{text,token}={},env=process.env){
+ if(typeof text!=='string'||!text.trim()||text.length>1024||typeof token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(token))throw Error('VISA_SCOPE_MENU_INVALID');
+ if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return{dryRun:true};
+ return sendGraphMessage({messaging_product:'whatsapp',recipient_type:'individual',to,type:'interactive',interactive:{type:'button',body:{text},action:{buttons:[
+ {type:'reply',reply:{id:'visa_scope:new:'+token,title:'طلب / استفسار جديد'}},
+ {type:'reply',reply:{id:'visa_scope:followup:'+token,title:'متابعة طلب حالي'}}
+ ]}}},env);
+}
+
 async function sendServiceMenu(to,{text,menuId}={},env=process.env){
  if(typeof text!=='string'||!text.trim()||text.length>1024||typeof menuId!=='string'||!/^[a-f0-9-]{36}$/.test(menuId))throw Error('WHATSAPP_SERVICE_MENU_INVALID');
  if(String(env.DRY_RUN??'true').toLowerCase()!=='false')return{dryRun:true};
@@ -127,4 +136,4 @@ async function sendComplaintNotification(to,{text,url,caseId,customer,useTemplat
  if(typeof data?.messages?.[0]?.id!=='string'||!data.messages[0].id||data.messages[0].id.length>500)throw Error('WHATSAPP_COMPLAINT_OUTCOME_UNCERTAIN');
  return data;
 }
-module.exports = {sendServiceMenu,sendImageMessage, sendTextMessage,sendRequestChoiceMessage,checkWhatsAppConnection,safeGraphFailure,changeWhatsAppBlock,sendComplaintNotification };
+module.exports = {sendVisaScopeMenu,sendServiceMenu,sendImageMessage, sendTextMessage,sendRequestChoiceMessage,checkWhatsAppConnection,safeGraphFailure,changeWhatsAppBlock,sendComplaintNotification };

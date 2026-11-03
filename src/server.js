@@ -50,7 +50,7 @@ const {VERIFIED_FAMILY_PROVIDERS,partyCapabilityStatus}=require('./party-capabil
 const {POLICY}=require('./assistant-policy');
 const { MessageBatcher } = require('./message-batcher');
 const {handleVoucherRequest}=require('./voucher-http');
-const { sendServiceMenu:rawSendServiceMenu,sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection,changeWhatsAppBlock,sendComplaintNotification } = require('./graph-api');
+const { sendVisaScopeMenu:rawSendVisaScopeMenu,sendServiceMenu:rawSendServiceMenu,sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection,changeWhatsAppBlock,sendComplaintNotification } = require('./graph-api');
 const {createServiceMenuSender}=require('./service-menu-delivery');
 const { QuoteJobs, validQueueKey } = require('./quote-jobs');
 const {recordDeliveryStatuses,comparisonDeliverySummary}=require('./delivery-status');
@@ -72,6 +72,7 @@ const journal=new ConversationJournal({store:assistant.store});
 for(const [id,state]of Object.entries(assistant.store.data.customers))if(validCustomer(id)&&!journal.hasCustomer(id))journal.importLegacy?.(id,{history:state.history,updatedAt:state.at,name:state.name});
 const portalMonitor=new PortalMonitor();
 const visa=new SaudiVisaEngine({store:assistant.store,understand:createSaudiVisaUnderstanding({fetchImpl:(...args)=>fetch(...args)})});
+const visaConversationScope=new (require('./visa-conversation-scope').VisaConversationScope)({store:assistant.store,engine:visa});
 const visaMedia=new VisaMediaStore({store:assistant.store,fetchImpl:(...args)=>fetch(...args)});
 const documentVision=createDocumentVision({env:process.env,budgetStore:assistant.store,fetchImpl:(...args)=>fetch(...args)});
 const opticalMrz=createOpticalMrz();
@@ -204,6 +205,7 @@ async function processCustomerMessages(sender,messages){
   let text=messages.map(m=>m.text).join('، ');
   if(inbox.isHumanOwned(sender)){if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await receiveVisaMedia(sender,m);return;}
   const turnRevision=incomingRevision(assistant.store,sender);
+  if(messages.some(m=>m.visaScopeChoice)&&activeService(assistant.store,sender)!=='saudi_visa'){await sendTextMessage(sender,'هذه الخيارات من محادثة سابقة. ابعت استفسارك الحالي حتى نوجّهك صح 🌷');return;}
   const flightState=assistant.state(sender);
   const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
   if(route.selectedText){text=route.selectedText;messages=[{...messages.at(-1),text:route.selectedText}];}
@@ -212,6 +214,12 @@ async function processCustomerMessages(sender,messages){
   if(route.service==='saudi_visa'){
     if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim())){
       visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
+    }
+    const scoped=await visaConversationScope.handle(sender,text,{messages});
+    if(scoped.handled){
+      if(!scoped.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
+      if(scoped.scopeMenu){const sent=await rawSendVisaScopeMenu(sender,{text:scoped.reply,token:scoped.scopeMenu.token}),messageId=sent?.messages?.[0]?.id;if(messageId){visaConversationScope.bind(sender,scoped.scopeMenu.token,messageId);if(journal.hasCustomer(sender))journal.recordOutbound(sender,{id:messageId,text:scoped.reply,actor:'assistant',timestamp:Date.now(),status:'accepted'});}}
+      else await sendTextMessage(sender,scoped.reply);return;
     }
     if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
     const attachments=messages.filter(m=>m.media),mediaReplies=[],priorVisaCase=visa.getCase(sender),holdNewMedia=Boolean(priorVisaCase&&(conversationIntent(text)==='new_application'||priorVisaCase.pendingNewApplication));

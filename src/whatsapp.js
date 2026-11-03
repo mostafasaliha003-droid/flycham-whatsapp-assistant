@@ -29,7 +29,7 @@ function extractIncomingMessages(payload) {
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
         if(!message?.from)continue;
-        let text,requestChoice,serviceChoice,visaAnswer,visaConfirmation,visaOwnerAction,visaOperatorAction,visaReceiptAction,visaCoordinationAction,media;
+        let text,requestChoice,serviceChoice,visaScopeChoice,visaAnswer,visaConfirmation,visaOwnerAction,visaOperatorAction,visaReceiptAction,visaCoordinationAction,media;
         if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
         else if(message.type==='button'){
           const payload=message.button?.payload;
@@ -45,6 +45,7 @@ function extractIncomingMessages(payload) {
         else if(message.type==='interactive'&&['button_reply','list_reply'].includes(message.interactive?.type)){
           const isButton=message.interactive.type==='button_reply';
           const buttonId=message.interactive[message.interactive.type]?.id;
+          const scope=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_scope:(new|followup):([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const choice=isButton&&typeof buttonId==='string'?buttonId.match(/^request_(continue|new):([a-f0-9-]{36})$/):null;
           const service=isButton&&typeof buttonId==='string'?buttonId.match(/^service_(flight|saudi_visa):([a-f0-9-]{36})$/):null;
           const answer=typeof buttonId==='string'?buttonId.match(/^visa_answer:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):([a-z][a-z0-9_]{0,39})$/):null;
@@ -53,7 +54,8 @@ function extractIncomingMessages(payload) {
           const operatorAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_operator_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const receiptAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_receipt_action:([a-f0-9-]{36})$/):null;
           const coordinationAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_coordination_action:([a-f0-9-]{36})$/):null;
-          if(coordinationAction){visaCoordinationAction={noticeId:coordinationAction[1]};text='[تنسيق مسؤول المكتب]';}
+          if(scope){visaScopeChoice={action:scope[1],token:scope[2]};text=scope[1]==='new'?'طلب / استفسار جديد':'متابعة طلب حالي';}
+          else if(coordinationAction){visaCoordinationAction={noticeId:coordinationAction[1]};text='[تنسيق مسؤول المكتب]';}
           else if(receiptAction){visaReceiptAction={noticeId:receiptAction[1]};text='[مراجعة إيصال تحويل]';}
           else if(service){serviceChoice={id:service[2],service:service[1]};text=service[1]==='flight'?'طيران إلى سوريا':'فيزا السعودية';}
           else if(choice){requestChoice={id:choice[2],action:choice[1]};text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';}
@@ -77,6 +79,7 @@ function extractIncomingMessages(payload) {
           name: contact?.profile?.name ?? null,
           text,
           ...(requestChoice?{requestChoice}:{}),
+          ...(visaScopeChoice?{visaScopeChoice}:{}),
           ...(serviceChoice?{serviceChoice}:{}),
           ...(visaAnswer?{visaAnswer}:{}),
           ...(visaConfirmation?{visaConfirmation}:{}),
