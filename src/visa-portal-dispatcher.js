@@ -9,6 +9,19 @@ class VisaPortalDispatcher{
  configured(){try{const u=new URL(this.env.RAAD_BROWSER_WORKER_URL);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&u.pathname==='/'&&typeof this.env.RAAD_JOB_BRIDGE_KEY==='string'&&this.env.RAAD_JOB_BRIDGE_KEY.length>=32;}catch{return false;}}
  async request(path,{body,artifact=false,method}={}){if(!this.configured())throw Error('RAAD_BROWSER_NOT_CONFIGURED');const u=new URL(path,this.env.RAAD_BROWSER_WORKER_URL),headers={Authorization:'Bearer '+this.env.RAAD_JOB_BRIDGE_KEY};if(body)headers['Content-Type']='application/json';const r=await this.fetchImpl(u.href,{method:method|| (body?'POST':'GET'),headers,body:body?JSON.stringify(body):undefined,redirect:'error',signal:AbortSignal.timeout(30000)});if(!r.ok)throw Object.assign(Error('RAAD_BRIDGE_HTTP_'+r.status),{status:r.status});if(!artifact)return r.json();if(!(r.headers.get('content-type')||'').startsWith('application/pdf'))throw Error('RAAD_ARTIFACT_TYPE_INVALID');const parts=[];let length=0;for await(const chunk of r.body){length+=chunk.length;if(length>10*1024*1024)throw Error('RAAD_ARTIFACT_TOO_LARGE');parts.push(Buffer.from(chunk));}const bytes=Buffer.concat(parts);if(!bytes.subarray(0,5).equals(Buffer.from('%PDF-')))throw Error('RAAD_ARTIFACT_INVALID');return bytes;}
  async resumeOtp({jobId,portalChallengeId,code,guard}){guard();const run=this.store.data.visaPortalRuns[jobId];if(!run||run.phase!=='waiting_otp')throw Error('RAAD_OTP_CONTEXT_STALE');return this.request('/internal/raad/jobs/'+jobId+'/otp',{body:{challengeId:portalChallengeId,code}});}
+ async liveView(jobId){
+  const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId],lease=this.fulfilment.data().lease;
+  const inactive=()=>({jobId,active:false,readOnly:true,state:job.state,phase:run?.lastStage||'preparing'});
+  if(!run||!lease||lease.jobId!==jobId||lease.token!==run.leaseToken||!['running','waiting_otp'].includes(job.state))return inactive();
+  try{this.fulfilment.guardLease(jobId,run.leaseToken);}catch{return inactive();}
+  const result=await this.request('/internal/raad/jobs/'+jobId+'/live');
+  this.fulfilment.guardLease(jobId,run.leaseToken);
+  if(result.jobId!==jobId||result.caseSignature!==job.caseSignature||result.applicantIndex!==job.applicantIndex||result.readOnly!==true)throw Error('LIVE_VIEW_CONTEXT_UNCONFIRMED');
+  if(result.active!==true)return inactive();
+  if(result.redacted!==true||result.mimeType!=='image/jpeg'||typeof result.image!=='string'||result.image.length>700000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(result.image)||!Number.isFinite(result.capturedAt)||result.capturedAt>this.now()+5000||this.now()-result.capturedAt>10000||!Number.isInteger(result.width)||result.width<1||result.width>1920||!Number.isInteger(result.height)||result.height<1||result.height>1200)throw Error('LIVE_VIEW_FRAME_UNCONFIRMED');
+  const bytes=Buffer.from(result.image.slice(23),'base64');try{if(bytes.length<4||bytes.length>500000||bytes[0]!==255||bytes[1]!==216||bytes[2]!==255||digest(bytes)!==result.sha256)throw Error('LIVE_VIEW_FRAME_UNCONFIRMED');}finally{bytes.fill(0);}
+  return {jobId,active:true,readOnly:true,redacted:true,state:job.state,phase:typeof result.phase==='string'&&/^[a-z_]{1,40}$/.test(result.phase)?result.phase:'preparing',capturedAt:result.capturedAt,width:result.width,height:result.height,image:result.image};
+ }
  async operatorChallenge(jobId,input){
   const check=()=>{const job=this.fulfilment.job(jobId),run=this.store.data.visaPortalRuns[jobId];if(run?.phase!=='waiting_operator'||!run.operatorChallenge||run.operatorChallenge.expiresAt<=this.now())throw Error('OPERATOR_CHALLENGE_STALE');this.fulfilment.guardLease(jobId,run.leaseToken);this.currentDossier(job,run);return{job,run};};
   const {job,run}=check(),id=run.operatorChallenge.id;

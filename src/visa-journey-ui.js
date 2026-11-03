@@ -224,6 +224,34 @@
       finally { if (epoch === state.epoch) { state.loading = false; render(); } }
     }
     async function fetchCase(id) { const result = await adapter.detail(id); return normalize(result.item || result.case || result); }
+    function liveDialog(job){
+      const epoch=state.epoch,dialog=modal('شاشة رعد المباشرة','vj-live-dialog');
+      const body=n('div','vj-dialog-body vj-live-viewer'),toolbar=n('div','vj-live-toolbar'),badge=n('span','vj-live-badge','جارٍ الاتصال'),phase=n('strong','vj-live-phase','متابعة خطوات التقديم'),clock=n('time','vj-live-clock'),screen=n('div','vj-live-screen'),image=n('img','vj-live-image'),status=n('p','vj-live-status','جارٍ الاتصال بجلسة رعد الحالية…');
+      image.alt='شاشة جلسة رعد الحالية · حقول الإدخال محجوبة';image.hidden=true;status.setAttribute('role','status');
+      const labels={preflight:'تجهيز جلسة التقديم',login:'تسجيل الدخول والتحقق',lookup:'التحقق من الطلبات الحالية',personal_info:'بيانات المتقدم',health:'الإفصاح الصحي',residence:'بيانات الإقامة',upload:'رفع المستندات',review:'مراجعة البيانات',form:'تعبئة نموذج الطلب',documents:'رفع المستندات',application_sms:'التحقق من رقم الهاتف',save:'حفظ الطلب',save_preflight:'مراجعة النموذج',insurance:'اختيار التأمين',payment:'مراجعة الخطوة الأخيرة',request_copy:'تجهيز نسخة الطلب',done:'انتهت الجلسة'};
+      let timer=null,staleTimer=null,busy=false,enabled=true,objectUrl=null;
+      const clearFrame=()=>{clearTimeout(staleTimer);image.hidden=true;image.removeAttribute('src');if(objectUrl){URL.revokeObjectURL(objectUrl);state.urls.delete(objectUrl);objectUrl=null;}badge.classList.remove('is-live');};
+      const pause=button('إيقاف المشاهدة',()=>{enabled=!enabled;pause.textContent=enabled?'إيقاف المشاهدة':'استئناف المشاهدة';clearTimeout(timer);if(enabled)update();else{clearFrame();badge.textContent='المشاهدة متوقفة';status.textContent='المشاهدة متوقفة عندك؛ إيقافها لا يغيّر تنفيذ رعد.';}});
+      toolbar.append(badge,phase,clock,pause);screen.append(image);body.append(toolbar,screen,status,n('p','vj-live-note','للمشاهدة فقط · تحديث تلقائي كل 3 ثوانٍ أثناء فتح الشاشة. حقول الإدخال والإطارات محجوبة لحماية البيانات ورموز التحقق.'));dialog.append(body);
+      async function update(){
+        if(busy||!enabled||!dialog.open||document.hidden||epoch!==state.epoch)return;busy=true;
+        try{
+          const result=await request('visa-operator/'+encodeURIComponent(job.id)+'/live','GET');
+          if(!dialog.open||document.hidden||!enabled||epoch!==state.epoch)return;
+          phase.textContent=labels[result.phase]||'متابعة خطوات التقديم';
+          if(result.active!==true){clearFrame();clock.textContent='';badge.textContent='لا توجد جلسة مفتوحة';status.textContent=result.state==='portal_review_required'?'جلسة رعد متوقفة وتحتاج مراجعة. سبب التوقف ظاهر في تفاصيل ملف الطلب.':result.state==='saved_application'?'انتهت جلسة المتصفح لهذا الطلب. نتيجة الحفظ والمتابعة ظاهرة في تفاصيل الملف.':'لا توجد شاشة متصفح نشطة لهذا الطلب الآن. ستظهر هنا عند فتح جلسة رعد.';return;}
+          if(result.jobId!==job.id||result.readOnly!==true||result.redacted!==true||typeof result.image!=='string'||result.image.length>700000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(result.image)||!Number.isFinite(result.capturedAt)||Date.now()-result.capturedAt>10000||result.capturedAt>Date.now()+5000)throw Error('LIVE_FRAME_UNCONFIRMED');
+          const binary=atob(result.image.slice(23)),bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));if(bytes.length>500000)throw Error('LIVE_FRAME_TOO_LARGE');
+          const next=URL.createObjectURL(new Blob([bytes],{type:'image/jpeg'}));state.urls.add(next);const old=objectUrl;objectUrl=next;image.src=next;image.hidden=false;if(old){URL.revokeObjectURL(old);state.urls.delete(old);}
+          clearTimeout(staleTimer);staleTimer=setTimeout(()=>{if(dialog.open){clearFrame();badge.textContent='بانتظار صورة حديثة';status.textContent='تأخر تحديث الشاشة. جارٍ إعادة الاتصال.';}},Math.max(0,Math.min(10000,10000-(Date.now()-result.capturedAt))));
+          badge.textContent='مباشر';badge.classList.add('is-live');clock.textContent='آخر صورة '+new Intl.DateTimeFormat('ar-AE',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(result.capturedAt));clock.dateTime=new Date(result.capturedAt).toISOString();status.textContent='المشاهدة متصلة بجلسة رعد الحالية.';
+        }catch{if(dialog.open&&epoch===state.epoch){clearFrame();badge.textContent='إعادة اتصال';status.textContent='تعذرت مشاهدة الجلسة الآن. ستُعاد محاولة الاتصال تلقائيًا؛ لا تُعرض صورة قديمة.';}}
+        finally{busy=false;if(enabled&&dialog.open&&!document.hidden&&epoch===state.epoch)timer=setTimeout(update,3000);}
+      }
+      const visibility=()=>{clearTimeout(timer);if(document.hidden){clearFrame();badge.textContent='المشاهدة معلّقة';status.textContent='تُستأنف المشاهدة عند الرجوع إلى هذه النافذة.';}else update();};document.addEventListener('visibilitychange',visibility);
+      image.onerror=()=>{if(dialog.open){clearFrame();badge.textContent='إعادة اتصال';status.textContent='تعذّر عرض الصورة؛ جارٍ طلب صورة حديثة.';}};
+      dialog.addEventListener('close',()=>{enabled=false;clearTimeout(timer);clearFrame();document.removeEventListener('visibilitychange',visibility);});dialog.showModal();update();return dialog;
+    }
     async function operatorDialog(job) {
       const epoch=state.epoch,dialog=modal('إكمال التحقق المرئي في جلسة رعد'),body=n('div','vj-dialog-body'),status=n('p','muted','جارٍ تحميل التحقق من الجلسة الحالية…');
       body.append(status);dialog.append(body);dialog.showModal();let objectUrl=null;
@@ -280,6 +308,7 @@
         const rows = item.applicants.length ? item.applicants : Array.from({length: item.applicantCount || 1}, (_, index) => ({index}));
         for (const [index, a] of rows.entries()) {
           const wrap = n('article', 'vj-applicant-card'), row = n('div', 'vj-applicant-row'), copy = n('div'); copy.append(n('strong', '', a.name || a.fullName || 'المتقدم ' + ((a.applicantIndex ?? index) + 1)), n('p', '', a.nextAction || a.blocker?.label || a.blocker?.message || 'مستندات · بيانات شخصية · إفصاح صحي')); row.append(n('span', 'vj-applicant-index', String((a.applicantIndex ?? index) + 1).padStart(2, '0')), copy, statusBadge(a.state || a.status || a.stage || item.stage)); wrap.append(row);
+          if(typeof a.id==='string'&&/^[a-f0-9-]{36}$/.test(a.id))wrap.append(button('شاشة رعد المباشرة',()=>liveDialog(a),true));
           const verification=n('section','vj-verification-status');verification.setAttribute('aria-label','التحقق المرئي');verification.append(n('strong','','التحقق المرئي'),n('p','vj-form-intro',a.operatorAvailable===true?'جلسة تحقق جاهزة. اضغط إكمال التحقق المرئي لعرض الصورة وإدخال الرمز.':a.operatorRestartAvailable===true?'انتهت جلسة التحقق السابقة. افتح جلسة جديدة عندما تكون جاهزًا لإدخال الرمز.':['OPERATOR_CHALLENGE_EXPIRED','LOGIN_CAPTCHA_TIMEOUT'].includes(a.blockedReason)?'انتهت مهلة التحقق المرئي. إعادة فتح الجلسة تحتاج مراجعة الفريق بعد استنفاد المحاولات المتاحة.':'لا توجد جلسة تحقق مرئي نشطة لهذا المتقدم الآن.'));wrap.append(verification);
           if(a.operatorAvailable===true)verification.append(button('إكمال التحقق المرئي',()=>operatorDialog(a),true));
           else if(a.operatorRestartAvailable===true){const status=n('p','vj-form-intro'),restart=button('فتح جلسة التحقق',async()=>{restart.disabled=true;status.textContent='جارٍ الاتصال بخدمة المتصفح وفتح الجلسة…';try{const result=await request('visa-operator/'+encodeURIComponent(a.id),'POST',{restart:true});if(result.restartQueued!==true)throw Error('UNCONFIRMED');status.textContent='قُبل فتح الجلسة. حدّث الملف بعد لحظات لإكمال التحقق المرئي.';await refresh();}catch{status.textContent='لم يتأكد فتح الجلسة. قد تكون خدمة المتصفح قيد الاستيقاظ، أو تغيّرت حالة الملف. حدّث الملف قبل المحاولة مجددًا.';restart.disabled=false;}},true);status.setAttribute('role','status');verification.append(restart,status);}

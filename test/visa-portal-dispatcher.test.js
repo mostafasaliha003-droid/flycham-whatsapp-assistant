@@ -527,3 +527,13 @@ test('missing document names trigger one case/applicant/source-bound Cline rerea
   const fields=structuredClone(job.confirmedFields);assert.equal(f.dispatcher.recoverDocumentNames(job),mode==='valid',mode);assert.equal(reads,mode==='valid'?1:0);assert.deepEqual(job.confirmedFields,fields);assert.equal(f.dispatcher.recoverDocumentNames(job),false);assert.equal(reads,mode==='valid'?1:0);
  }
 });
+
+test('live screen is bound to the active lease and rejects other cases, stale or unredacted frames',async()=>{
+ for(const mode of ['valid','wrong_job','wrong_case','unredacted','expired','wrong_digest','subject_pause']){
+  const f=fixture(),[job]=await f.activate(),{lease}=f.fulfilment.acquireJob(job.id,{workerId:'live-test'});f.store.data.visaPortalRuns[job.id]={phase:'running',lastStage:'personal_info',leaseToken:lease.token};
+  const bytes=Buffer.from([255,216,255,224,1,255,217]),image='data:image/jpeg;base64,'+bytes.toString('base64');let reads=0;
+  f.dispatcher.request=async path=>{assert.equal(path,'/internal/raad/jobs/'+job.id+'/live');reads++;if(mode==='subject_pause')f.claim(true);return{jobId:mode==='wrong_job'?'other':job.id,caseSignature:mode==='wrong_case'?'f'.repeat(64):job.caseSignature,applicantIndex:0,readOnly:true,redacted:mode!=='unredacted',active:true,phase:'personal_info',mimeType:'image/jpeg',capturedAt:Date.now()-(mode==='expired'?20000:0),width:1200,height:800,image,sha256:mode==='wrong_digest'?'f'.repeat(64):digest(bytes)};};
+  if(mode==='valid'){const r=await f.dispatcher.liveView(job.id);assert.equal(r.active,true);assert.equal(r.image,image);assert.equal(r.readOnly,true);assert.equal(r.caseSignature,undefined);}else await assert.rejects(f.dispatcher.liveView(job.id));assert.equal(reads,1);
+ }
+ const f=fixture(),[job]=await f.activate();f.dispatcher.request=()=>assert.fail('inactive view cannot open browser');assert.equal((await f.dispatcher.liveView(job.id)).active,false);
+});
