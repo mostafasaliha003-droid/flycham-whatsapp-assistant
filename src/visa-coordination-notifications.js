@@ -20,7 +20,7 @@ class VisaCoordinationNotifications{
    if(job.coordination?.recipient!==OWNER||this.store.data.visaCases?.[job.customer]?.id!==job.caseId||visaCaseSignature(this.store.data.visaCases[job.customer])!==job.caseSignature)continue;
    const q=job.state==='awaiting_answers'?Object.values(job.questions||{}).find(q=>q.state==='pending'):job.state==='awaiting_answer_confirmation'?job.summary:null;
    if(q)this.queue(job.customer,'questions',q.token,{jobId:job.id,questionToken:q.token});
-   else if(job.state==='portal_review_required')this.queue(job.customer,'blocked',job.id+':'+job.blockedReason,{jobId:job.id});
+   else if(job.state==='portal_review_required'||job.blockedReason&&!['DOCUMENTS_READING','BROWSER_STARTING','OWNER_NOTIFICATION_NOT_READY'].includes(job.blockedReason))this.queue(job.customer,'blocked',job.id+':'+job.blockedReason,{jobId:job.id});
   }
  }
  async flush(){if(this.busy)return;this.busy=true;try{this.sync();for(const i of Object.values(this.items())){

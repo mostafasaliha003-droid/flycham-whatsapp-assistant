@@ -574,6 +574,19 @@ class VisaFulfilment {
     return {...context, proof: hash(context), complete: Boolean(job.answerConfirmation) && missing.length === 0, missing};
   }
 
+  handleOperatorMessage(message = {}) {
+    const sender=phone(message.from);
+    if(!sender||sender!==this.coordinationOwner())return {handled:false};
+    const bound=Object.values(this.data().outbox).find(item=>item.coordination?.actor==='operator'&&phone(item.recipient)===sender&&(
+      message.visaAnswer?.token===item.payload?.token||message.visaConfirmation?.token===item.payload?.token||message.contextId&&message.contextId===item.messageId));
+    const pendingText=!message.contextId&&typeof message.text==='string'&&Object.values(this.data().jobs).some(job=>job.coordination?.recipient===sender&&job.state==='awaiting_answers'&&Object.values(job.questions||{}).some(q=>q.state==='pending'&&q.type==='text'));
+    if(!bound&&!message.visaAnswer&&!message.visaConfirmation&&!pendingText)return {handled:false};
+    // The owner's sales-chat takeover is not the subject customer's pause.
+    // guardJob still independently checks the actual customer and payment.
+    const result=this.handleCustomerMessage(sender,message),job=bound&&this.data().jobs[bound.jobId];
+    if(result.handled)console.info('[VISA_COORDINATION_INPUT] '+JSON.stringify({...(job?{caseHash:createHash('sha256').update(String(job.caseId)).digest('hex').slice(0,12),state:job.state}:{}),kind:message.visaConfirmation?'confirmation':message.visaAnswer?'choice':'text',outcome:result.ok===true?'accepted':result.error||'context_required'}));
+    return result;
+  }
   handleCustomerMessage(sender, message = {}) {
     if (!phone(sender)) return {handled: false};
     if(this.coordinationOwner()&&phone(sender)!==this.coordinationOwner()&&(message.visaAnswer||message.visaConfirmation))return {handled:true,ok:true,reply:'طلبك معنا، وعم نتابعه. منخبرك بأول تحديث.'};
