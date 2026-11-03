@@ -830,14 +830,14 @@ test('recover only the actual explicit office confirmation after its unique unch
 });
 
 
-test('employee manual completion closes only the current saved blocked applicant without inventing portal proof or sending messages', () => {
+test('employee manual completion closes only the current saved blocked applicant without inventing portal proof and queues one client reference message', () => {
   const f=fixture(), approval=f.approve(), job=f.service.job(approval.jobs[0].id);
   job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';job.blockedReason='PORTAL_BUTTON_VALIDATION_FAILED';
   const input={caseId:job.caseId,applicationReference:job.applicationReference}, beforeMessages=Object.keys(f.service.data().outbox).length;
   const result=f.service.reportManualCompletion(job.id,input);
   assert.equal(result.manualCompletionRecorded,true);assert.equal(job.state,'manually_completed');assert.equal(job.blockedReason,undefined);
   assert.equal(job.manualCompletion.actor,'employee');assert.equal(job.requestCopy,undefined);assert.equal(job.returnedFromPayment,undefined);assert.equal(job.paymentAttempted,undefined);
-  assert.equal(Object.keys(f.service.data().outbox).length,beforeMessages);assert.equal(f.service.job(approval.jobs[1].id).state,'queued');
+  assert.equal(Object.keys(f.service.data().outbox).length,beforeMessages+1);assert.equal(job.manualCopy.state,'pending');assert.equal(f.service.job(approval.jobs[1].id).state,'queued');
   assert.equal(f.service.reportManualCompletion(job.id,input).duplicate,true);
   assert.equal(f.service.data().audit.filter(e=>e.action==='manual_completion_reported').length,1);
   throwsCode(()=>f.service.acquireJob(job.id,{workerId:'test'}),'VISA_JOB_STALE');
@@ -850,4 +850,31 @@ test('manual completion refuses stale references, replacement cases, active leas
     if(mode==='active')f.service.data().lease={jobId:job.id};if(mode==='extra')input.extra=true;if(mode==='unsaved')job.portalSaved=false;if(mode==='running')job.state='running';
     assert.throws(()=>f.service.reportManualCompletion(job.id,input));assert.equal(job.manualCompletion,undefined);
   }
+});
+
+test('manual delivery is bound to case and reference, backfills old confirmations once and respects customer pauses',async()=>{
+ const f=fixture(),a=await f.activate(),job=f.service.job(a.jobs[0].id);job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';
+ f.service.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});
+ const ref=()=>Object.values(f.service.data().outbox).filter(m=>m.kind==='manual_application_reference');assert.equal(ref().length,1);assert.equal(f.service.messageCurrent(ref()[0]),true);
+ assert.match(ref()[0].payload.text,/828601588/);assert.doesNotMatch(ref()[0].payload.text,/رسوم|تقني|رعد/);
+ delete job.manualDeliveryQueued;f.service.syncManualDelivery();f.service.syncManualDelivery();assert.equal(ref().length,1);
+ f.claim(true);assert.equal(f.service.messageCurrent(ref()[0]),false);f.claim(false);job.applicationReference='999999999';assert.equal(f.service.messageCurrent(ref()[0]),false);
+});
+test('manual PDF needs an active print lease and exact generated media binding; it does not invent payment or Return proof',async()=>{
+ const f=fixture(),a=await f.activate(),job=f.service.job(a.jobs[0].id);job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';
+ f.service.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});
+ const {lease}=f.service.acquireManualCopy(job.id);assert.equal(job.state,'running');assert.equal(job.manualCopy.attempts,1);
+ assert.throws(()=>f.service.recordManualCopy(job.id,{leaseToken:lease.token,applicationReference:job.applicationReference,mediaId:PDF}));
+ Object.assign(f.store.data.visaMedia[PDF],{purpose:'raad_application_copy',jobId:job.id,applicationReference:job.applicationReference});
+ const result=f.service.recordManualCopy(job.id,{leaseToken:lease.token,applicationReference:job.applicationReference,mediaId:PDF});
+ assert.equal(job.state,'manually_completed');assert.equal(job.manualCopy.state,'completed');assert.equal(job.returnedFromPayment,undefined);assert.equal(job.paymentAttempted,undefined);
+ assert.equal(result.message.kind,'application_request_copy');assert.equal(f.service.messageCurrent(result.message),true);assert.equal(f.service.data().lease,null);
+});
+
+test('a failed manual PDF export can retry only with exact current context and a bounded explicit action',async()=>{
+ const f=fixture(),a=await f.activate(),job=f.service.job(a.jobs[0].id);job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';
+ const input={caseId:job.caseId,applicationReference:job.applicationReference};f.service.reportManualCompletion(job.id,input);job.state='portal_review_required';job.manualCopy={state:'failed',attempts:1};
+ assert.throws(()=>f.service.retryManualCopy(job.id,{...input,applicationReference:'999999999'}));
+ assert.equal(f.service.retryManualCopy(job.id,input).manualCopyQueued,true);assert.equal(job.state,'manually_completed');assert.equal(job.manualCopy.attempts,1);
+ job.state='portal_review_required';job.manualCopy={state:'failed',attempts:3};assert.throws(()=>f.service.retryManualCopy(job.id,input));
 });
