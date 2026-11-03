@@ -813,3 +813,18 @@ test('bound operator approval progresses even when the owner sales conversation 
  const next=f.service.askQuestions(id,{fields:['performUmrah']});f.service.answerQuestion({sender:'971507993145',token:next.questions[0].token,option:'no'});const blockedToken=f.service.job(id).summary.token;f.inbox.isOperatorOwned=()=>true;
  const blocked=f.service.handleOperatorMessage({from:'971507993145',id:'blocked-subject-approval',visaConfirmation:{token:blockedToken,confirm:true}});assert.equal(blocked.ok,false);assert.equal(f.service.data().jobs[id].state,'awaiting_answer_confirmation');
 });
+
+test('recover only the actual explicit office confirmation after its unique unchanged accepted summary, once',async()=>{
+ for(const mode of ['valid','generic_yes','older','other_summary','ambiguous','subject_pause','expired','not_live']){
+  const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP='971507993145';const a=await f.activate(),id=a.jobs[0].id;
+  const q=f.service.askQuestions(id,{fields:['performUmrah']});f.service.answerQuestion({sender:'971507993145',token:q.questions[0].token,option:'no'});const summary=f.service.pendingMessages().find(m=>m.kind==='applicant_answer_summary');const delivered=await f.service.dispatchMessage(summary.id);summary.messageId=delivered.messageId;
+  const at=f.service.now(),inbound={id:'real-signed-office-click',seq:20,direction:'in',text:mode==='generic_yes'?'نعم':'أؤكد صحة إجابات التأشيرة',at:mode==='older'?at-1000:at,status:mode==='not_live'?'historical':'received'};
+  f.store.data.conversationJournal.customers['971507993145']={operatorOwned:true,messages:[{id:summary.messageId,seq:10,direction:'out',at},inbound]};
+  if(mode==='other_summary'){const other=f.service.commit(()=>f.service.enqueue({key:'other-summary',kind:'applicant_answer_summary',recipient:'971507993145',payload:{token:'other'}}));other.messageId='another-summary-message';f.service.data().outbox[other.id].messageId=other.messageId;f.store.data.conversationJournal.customers['971507993145'].messages.push({id:other.messageId,seq:15,direction:'out',at});}
+  if(mode==='ambiguous'){const original=f.service.data().jobs[id];f.service.data().jobs['other-pending']={...structuredClone(original),id:'other-pending'};}
+  if(mode==='subject_pause')f.claim(true);if(mode==='expired')f.tick(2*3600000+1);
+  const r=f.service.recoverRecordedOperatorConfirmation();assert.equal(r.recovered,mode==='valid',mode);
+  if(mode==='valid'){const job=f.service.job(id);assert.equal(job.answerConfirmation.messageId,inbound.id);assert.equal(job.answerConfirmation.sender,'971507993145');assert.equal(job.answerConfirmation.actor,'operator');assert.equal(job.answerConfirmation.recoveredFrom.summaryMessageId,summary.messageId);assert.equal(f.service.recoverRecordedOperatorConfirmation().recovered,false);}
+  else assert.equal(f.service.data().jobs[id].answerConfirmation,undefined);
+ }
+});

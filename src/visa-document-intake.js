@@ -225,12 +225,13 @@ class VisaDocumentIntake{
    this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.sourceSha256=file.sha256;job.status='running';job.updatedAt=this.now();});
    // Exact duplicate bytes in this case reuse completed checkpoints. No provider
    // request is repeated merely because WhatsApp assigned another media UUID.
-   const duplicate=!job.mrzFocusOnly&&Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&other.sourceSha256===file.sha256&&other.status==='ready');
+   const duplicate=!job.mrzFocusOnly&&!Object.values(job.pages||{}).some(p=>p.nameReviewPending)&&Object.values(this.data().jobs).find(other=>other.id!==job.id&&other.customer===job.customer&&other.caseId===job.caseId&&other.policy===job.policy&&other.sourceSha256===file.sha256&&other.status==='ready');
    if(duplicate){if(this.pageCount(job.customer,job.caseId)-Object.keys(job.pages||{}).length+Object.keys(duplicate.pages).length>MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');this.commit(()=>{this.guard(snap);job=this.data().jobs[snap.id];job.pages=Object.fromEntries(Object.entries(duplicate.pages).map(([page,value])=>[page,{...clone(value),mediaId:job.mediaId}]));job.status='ready';job.updatedAt=this.now();});return;}
    for(let page=1;page<=10;page++){
-    this.guard(snap);job=this.data().jobs[snap.id];if(job.mrzFocusOnly&&!job.pages[page]||job.pages[page]&&!job.pages[page].mrzFocusPending&&!job.pages[page].reviewPending)continue;failedPage=page;
+    this.guard(snap);job=this.data().jobs[snap.id];if(job.mrzFocusOnly&&!job.pages[page]||job.pages[page]&&!job.pages[page].mrzFocusPending&&!job.pages[page].reviewPending&&!job.pages[page].nameReviewPending)continue;failedPage=page;
     let image,normalized;try{image=await this.pageBytes(file,page,()=>this.guard(snap));this.guard(snap);}catch(error){if(page>1&&error?.code==='PDF_INVALID')break;if(page>1&&error?.code==='DOCUMENT_NO_PAGE')break;throw error;}
     try{
+     if(job.pages[page]?.nameReviewPending){await this.reviewNamePage(snap,page,image);continue;}
      if(job.pages[page]?.reviewPending){await this.reviewDocumentPage(snap,page,image);continue;}
      if(job.pages[page]?.mrzFocusPending){if(await this.focusMrzPage(snap,page,image))return;continue;}
      if(this.pageCount(job.customer,job.caseId)>=MAX_TOTAL_PAGES)throw finite('DOCUMENT_PAGE_LIMIT');normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});this.guard(snap);const pageSha=hash(normalized.bytes);
@@ -354,6 +355,42 @@ class VisaDocumentIntake{
   try{const draft=this.raad.get(job.customer,{applicantIndex:job.applicantIndex}),c=this.caseFor(job.customer);if(!this.blockReason(job.customer)&&draft?.review?.complete===true&&draft.review.invalidated!==true&&draft.caseId===c?.id&&draft.caseSignature===visaCaseSignature(c))return {readyForQuestions:true,status:'ready',source:'staff',issues:[]};}catch{}
   const result=await this.refresh(job.customer,{applicantIndex:job.applicantIndex});if(!result.readyForQuestions)return result;const current=this.fulfilment?.data?.()?.jobs?.[job.id],state=this.data().cases[job.customer],applicant=state?.applicants?.find(item=>item.applicantIndex===job.applicantIndex);
   return {...result,readyForQuestions:Boolean(current&&current.caseId===state.caseId&&current.caseSignature===state.caseSignature&&applicant?.applied&&applicant.stagedJobs?.[job.id]===applicant.id&&['ready','needs_confirmation'].includes(applicant.status))};
+ }
+ queueNameReview(customer,binding){
+  if(this.env.RAAD_DOCUMENT_REVIEW_ENABLED!=='true'||typeof this.vision.extractReview!=='function')throw finite('DOCUMENT_REREAD_UNAVAILABLE');
+  const {state,job,source}=this.rereadBinding(customer,binding);
+  const pages=Object.values(job.pages||{}).filter(p=>p.extraction?.kind==='passport'&&p.extraction.readable===true);
+  if(!pages.length||pages.length>2)throw finite('DOCUMENT_REREAD_UNAVAILABLE');
+  const key=digest({caseId:state.caseId,sourceSha256:source.checksum,policy:this.policyFingerprint,purpose:'arabic-name-review'});
+  if(state.nameReviews?.[key])throw finite('DOCUMENT_REREAD_ALREADY_REQUESTED');
+  this.commit(()=>{const current=this.rereadBinding(customer,binding);current.state.nameReviews||={};current.state.nameReviews[key]={state:'queued',sourceSha256:source.checksum,createdAt:this.now(),pages:{}};
+   for(const page of Object.values(current.job.pages))if(page.extraction?.kind==='passport'&&page.extraction.readable===true){page.nameReviewPending=key;current.state.nameReviews[key].pages[page.page]='queued';}
+   current.job.status='queued';current.state.status='processing';current.state.updatedAt=this.now();
+  });this.wake();return {queued:true};
+ }
+ async reviewNamePage(snap,page,image){
+  const guard=()=>{const result=this.guard(snap);if(this.blockReason(snap.customer))throw finite('DOCUMENT_REREAD_PAUSED');return result;};guard();let checkpoint=this.data().jobs[snap.id].pages[page],key=checkpoint.nameReviewPending,record=this.data().cases[snap.customer].nameReviews?.[key];if(!record)return;
+  if(record.pages[page]!=='queued'){this.commit(()=>{guard();record=this.data().cases[snap.customer].nameReviews[key];if(record.pages[page]==='running')record.pages[page]='uncertain';delete this.data().jobs[snap.id].pages[page].nameReviewPending;});return;}
+  let normalized;
+  try{
+   normalized=await this.prepare(image.bytes,{mimeType:image.mimeType,kind:'portrait'});guard();if(hash(normalized.bytes)!==checkpoint.sha256)throw finite('DOCUMENT_SOURCE_CHANGED');
+   this.commit(()=>{guard();this.data().cases[snap.customer].nameReviews[key].pages[page]='running';});
+   const reading=validateDocumentExtraction(await this.vision.extractReview({bytes:normalized.bytes,mimeType:normalized.mimeType,guard}));guard();checkpoint=this.data().jobs[snap.id].pages[page];
+   if(reading.kind!=='passport'||reading.readable!==true||reading.rotation!==checkpoint.extraction.rotation)throw finite('DOCUMENT_REVIEW_UNCONFIRMED');
+   for(const name of ['passportNumber','birthDate']){const a=checkpoint.extraction.fields[name],b=reading.fields[name];if(a?.visible!==true||b?.visible!==true||b.confidence<0.90||a.value!==b.value)throw finite('DOCUMENT_REVIEW_UNCONFIRMED');}
+   this.commit(()=>{guard();const current=this.data().jobs[snap.id].pages[page],adopted=[];
+    // Preserve the checked MRZ, dates, Latin patronymic and their existing
+    // two-reader proof. This read may supplement explicit Arabic labels only.
+    for(const name of ['arabicFirstName','arabicFatherName','arabicFamilyName']){const field=reading.fields[name],old=current.extraction.fields[name];if(field?.visible!==true||field.confidence<0.98)continue;
+     if(old?.visible===true&&old.confidence>=0.98&&old.value.normalize('NFC').trim()!==field.value.normalize('NFC').trim()){current.readReviewIssue={code:'SOURCE_CONFLICT',field:name};continue;}
+     if(old?.visible!==true||old.confidence<0.98){current.extraction.fields[name]=clone(field);adopted.push(name);}
+    }
+    for(const other of Object.values(this.data().jobs)){if(other.id===snap.id||other.customer!==snap.customer||other.caseId!==snap.caseId||other.sourceSha256!==current.sourceSha256)continue;const alias=other.pages?.[page];if(!alias||alias.sha256!==current.sha256||alias.extraction?.kind!=='passport')continue;for(const name of adopted){const old=alias.extraction.fields[name],field=current.extraction.fields[name];if(old?.visible===true&&old.confidence>=0.98&&old.value.normalize('NFC').trim()!==field.value.normalize('NFC').trim()){alias.readReviewIssue={code:'SOURCE_CONFLICT',field:name};continue;}alias.extraction.fields[name]=clone(field);}}
+    current.nameReviewEvidence={policy:'visible-arabic-name-supplement-v1',mediaId:current.mediaId,page:current.page,sha256:current.sha256,sourceSha256:current.sourceSha256,fields:adopted};delete current.nameReviewPending;
+    const r=this.data().cases[snap.customer].nameReviews[key];r.pages[page]='completed';r.state=Object.values(r.pages).every(v=>v==='completed')?'completed':'queued';
+   });
+  }catch{try{guard();this.commit(()=>{guard();delete this.data().jobs[snap.id].pages[page].nameReviewPending;const r=this.data().cases[snap.customer].nameReviews[key];r.pages[page]='failed';r.state='failed';});}catch{}}
+  finally{normalized?.bytes?.fill(0);}
  }
  queueAutomaticDocumentReview(){
   const since=Date.parse(this.env.RAAD_DOCUMENT_REVIEW_START_AT||'');

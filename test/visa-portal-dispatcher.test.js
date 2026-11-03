@@ -516,3 +516,14 @@ test('uncertain saved case resumes only the explicit existing reference once, wi
   else{await assert.rejects(f.dispatcher.recoverExistingApplication(job.id,'12345678'));assert.equal(job.existingRecoveryRequested,undefined);assert.equal(job.state,'portal_review_required');}
  }
 });
+
+test('missing document names trigger one case/applicant/source-bound Cline reread before a human question; wrong sources and exhausted budgets cannot trigger it',async()=>{
+ for(const mode of ['valid','wrong_person','no_budget','too_many_pages','already_tried']){
+  const f=fixture(),[job]=await f.activate();job.coordination={actor:'operator',recipient:'971507993145'};job.stagedFields={};delete job.confirmedFields.arabicFirstName;const get=f.raad.get.bind(f.raad);f.raad.get=(...args)=>{const d=get(...args);delete d.fields.arabicFirstName;return d;};f.env.RAAD_DOCUMENT_REVIEW_ENABLED='true';
+  const source={allowed:true,kind:'passport',caseId:job.caseId,mediaId:IDS.passport,sourceSha256:'a'.repeat(64),generation:1};let reads=0;
+  const state={caseId:job.caseId,caseSignature:job.caseSignature,generation:1,applicants:[{applicantIndex:0,evidence:{fieldSources:{passportNumber:[{mediaId:IDS.passport}]}},sourceManifest:[{mediaId:mode==='wrong_person'?IDS.photo:IDS.passport,sha256:source.sourceSha256}]}]};
+  f.dispatcher.documentIntake={data:()=>({cases:{[CUSTOMER]:state},jobs:{source:{customer:CUSTOMER,caseId:job.caseId,generation:1,mediaId:source.mediaId,pages:mode==='too_many_pages'?{1:{},2:{},3:{}}:{1:{}}}}}),rereadSources:()=>[source],queueNameReview:(customer,binding)=>{assert.equal(customer,CUSTOMER);assert.equal(binding,source);reads++;},vision:{status:()=>({ready:mode!=='no_budget',dailyRemaining:mode==='no_budget'?0:5})}};
+  if(mode==='already_tried')job.documentNameRecovery={state:'queued'};
+  const fields=structuredClone(job.confirmedFields);assert.equal(f.dispatcher.recoverDocumentNames(job),mode==='valid',mode);assert.equal(reads,mode==='valid'?1:0);assert.deepEqual(job.confirmedFields,fields);assert.equal(f.dispatcher.recoverDocumentNames(job),false);assert.equal(reads,mode==='valid'?1:0);
+ }
+});
