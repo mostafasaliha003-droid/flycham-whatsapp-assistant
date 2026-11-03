@@ -228,6 +228,24 @@ class VisaPortalDispatcher{
    try{this.fulfilment.askQuestions(job.id,{fields});run.phase='followup';delete job.blockedReason;this.store.save();}catch{job.state=oldState;}
   }
  }
+ recoverDocumentNames(job){
+  if(job.coordination?.actor!=='operator'||this.env.RAAD_DOCUMENT_REVIEW_ENABLED!=='true'||typeof this.documentIntake?.rereadSources!=='function'||typeof this.documentIntake?.queueNameReview!=='function')return false;
+  const draft=this.raad.get(job.customer,{applicantIndex:job.applicantIndex}),fields={...draft.fields,...job.confirmedFields,...job.stagedFields};
+  const missing=PREFLIGHT_CLIENT_FIELDS.filter(f=>!fields[f]);if(!missing.length||job.documentNameRecovery)return false;
+  const state=this.documentIntake.data().cases[job.customer];if(!state||state.caseId!==job.caseId||state.caseSignature!==job.caseSignature)return false;
+  const person=state.applicants?.find(a=>a.applicantIndex===job.applicantIndex);
+  const source=this.documentIntake.rereadSources(job.customer,state).find(s=>s.allowed&&s.kind==='passport'&&person?.sourceManifest?.some(m=>m.mediaId===s.mediaId&&m.sha256===s.sourceSha256)&&person?.evidence?.fieldSources?.passportNumber?.some(r=>r.mediaId===s.mediaId));
+  if(!source)return false;
+  const sourceJob=Object.values(this.documentIntake.data().jobs).find(j=>j.customer===job.customer&&j.mediaId===source.mediaId&&j.caseId===job.caseId&&j.policy===this.documentIntake.policyFingerprint&&j.generation===state.generation);if(!sourceJob||Object.keys(sourceJob.pages||{}).length<1||Object.keys(sourceJob.pages||{}).length>2)return false;
+  const vision=this.documentIntake.vision?.status?.();if(vision?.ready!==true||!Number.isInteger(vision.dailyRemaining)||vision.dailyRemaining<1)return false;
+  this.fulfilment.guardJob(job.id);
+  // One source-bound Cline reread uses the existing document budget. The
+  // intake verifies exact bytes and deduplicates SHA aliases across restarts.
+  this.documentIntake.queueNameReview(job.customer,source);
+  job.state='queued';if(job.answerConfirmation){job.previousAnswerConfirmation=structuredClone(job.answerConfirmation);delete job.answerConfirmation;}
+  job.documentNameRecovery={sourceSha256:source.sourceSha256,requestedAt:this.now(),caseSignature:job.caseSignature,state:'queued'};this.block(job,'DOCUMENTS_READING');this.store.save();
+  console.info('[VISA_NAME_RECOVERY] '+JSON.stringify({caseHash:digest(String(job.caseId)).slice(0,12),action:'cline_name_review',missingFields:missing}));return true;
+ }
  supervisorDiagnostic(){
   for(const job of Object.values(this.fulfilment.data().jobs)){
    if(['stale','cancelled','saved_application'].includes(job.state))continue;
@@ -244,7 +262,7 @@ class VisaPortalDispatcher{
   for(const [customer,c]of Object.entries(this.store.data.visaCases||{}).slice(-50)){try{const s=this.documentIntake.summary(customer);if(s.caseId!==c.id||!['ready','needs_confirmation','needs_review','processing'].includes(s.status))continue;const row={caseHash:digest(String(c.id)).slice(0,12),status:s.status,awaitingPayment:s.awaitingPayment===true,review:{enabled:s.recovery?.enabled===true,...(Number.isInteger(s.recovery?.remainingCalls)&&s.recovery.remainingCalls>=0&&s.recovery.remainingCalls<=100?{remainingCalls:s.recovery.remainingCalls}:{}),attempts:(s.recovery?.attempts||[]).slice(0,2).filter(x=>['queued','running','completed','conflict','failed','uncertain'].includes(x))},applicants:(s.applicants||[]).slice(0,30).map(a=>({index:a.applicantIndex,status:['ready','needs_confirmation','needs_review'].includes(a.status)?a.status:'unconfirmed',gaps:['passportType','issueDate','birthPlace'].filter(f=>a.clientFieldsRequired?.includes(f)),prepared:['passport','residence','photo'].filter(k=>typeof a.documents?.[k]==='string'&&a.documents[k]),issues:(a.issues||[]).slice(0,8).map(i=>({code:require('./visa-document-matching').DOCUMENT_MATCH_ISSUE_CODES.includes(i.code)?i.code:'OTHER',...(require('./visa-document-vision').DOCUMENT_FIELD_NAMES.includes(i.field)?{field:i.field}:{})}))})),identityComparison:require('./visa-document-matching').residenceBindingDiagnostic(this.store.data.visaDocumentIntake?.cases?.[customer]?.documents||[],new Date(this.now()).toISOString().slice(0,10)),documentPages:(this.store.data.visaDocumentIntake?.cases?.[customer]?.documents||[]).slice(0,10).map(p=>({kind:['passport','uae_id_front','uae_id_back','portrait','other'].includes(p.extraction?.kind)?p.extraction.kind:'other',readable:p.extraction?.readable===true,mrzLineLengths:(p.extraction?.mrzLines||[]).slice(0,3).map(l=>typeof l==='string'?Math.min(44,l.length):0)})),readFailures:Object.values(this.store.data.visaDocumentIntake?.jobs||{}).filter(j=>j.customer===customer&&j.caseId===c.id&&j.status==='failed').slice(0,10).map(j=>({attempts:Math.min(10,Math.max(0,Number(Object.values(j.pageAttempts||{}).reduce((a,b)=>a+b,0))||0)),pages:Object.keys(j.pages||{}).length,issues:(j.issues||[]).slice(0,3).map(i=>({code:['DOCUMENT_READ_FAILED','DOCUMENT_FIELD_INVALID','DOCUMENT_PROVIDER_UNAVAILABLE','DOCUMENT_PDF_UNSUPPORTED'].includes(i.code)?i.code:'OTHER',failure:require('./visa-document-vision').DOCUMENT_VISION_ERROR_CODES.includes(i.failureCode)?i.failureCode:'OTHER',...(require('./visa-document-vision').SCHEMA_SECTIONS.includes(i.schemaSection)?{section:i.schemaSection}:{}),...(require('./visa-document-vision').DOCUMENT_FIELD_NAMES.includes(i.fieldName)?{field:i.fieldName}:{}),...(require('./visa-document-vision').SCHEMA_ISSUES.includes(i.schemaIssue)?{issue:i.schemaIssue}:{})}))}))};const key='documents:'+c.id,signature=JSON.stringify(row);if(this.reportedDiagnostics.get(key)===signature)continue;this.reportedDiagnostics.set(key,signature);console.info('[VISA_DOCUMENT_READINESS] '+signature);}catch{}}
  }
  async tick(){if(this.busy||this.env.RAAD_VISA_AUTOMATION_ENABLED!=='true')return;this.busy=true;try{
-  this.supervisorDiagnostic();this.diagnose();
+  this.fulfilment.recoverRecordedOperatorConfirmation?.();this.supervisorDiagnostic();this.diagnose();
   if(this.now()<this.portalReadyAt){await this.flushMessages();return;}
   await this.recoverPreflightLease();
   await this.recoverMissingPreflight();
@@ -256,6 +274,8 @@ class VisaPortalDispatcher{
    if(!['queued','ready'].includes(job.state))continue;
    try{this.fulfilment.guardJob(job.id);}catch(error){this.block(job,typeof error.code==='string'?error.code:'AUTHORIZATION_REVIEW_REQUIRED');continue;}
    if(this.documentIntake?.enabled?.()){const prepared=await this.documentIntake.prepareJob(job),staff=this.raad.get(job.customer,{applicantIndex:job.applicantIndex});if(prepared.readyForQuestions!==true&&!(staff.review?.complete&&!staff.review.invalidated)){this.block(job,prepared.status==='processing'||prepared.status==='queued'?'DOCUMENTS_READING':'DOCUMENTS_REVIEW_REQUIRED');continue;}if(['DOCUMENTS_READING','DOCUMENTS_REVIEW_REQUIRED'].includes(job.blockedReason)){delete job.blockedReason;this.store.save();}}
+   if(this.recoverDocumentNames(job))continue;
+   if(job.coordination?.actor==='operator'&&job.answerConfirmation){const proof=this.fulfilment.getConfirmedFields(job.id);if(proof.missing.length){this.fulfilment.askQuestions(job.id,{fields:proof.missing});continue;}}
    if(!job.answerConfirmation&&job.state==='queued'){const sibling=Object.values(this.fulfilment.data().jobs).some(j=>j.customer===job.customer&&j.id!==job.id&&['awaiting_answers','awaiting_answer_confirmation','needs_followup'].includes(j.state));if(!sibling)this.fulfilment.askQuestions(job.id);}
   }
   await this.flushMessages();if(!this.configured())return;await this.recover();

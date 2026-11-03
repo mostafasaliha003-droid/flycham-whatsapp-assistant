@@ -443,7 +443,8 @@ class VisaFulfilment {
     return this.commit(()=>{job.stagedFields={...clone(job.confirmedFields),...clone(job.stagedFields||{}),...clone(fields)};job.staffDocumentSupplement={draftJobId:draft.jobId,draftRevision:draft.revision,draftFingerprint,fields:clone(fields),fingerprint};this.audit('staff_document_supplement_staged',{customer:job.customer,jobId,evidenceId:job.documentFacts.evidenceId,fields:Object.keys(fields)});return {ok:true,duplicate:false};});
   }
   missingClientFields(job, fields) {
-    return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: job.documentRequiredFields || []})])];
+    const portalFields=job.coordination?.actor==='operator'||this.coordinationOwner()?['latinFatherName','arabicFirstName','arabicFatherName','arabicFamilyName']:[];
+    return [...new Set([...requiredQuestions(fields), ...requiredQuestions(fields, {requestedFields: [...(job.documentRequiredFields || []),...portalFields]})])];
   }
   stageDocumentFacts(jobId, {fields, evidenceId} = {}) {
     const job = this.guardJob(jobId);
@@ -574,6 +575,32 @@ class VisaFulfilment {
     return {...context, proof: hash(context), complete: Boolean(job.answerConfirmation) && missing.length === 0, missing};
   }
 
+  recoverRecordedOperatorConfirmation() {
+    const owner=this.coordinationOwner(),chat=owner&&this.store.data.conversationJournal?.customers?.[owner];
+    if(!owner||!chat||!(chat.operatorOwned===true||this.inbox?.isOperatorOwned?.(owner)===true))return {recovered:false};
+    const pending=Object.values(this.data().jobs).filter(j=>j.coordination?.recipient===owner&&j.state==='awaiting_answer_confirmation'&&j.summary&&!j.answerConfirmation);
+    if(pending.length!==1)return {recovered:false};
+    const job=pending[0],summary=job.summary;
+    const sent=Object.values(this.data().outbox).find(i=>i.jobId===job.id&&i.kind==='applicant_answer_summary'&&i.payload?.token===summary.token&&phone(i.recipient)===owner&&['accepted','delivered'].includes(i.state)&&providerMessageId(i.messageId));
+    if(!sent)return {recovered:false};
+    const outbound=chat.messages?.find(m=>m.direction==='out'&&m.id===sent.messageId&&Number.isSafeInteger(m.seq));
+    if(!outbound)return {recovered:false};
+    const inbound=chat.messages.find(m=>m.direction==='in'&&m.text==='أؤكد صحة إجابات التأشيرة'&&m.status==='received'&&providerMessageId(m.id)&&m.seq>outbound.seq&&m.at>=outbound.at&&m.at>=summary.createdAt&&m.at<=this.now()&&this.now()-m.at<=2*3600000);
+    if(!inbound)return {recovered:false};
+    // Reconstruct only an unambiguous, actually received explicit office
+    // confirmation. Never use a generic Yes, a chat claim, legacy imports,
+    // another case's summary, or a fabricated provider message ID.
+    const priorSummaries=Object.values(this.data().outbox).filter(i=>i.kind==='applicant_answer_summary'&&phone(i.recipient)===owner&&i.messageId).flatMap(i=>{const m=chat.messages.find(m=>m.direction==='out'&&m.id===i.messageId);return m&&m.seq<inbound.seq?[{item:i,seq:m.seq}]:[];}).sort((a,b)=>b.seq-a.seq);
+    if(priorSummaries[0]?.item.id!==sent.id)return {recovered:false};
+    try{
+      this.guardJob(job.id);this.assertDocumentFactsCurrent(job);
+      if(job.summary?.token!==summary.token||job.summary.questionRevision!==job.questionRevision)return {recovered:false};
+      this.confirmAnswers({sender:owner,token:summary.token,confirm:true,messageId:inbound.id});
+      this.commit(()=>{job.answerConfirmation.recoveredFrom={source:'explicit_operator_journal',summaryMessageId:sent.messageId,inboundSequence:inbound.seq};this.audit('operator_confirmation_recovered',{jobId:job.id,customer:job.customer,messageId:inbound.id});});
+      console.info('[VISA_OPERATOR_CONFIRMATION_RECOVERED] '+JSON.stringify({caseHash:createHash('sha256').update(String(job.caseId)).digest('hex').slice(0,12),state:job.state}));
+      return {recovered:true,jobId:job.id};
+    }catch{return {recovered:false};}
+  }
   handleOperatorMessage(message = {}) {
     const sender=phone(message.from);
     if(!sender||sender!==this.coordinationOwner())return {handled:false};
