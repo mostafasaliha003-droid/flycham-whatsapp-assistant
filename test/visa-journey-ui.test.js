@@ -66,6 +66,7 @@ function harness({approve, capabilities, list, item, media, operator} = {}) {
   const documentListeners={},timers=new Map();let nextTimer=0;
   const document = {addEventListener:(name,fn)=>{(documentListeners[name]||=[]).push(fn);},removeEventListener:(name,fn)=>{documentListeners[name]=(documentListeners[name]||[]).filter(f=>f!==fn);},body, activeElement: null, getElementById: () => root, createElement: tag => new Element(tag), querySelectorAll: selector => descendants(body).filter(node => selector === '.vj-dialog' && node.tagName === 'dialog')};
   const context = {setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),Uint8Array,document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, atob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
+  vm.runInNewContext(fs.readFileSync(require.resolve('../src/visa-operator-guidance'),'utf8'),context);
   vm.runInNewContext(source, context);
   let current = sample(item);
   const ui = context.RemalVisaJourney.create({toast: message => toasts.push(message), openConversation: customer => opened.push(customer), media: async (id, customer) => { mediaCalls.push(id); return media ? media(id, customer) : new Blob(['fake'], {type: 'image/png'}); }, request: async (path, method, payload, headers) => {
@@ -248,4 +249,12 @@ test('live viewer hides a frame when the tab is hidden and never renders an inac
  const id='10000000-0000-4000-8000-000000000001';let reads=0;const h=harness({item:{jobs:[{id,applicantIndex:0,state:'running'}]},operator:async()=>{reads++;return{jobId:'another-job',readOnly:true,redacted:true,active:true,capturedAt:Date.now(),image:'data:image/jpeg;base64,/9j/4AAB'};}});
  await h.ui.openCase('971500000001');h.nodes.find(n=>n.tagName==='button'&&n.textContent==='شاشة رعد المباشرة').click();await h.tick();const dialog=h.nodes.filter(n=>n.tagName==='dialog'&&n.open).at(-1);const image=h.descendants(dialog).find(n=>n.tagName==='img');assert.equal(image.hidden,true);assert.match(dialog.textContent,/إعادة اتصال/);
  h.document.hidden=true;for(const fn of h.documentListeners.visibilitychange||[])fn();assert.equal(h.timers.size,0);assert.equal(image.hidden,true);dialog.close();assert.equal(reads,1);
+});
+
+test('notification deep link shows the actual health blocker and clearly says no customer data entry is required',async()=>{
+ const caseId='12345678-1234-4321-abcd-123456789abc',jobId='12345678-1234-4321-abcd-123456789abd';const h=harness({item:{caseId,jobs:[{id:jobId,applicantIndex:0,state:'portal_review_required',portalStage:'health',blockedReason:'PORTAL_BUTTON_VALIDATION_FAILED',applicationReference:'E12345678'}]}});
+ await h.ui.openCase('971500000001',{caseId,jobId});const dialog=h.activeDialog();assert.match(dialog.textContent,/سبب إشعار رعد/);assert.match(dialog.textContent,/الإفصاح الصحي/);assert.match(dialog.textContent,/لا توجد بيانات ناقصة/);assert.match(dialog.textContent,/E12345678/);assert.equal(h.requests.some(r=>r.method==='POST'),false);
+});
+test('old notification cannot silently open a different current case',async()=>{
+ const h=harness({item:{caseId:'12345678-1234-4321-abcd-123456789abc'}});await h.ui.openCase('971500000001',{caseId:'12345678-1234-4321-abcd-123456789abd'});assert.match(h.activeDialog().textContent,/الإشعار يخص ملفًا سابقًا/);assert.doesNotMatch(h.activeDialog().textContent,/رقم الطلب المحفوظ/);assert.equal(h.requests.some(r=>r.method==='POST'),false);
 });
