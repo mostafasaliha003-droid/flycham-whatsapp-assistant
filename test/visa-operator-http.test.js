@@ -12,3 +12,9 @@ test('live view is a private employee-only GET and cannot invoke control actions
  const good=await call({suffix:'/live',dispatcher});assert.equal(good.status,200);assert.equal(good.headers['Cache-Control'],'no-store, private');assert.equal(good.value.readOnly,true);assert.equal(reads,1);
  const post=await call({suffix:'/live',method:'POST',body:{restart:true},dispatcher});assert.equal(post.status,405);assert.equal(reads,1);
 });
+
+test('manual completion is an authenticated explicit POST bound to the selected job',async()=>{
+ let writes=0;const input={caseId:id,applicationReference:'828601588'},dispatcher={fulfilment:{reportManualCompletion(job,value){assert.equal(job,id);assert.deepEqual(value,input);writes++;return{manualCompletionRecorded:true};}}};
+ assert.equal((await call({method:'POST',auth:'Bearer wrong',body:{manualCompletion:input},dispatcher})).status,401);assert.equal(writes,0);
+ const result=await call({method:'POST',body:{manualCompletion:input},dispatcher});assert.equal(result.status,200);assert.equal(result.value.manualCompletionRecorded,true);assert.equal(writes,1);
+});
