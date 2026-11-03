@@ -1,10 +1,10 @@
 'use strict';
 /* Protected operations UI. No customer communication is sent by this module. */
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module==='object'&&module.exports?require('./visa-operator-guidance'):root.RemalVisaOperatorGuidance);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.RemalVisaJourney = api;
-})(typeof window === 'undefined' ? globalThis : window, function () {
+})(typeof window === 'undefined' ? globalThis : window, function (operatorGuidance) {
   const stages = Object.freeze({
     awaiting_payment: ['بانتظار دفعة العميل', 'neutral'],
     awaiting_accountant: ['بانتظار اعتماد المحاسب', 'warn'],
@@ -24,7 +24,7 @@
   const aliases = {awaiting_verification: 'awaiting_accountant', receipt_received: 'awaiting_accountant', payment_verified: 'queued', needs_information: 'awaiting_client', ready_for_portal_review: 'queued', ready: 'queued', running: 'preparing', draft: 'preparing', awaiting_answers: 'awaiting_client', needs_followup: 'awaiting_client', awaiting_answer_confirmation: 'awaiting_client', waiting_otp: 'awaiting_otp', saved_application: 'saved', portal_review_required: 'blocked', cancelled: 'blocked', stale: 'blocked', sent: 'accepted', failed: 'blocked', uncertain: 'blocked'};
   const blockerLabels = Object.freeze({OPERATOR_CHALLENGE_EXPIRED:'انتهت مهلة التحقق المرئي؛ افتح جلسة تحقق جديدة',LOGIN_CAPTCHA_TIMEOUT:'انتهت مهلة التحقق المرئي؛ افتح جلسة تحقق جديدة',SAVE_UNCERTAIN:'لم تتأكد نتيجة الحفظ؛ يلزم فحص رعد قبل إعادة التقديم',SAVE_PREFLIGHT_PASSED:'اكتمل فحص النموذج دون حفظ أو إرسال',DOCUMENTS_READING: 'جارٍ قراءة المستندات ومطابقة بياناتها', OWNER_NOTIFICATION_NOT_READY: 'بانتظار جاهزية واتساب لمسؤول المكتب؛ سيُستأنف الطلب تلقائياً عند الجاهزية', BROWSER_STARTING: 'جارٍ تجهيز قناة التقديم؛ سيُستأنف الطلب عند جاهزيتها', DOCUMENTS_REVIEW_REQUIRED: 'راجع المستندات والبيانات في تبويب رعد قبل بدء التقديم', DOCUMENT_DATA_REVIEW_REQUIRED: 'استكمل مطابقة بيانات المستندات قبل التقديم', DOCUMENT_DATA_CONFLICT: 'إجابة المتقدم تختلف عن المستند؛ طابق البيانات قبل المتابعة', DOCUMENTS_REQUIRED: 'اربط الجواز والإقامة والصورة الشخصية بالمتقدم', PREPARATION_REVIEW_REQUIRED: 'استكمل متطلبات تجهيز الملف في تبويب رعد', PORTAL_START_UNCERTAIN: 'نتيجة بدء التقديم غير مؤكدة؛ راجع المرجع قبل الاستئناف', ACCOUNTANT_APPROVAL_REQUIRED: 'اعتماد المحاسب لدفعة هذا الملف مطلوب', CLIENT_ANSWERS_REQUIRED: 'استكمال إجابات المتقدم وتأكيدها', CUSTOMER_BLOCKED: 'التواصل مع العميل محظور · راجع إعدادات المحادثة', COMPLAINT_ACTIVE: 'حسم الشكوى المفتوحة مع الإدارة', HUMAN_OWNERSHIP: 'المحادثة لدى موظف · راجع تسليمها للفريق الآلي', CASE_AMENDMENT_PENDING: 'حسم تعديل ملف التأشيرة قبل استئناف التجهيز', CASE_ALREADY_PROCESSED: 'الملف سبق تقديمه أو معالجته · يحتاج مراجعة', AUTOMATION_PAUSED: 'المتابعة الآلية متوقفة', CASE_CHANGED: 'تغير ملف العميل · أعد مراجعة هذه النسخة', BROWSER_INTERRUPTED: 'انقطع اتصال البوابة · راجع المرحلة قبل الاستئناف', BROWSER_LEASE_EXPIRED: 'انتهت جلسة البوابة · يلزم مراجعتها', OTP_ATTEMPTS_EXHAUSTED: 'تعذر إكمال التحقق · يحتاج تدخّل صاحب الحساب', OTP_RESUME_UNCERTAIN: 'نتيجة استئناف التحقق غير مؤكدة · راجع البوابة', DELIVERY_OUTCOME_UNCERTAIN: 'نتيجة إرسال النسخة غير مؤكدة · تحقق قبل إعادة الإرسال'});
   const eventLabels = Object.freeze({receipt_received: 'استُلم إيصال العميل للمراجعة', accountant_payment_approved: 'اعتمد المحاسب وصول دفعة العميل', payment_approved: 'اعتمد المحاسب وصول دفعة العميل', case_invalidated: 'تغيرت متطلبات الملف · أُوقفت النسخة السابقة', job_claimed: 'بدأ رعد تجهيز بيانات المتقدم', client_questions_requested: 'أُعدت أسئلة استكمال بيانات المتقدم', applicant_answers_confirmed: 'أكد المتقدم إجاباته', owner_otp_requested: 'طُلب تحقق صاحب الحساب عبر القناة الآمنة', application_saved_without_payment: 'حُفظ الطلب دون دفع رسوم البوابة', message_accepted: 'قُبلت محاولة الإرسال لدى خدمة واتساب', message_delivered: 'تأكد وصول الرسالة للعميل'});
-  function blockerText(item) { return typeof item === 'string' ? blockerLabels[item] || (/[ء-ي]/.test(item) ? item : 'راجع متطلبات المرحلة في ملف العميل') : item?.label || item?.message || 'راجع متطلبات المرحلة'; }
+  function blockerText(item) { return typeof item === 'string' ? operatorGuidance?.guidanceFor(item)?.summary || blockerLabels[item] || (/[ء-ي]/.test(item) ? item : 'راجع متطلبات المرحلة في ملف العميل') : item?.label || item?.message || 'راجع متطلبات المرحلة'; }
   function stageOf(value) { const key = aliases[value] || value; return Object.hasOwn(stages, key) ? key : 'unknown'; }
   function applicantStage(job, messages = []) {
     let stage = stageOf(job.state || job.status || job.stage);
@@ -297,9 +297,12 @@
       if(!grid.children.length)section.append(n('p','vj-form-intro','لم تُجهز نسخة نهائية مرتبطة بهذا الملف بعد.'));else section.append(grid);
       return section;
     }
-    async function openCase(id) {
+    async function openCase(id,{caseId:expectedCaseId,jobId:targetJobId}={}) {
       const epoch = state.epoch, dialog = modal('تفاصيل رحلة التأشيرة', 'vj-case-dialog'), body = n('div', 'vj-dialog-body'); body.append(skeleton()); dialog.append(body); dialog.showModal();
       try { const item = await fetchCase(id); if (epoch !== state.epoch || !dialog.open) return; body.replaceChildren();
+        if(expectedCaseId&&item.id!==expectedCaseId){body.append(n('h3','','الإشعار يخص ملفًا سابقًا'),n('p','','الملف الحالي لهذا العميل يختلف عن مرجع الإشعار. افتح المحادثة لمراجعة الملف الصحيح.'),button('فتح المحادثة',()=>{dialog.close();openConversation(id);}));return;}
+        const flagged=item.applicants.find(a=>targetJobId?a.id===targetJobId:Boolean(a.blockedReason));
+        if(flagged?.blockedReason){const guidance=operatorGuidance?.guidanceFor(flagged.blockedReason,{phase:flagged.portalStage,hasReference:Boolean(flagged.applicationReference)}),alert=n('section','vj-intervention-panel');alert.setAttribute('role','status');alert.append(n('h3','','سبب إشعار رعد'),n('strong','',guidance?.summary||blockerText(flagged.blockedReason)),n('p','',guidance?.action||'راجع متطلبات هذه المحاولة في التفاصيل أدناه.'));if(guidance?.referenceNote)alert.append(n('p','',guidance.referenceNote));if(flagged.applicationReference)alert.append(n('p','','رقم الطلب المحفوظ: '+flagged.applicationReference));body.append(alert);}
         const head = n('div', 'vj-detail-heading'); head.append(n('h3', '', item.name), statusBadge(item.stage)); body.append(head, n('p', 'vj-detail-id', 'ملف ' + item.id + ' · ' + (item.applicantCount || item.applicants.length || '—') + ' متقدم'), paymentCards(item));
         const next = n('div', 'vj-detail-next'); next.append(n('span', 'eyebrow', 'الخطوة التالية'), n('strong', '', nextStep(item))); body.append(next);
         if (item.blockers.length) { const blockers = n('section', 'vj-blockers'); blockers.append(n('h3', '', 'ما الذي ينتظر المعالجة؟')); const list = n('ul'); for (const b of item.blockers) list.append(n('li', '', blockerText(b))); blockers.append(list); body.append(blockers); }

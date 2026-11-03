@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync(require.resolve('../src/operations.js'),'utf8'),html=fs.readFileSync(require.resolve('../src/operations.html'),'utf8');
-function setup(customer,visaCase){
+function setup(customer,visaCase,{search,journey}={}){
  const nodes=new Map(),requests=[];
  class Element{
   constructor(tag='div'){this.tagName=tag;this.children=[];this._text='';this.value='';this.hidden=false;this.disabled=false;this.dataset={};this.attributes={};this.classList={toggle:()=>{},add:()=>{},remove:()=>{}};this.scrollHeight=0;this.scrollTop=0;this.clientHeight=0;this.isConnected=true;}
@@ -14,7 +14,7 @@ function setup(customer,visaCase){
  for(const match of html.matchAll(/id="([^"]+)"/g))nodes.set(match[1],new Element());
  const document={getElementById:id=>nodes.get(id),createElement:tag=>new Element(tag),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelectorAll:()=>[],addEventListener:()=>{},body:new Element(),hidden:false};
  const detail=()=>({customer:{...customer},visaCase:visaCase?structuredClone(visaCase):undefined,messages:[],notes:[],media:[],sendAttempts:[]});
- const context={document,location:{search:'?customer='+customer.id,origin:'https://example.test'},URL,URLSearchParams,Intl,Date,Map,Set,Number,String,Array,Object,JSON,AbortController,AbortSignal,crypto:require('node:crypto').webcrypto,confirm:()=>true,prompt:()=> 'staff reason',setTimeout:()=>1,clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{},window:{addEventListener:()=>{}},console,fetch:async(path,options={})=>{
+ const context={document,location:{search:search||'?customer='+customer.id,origin:'https://example.test'},URL,URLSearchParams,Intl,Date,Map,Set,Number,String,Array,Object,JSON,AbortController,AbortSignal,crypto:require('node:crypto').webcrypto,confirm:()=>true,prompt:()=> 'staff reason',setTimeout:()=>1,clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{},window:{addEventListener:()=>{},RemalVisaOperatorGuidance:require('../src/visa-operator-guidance'),...(journey?{RemalVisaJourney:{create:()=>journey}}:{})},console,fetch:async(path,options={})=>{
   requests.push({path,options});let data={};
   if(path==='/internal/assistant/status')data={};
   else if(path.startsWith('/internal/assistant/conversations?'))data={items:[{...customer}]};
@@ -39,4 +39,9 @@ test('service filter is sent to backend and local/native block actions are expli
 });
 test('claim is required before staff visa verification controls are enabled',async()=>{
  const customer=base();const ui=setup(customer,{id:'visa-1',stage:'quoted',applicants:[],quote:{subtotal:700,total:700},paymentStatus:'unverified'});await ui.login();const actions=ui.nodes.get('visa-details').children.find(x=>x.className==='visa-actions');assert.ok(actions.children.every(x=>x.disabled));await ui.nodes.get('ownership-action').onclick();assert.equal(customer.staffClaimed,true);assert.equal(ui.nodes.get('message-text').disabled,false);
+});
+
+test('an authenticated notification opens the visas view and exact case directly without granting takeover or executing an action',async()=>{
+ const expected={customer:'971500000001',caseId:'12345678-1234-4321-abcd-123456789abc',jobId:'12345678-1234-4321-abcd-123456789abd'},opened=[];const {operationsLink}=require('../src/visa-operator-guidance');const search=new URL(operationsLink(expected)).search;
+ const journey={refresh:async()=>{},openCase:async(...args)=>opened.push(args)};const h=setup(base(),{id:expected.caseId},{search,journey});await h.login();assert.equal(h.nodes.get('view-visas').hidden,false);assert.equal(h.nodes.get('view-inbox').hidden,true);assert.equal(opened.length,1);assert.equal(opened[0][0],expected.customer);assert.equal(opened[0][1].caseId,expected.caseId);assert.equal(opened[0][1].jobId,expected.jobId);assert.equal(h.requests.some(r=>r.options.method==='POST'),false);
 });

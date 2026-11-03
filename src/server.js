@@ -464,10 +464,10 @@ function createServer() {
       }catch{if(!response.headersSent)response.writeHead(400).end();}
       return;
     }
-    if(request.method==='GET'&&['/operations','/operations.js','/operations.css','/operations-logo.jpg','/visa-journey-ui.js','/visa-journey-ui.css'].includes(url.pathname)){
+    if(request.method==='GET'&&['/operations','/operations.js','/operations.css','/operations-logo.jpg','/visa-journey-ui.js','/visa-journey-ui.css','/visa-operator-guidance.js'].includes(url.pathname)){
       const logo=url.pathname.endsWith('.jpg'),asset=url.pathname==='/operations'?'operations.html':url.pathname.slice(1);
       const body=logo?Buffer.from(require('./remal-logo').split(',')[1],'base64'):readFileSync(join(__dirname,asset));
-      response.writeHead(200,{'Content-Type':logo?'image/jpeg':asset.endsWith('.js')?'text/javascript; charset=utf-8':asset.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"}).end(body);return;
+      response.writeHead(200,{'Content-Type':logo?'image/jpeg':asset.endsWith('.js')?'text/javascript; charset=utf-8':asset.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"}).end(body);return;
     }
     if(['/internal/assistant/visa-portal/health','/internal/assistant/visa-portal/otp-template','/internal/assistant/visa-portal/payment-template','/internal/assistant/visa-portal/document-ocr/probe'].includes(url.pathname)){
       if(!validQueueKey(request.headers.authorization,process.env.RAAD_JOB_BRIDGE_KEY)){response.writeHead(403).end();return;}
