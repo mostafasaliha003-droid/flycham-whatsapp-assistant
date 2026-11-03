@@ -76,7 +76,7 @@ class VisaPortalDispatcher{
   for(const [key,value]of Object.entries(proof.fields)){if(['health','guardian','maritalStatus','previousNationality','previousNationalityDetails','travelledLastFiveYears','travelHistory','performUmrah','priorGccDeportation','priorGccRuleViolation','saudiAddress'].includes(key))continue;if(Object.hasOwn(draft.fields,key)&&JSON.stringify(draft.fields[key])!==JSON.stringify(value))return {ready:false,blockedReason:'DOCUMENT_DATA_CONFLICT'};}
   return {ready:true,source:'staff',fingerprint,fields:{...draft.fields,...proof.fields,health:{...draft.fields?.health,...proof.fields.health},guardian:{...draft.fields?.guardian,...proof.fields.guardian}},defaults:draft.defaults,documents:draft.documents};
  }
- currentDossier(job,run){if(run.printExistingOnly){if(!this.fulfilment.manualCompletionCurrent(job)||this.manualCopyFingerprint(job)!==run.draftFingerprint)throw Error('MANUAL_COPY_CONTEXT_STALE');return;}const proof=this.fulfilment.getConfirmedFields(job.id),dossier=this.dossier(job,proof);if(!proof.complete||!dossier.ready||!dossier.fingerprint||dossier.fingerprint!==run.draftFingerprint)throw Error('RAAD_DRAFT_CHANGED');return dossier;}
+ currentDossier(job,run){if(run.printExistingOnly){if(!this.fulfilment.manualCompletionCurrent(job)||this.manualCopyFingerprint(job)!==run.draftFingerprint)throw Error('MANUAL_COPY_CONTEXT_STALE');return {ready:true,source:'manual_print',fingerprint:run.draftFingerprint};}const proof=this.fulfilment.getConfirmedFields(job.id),dossier=this.dossier(job,proof);if(!proof.complete||!dossier.ready||!dossier.fingerprint||dossier.fingerprint!==run.draftFingerprint)throw Error('RAAD_DRAFT_CHANGED');return dossier;}
  async flushMessages(){
   const paused=Object.values(this.fulfilment.data().outbox).some(item=>item.state==='cancelled'&&item.failure==='DELIVERY_PAUSED'&&(item.kind==='payment_confirmation'||item.kind==='owner_otp_request'&&!item.noticeMessageId));
   if(paused&&typeof this.notificationReadiness==='function'){try{this.fulfilment.requeueApprovedNotifications(await this.notificationReadiness());}catch{ /* Unverified templates do not authorize an automatic retry. */ }}
@@ -93,6 +93,14 @@ class VisaPortalDispatcher{
  async recover(){if(this.recovered)return;for(const [id,run]of Object.entries(this.store.data.visaPortalRuns)){if(!['starting','running','waiting_otp','waiting_operator','uncertain'].includes(run.phase))continue;await this.cancelOwned(id);run.phase='interrupted';this.store.save();}this.recovered=true;}
  manualCopyPassport(job){const passport=job.documentFacts?.fields?.passportNumber||job.confirmedFields?.passportNumber;if(typeof passport!=='string'||!/^[A-Z0-9]{5,12}$/.test(passport))throw Error('MANUAL_COPY_PASSPORT_REQUIRED');return passport;}
  manualCopyFingerprint(job){return digest(JSON.stringify([job.caseId,job.caseSignature,job.manualCompletion?.applicationReference,this.manualCopyPassport(job),job.answerConfirmation?.messageId]));}
+ async recoverManualCopyPreflight(){
+  if(this.fulfilment.data().lease)return;
+  for(const job of Object.values(this.fulfilment.data().jobs)){
+   const run=this.store.data.visaPortalRuns[job.id];
+   if(job.state!=='portal_review_required'||job.blockedReason!=='LEASE_REVOKED'||job.manualCopy?.state!=='failed'||job.manualCopy.attempts!==1||run?.printExistingOnly!==true||run.phase!=='blocked'||run.lastStage!=='preflight')continue;
+   try{this.currentDossier(job,run);await this.cancelOwned(job.id);this.currentDossier(job,run);this.fulfilment.retryManualCopy(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});}catch{}
+  }
+ }
  async launchManualCopy(job){
   if(!this.fulfilment.manualCompletionCurrent(job)||job.state!=='manually_completed'||job.manualCopy?.state!=='pending')return;
   const consent=job.answerConfirmation;
@@ -311,7 +319,7 @@ class VisaPortalDispatcher{
    if(job.coordination?.actor==='operator'&&job.answerConfirmation){const proof=this.fulfilment.getConfirmedFields(job.id);if(proof.missing.length){this.fulfilment.askQuestions(job.id,{fields:proof.missing});continue;}}
    if(!job.answerConfirmation&&job.state==='queued'){const sibling=Object.values(this.fulfilment.data().jobs).some(j=>j.customer===job.customer&&j.id!==job.id&&['awaiting_answers','awaiting_answer_confirmation','needs_followup'].includes(j.state));if(!sibling)this.fulfilment.askQuestions(job.id);}
   }
-  await this.flushMessages();if(!this.configured())return;await this.recover();
+  await this.flushMessages();if(!this.configured())return;await this.recover();await this.recoverManualCopyPreflight();
   const active=this.fulfilment.data().lease;
   if(active){const job=this.fulfilment.job(active.jobId),run=this.store.data.visaPortalRuns[job.id];if(run&&['starting','running','waiting_otp','waiting_operator','uncertain'].includes(run.phase))await this.poll(job,run);}
   else {for(const job of Object.values(this.fulfilment.data().jobs)){if(job.state==='manually_completed'&&job.manualCopy?.state==='pending'){try{await this.launchManualCopy(job);}catch{if(job.manualCopy){job.manualCopy.state='failed';job.manualCopy.failure='COPY_PREPARATION_REQUIRED';job.state='portal_review_required';this.block(job,'COPY_PREPARATION_REQUIRED');}}if(this.fulfilment.data().lease)break;}}

@@ -551,6 +551,15 @@ test('manual completion delivers one reference then captures and delivers only t
 test('manual export never falls back to application creation or downloads another reference',async()=>{
  const f=fixture({printSupported:true}),[job]=await f.activate();job.state='portal_review_required';job.portalSaved=true;job.applicationReference='E12345678';job.confirmedFields.passportNumber='EXAMPLE88';
  f.fulfilment.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});await f.dispatcher.launch(job);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
- await f.dispatcher.launchManualCopy(job);f.setState(completedState(job,{printExistingOnly:true,reference:'E99999999',returnedFromPayment:false,ownedBrowserClosed:true}));
+ await f.dispatcher.launchManualCopy(job);assert.equal(f.dispatcher.currentDossier(job,f.store.data.visaPortalRuns[job.id]).ready,true);f.setState(completedState(job,{printExistingOnly:true,reference:'E99999999',returnedFromPayment:false,ownedBrowserClosed:true}));
  await assert.rejects(f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]),/MANUAL_COPY_PROOF_INVALID/);assert.equal(f.storedCopies.length,0);assert.equal(f.calls.some(c=>c.path.endsWith('/artifact')),false);
+});
+
+test('manual print lease preflight has positive readiness and one safe exact-job recovery',async()=>{
+ const f=fixture({printSupported:true}),[job]=await f.activate();job.state='portal_review_required';job.portalSaved=true;job.applicationReference='E12345678';job.confirmedFields.passportNumber='EXAMPLE88';
+ f.fulfilment.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});await f.dispatcher.launchManualCopy(job);
+ const run=f.store.data.visaPortalRuns[job.id];assert.equal(f.dispatcher.currentDossier(job,run).ready,true);
+ f.fulfilment.data().lease=null;job.state='portal_review_required';job.blockedReason='LEASE_REVOKED';job.manualCopy.state='failed';run.phase='blocked';run.lastStage='preflight';
+ await f.dispatcher.recoverManualCopyPreflight();assert.equal(job.state,'manually_completed');assert.equal(job.manualCopy.state,'pending');
+ job.state='portal_review_required';job.blockedReason='LEASE_REVOKED';job.manualCopy={state:'failed',attempts:2};await f.dispatcher.recoverManualCopyPreflight();assert.equal(job.state,'portal_review_required');
 });
