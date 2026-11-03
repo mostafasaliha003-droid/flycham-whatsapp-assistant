@@ -28,7 +28,7 @@ class VisaCoordinationNotifications{
   const job=i.jobId&&this.fulfilment.data().jobs[i.jobId];
   const detail=i.reason==='blocked'?guidanceFor(job?.blockedReason,{phase:job?.portalStage||this.store.data.visaPortalRuns?.[i.jobId]?.lastStage,hasReference:Boolean(job?.applicationReference)}):null;
   const headline=detail?[detail.summary,detail.action,detail.referenceNote].filter(Boolean).join('\n'):REASONS[i.reason];
-  return headline+'\nالعميل: +'+i.customer+'\nمرجع الملف: '+i.caseId+'\nفتح الملف مباشرة:\n'+operationsLink({customer:i.customer,caseId:i.caseId,jobId:i.jobId});
+  return (i.inquiry?'استفسار جديد من العميل يحتاج مراجعتك.\n'+(i.question?'السؤال: '+i.question+'\n':''):'')+headline+'\nالعميل: +'+i.customer+'\nمرجع الملف: '+i.caseId+'\nفتح الملف مباشرة:\n'+operationsLink({customer:i.customer,caseId:i.caseId,jobId:i.jobId});
  }
  async flush(){if(this.busy)return;this.busy=true;try{this.sync();for(const i of Object.values(this.items())){
   if(i.state==='paused'&&i.retryAt<=this.now())i.state='pending';if(i.state!=='pending')continue;
