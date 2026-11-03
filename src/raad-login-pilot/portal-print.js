@@ -43,7 +43,7 @@ async function captureApplicationPdf(page,input={}){
   await active('/SmartForm');if(await page.evaluate(observedPrintLink,{applicationReference,passportNumber,anchor,row,table,href:info.href})!==true)throw finite('PORTAL_PRINT_LINK_UNAVAILABLE');
   await active('/SmartForm');await page.goto(info.href,{waitUntil:'domcontentloaded',timeout:30000});await active(info.path);
   if(info.mode==='edit'&&await page.evaluate(savedEditorMatches,{path:info.path,passportNumber})!==true)throw finite('PORTAL_PRINT_PASSPORT_MISMATCH');
-  const caption='نسخة الطلب المحفوظ — الرسوم الحكومية غير مدفوعة',ref=escaped(applicationReference),template='<div style="width:100%;font-family:Arial,sans-serif;font-size:9px;text-align:center;direction:rtl">'+caption+' — '+ref+'</div>';
+  const caption=input.manualCompletion===true?'نسخة الطلب المحفوظ':'نسخة الطلب المحفوظ — الرسوم الحكومية غير مدفوعة',ref=escaped(applicationReference),template='<div style="width:100%;font-family:Arial,sans-serif;font-size:9px;text-align:center;direction:rtl">'+caption+' — '+ref+'</div>';
   await active(info.path);buffer=await page.pdf({format:'A4',printBackground:true,displayHeaderFooter:true,headerTemplate:template,footerTemplate:template,margin:{top:'18mm',bottom:'18mm',left:'12mm',right:'12mm'}});await active(info.path);
   if(info.mode==='edit'&&await page.evaluate(savedEditorMatches,{path:info.path,passportNumber})!==true)throw finite('PORTAL_PRINT_PASSPORT_MISMATCH');
   if(!Buffer.isBuffer(buffer)||buffer.length<8||buffer.length>MAX_PDF||buffer.subarray(0,5).toString('ascii')!=='%PDF-')throw finite('PORTAL_PRINT_PDF_INVALID');

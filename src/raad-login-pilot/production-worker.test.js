@@ -64,3 +64,22 @@ test('insurance continuation waits for actual page navigation without clicking s
  calls=0;const selected=await observeInsuranceQuotes(ctx,async()=>++calls<3?{insuranceQuotes:{available:false}}:{insuranceQuotes:{available:true,offers:[{publicChoice:'111',companyLabel:'Example expensive',cells:['$20']},{publicChoice:'222',companyLabel:'Example least',cells:['$5.779']}]}});assert.equal(selected.choice,'222');assert.equal(calls,3);
  ctx.locate=async()=>({path:'/Account/Loginindividuals'});await assert.rejects(observePortalTransition(ctx,['/SmartForm/HealthInsurance/12345678'],['/Payment/Summary'],'PAYMENT_SUMMARY_UNCONFIRMED'),e=>e.code==='PAYMENT_SUMMARY_UNCONFIRMED');ctx.checkLease=async()=>{throw finite('LEASE_REVOKED');};await assert.rejects(observeInsuranceQuotes(ctx,async()=>assert.fail('revoked')),e=>e.code==='LEASE_REVOKED');
 });
+
+test('print-only manifest requires existing reference; independent adapter guard forbids application writes and continuation navigation',async()=>{
+ for(const override of [{existingApplicationReference:null},{diagnosticOnly:true}])assert.throws(()=>validateManifest(manifest({printExistingOnly:true,...override}),NOW),/PRINT_EXISTING_REFERENCE_REQUIRED/);
+ for(const [action,data]of [['fill-draft',{fields:[]}],['upload-documents',{}],['set-dates',{}],['activate-control',{mode:'submit'}],['request-application-sms',{}],['confirm-application',{}],['open-page',{path:'/SmartForm/Agreement',label:'Agree'}],['open-page',{path:'/SmartForm',label:'Back',acceptAgreement:true}],['lookup-applications',{passportNumber:'OTHER99'}]]){
+  const t=setup({flow:ctx=>ctx.api(action,data)});await t.worker.start(manifest({printExistingOnly:true}));const result=await until(t.worker,'job_fake_1',s=>s.stage==='blocked');assert.equal(result.blocker.code,'PRINT_ONLY_WRITE_FORBIDDEN');assert.equal(t.calls.length,0);
+ }
+});
+test('print-only flow logs in and matches exact reference and passport without medical facts, insurance, saving, or payment',async()=>{
+ const {runGovernmentJob}=require('./production-worker'),calls=[],pdf=Buffer.from('%PDF-1.7\nexisting application');
+ for(const wrong of [false,true]){
+  const record={reference:'E12345678',controller:new AbortController()},m={printExistingOnly:true,existingApplicationReference:'E12345678',facts:{passportNumber:'X000001'}},ctx={record,manifest:m,operatorCaptcha:true,awaitOperator:async()=>({value:'HUMAN',imageId:'fake'}),wait:async()=>{},locate:async()=>({path:'/SmartForm'}),checkLease:async()=>{},withPage:async fn=>fn({}),capturePdf:async(page,input)=>{assert.equal(input.applicationReference,'E12345678');assert.equal(input.passportNumber,'X000001');assert.equal(input.manualCompletion,true);return{buffer:pdf,applicationReference:'E12345678',sha256:crypto.createHash('sha256').update(pdf).digest('hex')};},api:async(action)=>{calls.push(action);if(action==='start')return{sessionId:'fake-session',credentialsFromEnvironment:true};if(action==='submit')return{submitted:true};if(action==='current')return{stage:'authenticated'};if(action==='lookup-applications')return{lookupSupported:true,matchCount:1,matches:[{applicationReference:wrong?'E99999999':'E12345678'}]};assert.fail('unexpected '+action);}};
+  if(wrong){await assert.rejects(runGovernmentJob(ctx),/SAVED_REFERENCE_MISMATCH/);assert.equal(record.artifact,undefined);}else{await runGovernmentJob(ctx);assert.equal(record.printVerified,true);assert.equal(record.saved,true);assert.equal(record.returnedFromPayment,undefined);}
+ }
+ assert.ok(calls.every(a=>['start','submit','current','lookup-applications'].includes(a)));
+});
+test('print-only completed artifact is readable without inventing a Return from Payment proof',async()=>{
+ const t=setup({flow:async ctx=>{complete(ctx);ctx.record.returnedFromPayment=false;ctx.record.printVerified=true;}});
+ await t.worker.start(manifest({printExistingOnly:true}));const s=await until(t.worker,'job_fake_1',v=>v.stage==='completed');assert.equal(s.artifactReady,true);assert.equal(s.printExistingOnly,true);assert.equal(s.returnedFromPayment,false);assert.equal(s.ownedBrowserClosed,true);assert.ok(t.worker.artifact('job_fake_1').buffer);
+});
