@@ -41,12 +41,13 @@ function harness({approve, capabilities, list, item, media, operator} = {}) {
   const nodes = [], requests = [], toasts = [], revoked = [], mediaCalls = [], opened = [];
   const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
   class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.parentNode = null; this.attributes = {}; this.dataset = {}; this.listeners = {}; this.value = ''; this._text = ''; this.disabled = false; this.checked = false; this.open = false; this.isConnected = true; this.classList = {add() {}}; nodes.push(this); }
+    constructor(tag) { this.tagName = tag; this.children = []; this.parentNode = null; this.attributes = {}; this.dataset = {}; this.listeners = {}; this.value = ''; this._text = ''; this.disabled = false; this.checked = false; this.open = false; this.isConnected = true; this.classList = {add() {},remove() {}}; nodes.push(this); }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
     set textContent(value) { this._text = String(value); this.children = []; }
     append(...children) { for (const child of children) { this.children.push(child); child.parentNode = this; } }
     replaceChildren(...children) { this.children = []; this._text = ''; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = String(value); }
+    removeAttribute(key){delete this.attributes[key];delete this[key];}
     addEventListener(name, handler) { (this.listeners[name] ||= []).push(handler); }
     remove() { this.isConnected = false; if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this); }
     focus() { document.activeElement = this; }
@@ -62,8 +63,9 @@ function harness({approve, capabilities, list, item, media, operator} = {}) {
     reportValidity() { return this.elements.every(node => node.disabled || !node.required || (node.type === 'checkbox' ? node.checked : node.type === 'number' ? Number(node.value) > 0 : node.value.trim().length >= (node.minLength || 1))); }
   }
   const body = new Element('body'), root = new Element('div');
-  const document = {body, activeElement: null, getElementById: () => root, createElement: tag => new Element(tag), querySelectorAll: selector => descendants(body).filter(node => selector === '.vj-dialog' && node.tagName === 'dialog')};
-  const context = {document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, atob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
+  const documentListeners={},timers=new Map();let nextTimer=0;
+  const document = {addEventListener:(name,fn)=>{(documentListeners[name]||=[]).push(fn);},removeEventListener:(name,fn)=>{documentListeners[name]=(documentListeners[name]||[]).filter(f=>f!==fn);},body, activeElement: null, getElementById: () => root, createElement: tag => new Element(tag), querySelectorAll: selector => descendants(body).filter(node => selector === '.vj-dialog' && node.tagName === 'dialog')};
+  const context = {setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),Uint8Array,document, console, Intl, Date, Map, Set, Number, String, Array, Object, JSON, Math, Blob, atob, crypto: require('node:crypto').webcrypto, URL: {createObjectURL: () => 'blob:protected-receipt', revokeObjectURL: value => revoked.push(value)}};
   vm.runInNewContext(source, context);
   let current = sample(item);
   const ui = context.RemalVisaJourney.create({toast: message => toasts.push(message), openConversation: customer => opened.push(customer), media: async (id, customer) => { mediaCalls.push(id); return media ? media(id, customer) : new Blob(['fake'], {type: 'image/png'}); }, request: async (path, method, payload, headers) => {
@@ -79,7 +81,7 @@ function harness({approve, capabilities, list, item, media, operator} = {}) {
   const submit = async form => { await form.onsubmit({preventDefault() {}}); await tick(); };
   const authorize = async () => { await ui.reviewPayment('971500000001'); const dialog = activeDialog(), form = descendants(dialog).find(node => node.tagName === 'form'); descendants(form).find(node => node.type === 'password').value = 'test-accountant'; await submit(form); };
   const reviewForm = () => descendants(activeDialog()).find(node => node.tagName === 'form');
-  return {ui, root, body, document, nodes, requests, toasts, revoked, mediaCalls, opened, find, descendants, activeDialog, submit, tick, authorize, reviewForm};
+  return {ui, root, body, document, documentListeners,timers,nodes, requests, toasts, revoked, mediaCalls, opened, find, descendants, activeDialog, submit, tick, authorize, reviewForm};
 }
 
 test('accountant authority is confirmed by the server before the approval form opens', async () => {
@@ -232,4 +234,18 @@ test('final document preview uses protected selected bytes and revokes them when
 });
 test('closed final document preview never creates a stale image and rejects nonimage content',async()=>{
  for(const close of [true,false]){let resolve;const h=harness({item:{preparedDocuments:[{kind:'passport',mediaId:'final',mimeType:'image/png'}]},media:()=>new Promise(r=>{resolve=r;})});await h.ui.openCase('971500000001');const promise=h.find('button','عرض الصورة النهائية').onclick();if(close)h.activeDialog().close();resolve(new Blob(['synthetic'],{type:close?'image/png':'text/html'}));await promise;assert.equal(h.nodes.some(node=>node.tagName==='img'),false);if(!close)assert.match(h.activeDialog().textContent,/تعذرت معاينة/);}
+});
+
+test('live viewer reads the current job, updates its phase and clears stale frames without sending control requests',async()=>{
+ const id='10000000-0000-4000-8000-000000000001',bytes=Buffer.from([255,216,255,224,1,255,217]);
+ const h=harness({item:{jobs:[{id,applicantIndex:0,state:'running'}]},operator:async({path,method})=>{assert.equal(path,'visa-operator/'+id+'/live');assert.equal(method,'GET');return{jobId:id,readOnly:true,redacted:true,active:true,phase:'insurance',capturedAt:Date.now(),image:'data:image/jpeg;base64,'+bytes.toString('base64')};}});
+ await h.ui.openCase('971500000001');const open=h.nodes.find(n=>n.tagName==='button'&&n.textContent==='شاشة رعد المباشرة');assert(open);open.click();await h.tick();
+ const dialog=h.nodes.filter(n=>n.tagName==='dialog'&&n.open).at(-1),image=h.descendants(dialog).find(n=>n.tagName==='img');assert.equal(image.hidden,false);assert.match(dialog.textContent,/اختيار التأمين/);assert.match(dialog.textContent,/للمشاهدة فقط/);
+ const expiry=[...h.timers.values()].find(t=>t.ms>3000);assert(expiry);expiry.fn();assert.equal(image.hidden,true);assert.match(dialog.textContent,/بانتظار صورة حديثة/);assert(h.revoked.includes('blob:protected-receipt'));
+ dialog.close();assert.equal(h.timers.size,0);assert.equal((h.documentListeners.visibilitychange||[]).length,0);assert.equal(h.requests.some(r=>r.method==='POST'),false);
+});
+test('live viewer hides a frame when the tab is hidden and never renders an inactive or wrong-job frame',async()=>{
+ const id='10000000-0000-4000-8000-000000000001';let reads=0;const h=harness({item:{jobs:[{id,applicantIndex:0,state:'running'}]},operator:async()=>{reads++;return{jobId:'another-job',readOnly:true,redacted:true,active:true,capturedAt:Date.now(),image:'data:image/jpeg;base64,/9j/4AAB'};}});
+ await h.ui.openCase('971500000001');h.nodes.find(n=>n.tagName==='button'&&n.textContent==='شاشة رعد المباشرة').click();await h.tick();const dialog=h.nodes.filter(n=>n.tagName==='dialog'&&n.open).at(-1);const image=h.descendants(dialog).find(n=>n.tagName==='img');assert.equal(image.hidden,true);assert.match(dialog.textContent,/إعادة اتصال/);
+ h.document.hidden=true;for(const fn of h.documentListeners.visibilitychange||[])fn();assert.equal(h.timers.size,0);assert.equal(image.hidden,true);dialog.close();assert.equal(reads,1);
 });
