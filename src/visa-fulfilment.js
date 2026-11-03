@@ -8,7 +8,7 @@ const clone = value => structuredClone(value);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const phone = value => typeof value === 'string' && /^\+?\d{8,16}$/.test(value) ? value.replace(/^\+/, '') : null;
-const terminal = new Set(['saved_application', 'stale', 'cancelled', 'portal_review_required']);
+const terminal = new Set(['saved_application', 'manually_completed', 'stale', 'cancelled', 'portal_review_required']);
 const OTP_TTL = 5 * 60000;
 const DOCUMENT_FACT_FIELDS = Object.freeze(['nationalityCode', 'passportNumber', 'passportType', 'issuingCountryCode', 'issueDate', 'expiryDate', 'birthDate', 'birthPlace', 'sex', 'latinFirstName', 'latinFamilyName', 'latinFatherName', 'latinGrandfatherName', 'arabicFirstName', 'arabicFatherName', 'arabicGrandfatherName', 'arabicFamilyName', 'emiratesId', 'residenceExpiry']);
 const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
@@ -333,7 +333,7 @@ class VisaFulfilment {
     if (this.blocked(item.customer) || !this.approvalCurrent(item.customer, approval) || item.caseSignature !== visaCaseSignature(c)) return false;
     if (item.jobId) {
       const job = this.data().jobs[item.jobId];
-      if (!job || ['stale', 'cancelled', 'portal_review_required'].includes(job.state) || item.questionRevision !== undefined && item.questionRevision !== job.questionRevision) return false;
+      if (!job || ['stale', 'cancelled', 'portal_review_required', 'manually_completed'].includes(job.state) || item.questionRevision !== undefined && item.questionRevision !== job.questionRevision) return false;
       if (item.kind === 'applicant_question' && (job.state !== 'awaiting_answers' || job.questions[item.payload.token]?.state !== 'pending')) return false;
       if (item.kind === 'applicant_answer_summary' && (job.state !== 'awaiting_answer_confirmation' || job.summary?.token !== item.payload.token)) return false;
       if (job.documentFacts && ['applicant_question', 'applicant_answer_summary'].includes(item.kind)) { try { this.assertDocumentFactsCurrent(job); } catch { return false; } }
@@ -740,6 +740,26 @@ class VisaFulfilment {
     } catch {
       return this.commit(() => { const current = this.data().challenges[id]; current.state = 'uncertain'; const job = this.job(current.jobId); if (!terminal.has(job.state)) { job.state = 'portal_review_required'; job.blockedReason = 'OTP_RESUME_UNCERTAIN'; } return reject('OTP_RESUME_UNCERTAIN'); });
     } finally { this.otpLocks.delete(id); }
+  }
+
+  reportManualCompletion(jobId, input) {
+    const job = this.job(jobId), c = this.case(job.customer);
+    if (!object(input) || Object.keys(input).sort().join(',') !== 'applicationReference,caseId' ||
+        input.caseId !== c.id || job.caseId !== c.id || job.caseSignature !== visaCaseSignature(c) ||
+        typeof input.applicationReference !== 'string' || !/^[A-Z]{0,3}[0-9]{3,20}$/.test(input.applicationReference) ||
+        job.applicationReference !== input.applicationReference) fail('MANUAL_COMPLETION_CONTEXT_STALE');
+    if (job.state === 'manually_completed' && job.manualCompletion?.applicationReference === input.applicationReference)
+      return {ok: true, manualCompletionRecorded: true, duplicate: true};
+    if (job.state !== 'portal_review_required' || job.portalSaved !== true || this.data().lease?.jobId === jobId)
+      fail('MANUAL_COMPLETION_UNAVAILABLE');
+    return this.commit(() => {
+      job.manualCompletion = {actor: 'employee', at: this.now(), applicationReference: input.applicationReference};
+      job.state = 'manually_completed'; job.revision++; job.updatedAt = this.now(); delete job.blockedReason;
+      for (const item of Object.values(this.data().outbox)) if (item.jobId === jobId && ['pending', 'paused', 'waiting_owner'].includes(item.state)) { item.state = 'cancelled'; item.failure = 'MANUALLY_COMPLETED'; }
+      for (const challenge of Object.values(this.data().challenges)) if (challenge.jobId === jobId && ['pending', 'consuming'].includes(challenge.state)) challenge.state = 'cancelled';
+      this.audit('manual_completion_reported', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, applicationReference: input.applicationReference, actor: 'employee'});
+      return {ok: true, manualCompletionRecorded: true, duplicate: false};
+    });
   }
 
   recordPortalResult(jobId, {leaseToken, status, applicationReference, paymentAttempted, returnedFromPayment, requestCopy} = {}) {

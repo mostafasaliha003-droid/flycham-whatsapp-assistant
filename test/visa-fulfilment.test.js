@@ -828,3 +828,26 @@ test('recover only the actual explicit office confirmation after its unique unch
   else assert.equal(f.service.data().jobs[id].answerConfirmation,undefined);
  }
 });
+
+
+test('employee manual completion closes only the current saved blocked applicant without inventing portal proof or sending messages', () => {
+  const f=fixture(), approval=f.approve(), job=f.service.job(approval.jobs[0].id);
+  job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';job.blockedReason='PORTAL_BUTTON_VALIDATION_FAILED';
+  const input={caseId:job.caseId,applicationReference:job.applicationReference}, beforeMessages=Object.keys(f.service.data().outbox).length;
+  const result=f.service.reportManualCompletion(job.id,input);
+  assert.equal(result.manualCompletionRecorded,true);assert.equal(job.state,'manually_completed');assert.equal(job.blockedReason,undefined);
+  assert.equal(job.manualCompletion.actor,'employee');assert.equal(job.requestCopy,undefined);assert.equal(job.returnedFromPayment,undefined);assert.equal(job.paymentAttempted,undefined);
+  assert.equal(Object.keys(f.service.data().outbox).length,beforeMessages);assert.equal(f.service.job(approval.jobs[1].id).state,'queued');
+  assert.equal(f.service.reportManualCompletion(job.id,input).duplicate,true);
+  assert.equal(f.service.data().audit.filter(e=>e.action==='manual_completion_reported').length,1);
+  throwsCode(()=>f.service.acquireJob(job.id,{workerId:'test'}),'VISA_JOB_STALE');
+});
+test('manual completion refuses stale references, replacement cases, active leases, extra data and unsaved jobs', () => {
+  for(const mode of ['reference','case','active','extra','unsaved','running']){
+    const f=fixture(), a=f.approve(), job=f.service.job(a.jobs[0].id);job.state='portal_review_required';job.portalSaved=true;job.applicationReference='828601588';
+    const input={caseId:job.caseId,applicationReference:job.applicationReference};
+    if(mode==='reference')input.applicationReference='999999999';if(mode==='case')f.c.id='different-case';
+    if(mode==='active')f.service.data().lease={jobId:job.id};if(mode==='extra')input.extra=true;if(mode==='unsaved')job.portalSaved=false;if(mode==='running')job.state='running';
+    assert.throws(()=>f.service.reportManualCompletion(job.id,input));assert.equal(job.manualCompletion,undefined);
+  }
+});

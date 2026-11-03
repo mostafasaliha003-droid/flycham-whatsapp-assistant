@@ -258,3 +258,18 @@ test('notification deep link shows the actual health blocker and clearly says no
 test('old notification cannot silently open a different current case',async()=>{
  const h=harness({item:{caseId:'12345678-1234-4321-abcd-123456789abc'}});await h.ui.openCase('971500000001',{caseId:'12345678-1234-4321-abcd-123456789abd'});assert.match(h.activeDialog().textContent,/الإشعار يخص ملفًا سابقًا/);assert.doesNotMatch(h.activeDialog().textContent,/رقم الطلب المحفوظ/);assert.equal(h.requests.some(r=>r.method==='POST'),false);
 });
+
+test('manual completion has a distinct employee-confirmed status without claiming a PDF was delivered',()=>{
+ const item=UI.normalize(sample({blockers:[],jobs:[{id:'job',state:'manually_completed',applicationReference:'828601588',manualCompletion:{actor:'employee',at:100}}]}));
+ assert.equal(item.stage,'manually_completed');assert.match(UI.stages[item.stage][0],/بتأكيد الموظف/);
+});
+test('manual completion button confirms first then posts the exact case and reference',async()=>{
+ const jobId='10000000-0000-4000-8000-000000000001';
+ const h=harness({item:{blockers:[],jobs:[{id:jobId,state:'portal_review_required',applicationReference:'828601588',manualCompletionAvailable:true}]},operator:async()=>({manualCompletionRecorded:true})});
+ await h.ui.openCase('971500000001');const done=h.find('button','استكملت الطلب يدويًا');assert.ok(done);
+ const pending=done.onclick();await h.tick();assert.equal(h.requests.some(r=>r.method==='POST'),false);
+ const confirmation=h.descendants(h.body).find(n=>String(n.className||'').includes('vj-confirm-dialog'));assert.match(confirmation.textContent,/828601588/);
+ h.descendants(confirmation).find(n=>n.tagName==='button'&&n.textContent==='متابعة').onclick();await pending;
+ const post=h.requests.find(r=>r.method==='POST');assert.equal(post.path,'visa-operator/'+jobId);
+ assert.equal(post.payload.manualCompletion.caseId,'visa-example');assert.equal(post.payload.manualCompletion.applicationReference,'828601588');
+});
