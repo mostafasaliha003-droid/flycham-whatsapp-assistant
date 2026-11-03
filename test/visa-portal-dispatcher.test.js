@@ -17,7 +17,7 @@ function pdfResponse(bytes = PDF, mime = 'application/pdf') { return {ok: true, 
 function applicant() {
   return {nationalityCode: 'EGY', issuingCountryCode: 'EGY', passportNumber: 'EXAMPLE88', passportType: 'ordinary', issueDate: '2020-01-01', expiryDate: '2100-01-01', birthDate: '1990-04-03', birthPlace: 'Example City', sex: 'M', latinFirstName: 'Ari', latinFatherName:'Example', arabicFirstName:'مثال', arabicFatherName:'مثال', arabicFamilyName:'مثال', latinFamilyName: 'Example', emiratesId: '784199000000001', residenceExpiry: '2100-01-01', maritalStatus: 'single', previousNationality: false, travelledLastFiveYears: false, performUmrah: false, gccResident: true, priorGccDeportation: false, priorGccRuleViolation: false, health: {hospitalizedOrEmergency: false, accidentDisability: false, congenitalCondition: false}, saudiAddress: 'Example Hotel, Riyadh', transport: 'air', arrivalPort: 'Example Airport', entryDate: '2099-01-01'};
 }
-function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
+function fixture({count = 1, send, fetchImpl, configured = true, printSupported = false} = {}) {
   const calls = [], storedCopies = [], sent = [], reads = [];
   let claimed = true, state = {stage: 'running', phase: 'personal_info'}, saves = 0, ready = true;
   const c = {id: 'example-case', revision: 2, policyVersion: 'example-policy', applicantCount: count, applicants: Array.from({length: count}, () => ({nationality: 'مصر', latinFirstName: 'Ari', latinFamilyName: 'Example'})), quote: {total: count * 240}, documents: [], paymentStatus: 'awaiting_verification', submissionStatus: 'not_submitted'};
@@ -30,13 +30,13 @@ function fixture({count = 1, send, fetchImpl, configured = true} = {}) {
   const drafts = Array.from({length: count}, (_, applicantIndex) => ({applicantIndex, revision: 5, fields: applicant(), defaults: {mission: 'Abu Dhabi', applicationPhone: '+' + CUSTOMER, contactEmail: 'example@example.test', insurancePhone: '+' + CUSTOMER, postalCode: '00000'}, documents: {passport: {mediaId: IDS.passport}, residence: {mediaId: IDS.residence}, photo: {mediaId: IDS.photo}}, review: {complete: true, invalidated: false, fingerprint: 'reviewed-example-' + applicantIndex}}));
   for (const draft of drafts) store.data.raadApplications[CUSTOMER].applicants[draft.applicantIndex] = draft;
   const raad = {get(customer, {applicantIndex}) { assert.equal(customer, CUSTOMER); return structuredClone(drafts[applicantIndex]); }};
-  const mediaStore = {get(id, {customer}) { const record = records[id]; if (!record || record.customer !== customer) throw Error('MEDIA_NOT_FOUND'); const {bytes, ...metadata} = record; return structuredClone(metadata); }, read(id, {customer}) { const metadata = this.get(id, {customer}); reads.push({id, customer}); return {metadata, bytes: Buffer.from(records[id].bytes)}; }, storeApplicationPdf(customer, input) { storedCopies.push({customer, ...input, bytes: Buffer.from(input.bytes)}); records[IDS.pdf] = {...records[IDS.pdf], customer, bytes: input.bytes, size: input.bytes.length, checksum: digest(input.bytes), jobId: input.jobId, applicationReference: input.applicationReference}; return this.get(IDS.pdf, {customer}); }};
+  const mediaStore = {get(id, {customer}) { const record = records[id]; if (!record || record.customer !== customer) throw Error('MEDIA_NOT_FOUND'); const {bytes, ...metadata} = record; return structuredClone(metadata); }, read(id, {customer}) { const metadata = this.get(id, {customer}); reads.push({id, customer}); return {metadata, bytes: Buffer.from(records[id].bytes)}; }, storeApplicationPdf(customer, input) { storedCopies.push({customer, ...input, bytes: Buffer.from(input.bytes)}); records[IDS.pdf] = {...records[IDS.pdf], customer, bytes: input.bytes, size: input.bytes.length, checksum: digest(input.bytes), jobId: input.jobId, applicationReference: input.applicationReference,purpose:'raad_application_copy'}; return this.get(IDS.pdf, {customer}); }};
   const inbox = {isOperatorOwned: () => claimed, isBlocked: () => false, updateVisa(customer, input) { assert.equal(customer, CUSTOMER); c.staffVerification ||= {}; c.staffVerification.payment = {amount: input.amount, reference: input.reference, actor: 'staff', caseSignature: visaCaseSignature(c), verifiedAt: 1000}; c.paymentStatus = 'verified'; c.revision++; }};
   const env = {RAAD_OTP_OWNER_WHATSAPP: OWNER, RAAD_VISA_AUTOMATION_ENABLED: 'true', RAAD_BROWSER_WORKER_URL: configured ? 'https://worker.example.test/' : '', RAAD_JOB_BRIDGE_KEY: 'example-bridge-key-'.repeat(3)};
   const fulfilment = new VisaFulfilment({store, inbox, mediaStore, raad, env, send: send || (async (to, payload, guard) => { guard(); sent.push({to, payload}); return {messageId: 'accepted-' + sent.length}; })});
   const fetcher = async (url, options) => {
     const path = new URL(url).pathname, request = {url, path, ...options, body: options.body ? JSON.parse(options.body) : undefined}; calls.push(request);
-    if (path === '/health') return jsonResponse({ready});
+    if (path === '/health') return jsonResponse({ready,production:{activeJob:false,printExistingSupported:printSupported}});
     if (fetchImpl) return await fetchImpl(request);
     if (path.endsWith('/artifact')) return pdfResponse();
     if (path.endsWith('/cancel')) return jsonResponse({ownedBrowserClosed: true, stage: 'cancelled'});
@@ -536,4 +536,21 @@ test('live screen is bound to the active lease and rejects other cases, stale or
   if(mode==='valid'){const r=await f.dispatcher.liveView(job.id);assert.equal(r.active,true);assert.equal(r.image,image);assert.equal(r.readOnly,true);assert.equal(r.caseSignature,undefined);}else await assert.rejects(f.dispatcher.liveView(job.id));assert.equal(reads,1);
  }
  const f=fixture(),[job]=await f.activate();f.dispatcher.request=()=>assert.fail('inactive view cannot open browser');assert.equal((await f.dispatcher.liveView(job.id)).active,false);
+});
+
+test('manual completion delivers one reference then captures and delivers only the exact existing request PDF',async()=>{
+ const f=fixture({printSupported:true}),[job]=await f.activate();job.state='portal_review_required';job.portalSaved=true;job.applicationReference='E12345678';job.confirmedFields.passportNumber='EXAMPLE88';
+ f.fulfilment.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});await f.dispatcher.tick();
+ const post=f.calls.find(c=>c.path==='/internal/raad/jobs');assert.equal(post.body.printExistingOnly,true);assert.equal(post.body.existingApplicationReference,'E12345678');assert.deepEqual(post.body.documents,[]);assert.deepEqual(Object.keys(post.body.fields),['passportNumber']);
+ assert.equal(f.sent.filter(s=>s.payload.type==='text'&&s.payload.text.includes('E12345678')).length,1);
+ f.setState(completedState(job,{printExistingOnly:true,returnedFromPayment:false,ownedBrowserClosed:true}));await f.dispatcher.tick();
+ assert.equal(job.state,'manually_completed');assert.equal(job.manualCopy.state,'completed');assert.equal(job.returnedFromPayment,undefined);assert.equal(f.storedCopies.length,1);
+ const copies=f.sent.filter(s=>s.payload.type==='document');assert.equal(copies.length,1);assert.equal(copies[0].to,CUSTOMER);assert.match(copies[0].payload.caption,/E12345678/);
+ await f.dispatcher.tick();assert.equal(f.sent.filter(s=>s.payload.type==='document').length,1);assert.equal(f.calls.filter(c=>c.path==='/internal/raad/jobs').length,1);
+});
+test('manual export never falls back to application creation or downloads another reference',async()=>{
+ const f=fixture({printSupported:true}),[job]=await f.activate();job.state='portal_review_required';job.portalSaved=true;job.applicationReference='E12345678';job.confirmedFields.passportNumber='EXAMPLE88';
+ f.fulfilment.reportManualCompletion(job.id,{caseId:job.caseId,applicationReference:job.applicationReference});await f.dispatcher.launch(job);assert.equal(f.calls.some(c=>c.path==='/internal/raad/jobs'),false);
+ await f.dispatcher.launchManualCopy(job);f.setState(completedState(job,{printExistingOnly:true,reference:'E99999999',returnedFromPayment:false,ownedBrowserClosed:true}));
+ await assert.rejects(f.dispatcher.poll(job,f.store.data.visaPortalRuns[job.id]),/MANUAL_COPY_PROOF_INVALID/);assert.equal(f.storedCopies.length,0);assert.equal(f.calls.some(c=>c.path.endsWith('/artifact')),false);
 });

@@ -333,7 +333,8 @@ class VisaFulfilment {
     if (this.blocked(item.customer) || !this.approvalCurrent(item.customer, approval) || item.caseSignature !== visaCaseSignature(c)) return false;
     if (item.jobId) {
       const job = this.data().jobs[item.jobId];
-      if (!job || ['stale', 'cancelled', 'portal_review_required', 'manually_completed'].includes(job.state) || item.questionRevision !== undefined && item.questionRevision !== job.questionRevision) return false;
+      const manualDelivery=job?.manualCompletion&&['manual_application_reference','application_request_copy'].includes(item.kind)&&item.manualCompletionReference===job.manualCompletion.applicationReference&&item.manualCompletionReference===job.applicationReference;
+      if (!job || ['stale', 'cancelled'].includes(job.state) || ['portal_review_required','manually_completed'].includes(job.state)&&!manualDelivery || item.questionRevision !== undefined && item.questionRevision !== job.questionRevision) return false;
       if (item.kind === 'applicant_question' && (job.state !== 'awaiting_answers' || job.questions[item.payload.token]?.state !== 'pending')) return false;
       if (item.kind === 'applicant_answer_summary' && (job.state !== 'awaiting_answer_confirmation' || job.summary?.token !== item.payload.token)) return false;
       if (job.documentFacts && ['applicant_question', 'applicant_answer_summary'].includes(item.kind)) { try { this.assertDocumentFactsCurrent(job); } catch { return false; } }
@@ -742,6 +743,46 @@ class VisaFulfilment {
     } finally { this.otpLocks.delete(id); }
   }
 
+  manualCompletionCurrent(job) {
+    const c=this.case(job.customer);
+    return job.caseId===c.id && job.caseSignature===visaCaseSignature(c) &&
+      job.manualCompletion?.actor==='employee' && job.manualCompletion.applicationReference===job.applicationReference &&
+      /^[A-Z]{0,3}[0-9]{3,20}$/.test(job.applicationReference||'');
+  }
+  queueManualDelivery(job) {
+    if(!this.manualCompletionCurrent(job)||['stale','cancelled'].includes(job.state))return;
+    this.enqueue({key:'manual-reference:'+job.id+':'+job.applicationReference,kind:'manual_application_reference',customer:job.customer,recipient:job.customer,approvalId:job.approvalId,caseSignature:job.caseSignature,caseRevision:job.caseRevision,jobId:job.id,manualCompletionReference:job.applicationReference,payload:{type:'text',text:`تم تقديم طلبك برقم ${job.applicationReference} ✅
+رح نتابع طلبك، وأول ما تصدر التأشيرة بنبعتها إلك مباشرة.`}});
+    if(!job.requestCopy&&!job.manualCopy)job.manualCopy={state:'pending',attempts:0};job.manualDeliveryQueued=true;
+  }
+  syncManualDelivery() {
+    for(const job of Object.values(this.data().jobs))if(this.manualCompletionCurrent(job)&&!job.manualDeliveryQueued)this.commit(()=>this.queueManualDelivery(job));
+  }
+  retryManualCopy(jobId,input) {
+    const job=this.job(jobId);
+    if(!object(input)||Object.keys(input).sort().join(',')!=='applicationReference,caseId'||!this.manualCompletionCurrent(job)||input.caseId!==job.caseId||input.applicationReference!==job.applicationReference||job.requestCopy||job.state!=='portal_review_required'||this.data().lease?.jobId===jobId||job.manualCopy?.state!=='failed'||job.manualCopy.attempts>=3)fail('MANUAL_COPY_RETRY_UNAVAILABLE');
+    return this.commit(()=>{job.state='manually_completed';job.manualCopy.state='pending';delete job.blockedReason;return{manualCopyQueued:true};});
+  }
+  acquireManualCopy(jobId) {
+    const job=this.job(jobId);
+    if(!this.manualCompletionCurrent(job)||job.state!=='manually_completed'||job.requestCopy||job.manualCopy?.state!=='pending'||(job.manualCopy.attempts||0)>=3)fail('MANUAL_COPY_UNAVAILABLE');
+    return this.commit(()=>{
+      job.state='ready';const acquired=this.acquireJob(jobId,{workerId:'raad-print-only',ttlMs:30*60000});
+      job.manualCopy={state:'running',attempts:(job.manualCopy.attempts||0)+1,startedAt:this.now()};return acquired;
+    });
+  }
+  recordManualCopy(jobId,{leaseToken,applicationReference,mediaId}={}) {
+    const {job}=this.guardLease(jobId,leaseToken);
+    if(!this.manualCompletionCurrent(job)||applicationReference!==job.applicationReference||job.manualCopy?.state!=='running')fail('MANUAL_COPY_CONTEXT_STALE');
+    const raw=this.store.data.visaMedia?.[mediaId],artifact=this.observeMedia(job.customer,mediaId,this.artifactStore);
+    if(artifact.mimeType!=='application/pdf'||raw?.purpose!=='raad_application_copy'||raw.jobId!==jobId||raw.applicationReference!==applicationReference)fail('MANUAL_COPY_BINDING_INVALID');
+    return this.commit(()=>{
+      job.requestCopy=artifact;job.state='manually_completed';job.manualCopy.state='completed';job.manualCopy.completedAt=this.now();job.revision++;delete job.blockedReason;this.data().lease=null;
+      const message=this.enqueue({key:'manual-copy:'+job.id+':'+artifact.sha256,kind:'application_request_copy',customer:job.customer,recipient:job.customer,approvalId:job.approvalId,caseSignature:job.caseSignature,caseRevision:job.caseRevision,jobId,manualCompletionReference:applicationReference,payload:{type:'document',mediaId:artifact.mediaId,filename:'saudi-application-'+applicationReference+'.pdf',mimeType:'application/pdf',caption:'نسخة طلبك رقم '+applicationReference}});
+      this.audit('manual_request_copy_ready',{customer:job.customer,jobId,applicationReference,artifactSha256:artifact.sha256});return{ok:true,message};
+    });
+  }
+
   reportManualCompletion(jobId, input) {
     const job = this.job(jobId), c = this.case(job.customer);
     if (!object(input) || Object.keys(input).sort().join(',') !== 'applicationReference,caseId' ||
@@ -757,6 +798,7 @@ class VisaFulfilment {
       job.state = 'manually_completed'; job.revision++; job.updatedAt = this.now(); delete job.blockedReason;
       for (const item of Object.values(this.data().outbox)) if (item.jobId === jobId && ['pending', 'paused', 'waiting_owner'].includes(item.state)) { item.state = 'cancelled'; item.failure = 'MANUALLY_COMPLETED'; }
       for (const challenge of Object.values(this.data().challenges)) if (challenge.jobId === jobId && ['pending', 'consuming'].includes(challenge.state)) challenge.state = 'cancelled';
+      this.queueManualDelivery(job);
       this.audit('manual_completion_reported', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, applicationReference: input.applicationReference, actor: 'employee'});
       return {ok: true, manualCompletionRecorded: true, duplicate: false};
     });
