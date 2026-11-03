@@ -803,3 +803,13 @@ test('deployment migration retains prior real answers and cancels old unsent cli
  f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP='971507993145';const upgraded=new VisaFulfilment(f.options);const job=upgraded.data().jobs[id];assert.equal(job.state,'queued');assert.equal(job.coordination.recipient,'971507993145');assert.equal(upgraded.data().outbox[old.id].state,'cancelled');assert.equal(upgraded.data().outbox[old.id].failure,'COORDINATION_MOVED');assert.equal(job.summary,undefined);
  assert.equal(upgraded.handleCustomerMessage(CUSTOMER,{visaAnswer:{token:q.questions[0].token},id:'stale-click'}).ok,true);
 });
+
+test('bound operator approval progresses even when the owner sales conversation is staff-owned, while subject customer pauses remain enforced',async()=>{
+ const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP='971507993145';const a=await f.activate(),id=a.jobs[0].id;
+ const q=f.service.askQuestions(id,{fields:['performUmrah']});f.service.answerQuestion({sender:'971507993145',token:q.questions[0].token,option:'no'});const token=f.service.job(id).summary.token;
+ f.inbox.isHumanOwned=()=>true;f.inbox.isOperatorOwned=customer=>customer==='971507993145';
+ const r=f.service.handleOperatorMessage({from:'971507993145',id:'real-office-approval',visaConfirmation:{token,confirm:true}});assert.equal(r.ok,true);assert.equal(f.service.job(id).state,'ready');assert.equal(f.service.job(id).answerConfirmation.messageId,'real-office-approval');
+ assert.equal(f.service.handleOperatorMessage({from:OTHER,id:'attacker',visaConfirmation:{token,confirm:true}}).handled,false);
+ const next=f.service.askQuestions(id,{fields:['performUmrah']});f.service.answerQuestion({sender:'971507993145',token:next.questions[0].token,option:'no'});const blockedToken=f.service.job(id).summary.token;f.inbox.isOperatorOwned=()=>true;
+ const blocked=f.service.handleOperatorMessage({from:'971507993145',id:'blocked-subject-approval',visaConfirmation:{token:blockedToken,confirm:true}});assert.equal(blocked.ok,false);assert.equal(f.service.data().jobs[id].state,'awaiting_answer_confirmation');
+});

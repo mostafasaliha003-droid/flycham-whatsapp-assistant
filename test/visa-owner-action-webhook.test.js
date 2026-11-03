@@ -13,7 +13,7 @@ const SECRET = 'synthetic-owner-action-webhook-secret';
 const source = readFileSync(require.resolve('../src/server'), 'utf8');
 const handler = source.slice(source.indexOf('async function handleWebhookPost('), source.indexOf('\nfunction customerSearchActive'));
 
-function fixture({ok = true, operator = false} = {}) {
+function fixture({ok = true, operator = false, coordination=false} = {}) {
   const events = [], codes = [], sends = [], accepted = new Set();
   const store = {data: {}, save() {}};
   const journal = new ConversationJournal({store});
@@ -21,7 +21,7 @@ function fixture({ok = true, operator = false} = {}) {
   journal.recordInbound = (sender, input) => { events.push('journal'); return originalRecord(sender, input); };
   const context = vm.createContext({
     process: {env: {NODE_ENV: 'production', WHATSAPP_APP_SECRET: SECRET}}, Buffer,
-    readBody: async request => request.body, verifySignature, extractIncomingMessages,
+    readBody: async request => request.body, verifySignature, extractIncomingMessages,journalSafeText:value=>value,
     recordDeliveryStatuses() {}, journal, complaints: {handleReceipt() {}}, assistant: {store},
     quoteJobs: {acceptMessage(id) { if (accepted.has(id)) return false; accepted.add(id); return true; }, save() {}},
     noteIncoming() { events.push('incoming'); },
@@ -29,6 +29,7 @@ function fixture({ok = true, operator = false} = {}) {
     visaCoordinationNotices:{handles:()=>false},
     visaOperatorNotices:{handles:message=>operator&&Boolean(message.visaOperatorAction),async receive(message){assert.equal(message.from,OWNER);assert.equal(message.contextId,'accepted-task-notice');assert.equal(message.visaOperatorAction.noticeId,CHALLENGE);assert.equal(journal.get(OWNER).messages.at(-1).text,'[متابعة إشعار التحقق المرئي]');events.push('operator-notice');return{ok:true};}},
     visaFulfilment: {
+      handleOperatorMessage(message){if(!coordination||!message.visaConfirmation)return {handled:false};assert.equal(message.from,OWNER);assert.equal(message.id,'bound-office-confirmation');events.push('coordination-input');return{handled:true,ok:true,reply:'تم اعتمادها'};},
       recordDelivery() {}, otpOwner: () => OWNER,
       openOwnerAction(input) {
         assert.equal(journal.summary(input.sender).serviceWindowOpen, true, 'only an actual inbound opens the window before the prompt is queued');
@@ -88,3 +89,9 @@ test('subsequent OTP reaches only the ephemeral consumer and is redacted before 
 });
 
 test('visual-verification notice reply is signed, redacted and isolated from OTP and customer routing',async()=>{const f=fixture({operator:true}),message={...f.action('operator-action'),button:{payload:'visa_operator_action:'+CHALLENGE,text:'UNTRUSTED'}};assert.equal(await f.inbound(message),200);assert.deepEqual(f.events,['incoming','journal','operator-notice']);assert.equal(f.codes.length,0);assert.equal(f.sends.length,0);await f.inbound(message);assert.equal(f.events.filter(e=>e==='operator-notice').length,1);});
+
+test('signed operator confirmation has priority over sales-chat takeover and document/customer handlers',async()=>{
+ const f=fixture({coordination:true});const message={id:'bound-office-confirmation',from:OWNER,type:'interactive',interactive:{type:'button_reply',button_reply:{id:'visa_confirm:'+CHALLENGE+':confirm',title:'أؤكد وأفوّض'}},context:{id:'office-summary'}};
+ assert.equal(await f.inbound(message),200);assert.equal(f.events.includes('coordination-input'),true);assert.equal(f.events.at(-1),'wake');assert.equal(f.sends.length,1);assert.equal(f.sends[0].to,OWNER);
+ await f.inbound(message);assert.equal(f.events.filter(e=>e==='coordination-input').length,1);
+});
