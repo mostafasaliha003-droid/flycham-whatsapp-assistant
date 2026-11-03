@@ -397,7 +397,7 @@ class RaadVisaWorkflow {
   }
 
   applyMachineDossier(customer, {applicantIndex = 0, expectedRevision, expectedCaseSignature, evidenceId} = {}) {
-    const context = this.context(customer, applicantIndex), previous = this.job(context);
+    const context = this.context(customer, applicantIndex);let previous = this.job(context),archive=null;
     this.assertRevision(previous, expectedRevision);
     const ownershipBlock = this.executionOwnershipBlock(customer);
     if (ownershipBlock) fail(ownershipBlock, 409);
@@ -409,6 +409,12 @@ class RaadVisaWorkflow {
     const dossier = verifyMachineDossier({store: this.store, mediaStore: this.mediaStore, customer, applicantIndex, expectedCaseSignature, evidenceId, now: this.now});
     if (!dossier.ready) fail(dossier.blockedReason || 'RAAD_MACHINE_REVIEW_REQUIRED', 409);
     for (const [field, value] of Object.entries(sourceFields(context.person))) if (DOCUMENT_FACT_SET.has(field) && Object.hasOwn(dossier.fields, field) && !equivalentFact(field, value, dossier.fields[field])) fail('RAAD_MACHINE_SOURCE_CONFLICT', 409);
+    if(previous&&!previous.machineReview&&(previous.caseId!==context.c.id||previous.caseSignature!==context.caseSignature)){
+      if(!context.evidence.payment)failManual('case_stale');
+      const jobs=Object.values(this.store.data.visaFulfilment?.jobs||{}),lease=this.store.data.visaFulfilment?.lease;
+      if(jobs.some(j=>j.customer===customer&&(lease?.jobId===j.id||['running','waiting_otp'].includes(j.state)||j.caseId===context.c.id&&(j.portalSaved||j.applicationReference))))failManual('case_stale');
+      archive=clone(previous);previous=null;
+    }
     if (previous?.machineReview?.evidenceFingerprint === dossier.evidenceFingerprint) return clone({...this.summary(context, previous), ok: true, duplicate: true, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview: previous.machineReview});
     const documents = Object.fromEntries(DOCUMENT_KINDS.map(kind => [kind, this.observeDocument(dossier.documents[kind].mediaId, context)]));
     if (Object.values(documents).some(value => !value)) fail('RAAD_MACHINE_DOCUMENT_UNAVAILABLE', 409);
@@ -429,7 +435,7 @@ class RaadVisaWorkflow {
     const fields = clone(dossier.fields);
     const machineReview = {scope: 'machine_document_consistency', version: 1, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, extractionDigest: dossier.extractionDigest, verifiedAt: this.now(), draftFingerprint: hash({fields, documents}), authenticityVerified: false};
     const job = {jobId: previous?.jobId || randomUUID(), caseId: context.c.id, applicantIndex, revision: (previous?.revision || 0) + 1, caseSignature: context.caseSignature, parentSignature: context.parentSignature, sourceFields: sourceFields(context.person), fields, defaults: this.defaults(context, dubaiDate(this.now())), documents, machineReview, review: {scope: 'staff_data_review', confirmedFields: []}, createdAt: previous?.createdAt || this.now(), updatedAt: this.now()};
-    this.persist(context, job);
+    this.persist(context, job, {archive});
     return clone({...this.summary(context, job), ok: true, duplicate: false, evidenceId, evidenceFingerprint: dossier.evidenceFingerprint, machineReview});
   }
 
@@ -519,12 +525,13 @@ class RaadVisaWorkflow {
     return clone({ready, source, fingerprint, fields, defaults, documents, issues: uniqueIssues, blockedReason: uniqueIssues[0]?.code || null, caseId: context.c.id, caseSignature: context.caseSignature, applicantIndex, ...(dossier?.ready ? {evidenceId: dossier.evidenceId, evidenceFingerprint: dossier.evidenceFingerprint} : {})});
   }
 
-  persist(context, job) {
+  persist(context, job, {archive=null}={}) {
     const old = this.store.data.raadApplications;
-    const oldCustomer = old?.[context.customer];
+    const oldCustomer = old?.[context.customer],oldArchives=this.store.data.raadDraftArchives;
+    if(archive){const records=oldArchives?.[context.customer]||[],key=hash(archive);if(!records.some(r=>r.key===key)){if(records.length>=200)failManual('case_stale');this.store.data.raadDraftArchives={...oldArchives,[context.customer]:[...records,{key,reason:'case_version_changed',archivedAt:this.now(),draft:clone(archive)}]};}}
     this.store.data.raadApplications = {...old, [context.customer]: {caseId: context.c.id, applicants: {...oldCustomer?.applicants, [context.applicantIndex]: job}}};
     try { this.store.save(); }
-    catch (error) { if (old === undefined) delete this.store.data.raadApplications; else this.store.data.raadApplications = old; throw error; }
+    catch (error) { if (old === undefined) delete this.store.data.raadApplications; else this.store.data.raadApplications = old;if(oldArchives===undefined)delete this.store.data.raadDraftArchives;else this.store.data.raadDraftArchives=oldArchives;throw error; }
   }
 
   prepare(customer, {applicantIndex = 0, expectedRevision, fields = {}, documents = {}, confirm = false} = {}) {
