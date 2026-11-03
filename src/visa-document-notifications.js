@@ -40,7 +40,8 @@ function copyFor(status, issues, summary) {
 }
 
 class VisaDocumentNotifications {
-  constructor({store, documentIntake, inbox, send, now = Date.now, isInboundBusy = () => false, quietMs = QUIET_MS} = {}) {
+  constructor({store, documentIntake, inbox, send, now = Date.now, isInboundBusy = () => false, quietMs = QUIET_MS, operatorCoordination=false} = {}) {
+    this.operatorCoordination=operatorCoordination;
     if (!store?.data || typeof store.save !== 'function' || typeof documentIntake?.summary !== 'function' || typeof send !== 'function' || typeof isInboundBusy !== 'function' || !Number.isSafeInteger(quietMs) || quietMs < 0 || quietMs > 60000) throw error('DOCUMENT_NOTICE_CONFIGURATION_REQUIRED');
     Object.assign(this, {store, documentIntake, inbox, send, now, isInboundBusy, quietMs});
     store.data.visaDocumentNotifications ||= {items: {}};
@@ -49,6 +50,7 @@ class VisaDocumentNotifications {
     let changed = false;
     for (const [key, item] of Object.entries(this.data().items)) {
       if (!item || !Number.isFinite(item.expiresAt) || item.expiresAt <= now()) { delete this.data().items[key]; changed = true; }
+      else if(operatorCoordination&&item.payload?.type==='question'&&['pending','paused'].includes(item.state)){item.state='cancelled';item.failure='COORDINATION_MOVED';changed=true;}
       else if (item.state === 'sending') { item.state = 'uncertain'; item.failure = 'PROCESS_INTERRUPTED'; item.updatedAt = now(); changed = true; }
     }
     if (changed) store.save();
@@ -114,8 +116,8 @@ class VisaDocumentNotifications {
     // fingerprint while retaining every identity/evidence/manifest field.
     const applicants = raw.applicants.map(({applied, stagedJobs, ...applicant}) => applicant);
     const receiptFollowup=paymentReceiptFollowup(this.store,customer,{...summary,status:raw.status});
-    const noticeText=[copyFor(raw.status, issues,summary),receiptFollowup].filter(Boolean).join('\n\n');
-    const choiceApplicant=raw.status==='needs_confirmation'&&raw.awaitingPayment===true?raw.applicants.find(app=>UUID.test(app.id||'')&&app.clientFieldsRequired?.includes('passportType')&&!documentClientAnswers(this.store,customer,app,this.now()).passportType):null;
+    const noticeText=[this.operatorCoordination?'وصلت أوراقك، شكرًا إلك. عم نجهّز ملفك، ومنخبرك بأول تحديث.':copyFor(raw.status, issues,summary),receiptFollowup].filter(Boolean).join('\n\n');
+    const choiceApplicant=!this.operatorCoordination&&raw.status==='needs_confirmation'&&raw.awaitingPayment===true?raw.applicants.find(app=>UUID.test(app.id||'')&&app.clientFieldsRequired?.includes('passportType')&&!documentClientAnswers(this.store,customer,app,this.now()).passportType):null;
     const binding = {customer, caseId: c.id, caseSignature: signature, generation: raw.generation, status: raw.status, resultFingerprint: raw.resultFingerprint, resultDigest: digest({documents: raw.documents, applicants, issues: issues.map(issue => ({code: issue?.code, field: issue?.field}))}), sources, policy: this.documentIntake.policyFingerprint || null};
     const key=digest({customer,caseId:c.id,caseSignature:signature,generation:raw.generation,status:raw.status,resultFingerprint:raw.resultFingerprint,receiptFollowup,noticeText,choiceEvidence:choiceApplicant?.id||null});
     const h=digest({customer,caseId:c.id,signature,generation:raw.generation,evidenceId:choiceApplicant?.id,purpose:'passport-type-list'}).slice(0,32),token=[h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');
@@ -160,6 +162,7 @@ class VisaDocumentNotifications {
     });
   }
   receive(message){
+    if(this.operatorCoordination&&message?.visaAnswer)return {handled:false};
     const choice=message?.visaAnswer;if(!choice)return {handled:false};
     const item=Object.values(this.data().items).find(item=>item.payload?.type==='question'&&item.payload.token===choice.token);if(!item)return {handled:false};
     const stale=()=>({handled:true,ok:false,reply:'اختار من أحدث قائمة أرسلتها إلك لو سمحت.'});

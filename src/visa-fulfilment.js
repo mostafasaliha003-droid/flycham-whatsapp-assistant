@@ -58,8 +58,32 @@ class VisaFulfilment {
     }
     for (const challenge of Object.values(state.challenges)) if (['pending', 'consuming'].includes(challenge.state)) { challenge.state = 'interrupted'; changed = true; }
     if (changed) this.save();
+    this.migrateCoordination();
   }
 
+  coordinationOwner() { return this.env.RAAD_COORDINATION_MODE === 'operator' ? phone(this.env.RAAD_COORDINATION_WHATSAPP || '971507993145') : null; }
+  answerRecipient(job) { return job.coordination?.recipient || job.customer; }
+  migrateCoordination() {
+    const owner=this.coordinationOwner(); if(!owner)return;
+    for(const item of Object.values(this.data().outbox))if(item.kind==='payment_confirmation'&&['pending','cancelled'].includes(item.state)&&item.payload?.type==='text')this.commit(()=>{item.payload.text='تم تأكيد استلام دفعتك، شكرًا إلك 🌷 عم نجهّز طلبك، ومنرسل لك رقم الطلب بعد إتمام التقديم.';});
+    for(const job of Object.values(this.data().jobs)) {
+      if(job.state==='portal_review_required'&&!job.coordination){this.commit(()=>{job.coordination={actor:'operator',recipient:owner,at:this.now()};});continue;}
+      if(!['queued','ready','awaiting_answers','awaiting_answer_confirmation','needs_followup'].includes(job.state)||job.coordination?.recipient===owner)continue;
+      try { this.guardJob(job.id); } catch { continue; }
+      this.commit(()=>{
+        job.coordination={actor:'operator',recipient:owner,at:this.now()};
+        for(const item of Object.values(this.data().outbox))if(item.jobId===job.id&&['applicant_question','applicant_answer_summary'].includes(item.kind)&&['pending','cancelled'].includes(item.state)){item.state='cancelled';item.failure='COORDINATION_MOVED';}
+        // Retain real answers, but require an explicit operator review. Never
+        // manufacture a client message or medical declaration during migration.
+        const staged={...job.confirmedFields,...job.stagedFields};
+        for(const q of Object.values(job.questions||{}))if(q.state==='answered')setField(staged,q.field,q.answer);
+        job.stagedFields=staged;job.questions={};delete job.summary;delete job.answerConfirmation;job.state='queued';job.revision++;
+      });
+    }
+  }
+  enqueueQuestion(job,question) {
+    this.enqueue({key:'question:'+question.token,kind:'applicant_question',customer:job.customer,recipient:this.answerRecipient(job),approvalId:job.approvalId,caseSignature:job.caseSignature,caseRevision:job.caseRevision,jobId:job.id,questionRevision:job.questionRevision,coordination:job.coordination||null,payload:{type:'question',text:(job.coordination?'متابعة ملف العميل +'+job.customer+' — المسافر '+(job.applicantIndex+1)+'\nأجب بالمعلومة المتحقق منها فقط.\n':'')+question.prompt,token:question.token,field:question.field,applicantIndex:job.applicantIndex,options:question.options||[]}});
+  }
   data() { return this.store.data.visaFulfilment; }
   save() { this.store.save(); }
   commit(change) {
@@ -222,7 +246,7 @@ class VisaFulfilment {
       live.approvals[approval.id] = approval; live.activeApprovalId = approval.id;
       live.idempotency[key] = {fingerprint, state: 'approved', approvalId: approval.id, createdAt: this.now()};
       live.receipts[receiptId].state = 'accountant_verified';
-      const notification = this.enqueue({key: 'payment:' + customer + ':' + paymentFingerprint, kind: 'payment_confirmation', customer, recipient: customer, approvalId: approval.id, caseSignature: signature, caseRevision: approval.caseRevision, payload: {type: 'text', text: 'أهلاً، معك إسماعيل من رمال 🌷 أكد المحاسب وصول دفعتك. بدأنا تجهيز طلب التأشيرة السعودية ومتابعة خطوات التقديم مع رعد. سنطلب منك تأكيد أي بيانات شخصية ناقصة، ونرسل لك نسخة الطلب عند حفظها. هذا التأكيد لا يعني صدور التأشيرة أو اكتمال التقديم الرسمي.'}});
+      const notification = this.enqueue({key: 'payment:' + customer + ':' + paymentFingerprint, kind: 'payment_confirmation', customer, recipient: customer, approvalId: approval.id, caseSignature: signature, caseRevision: approval.caseRevision, payload: {type: 'text', text: 'تم تأكيد استلام دفعتك، شكرًا إلك 🌷 عم نجهّز طلبك، ومنرسل لك رقم الطلب بعد إتمام التقديم.'}});
       const count = approvedCase.applicantCount;
       if (!Number.isSafeInteger(count) || count < 1 || count > 30 || approvedCase.applicants?.length !== count) fail('VISA_APPLICANTS_INCOMPLETE');
       const jobs = Array.from({length: count}, (_, applicantIndex) => {
@@ -305,6 +329,7 @@ class VisaFulfilment {
   }
   messageCurrent(item) {
     const c = this.case(item.customer), record = this.data().cases[item.customer], approval = record?.approvals[record.activeApprovalId];
+    if (this.coordinationOwner() && ['applicant_question','applicant_answer_summary'].includes(item.kind) && phone(item.recipient)!==this.coordinationOwner())return false;
     if (this.blocked(item.customer) || !this.approvalCurrent(item.customer, approval) || item.caseSignature !== visaCaseSignature(c)) return false;
     if (item.jobId) {
       const job = this.data().jobs[item.jobId];
@@ -338,7 +363,7 @@ class VisaFulfilment {
     const guard = () => { if (!this.messageCurrent(this.data().outbox[id])) throw Object.assign(Error('MESSAGE_SUPERSEDED'), {notDispatched: true}); };
     try {
       guard();
-      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {}), ...(item.noticeMessageId ? {noticeMessageId: item.noticeMessageId} : {})}));
+      const result = await this.send(item.recipient, clone(item.payload), guard, clone({id: item.id, kind: item.kind, customer: item.customer, ...(item.coordination?{coordination:item.coordination}:{}), caseId: this.case(item.customer).id, ...(item.jobId ? {jobId: item.jobId} : {}), ...(item.challengeId ? {challengeId: item.challengeId} : {}), ...(item.noticeMessageId ? {noticeMessageId: item.noticeMessageId} : {})}));
       if (item.kind === 'owner_otp_request' && result?.paused === true && result.reason === 'owner_action_required') {
         const noticeMessageId = result.noticeMessageId || item.noticeMessageId;
         if (!providerMessageId(noticeMessageId) || item.noticeMessageId && noticeMessageId !== item.noticeMessageId) throw Error('OWNER_NOTICE_RESPONSE_INVALID');
@@ -453,7 +478,7 @@ class VisaFulfilment {
     job.summary = summary; job.state = 'awaiting_answer_confirmation';
     const answeredPaths = Object.keys(answers).flatMap(field => object(answers[field]) ? Object.keys(answers[field]).map(name => field + '.' + name) : [field]);
     const entries = answeredPaths.map(field => ({field, label: questionFor(field, {applicantIndex: job.applicantIndex}).prompt, value: fieldAt(answers, field), ...(fieldAt(answers, field) === null ? {displayValue: 'غير منطبق'} : {})}));
-    this.enqueue({key: 'summary:' + summary.token, kind: 'applicant_answer_summary', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId: job.id, questionRevision: job.questionRevision, payload: {type: 'answer_summary', text: `يرجى مراجعة إجابات المسافر ${job.applicantIndex + 1}. باختيار «أؤكد وأفوّض» تقر بما يلي: أؤكد صحة الإجابات وأفوّض شركة الرمال بتقديم طلب التأشيرة بهذه البيانات.`, token: summary.token, applicantIndex: job.applicantIndex, entries, options: [{id: 'confirm', label: 'أؤكد وأفوّض'}, {id: 'correct', label: 'أريد تصحيح الإجابات'}]}});
+    this.enqueue({key: 'summary:' + summary.token, kind: 'applicant_answer_summary', customer: job.customer, recipient: this.answerRecipient(job), coordination:job.coordination||null, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId: job.id, questionRevision: job.questionRevision, payload: {type: 'answer_summary', text: job.coordination ? `مراجعة مسؤول المكتب لملف العميل +${job.customer} — المسافر ${job.applicantIndex+1}. أكّد المعلومات بعد التحقق منها ومن تفويض العميل. هذا اعتماد منك بصفتك مسؤول المكتب، وليس إقرارًا صادرًا من العميل.` : `يرجى مراجعة إجابات المسافر ${job.applicantIndex + 1}. باختيار «أؤكد وأفوّض» تقر بما يلي: أؤكد صحة الإجابات وأفوّض شركة الرمال بتقديم طلب التأشيرة بهذه البيانات.`, token: summary.token, applicantIndex: job.applicantIndex, entries, options: [{id: 'confirm', label: 'أؤكد وأفوّض'}, {id: 'correct', label: 'أريد تصحيح الإجابات'}]}});
     return summary;
   }
   askQuestions(jobId, {fields, leaseToken} = {}) {
@@ -486,12 +511,13 @@ class VisaFulfilment {
     return this.commit(() => {
       if (activeLease?.jobId === jobId) this.data().lease = null;
       for (const challenge of Object.values(this.data().challenges)) if (challenge.jobId === jobId && ['pending', 'consuming'].includes(challenge.state)) challenge.state = 'cancelled';
+      if(this.coordinationOwner())job.coordination={actor:'operator',recipient:this.coordinationOwner(),at:this.now()};
       job.questionRevision = (job.questionRevision || 0) + 1; job.questions = {}; delete job.summary;
       job.revision++; job.state = prepared.length ? 'awaiting_answers' : 'ready';
       for (const definition of prepared) {
         const token = randomUUID(), question = {...definition, token, caseRevision: job.caseRevision, questionRevision: job.questionRevision, state: 'pending'};
         job.questions[token] = question;
-        this.enqueue({key: 'question:' + token, kind: 'applicant_question', customer: job.customer, recipient: job.customer, approvalId: job.approvalId, caseSignature: job.caseSignature, caseRevision: job.caseRevision, jobId, questionRevision: job.questionRevision, payload: {type: 'question', text: definition.prompt, token, field: definition.field, applicantIndex: job.applicantIndex, options: definition.options || []}});
+        if(!job.coordination || Object.keys(job.questions).length===1)this.enqueueQuestion(job,question);
       }
       if (!prepared.length && job.stagedFields && !job.answerConfirmation) this.queueAnswerSummary(job, job.stagedFields);
       this.audit('questions_requested', {customer: job.customer, jobId, applicantIndex: job.applicantIndex, fields: requested});
@@ -500,7 +526,7 @@ class VisaFulfilment {
   }
   answerQuestion({sender, token, option, value} = {}) {
     const match = Object.values(this.data().jobs).find(job => Object.hasOwn(job.questions || {}, token));
-    if (!match || sender !== match.customer) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
+    if (!match || phone(sender) !== this.answerRecipient(match)) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
     const job = this.guardJob(match.id), question = job.questions[token];
     this.assertDocumentFactsCurrent(job);
     if (job.state !== 'awaiting_answers' || question.questionRevision !== job.questionRevision || question.caseRevision !== job.caseRevision || question.state !== 'pending') fail('VISA_ANSWER_TOKEN_STALE');
@@ -526,19 +552,20 @@ class VisaFulfilment {
         }
         this.queueAnswerSummary(job, answers);
       }
+      if(job.coordination&&job.state==='awaiting_answers'){const next=Object.values(job.questions).find(q=>q.state==='pending');if(next)this.enqueueQuestion(job,next);}
       return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state};
     });
   }
   confirmAnswers({sender, token, confirm, messageId} = {}) {
     const found = Object.values(this.data().jobs).find(job => job.summary?.token === token);
-    if (!found || found.customer !== sender) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
+    if (!found || this.answerRecipient(found) !== phone(sender)) fail('VISA_ANSWER_CONTEXT_INVALID', 400);
     const job = this.guardJob(found.id);
     this.assertDocumentFactsCurrent(job);
     if (job.state !== 'awaiting_answer_confirmation' || job.summary.questionRevision !== job.questionRevision || job.summary.caseRevision !== job.caseRevision) fail('VISA_ANSWER_TOKEN_STALE');
     if (confirm !== true) return this.commit(() => { job.state = 'needs_followup'; job.followupFields = Object.keys(job.summary.answers).flatMap(field => object(job.summary.answers[field]) ? Object.keys(job.summary.answers[field]).map(name => field + '.' + name) : [field]); delete job.summary; delete job.stagedFields; return {ok: true, state: job.state, followupFields: job.followupFields}; });
     const incomingMessageId = messageId === undefined ? null : text(messageId, 500);
     const answers = clone(job.summary.answers);
-    return this.commit(() => { job.confirmedFields = answers; job.answerConfirmation = {at: this.now(), grantedAt: this.now(), granted: true, scope: 'saudi_visa_application', caseSignature: job.caseSignature, messageId: incomingMessageId, sender, questionRevision: job.questionRevision, documentEvidence: clone(job.summary.documentEvidence || null)}; job.state = 'ready'; job.revision++; delete job.summary; delete job.stagedFields; this.audit('applicant_answers_confirmed', {customer: job.customer, jobId: job.id, applicantIndex: job.applicantIndex, messageId: incomingMessageId, scope: 'saudi_visa_application', fields: Object.values(job.questions).map(item => item.field)}); return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state}; });
+    return this.commit(() => { job.confirmedFields = answers; job.answerConfirmation = {at: this.now(), grantedAt: this.now(), granted: true, scope: 'saudi_visa_application', ...(job.coordination?{actor:'operator',representedCustomer:job.customer,verifiedAnswers:true}:{}), caseSignature: job.caseSignature, messageId: incomingMessageId, sender, questionRevision: job.questionRevision, documentEvidence: clone(job.summary.documentEvidence || null)}; job.state = 'ready'; job.revision++; delete job.summary; delete job.stagedFields; this.audit('applicant_answers_confirmed', {customer: job.customer, jobId: job.id, applicantIndex: job.applicantIndex, messageId: incomingMessageId, scope: 'saudi_visa_application', fields: Object.values(job.questions).map(item => item.field)}); return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state}; });
   }
   getConfirmedFields(jobId) {
     const job = this.guardJob(jobId), fields = clone(job.confirmedFields), missing = this.missingClientFields(job, fields);
@@ -549,23 +576,24 @@ class VisaFulfilment {
 
   handleCustomerMessage(sender, message = {}) {
     if (!phone(sender)) return {handled: false};
+    if(this.coordinationOwner()&&phone(sender)!==this.coordinationOwner()&&(message.visaAnswer||message.visaConfirmation))return {handled:true,ok:true,reply:'طلبك معنا، وعم نتابعه. منخبرك بأول تحديث.'};
     const existing = message.id && this.data().cases[sender]?.handledMessages?.[message.id];
     if (existing) return clone(existing);
     let operation = null;
     if (object(message.visaAnswer)) operation = () => this.answerQuestion({...message.visaAnswer, sender});
     else if (object(message.visaConfirmation)) operation = () => this.confirmAnswers({...message.visaConfirmation, sender, messageId: message.id});
     else if (typeof message.text === 'string' && message.text.trim()) {
-      const matchingMessage = message.contextId && Object.values(this.data().outbox).find(item => item.customer === sender && item.messageId === message.contextId && ['applicant_question', 'applicant_answer_summary'].includes(item.kind));
+      const matchingMessage = message.contextId && Object.values(this.data().outbox).find(item => phone(item.recipient) === phone(sender) && item.messageId === message.contextId && ['applicant_question', 'applicant_answer_summary'].includes(item.kind));
       if (matchingMessage) {
         if (matchingMessage.kind === 'applicant_question' && this.data().jobs[matchingMessage.jobId]?.questions[matchingMessage.payload.token]?.type === 'text') operation = () => this.answerQuestion({sender, token: matchingMessage.payload.token, value: message.text});
         else return {handled: true, reply: 'يرجى اختيار الإجابة من خيارات السؤال المرسل أو طلب تصحيح البيانات.'};
       } else if (!message.contextId) {
-        const acceptedTokens = new Set(Object.values(this.data().outbox).filter(item => item.customer === sender && item.kind === 'applicant_question' && ['accepted', 'delivered'].includes(item.state)).map(item => item.payload.token));
-        const pending = Object.values(this.data().jobs).filter(job => job.customer === sender && job.state === 'awaiting_answers').flatMap(job => Object.values(job.questions).filter(question => question.state === 'pending' && acceptedTokens.has(question.token)).map(question => ({job, question})));
+        const acceptedTokens = new Set(Object.values(this.data().outbox).filter(item => phone(item.recipient) === phone(sender) && item.kind === 'applicant_question' && ['accepted', 'delivered'].includes(item.state)).map(item => item.payload.token));
+        const pending = Object.values(this.data().jobs).filter(job => this.answerRecipient(job) === phone(sender) && job.state === 'awaiting_answers').flatMap(job => Object.values(job.questions).filter(question => question.state === 'pending' && acceptedTokens.has(question.token)).map(question => ({job, question})));
         if (pending.length === 1 && pending[0].question.type === 'text') operation = () => this.answerQuestion({sender, token: pending[0].question.token, value: message.text});
       }
     }
-    if (!operation) return {handled: false};
+    if (!operation) return this.coordinationOwner()===phone(sender)&&Object.values(this.data().jobs).some(job=>job.coordination?.recipient===phone(sender)&&['awaiting_answers','awaiting_answer_confirmation'].includes(job.state))&&typeof message.text==='string'&&message.text.trim()?{handled:true,ok:false,reply:'حتى أربط إجابتك بالملف الصحيح، اضغط «رد» على سؤال رعد المطلوب وأرسل إجابتك، أو اختار من أزرار السؤال.'}:{handled: false};
     let result;
     try {
       const outcome = operation();

@@ -72,7 +72,7 @@ class VisaPortalDispatcher{
    const sent=await this.fulfilment.dispatchMessage(item.id);
    if(['applicant_question','applicant_answer_summary','owner_otp_request'].includes(item.kind)){
     const job=this.fulfilment.data().jobs[item.jobId];
-    console.info('[VISA_WORKFLOW_DELIVERY] '+JSON.stringify({caseHash:digest(String(job?.caseId||'')).slice(0,12),kind:item.kind,state:['accepted','delivered','cancelled','failed','uncertain'].includes(sent?.state)?sent.state:'unconfirmed'}));
+    console.info('[VISA_WORKFLOW_DELIVERY] '+JSON.stringify({caseHash:digest(String(job?.caseId||'')).slice(0,12),kind:item.kind,audience:item.coordination?.actor==='operator'?'operator':'customer',state:['accepted','delivered','cancelled','failed','uncertain'].includes(sent?.state)?sent.state:'unconfirmed'}));
    }
   }
  }

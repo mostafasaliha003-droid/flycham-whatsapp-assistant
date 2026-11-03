@@ -29,16 +29,18 @@ function extractIncomingMessages(payload) {
       const contacts = value.contacts ?? [];
       for (const message of value.messages ?? []) {
         if(!message?.from)continue;
-        let text,requestChoice,serviceChoice,visaAnswer,visaConfirmation,visaOwnerAction,visaOperatorAction,visaReceiptAction,media;
+        let text,requestChoice,serviceChoice,visaAnswer,visaConfirmation,visaOwnerAction,visaOperatorAction,visaReceiptAction,visaCoordinationAction,media;
         if(message.type==='text'&&typeof message.text?.body==='string')text=message.text.body.trim();
         else if(message.type==='button'){
           const payload=message.button?.payload;
           const ownerAction=typeof payload==='string'?payload.match(/^visa_owner_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const operatorAction=typeof payload==='string'?payload.match(/^visa_operator_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const receiptAction=typeof payload==='string'?payload.match(/^visa_receipt_action:([a-f0-9-]{36})$/):null;
-          if(receiptAction){visaReceiptAction={noticeId:receiptAction[1]};text='[مراجعة إيصال تحويل]';}
-          if(!ownerAction&&!operatorAction&&!receiptAction)continue;
-          if(operatorAction)visaOperatorAction={noticeId:operatorAction[1]};else if(ownerAction)visaOwnerAction={challengeId:ownerAction[1]};text='[متابعة إجراء التأشيرة]';
+          const coordinationAction=typeof payload==='string'?payload.match(/^visa_coordination_action:([a-f0-9-]{36})$/):null;
+          if(coordinationAction){visaCoordinationAction={noticeId:coordinationAction[1]};text='[تنسيق مسؤول المكتب]';}
+          else if(receiptAction){visaReceiptAction={noticeId:receiptAction[1]};text='[مراجعة إيصال تحويل]';}
+          if(!ownerAction&&!operatorAction&&!receiptAction&&!coordinationAction)continue;
+          if(operatorAction){visaOperatorAction={noticeId:operatorAction[1]};text='[متابعة إجراء التأشيرة]';}else if(ownerAction){visaOwnerAction={challengeId:ownerAction[1]};text='[متابعة إجراء التأشيرة]';}
         }
         else if(message.type==='interactive'&&['button_reply','list_reply'].includes(message.interactive?.type)){
           const isButton=message.interactive.type==='button_reply';
@@ -50,7 +52,9 @@ function extractIncomingMessages(payload) {
           const ownerAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_owner_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const operatorAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_operator_action:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/):null;
           const receiptAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_receipt_action:([a-f0-9-]{36})$/):null;
-          if(receiptAction){visaReceiptAction={noticeId:receiptAction[1]};text='[مراجعة إيصال تحويل]';}
+          const coordinationAction=isButton&&typeof buttonId==='string'?buttonId.match(/^visa_coordination_action:([a-f0-9-]{36})$/):null;
+          if(coordinationAction){visaCoordinationAction={noticeId:coordinationAction[1]};text='[تنسيق مسؤول المكتب]';}
+          else if(receiptAction){visaReceiptAction={noticeId:receiptAction[1]};text='[مراجعة إيصال تحويل]';}
           else if(service){serviceChoice={id:service[2],service:service[1]};text=service[1]==='flight'?'طيران إلى سوريا':'فيزا السعودية';}
           else if(choice){requestChoice={id:choice[2],action:choice[1]};text=choice[1]==='continue'?'متابعة طلبي الحالي':'طلب جديد مختلف';}
           else if(answer){visaAnswer={token:answer[1],option:answer[2]};text='[إجابة بيانات التأشيرة]';}
@@ -78,6 +82,7 @@ function extractIncomingMessages(payload) {
           ...(visaConfirmation?{visaConfirmation}:{}),
           ...(visaOwnerAction?{visaOwnerAction}:{}),
           ...(visaOperatorAction?{visaOperatorAction}:{}),
+          ...(visaCoordinationAction?{visaCoordinationAction}:{}),
           ...(visaReceiptAction?{visaReceiptAction}:{}),
           ...(media?{media}:{}),
           timestamp: message.timestamp ?? null

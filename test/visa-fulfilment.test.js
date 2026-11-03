@@ -38,7 +38,7 @@ test('receipt only is not payment; accountant approval uses existing financial a
   assert.equal(f.stats().paymentCalls, 1); assert.equal(result.jobs.length, 2); assert.notEqual(result.jobs[0].id, result.jobs[1].id);
   assert.deepEqual(result.jobs.map(job => job.applicantIndex), [0, 1]); assert.equal(result.approval.actualReceived, true); assert.equal(result.approval.receiptSha256, 'a'.repeat(64));
   assert.equal(f.service.pendingMessages().length, 1); assert.equal(f.service.pendingMessages()[0].recipient, CUSTOMER);
-  assert.match(f.service.pendingMessages()[0].payload.text, /إسماعيل/); assert.match(f.service.pendingMessages()[0].payload.text, /لا يعني صدور/);
+  assert.match(f.service.pendingMessages()[0].payload.text, /تم تأكيد استلام دفعتك/); assert.doesNotMatch(f.service.pendingMessages()[0].payload.text, /رعد|بيانات شخصية ناقصة|لا يعني/);
 });
 
 test('accountant role, claim, actual received, exact quote and current revision protect approval', () => {
@@ -781,4 +781,25 @@ test('a bound document-list answer stages as a customer answer and is included i
  f.store.data.visaDocumentNotifications={items:{list:{customer:CUSTOMER,state:'accepted',expiresAt:now+60000,payload:{type:'question',field:'passportType',applicantIndex:0},binding:{caseId:f.c.id,caseSignature:visaCaseSignature(f.c),generation:raw.generation},answer:{field:'passportType',value:'ordinary',applicantIndex:0,evidenceId:f.ids.evidence,messageId:'wamid.list-choice',at:now}}}};
  const before=structuredClone(f.c),staged=f.service.stageDocumentFacts(f.jobId,{evidenceId:f.ids.evidence});assert.equal(staged.stagedFields.passportType,'ordinary');assert.equal(f.applicant.fields.passportType,undefined);assert.deepEqual(f.c,before);
  const asked=answerRemainingMachineQuestions(f);assert(!asked.questions.some(q=>q.field==='passportType'));const summary=f.service.job(f.jobId).summary;assert.equal(summary.answers.passportType,'ordinary');assert.equal(f.service.job(f.jobId).state,'awaiting_answer_confirmation');f.service.confirmAnswers({sender:CUSTOMER,token:summary.token,confirm:true,messageId:'list-answer-final-consent'});const proof=f.service.getConfirmedFields(f.jobId);assert.equal(proof.complete,true);assert.equal(proof.fields.passportType,'ordinary');
+});
+
+test('operator coordination isolates the customer, asks one bound question at a time and records actual operator authority', async()=>{
+ const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP='971507993145';
+ const a=await f.activate(),id=a.jobs[0].id;
+ const q=f.service.askQuestions(id,{fields:['arabicFirstName','arabicFamilyName']});
+ const messages=f.service.pendingMessages().filter(i=>i.kind==='applicant_question');assert.equal(messages.length,1);assert.equal(messages[0].recipient,'971507993145');assert.equal(messages[0].customer,CUSTOMER);
+ throwsCode(()=>f.service.answerQuestion({sender:CUSTOMER,token:q.questions[0].token,value:'اسم'}),'VISA_ANSWER_CONTEXT_INVALID');
+ assert.equal(f.service.handleCustomerMessage(CUSTOMER,{visaAnswer:{token:q.questions[0].token},id:'old-client'}).handled,true);
+ await f.service.dispatchMessage(messages[0].id);
+ const answered=f.service.handleCustomerMessage('971507993145',{id:'owner-name',contextId:'outbound-2',text:'تجريبي'});assert.equal(answered.ok,true);
+ const next=f.service.pendingMessages().filter(i=>i.kind==='applicant_question');assert.equal(next.length,1);assert.equal(next[0].payload.field,'arabicFamilyName');
+ f.service.answerQuestion({sender:'971507993145',token:q.questions[1].token,value:'اختبار'});
+ const job=f.service.data().jobs[id];assert.equal(job.state,'awaiting_answer_confirmation');const summary=f.service.pendingMessages().find(i=>i.kind==='applicant_answer_summary');assert.equal(summary.recipient,'971507993145');assert.match(summary.payload.text,/مسؤول المكتب/);
+ f.service.confirmAnswers({sender:'971507993145',token:job.summary.token,confirm:true,messageId:'actual-owner-confirmation'});
+ const proof=f.service.getConfirmedFields(id);assert.equal(proof.confirmation.actor,'operator');assert.equal(proof.confirmation.sender,'971507993145');assert.equal(proof.confirmation.representedCustomer,CUSTOMER);assert.equal(proof.confirmation.messageId,'actual-owner-confirmation');assert.equal(proof.fields.arabicFirstName,'تجريبي');
+});
+test('deployment migration retains prior real answers and cancels old unsent client questions',async()=>{
+ const f=fixture({count:1});const a=await f.activate(),id=a.jobs[0].id;const q=f.service.askQuestions(id,{fields:['arabicFirstName']});const old=f.service.pendingMessages().find(m=>m.kind==='applicant_question');
+ f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP='971507993145';const upgraded=new VisaFulfilment(f.options);const job=upgraded.data().jobs[id];assert.equal(job.state,'queued');assert.equal(job.coordination.recipient,'971507993145');assert.equal(upgraded.data().outbox[old.id].state,'cancelled');assert.equal(upgraded.data().outbox[old.id].failure,'COORDINATION_MOVED');assert.equal(job.summary,undefined);
+ assert.equal(upgraded.handleCustomerMessage(CUSTOMER,{visaAnswer:{token:q.questions[0].token},id:'stale-click'}).ok,true);
 });

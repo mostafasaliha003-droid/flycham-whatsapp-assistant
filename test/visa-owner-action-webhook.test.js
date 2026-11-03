@@ -25,6 +25,8 @@ function fixture({ok = true, operator = false} = {}) {
     recordDeliveryStatuses() {}, journal, complaints: {handleReceipt() {}}, assistant: {store},
     quoteJobs: {acceptMessage(id) { if (accepted.has(id)) return false; accepted.add(id); return true; }, save() {}},
     noteIncoming() { events.push('incoming'); },
+    visaReceiptNotices:{handles:()=>false},
+    visaCoordinationNotices:{handles:()=>false},
     visaOperatorNotices:{handles:message=>operator&&Boolean(message.visaOperatorAction),async receive(message){assert.equal(message.from,OWNER);assert.equal(message.contextId,'accepted-task-notice');assert.equal(message.visaOperatorAction.noticeId,CHALLENGE);assert.equal(journal.get(OWNER).messages.at(-1).text,'[متابعة إشعار التحقق المرئي]');events.push('operator-notice');return{ok:true};}},
     visaFulfilment: {
       recordDelivery() {}, otpOwner: () => OWNER,

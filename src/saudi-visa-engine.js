@@ -1,6 +1,7 @@
 'use strict';
 const {randomUUID}=require('node:crypto');
 const P=require('./saudi-visa-policy');
+const SERVICE=require('./remal-service-policy');
 const {loadVisaPrivateConfig}=require('./saudi-visa-private');
 const {currentVisaEvidence}=require('./visa-case-signature');
 const {redactVisaText}=require('./saudi-visa-nlu');
@@ -92,7 +93,7 @@ class SaudiVisaEngine{
   if(!store?.data||typeof store.save!=='function')throw Error('VISA_STORE_REQUIRED');Object.assign(this,{store,now,understand,env,privateConfig});store.data.visaCases||={};
  }
  getCase(id){return this.store.data.visaCases[id]||null;}
- status(){return {enabled:true,policyVersion:P.POLICY_VERSION,cases:Object.keys(this.store.data.visaCases).length,feesEnabled:this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'};}
+ status(){return {enabled:true,policyVersion:P.POLICY_VERSION,cases:Object.keys(this.store.data.visaCases).length,feesEnabled:true};}
  delete(id){delete this.store.data.pendingNewVisaMedia?.[id];if(this.store.data.serviceSessions?.[id])delete this.store.data.serviceSessions[id].documentConversation;for(const [key,item]of Object.entries(this.store.data.visaDocumentPreviews?.items||{}))if(item.customer===id)delete this.store.data.visaDocumentPreviews.items[key];delete this.store.data.visaCases[id];if(this.store.data.visaCaseArchives)delete this.store.data.visaCaseArchives[id];if(this.store.data.raadApplications)delete this.store.data.raadApplications[id];if(this.store.data.visaDocumentIntake){delete this.store.data.visaDocumentIntake.cases?.[id];for(const [key,item]of Object.entries(this.store.data.visaDocumentIntake.jobs||{}))if(item.customer===id)delete this.store.data.visaDocumentIntake.jobs[key];}for(const [key,item]of Object.entries(this.store.data.visaDocumentNotifications?.items||{}))if(item.customer===id)delete this.store.data.visaDocumentNotifications.items[key];for(const [key,item]of Object.entries(this.store.data.visaUpload?.sessions||{}))if(item.customer===id)delete this.store.data.visaUpload.sessions[key];for(const [key,item]of Object.entries(this.store.data.visaPreparedDeliveries?.items||{}))if(item.customer===id)delete this.store.data.visaPreparedDeliveries.items[key];this.store.save();}
  save(id,c){c.updatedAt=this.now();this.store.data.visaCases[id]=c;this.store.save();}
  recordDocumentTurn(id,text,reply,{caseId,expectedRevision,hasAttachments=false}={}){
@@ -126,7 +127,7 @@ class SaudiVisaEngine{
   const currentJobs=jobs.filter(job=>job.caseId===c.id);
   if(currentJobs.length===1){delete c.followupAwaitingReference;return this.applicationUpdate(currentJobs[0]);}
   if(currentJobs.length>1){c.followupAwaitingReference=true;return 'عندك أكثر من طلب محفوظ معنا: '+currentJobs.map(job=>job.applicationReference).slice(0,10).join('، ')+'. أي رقم طلب حابب تتابع؟';}
-  const review=this.store.data.visaDocumentIntake?.cases?.[id];if(review?.caseId===c.id&&review.caseSignature===currentVisaEvidence(c).signature&&!['processing','queued'].includes(review.status)){const clarification=documentClarificationCopy(review);if(clarification)return clarification;}
+  const review=this.store.data.visaDocumentIntake?.cases?.[id];if(review?.caseId===c.id&&review.caseSignature===currentVisaEvidence(c).signature&&!['processing','queued'].includes(review.status)){return SERVICE.response('processing');}
   if(c.paymentStatus==='verified'||c.submissionStatus==='submitted'||c.documents?.length||c.staffVerification?.decision)return null;
   c.followupAwaitingReference=true;return 'أكيد، بساعدك بمتابعة طلبك. ابعت رقم الطلب، وتابع من نفس رقم واتساب اللي قدمت منه حتى نربطه بملفك الصحيح.';
  }
@@ -211,26 +212,32 @@ class SaudiVisaEngine{
   }
   c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false;
   const products=c.applicants.map(P.productFor),hasUmrah=products.some(p=>p.code==='umrah');
-  c.quote=P.calculateQuote(c,{feesEnabled:this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'});
+  c.quote=P.calculateQuote(c,{feesEnabled:true});
+  if(beforeCase.paymentStatus==='verified'&&beforeCase.quote&&beforeFacts===afterFacts&&c.quote?.total!==beforeCase.quote.total)c.quote=beforeCase.quote;
   const previousQuestion=c.lastQuestion,previousAsked=[...c.askedQuestions],completion=this.nextQuestion(c),nextQuestion=c.lastQuestion,nextAsked=[...c.askedQuestions];
   c.lastQuestion=previousQuestion;c.askedQuestions=previousAsked;
   const intent=({documents:'requirements',payment_after:'pay_after_issue',negotiation:'negotiate',bank:'bank_details',address:'address',payment:'payment_options'})[decision?.intent]||localIntent||decision?.intent;
   const documentStep=detectDocumentStep(n),quoteUnchanged=Boolean(beforeCase.quote&&c.quote&&JSON.stringify(beforeCase.quote)===JSON.stringify(c.quote));
   const priceRequested=/سعر|تكلفه|بكم|قديش|رسوم/.test(n)||intent==='price';
   const substantiveCaption=hasAttachments&&semanticText&&(/[؟?]|حسابك|حسابكم|حساب بنكي|الحساب البنكي|ايبان|\bbank\b|كيف احول|بدي احول|كيف ادفع|طرق الدفع/.test(n)||['price','bank_details','payment_options','payment_receipt','pay_after_issue','refund','cancel','address','courier','processing_time','visa_duration'].includes(intent));
-  if(isComplaint(text)||intent==='complaint'){
+  const intervention=reason=>{c.operatorIntervention={reason,at:this.now(),revision:c.revision};};
+  if(/(?:بدي|كيف|اريد|حابب|حابه|بدنا|بدنا ن|بدي ا).{0,12}(?:ثبت|تثبيت)|^(?:ثبت|ثبتلي|تثبيت)$/.test(n))reply=SERVICE.applicationStart(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS);
+  else if(/(?:رابط|لينك|link).{0,15}(?:دفع|pay)|(?:بدي|ارسل|ابعت|اريد|عطيني|ممكن).{0,15}(?:رابط|لينك)|^(?:رابط|لينك)$/.test(n)){intervention('payment_link');reply=SERVICE.response('link')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote):'');}
+  else if(/تابي|tabby/.test(n)&&!/طرق|خيارات|وسائل/.test(n)){intervention('tabby');reply=SERVICE.response('tabby')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote):'');}
+  else if(intent==='negotiate'||/خصم|تخفيض|ارخص|اخر سعر/.test(n)){intervention('discount');reply=SERVICE.response('discount')+'\n'+P.REFUND_BENEFIT;}
+  else if(isComplaint(text)||intent==='complaint'){
    complaint=true;c.stage='complaint_pending';reply='منفهم انزعاجك، وبدنا نراجع الموضوع بدقة. رح أرفع المحادثة للإدارة لمراجعة المعاملة والدفعات المرتبطة فيها، من دون ما تحتاج تعيد التفاصيل.';
   }else if(relativeInquiry&&!operational)reply=relativeReply(c.pendingRelative,{group:/كمان بدن يقدمو|كمان بدهم يقدمو|هنن.*(?:يقدمو|يقدموا)/.test(n)});
   else if(pendingAmendment)reply='وصل طلب التعديل. لأن الدفعة مؤكدة أو المعاملة مقدمة، حفظنا التعديل للمراجعة مع القسم قبل اعتماده. بيانات المعاملة والدفعة الحالية بقيت محفوظة؛ ما تم تعديل تقديم أو احتساب دفعة جديدة تلقائياً.';
   else if(!first&&(/^(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير)[،,!؟?. 🌷]*$/i.test(n)||decision?.intent==='greeting'&&!documentStep))reply='أهلاً فيك 🌷 أنا معك، ومنكمل على نفس طلب التأشيرة.';
-  else if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|location|address/.test(n))reply=P.OFFICE_ADDRESS+'\nلتسليم الأصول، خبرنا قبل الزيارة حتى ننسّق الاستلام.';
+  else if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|location|address/.test(n))reply=SERVICE.OFFICE;
   else if(intent==='status'||/حاله الطلب|حاله المعامله|تم التقديم|تقدم الطلب|وصلت الدفعه/.test(n)){
    const verified=c.staffVerification||{},evidence=currentVisaEvidence(c);
    if(verified.decision&&verified.decision.caseSignature===evidence.signature)reply=(verified.decision.value||verified.decision)==='approved'?'بحسب تحديث القسم المسجل، صدر قرار الموافقة على طلبك. تسليم التأشيرة وتفاصيلها يكون من القسم المختص.':'بحسب تحديث القسم المسجل، صدر رفض رسمي لطلبك. تتم مراجعة الاسترداد وفق سياسة المكتب؛ لا يعني هذا أن التحويل المالي نُفّذ.';
    else if(c.submissionStatus==='submitted'&&evidence.submission)reply='بحسب تأكيد القسم المسجل، تم تقديم المعاملة فعلياً وهي بانتظار النتيجة. لا يوجد قرار مسجل حتى الآن.';
-   else if(c.paymentStatus==='verified'&&evidence.payment)reply='الدفعة مؤكدة من القسم بحسب السجل. تقديم الطلب للسفارة لم يتأكد في السجل بعد، ومنتابع الخطوة التالية حسب اكتمال الأوراق.';
-   else if(c.paymentStatus==='verified'||c.submissionStatus==='submitted')reply='في تأكيد سابق محفوظ من القسم، لكن مطابقة التأكيد مع تفاصيل المعاملة الحالية تحتاج مراجعة قبل إعطاء حالة مؤكدة. ما في داعي تعيد الدفع؛ منراجع السجل أولاً.';
-   else reply='ما في تأكيد مسجل حتى الآن لوصول الدفعة أو تقديم الطلب للسفارة. إذا المعاملة مقدمة عبر قسم آخر، تابع من نفس رقمك ومع نفس الرقم اللي استلم بياناتك.';
+   else if(c.paymentStatus==='verified'&&evidence.payment)reply=SERVICE.response('processing');
+   else if(c.paymentStatus==='verified'||c.submissionStatus==='submitted')reply=SERVICE.response('processing');
+   else reply=SERVICE.response('update');
   }
   else if(/(?:دفع|بدفع|الدفع).{0,15}(?:بعد|لما|بس).{0,15}(?:اصدار|تطلع|تجهز|تصدر)|بعد الاصدار/.test(n)||intent==='pay_after_issue')reply='منفهم رغبتك، لكن التقديم عنا بيبدأ بعد استكمال الأوراق وتسديد الرسوم، وما عنا دفع بعد الإصدار. فيك تختار التحويل البنكي أو تطلب تفاصيل وسائل الدفع الأخرى.';
   else if(/(?:انا|نحن|نحنا).{0,15}(?:مقدم|قدمنا|قدمت)|متابعه معامل|وين معاملتي|طلعت معاملتي|طلعت الفيزا|شو صار بالطلب/.test(n)||intent==='existing_application')reply='لمتابعة معاملتك الحالية، تواصل حصراً من نفس الرقم اللي قدّمت منه ومع نفس رقم الشركة اللي استلم بياناتك. أقسامنا منفصلة، والقسم اللي قدّمت معه هو اللي بيقدر يراجع ملفك والدفعات المرتبطة فيه.';
@@ -240,16 +247,16 @@ class SaudiVisaEngine{
   }else if(c.cancellation?.state==='awaiting_confirmation'&&/^(?:اي|نعم|تمام|اكد|اوافق|موافق)(?:\s.*)?$/.test(n)){
    c.cancellation.state='review_requested';c.stage='cancellation_review';reply='وصل تأكيدك، وسجلنا طلب مراجعة الإلغاء برسوم 200 درهم لكل معاملة ملغاة. يلزم مراجعة القسم لحالة المعاملة والمبلغ القابل للاسترداد قبل تنفيذ الإلغاء؛ لم يُنفّذ إلغاء أو تحويل مالي بعد.';
   }else if(hasAttachments&&!substantiveCaption||!hasAttachments&&/ارسل[ت]? (?:الجواز|الهويه|الاوراق)|بعت[ت]? (?:الجواز|الهويه|الاوراق)/.test(n)){
-   if(!c.staffVerification?.documentsReviewed&&c.submissionStatus!=='submitted')c.stage='documents_pending_review';reply='وصلتنا رسالتك المتعلقة بالمستندات، شكراً إلك. استلام الملف لا يعني اعتماد جودته أو اكتمال الطلب؛ رح يظهر ضمن ملف المعاملة للمراجعة. حالة الدفع والتقديم تُعتمد فقط من تأكيد القسم المسجل.';
+   if(!c.staffVerification?.documentsReviewed&&c.submissionStatus!=='submitted')c.stage='documents_pending_review';reply=SERVICE.response('received');
   }else if(/(?:حولت|دفعت|سددت|تم التحويل|ايصال|وصل التحويل)/.test(n)||intent==='payment_receipt'){
    if(c.paymentStatus==='verified')reply='الدفعة مؤكدة بالفعل من القسم بحسب السجل، شكراً إلك 🌷 ما في داعي تعيد التحويل. منتابع الخطوة التالية حسب حالة المعاملة.';
    else{c.paymentStatus='awaiting_verification';c.stage='payment_review';reply='شكراً إلك 🌷 رح نتحقق من وصول الدفعة للحساب قبل تأكيدها واستكمال الإجراء. إذا ما أرسلت إيصال التحويل، ابعته مع رقم طلبك إن وُجد. صورة الإيصال وحدها ما بتأكد وصول المبلغ.';}
   }else if(/حسابات|حسابك|حسابكم|حساب بنكي|الحساب البنكي|ايبان|iban|bank details|بدي احول|كيف احول/.test(n)||intent==='bank_details'){
-   reply=this.privateConfig.banks?.length?'التفاصيل البنكية المعتمدة لشركة الرمال للسياحة:\n\n'+this.privateConfig.banks.map(b=>`🏦 ${b.bank}\nاسم الحساب: ${b.name}\nرقم الحساب: ${b.account}\nIBAN: ${b.iban}`).join('\n\n')+'\n\nالتحويل البنكي دون عمولة إضافية من المكتب. بعد التحويل ابعت الإيصال لنتحقق من وصول الدفعة.':'التفاصيل البنكية تحتاج تأكيداً من القسم قبل إرسالها؛ ما رح نعطيك رقم حساب غير معتمد.';
+   reply=SERVICE.response('bank');
   }else if(/رفض|مسترد|استرداد|ترجع المصاري|ترجعو الرسوم/.test(n)||intent==='refund')reply='من ميزات التقديم معنا: رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي، حسب شروط خدمتنا الموضحة قبل الدفع. هذا التزام من مكتبنا وليس وعداً برد الرسوم من السفارة. التأخير أو التعليق ليس رفضاً، والإلغاء بطلب العميل له رسوم 200 درهم للمعاملة. رسوم الدفع والزاجل والفندق تحتاج توضيحاً منفصلاً قبل الاتفاق.';
   else if(/كم يوم|قديش وقت|مده|مدة|متي تطلع|ايمت تطلع|بسرعه|مستعجل|بكرا|اليوم/.test(n)||intent==='processing_time')reply='المدة المعتادة حسب إجراءاتنا 6–7 أيام عمل، والإنجاز مرتبط بالسفارة. السبت والأحد والعطل المعتمدة ما بتنحسب ضمن أيام المعالجة. ما فينا نضمن الموافقة أو الصدور قبل موعد محدد. إذا سفرك قريب، شو تاريخ السفر؟';
   else if(/زاجل|توصيل|استلام الجواز|ابعت مندوب/.test(n)||intent==='courier')reply='فينا ننسّق استلام أصل الجواز والهوية عن طريق زاجل برسوم 35 درهماً، أو بتسلمهم بالمكتب. قبل ترتيب الاستلام منأكد معك نطاق الخدمة وهل الإعادة مشمولة؛ ما حُجز مندوب بعد.';
-  else if(/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply='الدفع متاح بالتحويل البنكي دون عمولة إضافية من المكتب. رابط الدفع وتابي متاحان حسب إعداد الخدمة وشروط المزود؛ قبل تأكيدك منوضح رسوم كل وسيلة والإجمالي.'+(this.env.SAUDI_VISA_PAYMENT_FEES_ENABLED==='true'?' حسب سياسة المكتب المفعّلة: رابط الدفع +5% وتابي +9%.':' رسوم الرابط وتابي بانتظار اعتماد الإعداد التجاري، لذلك لا نؤكد إجماليهما الآن.');
+  else if(/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply=SERVICE.response('payment');
   else if(/90|تسعين|مده الاقامه|مده الفيزا|كم شهر|كل دخول/.test(n)||intent==='visa_duration')reply='السياحية المتعددة في عرضنا صلاحيتها سنة، والإقامة تصل إلى 90 يوماً حسب شروط التأشيرة الصادرة. صلاحية السنة تختلف عن مدة الإقامة؛ ما منعتبر الـ90 يوماً تلقائياً لكل دخول. السفرة الواحدة والعمرة إلهم شروط مختلفة حسب التأشيرة الفعلية.';
   else if(documentStep==='will_send')reply='تمام، ابعتهن هون لما تجهز، ومنكمل على نفس طلبك.';
   else if(documentStep==='requirements'||documentStep==='apply'&&quoteUnchanged||/اوراق|مطلوب|مستندات|كيف اقدم|طريقه التقديم/.test(n)||intent==='requirements')reply=(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS)+(completion?'\n\n'+completion:'\nابعتهن هون، ومنرتب المستندات قبل الخطوة التالية.');
@@ -259,13 +266,14 @@ class SaudiVisaEngine{
   else if(/منتظر|ناطر|بانتظار|جاري/.test(n)||intent==='waiting')reply='شكراً لانتظارك 🌷 تفاصيلك موجودة معنا. '+(c.stage==='documents_pending_review'?'المستندات بانتظار المراجعة، ومنأكدلك الخطوة التالية بعد التحقق.':completion||'إذا حابب نكمل، فينا نرتب مراجعة الأوراق وطريقة الدفع.');
   else if(products.some(p=>p.code==='suspended'))reply='حسب حالة التقديم الحالية لدى مكتبنا، التقديم لهذه الجنسية متوقف حالياً. ما رح نطلب منك دفع أو نعطيك وعد بموعد فتح قبل وجود تحديث معتمد.';
   else if(products.some(p=>p.code==='unverified')&&c.applicants[0]?.nationality)reply='حتى نعطيك معلومة دقيقة، نوع التأشيرة لهذه الجنسية أو الوثيقة يحتاج تحققاً ضمن قناة التقديم عندنا. ما رح نأكد أهلية أو نطلب دفع قبل التحقق.';
+  else if(intent==='other'&&semanticText&&!documentStep&&afterFacts===beforeFacts&&!/فيزا|تاشيره|سعودي|saudi|visa/i.test(n)){intervention('untrained_request');reply=SERVICE.response('unknown');}
   else if(completion){
    const price=priceRequested;
    const known=products[0];
    reply=(price?'السياحية 700 درهم للشخص، ولثلاثة متقدمين سياحيين أو أكثر 650 للشخص، والعمرة 850 درهماً.\n\n'+P.REFUND_BENEFIT+'\n\n':known?.code==='umrah'?'حسب سياسة التقديم الحالية لدينا، المسار المناسب لهذه الحالة هو تأشيرة العمرة. ':known?.code==='tourist_single'?EGYPT_SINGLE_COPY+' ':'')+completion;
   }else{
    if(!c.staffVerification?.decision&&c.submissionStatus!=='submitted'&&c.paymentStatus!=='verified')c.stage=c.paymentStatus==='awaiting_verification'?'payment_review':'quoted';c.lastQuestion=null;
-   if(quoteUnchanged&&!priceRequested&&afterFacts===beforeFacts&&!c.quote?.requiresReview)reply='أنا معك، ومنكمل على نفس الطلب. إذا عندك سؤال عن الخطوة الحالية خبرني.';
+   if(quoteUnchanged&&!priceRequested&&afterFacts===beforeFacts&&!c.quote?.requiresReview)reply=SERVICE.response('processing');
    else{
     reply=quoteText(c.quote);
     if(c.quote?.requiresReview)c.stage='pricing_review';

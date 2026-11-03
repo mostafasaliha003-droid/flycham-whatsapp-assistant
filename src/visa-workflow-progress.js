@@ -33,6 +33,7 @@ function workflowProgressReply(store,customer,summary,now=Date.now()){
   if(job.state==='portal_review_required')return job.blockedReason==='OTP_CHALLENGE_EXPIRED'
    ? 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.'
    : 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.';
+  if(job.coordination&&['awaiting_answers','needs_followup','awaiting_answer_confirmation','queued','ready'].includes(job.state))return 'طلبك معنا، وعم نتابع تجهيزه. منرسل لك رقم الطلب بعد إتمام التقديم.';
   if(['awaiting_answers','needs_followup'].includes(job.state))return 'استكمال الطلب بانتظار إجابات الأسئلة المرسلة لك في هذه المحادثة. جاوب على السؤال الحالي لنكمل على نفس الملف؛ لا داعي لإعادة إرسال الأوراق.';
   if(job.state==='awaiting_answer_confirmation')return 'بيانات الطلب بانتظار اعتمادك على ملخص الإجابات المرسل في هذه المحادثة. راجع الملخص وأكّد صحته لنكمل على نفس الملف.';
   const lease=data.visaFulfilment?.lease;

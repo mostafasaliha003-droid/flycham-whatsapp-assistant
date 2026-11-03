@@ -119,7 +119,7 @@ function uploadUrl(result) {
 
 // Callbacks own authorization, current-case/source guards and actual delivery.
 // This layer only recognizes the request and renders bounded application copy.
-function createVisaDocumentConversation({documentIntake, createUploadLink, sendPrepared, store, now = Date.now} = {}) {
+function createVisaDocumentConversation({documentIntake, createUploadLink, sendPrepared, store, now = Date.now, operatorCoordination=false} = {}) {
   if (typeof documentIntake?.summary !== 'function') throw Error('DOCUMENT_CONVERSATION_CONFIGURATION_REQUIRED');
   const fallback = new Map();
   const stored = customer => store?.data ? store.data.serviceSessions?.[customer]?.documentConversation : fallback.get(customer);
@@ -169,6 +169,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     }
     if (!request.kind && previous?.lastKind && pronounReference(normalize(text || '').replace(/\s+/g, ' '))) request = {...request, kind: previous.lastKind};
     const result = {handled: true, intent: request.intent, kind: request.kind};
+    if(operatorCoordination&&['status','prepare_application'].includes(request.intent)){remember(customer,summary);return {...result,reply:require('./remal-service-policy').response('processing')};}
     if (['status','prepare_application'].includes(request.intent)) {
       const progress=workflowProgressReply(store,customer,summary,now());
       if(progress){remember(customer,summary);return {...result,reply:progress};}

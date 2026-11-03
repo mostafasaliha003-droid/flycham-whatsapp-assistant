@@ -2,7 +2,7 @@
 const {validateDocumentExtraction}=require('./visa-document-vision');
 const {parseTD3MRZ}=require('./raad-document-validation');
 const POLICY='independent-cline-document-review-v2',THRESHOLD=0.98;
-const PASSPORT_FIELDS=['birthDate','expiryDate','issueDate','birthPlace','passportType','sex'];
+const PASSPORT_FIELDS=['birthDate','expiryDate','issueDate','birthPlace','passportType','sex','arabicFirstName','arabicFatherName','arabicFamilyName'];
 function needsDocumentReview(extraction){return extraction?.kind==='passport'&&extraction.readable===true&&PASSPORT_FIELDS.some(name=>{const field=extraction.fields?.[name];return field?.visible!==true||field.confidence<THRESHOLD;});}
 const comparable=(name,value)=>name.includes('Name')?value.normalize('NFKC').toUpperCase().replace(/\s+/g,' ').trim():value;
 function mergeDocumentReview(primary,secondary){
@@ -29,7 +29,7 @@ function corroboratedPassportDate(document,field){
  }catch{return false;}
 }
 function corroboratedPassportVisibleField(document,field){
- if(!['latinFirstName','latinFatherName','latinGrandfatherName','latinFamilyName','birthPlace','issueDate','passportType'].includes(field))return false;
+ if(!['latinFirstName','latinFatherName','latinGrandfatherName','latinFamilyName','birthPlace','issueDate','passportType','arabicFirstName','arabicFatherName','arabicGrandfatherName','arabicFamilyName'].includes(field))return false;
  const proof=document.reviewEvidence;if(!proof||proof.policy!==POLICY||proof.mediaId!==document.mediaId||proof.page!==document.page||proof.sha256!==document.sha256||proof.sourceSha256!==document.sourceSha256||!/^[a-f0-9]{64}$/.test(proof.sourceSha256||''))return false;
  try{
   const first=validateDocumentExtraction(document.reviewOriginalExtraction),second=validateDocumentExtraction(document.reviewSecondaryExtraction),current=validateDocumentExtraction(document.extraction);
