@@ -75,6 +75,6 @@ function voiceLead(transcript){
 function voiceFallback(reason){
  if(reason==='too_long')return 'وصلتني رسالتك الصوتية 🌷 لأنها طويلة شوي، ممكن تلخصلي المطلوب برسالة صوتية أقصر (أقل من دقيقتين) أو بكم كلمة مكتوبة؟ ومنكمل فوراً من نفس النقطة.';
  if(reason==='unclear')return 'وصلتني رسالتك الصوتية 🌷 بس الصوت ما كان واضح كفاية لأفهمه بدقة. ممكن تعيدها بمكان أهدى أو تكتبلي المطلوب بكلمتين؟';
- return 'وصلتني رسالتك الصوتية 🌷 حالياً ما قدرت أفرّغها، فممكن تكتبلي المطلوب بكلمتين ومنكمل فوراً من نفس النقطة؟';
+ return 'وصلتني رسالتك الصوتية، شكرًا إلك 🌷 حتى أساعدك بدقة، ممكن تكتبلي ملخّص طلبك؟';
 }
 module.exports={DEFAULT_GEMINI_VOICE_MODEL,callCline,callGemini,transcribeVoice,voiceProviders,voiceLead,voiceFallback,parse,INSTRUCTIONS};
