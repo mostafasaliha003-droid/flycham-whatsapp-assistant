@@ -31,6 +31,41 @@ function fixture({send, resumeOtp, count = 2, canAutomate} = {}) {
   return {service, options, store, c, inbox, mediaStore, input, receive, approve, activate, drafts, applied, tick: ms => { at += ms; }, claim: value => { claimed = value; }, stats: () => ({saves, paymentCalls, sends})};
 }
 const throwsCode = (run, code) => assert.throws(run, error => error.code === code || error.message === code);
+test('Package 5 labelled passport and ID answers normalize while controls and catalog validation remain mandatory',()=>{
+ const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions');
+ const passport=questionFor('passportNumber',{applicantIndex:0}),eid=questionFor('emiratesId',{applicantIndex:0});
+ for(const text of ['رقم الجواز: n ١٢٣٤٥٦٧٨','جواز رقم - N12345678','Passport number: n12345678','passport no： N12345678'])assert.equal(validateAnswer('passportNumber',normalize(passport,text)),'N12345678',text);
+ for(const text of ['هويتي: 784-1990-1234567-1','رقم الهوية：٧٨٤١٩٩٠١٢٣٤٥٦٧١','Emirates ID: 784199012345671','EID - 784199012345671'])assert.equal(validateAnswer('emiratesId',normalize(eid,text)),'784199012345671',text);
+ assert.equal(normalize({inputType:'passport_number'},'جواز رقم: n12345678'),'N12345678');assert.equal(normalize({inputType:'phone_number'},'+٩٧١٥٥٥٠٠٠٠٠٠'),'+971555000000');
+ for(const [field,text]of [['passportNumber','رقم الجواز: A/123'],['passportNumber','رقم الجواز: N123\n'],['passportNumber','رقم الجواز: '+ 'A'.repeat(21)],['emiratesId','هويتي: 123199012345671'],['emiratesId','هويتي: 784199012345671\u0085'],['nationalityCode','بدي سوريا']])assert.throws(()=>validateAnswer(field,normalize(questionFor(field,{applicantIndex:0}),text)),/VISA_ANSWER_INVALID/,text);
+});
+test('Package 5 name whitespace normalization preserves spelling and rejects controls and mixed scripts',()=>{
+ const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions');
+ for(const [field,input,expected]of [['latinFirstName',"  José   O'Neil  ","José O'Neil"],['arabicFirstName','  أحمد   علي  ','أحمد علي']])assert.equal(validateAnswer(field,normalize(questionFor(field,{applicantIndex:0}),input)),expected);
+ for(const [field,input]of [['latinFirstName','أحمد'],['arabicFirstName','AHMAD'],['latinFirstName','AHMAD\tALI'],['arabicFirstName','أحمد\nعلي'],['latinFirstName','AHMAD 123']])assert.throws(()=>validateAnswer(field,normalize(questionFor(field,{applicantIndex:0}),input)),/VISA_ANSWER_INVALID/);
+});
+test('Package 5 invalid bound answers get field-specific guidance and never stage or confirm data',async()=>{
+ const f=fixture({count:1});const approval=await f.activate(),jobId=approval.jobs[0].id;
+ const inputs=[['latinFirstName','أحمد',/الأحرف الإنجليزية/],['arabicFirstName','AHMAD',/الأحرف العربية/],['emiratesId','12345',/15 خانة.*784/],['passportNumber','N/123',/الأحرف الإنجليزية والأرقام/],['nationalityCode','بدي سوريا',/اسم الدولة.*SYR/],['birthDate','31/02/1990',/يوم\/شهر\/سنة/],['passportType','أي شيء',/اختار من قائمة السؤال/]];
+ const asked=f.service.askQuestions(jobId,{fields:inputs.map(([field])=>field)});
+ for(const [field,input,pattern]of inputs){
+  const q=asked.questions.find(q=>q.field===field),out=Object.values(f.service.data().outbox).find(x=>x.payload.token===q.token);await f.service.dispatchMessage(out.id);
+  assert.equal(f.service.handleCustomerMessage(OTHER,{contextId:out.messageId,text:input}).handled,false);
+  const before=structuredClone(f.service.job(jobId).stagedFields),r=f.service.handleCustomerMessage(CUSTOMER,{id:'invalid-'+field,contextId:out.messageId,text:input});
+  assert.equal(r.ok,false,field);assert.equal(r.error,'VISA_ANSWER_INVALID',field);assert.match(r.reply,pattern,field);assert.deepEqual(f.service.job(jobId).stagedFields,before);assert.equal(f.service.job(jobId).answerConfirmation,undefined);
+ }
+});
+test('Package 5 conversational operator answers remain bound and staged before explicit approval',async()=>{
+ const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP=OWNER;
+ const approval=await f.activate(),jobId=approval.jobs[0].id,asked=f.service.askQuestions(jobId,{fields:['passportNumber','emiratesId','arabicFirstName']});
+ for(const [field,input,expected]of [['passportNumber','رقم الجواز: n12345678','N12345678'],['emiratesId','هويتي: 784-1990-1234567-1','784199012345671'],['arabicFirstName','أحمد   علي','أحمد علي']]){
+  const q=asked.questions.find(q=>q.field===field),out=Object.values(f.service.data().outbox).find(x=>x.payload.token===q.token);await f.service.dispatchMessage(out.id);
+  assert.equal(f.service.handleOperatorMessage({from:OTHER,contextId:out.messageId,text:input}).handled,false);
+  assert.equal(f.service.handleOperatorMessage({from:OWNER,contextId:out.messageId,text:input,id:'label-'+field}).ok,true);assert.equal(f.service.job(jobId).stagedFields[field],expected);
+  const stale=f.service.handleOperatorMessage({from:OWNER,contextId:out.messageId,text:'bad',id:'stale-'+field});assert.equal(stale.ok,false);assert.equal(stale.error,'VISA_ANSWER_CONTEXT_STALE');assert.equal(f.service.job(jobId).stagedFields[field],expected);
+ }
+ assert.equal(f.service.job(jobId).state,'awaiting_answer_confirmation');assert.equal(f.service.job(jobId).answerConfirmation,undefined);assert.equal(f.applied.length,0);
+});
 test('Package 4 exact Arabic and English country answers normalize before strict catalog validation',()=>{
  const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions'),q=questionFor('nationalityCode',{applicantIndex:0});
  const countries={SYR:['سوريا','سورية','Syrian'],EGY:['مصر','مصرية','Egypt'],JOR:['الأردن','اردنيه','Jordanian'],LBN:['لبنان','لبنانية','Lebanon'],PSE:['فلسطين','فلسطينية','Palestinian'],IRQ:['العراق','عراق','Iraqi'],YEM:['اليمن','يمن','Yemeni'],SDN:['السودان','سودانية','Sudan'],LBY:['ليبيا','ليبي','Libyan'],MAR:['المغرب','مغرب','Moroccan'],TUN:['تونس','تونسية','Tunisia'],DZA:['الجزائر','جزائر','Algerian'],MRT:['موريتانيا','موريتانية','Mauritanian'],ARE:['الإمارات','إماراتي','  United   Arab Emirates  '],SAU:['السعودية','سعودي','Saudi Arabia'],TUR:['تركيا','تركية','Turkish'],PAK:['باكستان','باكستانية','Pakistani'],IND:['الهند','هندية','India'],BGD:['بنغلادش','بنغالي','Bangladeshi']};

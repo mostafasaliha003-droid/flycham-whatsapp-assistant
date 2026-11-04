@@ -61,8 +61,10 @@ function normalizeInboundQuestionValue(question = {}, value = '') {
     return Object.hasOwn(COUNTRY_CODE_ALIASES,country)?COUNTRY_CODE_ALIASES[country]:raw.toUpperCase();
   }
   if (format === 'country_code' && /^(?:\+|00)?\d{1,4}$/.test(ascii)) return ascii.replace(/^\+|^00/, '');
-  if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/\s+/g, '').toUpperCase();
-  if (format === 'emiratesId' || format === 'phone_number') return ascii;
+  if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/^(?:رقم\s*الجواز|جواز\s*رقم|passport\s*(?:no|number)?)\s*[:：-]?\s*/i, '').replace(/\s+/g, '').toUpperCase();
+  if (format === 'emiratesId') return ascii.replace(/^(?:رقم\s*الهوي[ةه]|هويتي|emirates\s*id|eid)\s*[:：-]?\s*/i, '');
+  if (format === 'phone_number') return ascii;
+  if (format === 'latinName' || format === 'arabicName') return raw.replace(/\s+/g, ' ');
   return raw;
 }
 function choiceText(value) { return asciiDigits(value).normalize('NFKC').trim().toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/\s+/g, ' '); }
@@ -730,6 +732,11 @@ class VisaFulfilment {
       const invalid = ['VISA_ANSWER_INVALID', 'VISA_ANSWER_OPTION_INVALID'].includes(error?.code);
       result = {handled: true, ok: false, error: invalid ? 'VISA_ANSWER_INVALID' : 'VISA_ANSWER_CONTEXT_STALE', reply: invalid ? 'لم نعتمد هذه الإجابة. يرجى الإجابة بالصيغة المطلوبة أو استخدام خيارات السؤال.' : 'هذه الإجابة مرتبطة بسؤال قديم أو بمعاملة متوقفة. لم نغيّر بيانات الطلب؛ يرجى انتظار السؤال الحالي.'};
       if (invalid && activeQuestion?.format === 'date') result.reply = 'التاريخ المدخل غير صالح. اكتبه يوم/شهر/سنة (مثال: 15/05/1990) أو 1990-05-15، ومنسجّله بعد التحقق من صحته.';
+      else if (invalid && activeQuestion?.format === 'latinName') result.reply = 'يرجى كتابة الاسم بالأحرف الإنجليزية (اللاتينية) فقط كما هو مطبوع في جواز السفر (مثال: AHMAD).';
+      else if (invalid && activeQuestion?.format === 'arabicName') result.reply = 'يرجى كتابة الاسم بالأحرف العربية فقط كما هو مثبت في المستندات.';
+      else if (invalid && activeQuestion?.format === 'emiratesId') result.reply = 'رقم الهوية الإماراتية غير صالح؛ يرجى إرسال الرقم المكون من 15 خانة والذي يبدأ بـ 784.';
+      else if (invalid && activeQuestion?.format === 'passportNumber') result.reply = 'يرجى إرسال رقم الجواز بالأحرف الإنجليزية والأرقام فقط بدون رموز إضافية.';
+      else if (invalid && activeQuestion?.format === 'countryCode') result.reply = 'يرجى كتابة اسم الدولة (مثل: سوريا، مصر، الأردن) أو رمزها المكون من 3 أحرف (مثل: SYR).';
       else if (invalid && activeQuestion?.type === 'choice') result.reply = 'اختار من قائمة السؤال، أو اكتب رقم الإجابة أو اسمها:\n' + activeQuestion.options.map((option, index) => `${index + 1}. ${option.label}`).join('\n');
     }
     if (message.id && typeof message.id === 'string' && message.id.length <= 500 && this.data().cases[sender]) this.commit(() => { const record = this.data().cases[sender]; record.handledMessages ||= {}; record.handledMessages[message.id] = result; const ids = Object.keys(record.handledMessages); for (const id of ids.slice(0, Math.max(0, ids.length - 100))) delete record.handledMessages[id]; });

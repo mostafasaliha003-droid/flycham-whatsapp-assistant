@@ -10,7 +10,10 @@ const IMAGE_INTENTS = new Set(['merge', 'enhance', 'send_prepared']);
 const ISSUE_COPY = Object.freeze({
   DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس أو فلاش (بحيث تظهر الزوايا الأربع والباركود بوضوح)؟ باقي مرفقاتك السليمة محفوظة.',
   DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي الكامل (أو ملف PDF من تطبيق UAEICP للهوية) بدون قص؟',
-  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية أمامية واضحة بخلفية بيضاء وإضاءة جيدة بدون فلتر؟'
+  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية أمامية واضحة بخلفية بيضاء وإضاءة جيدة بدون فلتر؟',
+  PASSPORT_MRZ_REQUIRED:'ممكن تبعت صورة كاملة لصفحة بيانات الجواز يظهر فيها السطران السفليان (رموز وأحرف أسفل الصفحة) بوضوح بدون قص؟',
+  PASSPORT_VALIDITY:'صلاحية الجواز الظاهرة أقل من 6 أشهر؛ إذا عندك جواز مجدد ابعت صورته هون، أو منراجع الحالة معك.',
+  RESIDENCE_VALIDITY:'صلاحية الإقامة الظاهرة أقل من 3 أشهر؛ إذا عندك هوية أو إقامة مجددة ابعتها هون، أو منراجع الحالة معك.'
 });
 const documentWords = /صور(?:ه|تين)?|الصور|اوراق|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
 function detectDocumentStep(text) {
@@ -103,9 +106,15 @@ function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
     : 'أوراقك جاهزة، ومنكمل معك الخطوة التالية.';
   if (summary.status === 'needs_confirmation') return documentConfirmationCopy(summary);
   const issues = [...(Array.isArray(summary.issues) ? summary.issues : []), ...(Array.isArray(summary.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
-  const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED']);
+  const actionable=new Set(Object.keys(ISSUE_COPY));
   const lines = [...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue => ISSUE_COPY[issue.code]).filter(Boolean))].slice(0, 1);
-  return lines.length ? lines.join('\n') : 'أوراقك محفوظة معنا، ومنخبرك إذا احتجنا أي معلومة إضافية.';
+  if (lines.length) return lines.join('\n');
+  if (!kind && Array.isArray(summary.applicants) && summary.applicants.length === 1) {
+    const present = ['passport', 'residence', 'photo'].filter(item => hasPrepared(summary, item));
+    const missing = ['passport', 'residence', 'photo'].filter(item => !hasPrepared(summary, item));
+    if (present.length > 0 && missing.length > 0) return `المرفقات الجاهزة بملفك: ✅ ${present.map(item => KINDS[item]).join('، ')} — وبقي لإكمال الملف: ⏳ ${missing.map(item => KINDS[item]).join('، ')}.`;
+  }
+  return 'أوراقك محفوظة معنا، ومنخبرك إذا احتجنا أي معلومة إضافية.';
 }
 function accepted(result) {
   if (!result || result.paused || result.dryRun || result.uncertain || result.ok === false) return false;
