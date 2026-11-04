@@ -878,3 +878,52 @@ test('a failed manual PDF export can retry only with exact current context and a
  assert.equal(f.service.retryManualCopy(job.id,input).manualCopyQueued,true);assert.equal(job.state,'manually_completed');assert.equal(job.manualCopy.attempts,1);
  job.state='portal_review_required';job.manualCopy={state:'failed',attempts:3};assert.throws(()=>f.service.retryManualCopy(job.id,input));
 });
+
+
+test('friendly answer formats normalize digits and dates without weakening catalog validation',()=>{
+ const {normalizeInboundQuestionValue:normalize,matchChoiceOption,asciiDigits}=require('../src/visa-fulfilment');
+ const {questionFor,validateAnswer}=require('../src/visa-client-questions'),date=questionFor('birthDate',{applicantIndex:0});
+ assert.equal(asciiDigits('٠١٢٣٤٥٦٧٨٩ ۰۱۲۳۴۵۶۷۸۹'),'0123456789 0123456789');
+ for(const raw of ['١٥/٥/١٩٩٠','۱۵.۰۵.۱۹۹۰','1990/5/15','1990-05-15'])assert.equal(validateAnswer('birthDate',normalize(date,raw)),'1990-05-15');
+ for(const raw of ['31/02/1990','29/02/2023','01/13/1990','1/1/90','1990-05-15\n'])assert.throws(()=>validateAnswer('birthDate',normalize(date,raw)),/VISA_ANSWER_INVALID/);
+ assert.equal(normalize({format:'passportNumber'},' ab ١٢۳ '),'AB123');assert.equal(normalize({format:'countryCode'},' mar '),'MAR');assert.equal(normalize({format:'countryCode'},'+971'),'+971');
+ assert.equal(normalize({inputType:'phone_number'},'+٩٧١٥٠٠٠٠٠٠٠٠'),'+971500000000');assert.equal(normalize({inputType:'country_code'},'00971'),'971');
+ const fields={performUmrah:{yes:['نعم','إي','أيوه','أجل','صح','موجود','لدي','عندي','true'],no:['لا','كلا','ما عندي','مافي','ما في','ليس لدي','false']},maritalStatus:{single:['أعزب','عزباء','غير متزوج','unmarried'],married:['متزوجة'],divorced:['مطلقة'],widowed:['أرملة'],separated:['منفصلة']},sex:{male:['ذكر','m'],female:['أنثى','امرأة','سيدة']},passportType:{ordinary:['عادي','جواز عادي','regular'],service:['خدمة'],diplomatic:['دبلوماسية'],special:['خاص']}};
+ for(const [field,cases]of Object.entries(fields))for(const [id,aliases]of Object.entries(cases))for(const text of aliases)assert.equal(matchChoiceOption(field,questionFor(field,{applicantIndex:0}).options,text)?.id,id,field+' '+text);
+ assert.equal(matchChoiceOption('maritalStatus',questionFor('maritalStatus',{applicantIndex:0}).options,'٢').id,'married');
+ assert.equal(matchChoiceOption('performUmrah',questionFor('performUmrah',{applicantIndex:0}).options,'نعم لا'),null);
+ assert.equal(matchChoiceOption('confirm',[{id:'confirm',label:'أؤكد وأفوّض'}],'1'),null);
+});
+test('delivered bound choices accept synonyms with progress but never auto-confirm declarations',async()=>{
+ const f=fixture({count:1}),approval=await f.activate(),jobId=approval.jobs[0].id;
+ const asked=f.service.askQuestions(jobId,{fields:['maritalStatus','birthDate']});
+ const choice=asked.questions[0],date=asked.questions[1];
+ assert.equal(f.service.handleCustomerMessage(CUSTOMER,{text:'أعزب'}).handled,false);
+ const outgoing=Object.values(f.service.data().outbox).find(item=>item.payload.token===choice.token);await f.service.dispatchMessage(outgoing.id);
+ const first=f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-choice',text:'أعزب'});assert.equal(first.ok,true);assert.deepEqual(first.progress,{answered:1,total:2,remaining:1});assert.match(first.reply,/تم إنجاز 1 من 2 — بقي 1 أسئلة/);
+ assert.deepEqual(f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-choice',text:'أعزب'}),first);
+ const second=f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-date',visaAnswer:{token:date.token,value:'١٥/٠٥/١٩٩٠'}});assert.equal(second.ok,true);assert.deepEqual(second.progress,{answered:2,total:2,remaining:0});
+ assert.equal(f.service.job(jobId).stagedFields.birthDate,'1990-05-15');assert.equal(f.service.job(jobId).state,'awaiting_answer_confirmation');
+ const summary=Object.values(f.service.data().outbox).find(item=>item.kind==='applicant_answer_summary');await f.service.dispatchMessage(summary.id);
+ f.service.handleCustomerMessage(CUSTOMER,{id:'not-consent',contextId:summary.messageId,text:'نعم'});assert.equal(f.service.job(jobId).state,'awaiting_answer_confirmation');assert.equal(f.service.job(jobId).answerConfirmation,undefined);
+});
+test('operator normalization preserves sender delivery ambiguity and stale-token boundaries',async()=>{
+ const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP=OWNER;
+ const approval=await f.activate(),jobId=approval.jobs[0].id,asked=f.service.askQuestions(jobId,{fields:['maritalStatus','birthDate']});
+ const outgoing=Object.values(f.service.data().outbox).find(item=>item.payload.token===asked.questions[0].token);await f.service.dispatchMessage(outgoing.id);
+ assert.equal(f.service.handleOperatorMessage({from:OTHER,contextId:outgoing.messageId,text:'متزوج'}).handled,false);
+ const accepted=f.service.handleOperatorMessage({from:OWNER,id:'owner-choice',contextId:outgoing.messageId,text:'غير متزوج'});assert.equal(accepted.ok,true);assert.equal(f.service.job(jobId).stagedFields.maritalStatus,'single');
+ const stale=f.service.handleOperatorMessage({from:OWNER,id:'owner-stale',contextId:outgoing.messageId,text:'متزوج'});assert.equal(stale.ok,false);assert.equal(f.service.job(jobId).stagedFields.maritalStatus,'single');
+ const next=Object.values(f.service.data().outbox).find(item=>item.payload.token===asked.questions[1].token);await f.service.dispatchMessage(next.id);
+ const invalid=f.service.handleOperatorMessage({from:OWNER,id:'bad-date',text:'31/2/1990'});assert.equal(invalid.ok,false);assert.match(invalid.reply,/يوم\/شهر\/سنة/);
+ assert.equal(f.service.job(jobId).questions[asked.questions[1].token].state,'pending');
+ assert.equal(f.service.handleOperatorMessage({from:OWNER,id:'good-date',text:'۱۵/۵/۱۹۹۰'}).ok,true);
+ assert.equal(f.service.job(jobId).stagedFields.birthDate,'1990-05-15');
+});
+test('bare choice is not assigned when two accepted questions could match',async()=>{
+ const f=fixture({count:1}),approval=await f.activate(),jobId=approval.jobs[0].id;
+ f.service.askQuestions(jobId,{fields:['performUmrah','gccResident']});
+ for(const item of f.service.pendingMessages())await f.service.dispatchMessage(item.id);
+ assert.equal(f.service.handleCustomerMessage(CUSTOMER,{text:'نعم'}).handled,false);
+ assert.ok(Object.values(f.service.job(jobId).questions).every(q=>q.state==='pending'));
+});

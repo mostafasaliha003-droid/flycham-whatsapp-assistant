@@ -39,6 +39,8 @@ const DOCUMENT_FACT_SET = new Set(DOCUMENT_FACT_FIELDS);
 const CONTACT_FIELDS = Object.freeze(['applicationPhone', 'contactEmail', 'insurancePhone', 'postalCode']);
 const CONTACT_ENV = Object.freeze({applicationPhone: 'RAAD_APPLICATION_PHONE', contactEmail: 'RAAD_CONTACT_EMAIL', insurancePhone: 'RAAD_INSURANCE_PHONE', postalCode: 'RAAD_POSTAL_CODE', city: 'RAAD_CITY', postOfficeBox: 'RAAD_POST_OFFICE_BOX'});
 const NATIONALITY_CODES = Object.freeze({
+  'المغرب': 'MAR', 'تونس': 'TUN', 'الجزائر': 'DZA', 'موريتانيا': 'MRT',
+  'تركيا': 'TUR', 'روسيا': 'RUS', 'أستراليا': 'AUS', 'نيوزيلندا': 'NZL',
   'سوريا': 'SYR', 'الأردن': 'JOR', 'لبنان': 'LBN', 'جزر القمر': 'COM',
   'اليمن': 'YEM', 'السودان': 'SDN', 'مصر': 'EGY', 'فلسطين': 'PSE',
   'ليبيا': 'LBY', 'العراق': 'IRQ', 'أفغانستان': 'AFG', 'إيران': 'IRN',

@@ -75,6 +75,9 @@ function supplierSummary(snapshot){
 }
 function footer(snapshot,shown,remaining){
  const lines=supplierSummary(snapshot);
+ const cheapest=provider=>shown.filter(o=>o.provider===provider).reduce((best,o)=>!best||BigInt(o.price.sellingTotal.replace('.',''))<BigInt(best.price.sellingTotal.replace('.',''))?o:best,null);
+ const aa=cheapest('airarabia'),fc=cheapest('flycham');
+ if(aa&&fc)lines.unshift(`📊 *ملخص الشركتين ضمن هذه الصفحة:* العربية للطيران من *${aa.price.sellingTotal} درهم* | فلاي شام من *${fc.price.sellingTotal} درهم*؛ المطار والتاريخ والوزن موضحون بكل خيار.`);
  if(shown.some(o=>o.provider==='flycham'&&amount(o.price.voucherValue)))lines.push('فاوجر فلاي شام يصدر بعد إصدار التذكرة، صالح سنة للاستخدام القادم ضمن خدماتنا؛ لا يُخصم من السعر المعروض.');
  const uncertain=(snapshot.statuses||[]).some(s=>['pending','partial','unverified','auth_required'].includes(s.status));
  if(uncertain||snapshot.ready===false)lines.push('هذه الخيارات تأكدت؛ بعض الأيام أو التواقيت الأخرى لم يكتمل التحقق منها، لذلك المقارنة لا تثبت الأرخص في كامل الفترة.');

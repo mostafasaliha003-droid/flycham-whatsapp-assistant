@@ -164,3 +164,26 @@ test('the latest screenshot sequence retains supplied route and party after trip
 test('Ahmed answers payment and office questions without needing model classification',async()=>{const e=make();assert.match((await e.handle('ux','طرق الدفع',{now})).reply,/5%/);assert.match((await e.handle('ux','وين مكتبكم',{now})).reply,/لا يستقبل العملاء/);});
 test('group enquiry offers single-adult comparison and direct staff handoff',async()=>{const e=make();const r=await e.handle('group','من الشارقة الى دمشق 15/11/2026 ذهاب فقط 2 بالغين',{now});assert.equal(r.complete,false);assert.match(r.reply,/شوف سعر شخص واحد/);const h=await e.handle('group','حوّلني للموظف',{now});assert.ok(h.handoff);assert.notEqual(h.complete,true);});
 test('single-person group alternative keeps the original party separately',async()=>{const e=make();await e.handle('g','من الشارقة الى دمشق 15/11/2026 ذهاب فقط 2 بالغين',{now});const r=await e.handle('g','شوف سعر شخص واحد',{now});assert.equal(r.complete,true);assert.equal(r.request.passengers.adults,1);assert.equal(e.state('g').savedGroupPassengers.adults,2);});
+
+
+async function masterstrokeFixture(){
+ const e=make(),id='masterstroke';await e.handle(id,initial+'، 1 بالغ',{now});const request=e.state(id).base.request;
+ for(const [reference,provider,total,flight,date]of [[7,'airarabia','650.10','G9123','2026-10-24'],[9,'flycham','600.01','XH124','2026-10-25'],[11,'flycham','800.00','XH126','2026-10-24']])e.progress(id,{offer:{reference,provider,checkedAt:now,request:{...request,departureRange:null,departureDate:date},timing:{out:{flight,departure:'08:00',arrival:'10:00'}},price:{currency:'AED',sellingTotal:total,weights:[{kg:30}]}}},'shown-'+reference);
+ return {e,id};
+}
+test('head-to-head comparison uses verified airline minima and exact cents without selecting or changing trip',async()=>{
+ const {e,id}=await masterstrokeFixture(),before=structuredClone(e.state(id).base);const r=await e.handle(id,'شو الفرق بين العربية وفلاي شام؟',{now});
+ assert.equal(r.complete,false);assert.match(r.reply,/مقارنة مباشرة/);assert.match(r.reply,/الخيار 7/);assert.match(r.reply,/الخيار 9/);assert.match(r.reply,/50\.09 درهم/);assert.match(r.reply,/2026-10-24/);assert.match(r.reply,/2026-10-25/);assert.doesNotMatch(r.reply,/800\.00/);assert.match(r.reply,/لم يُنشأ حجز/);assert.deepEqual(e.state(id).base,before);assert.equal(e.state(id).selected,null);
+});
+test('airline comparison rejects stale future wrong-route and missing-check prices',async()=>{
+ const {e,id}=await masterstrokeFixture(),s=e.state(id);s.offers[0].checkedAt=now-900001;s.offers[1].request.destination='حلب';s.offers[2].checkedAt=now+1;e.store.set(id,s);
+ const r=await e.handle(id,'قارن بين فلاي شام والعربية',{now});assert.match(r.reply,/ما عندي الآن عرضان حديثان/);assert.doesNotMatch(r.reply,/650\.10|600\.01|800\.00|أوفر بـ/);
+});
+test('price objection gives factual lowest fare and three options without starting a search',async()=>{
+ const {e,id}=await masterstrokeFixture(),before=structuredClone(e.state(id).base.request);const r=await e.handle(id,'غالي',{now});assert.equal(r.complete,false);assert.match(r.reply,/600\.01/);assert.match(r.reply,/بيوم أو يومين/);assert.match(r.reply,/20 كيلو/);assert.match(r.reply,/مطار قريب بديل/);assert.deepEqual(e.state(id).base.request,before);assert.equal(e.store.data.handoffs.length,0);
+});
+test('ticket cancellation question and airline comparison without offers never cancel the search',async()=>{
+ const e=make(),id='ticket-service';await e.handle(id,initial+'، 1 بالغ',{now});const before=structuredClone(e.state(id).base.request);e.nlu=async()=>nluDecision({},'cancel');
+ for(const input of ['كيف إلغاء التذكرة؟','تعديل التذكرة','بدي استرجاع التذكرة']){const r=await e.handle(id,input,{now});assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.match(r.reply,/حسب الفئة وشركة الطيران/);assert.deepEqual(e.state(id).base.request,before);}
+ const compared=await e.handle(id,'شو الفرق بين العربية وفلاي شام؟',{now});assert.match(compared.reply,/المقارنة الأنسب/);assert.doesNotMatch(compared.reply,/null|undefined/);assert.deepEqual(e.state(id).base.request,before);
+});

@@ -286,3 +286,20 @@ test('mentioning a child after verified payment proposes review without changing
  const e=make();await e.handle('a','نحنا 2 كلنا سوريين جواز عادي');const c=e.getCase('a');c.paymentStatus='verified';c.quote.rows.forEach(row=>row.amount=700);c.quote.subtotal=1400;c.quote.total=1400;e.save('a',c);const paid=structuredClone(c.quote);
  await e.handle('a','معي طفل');const after=e.getCase('a');assert.equal(after.stage,'amendment_review');assert.equal(after.pendingAmendment.facts.hasMinors,true);assert.equal(after.hasMinors,undefined);assert.deepEqual(after.quote,paid);assert.equal(after.paymentStatus,'verified');
 });
+
+
+test('document validity questions answer directly without inventing facts or escalating',async()=>{
+ const e=make({understand:async()=>{throw Error('Guidance should not need a model');}});
+ for(const text of ['كم لازم تكون صلاحية الجواز لتأشيرة السعودية؟','الجواز لازم تكون صلاحيته كم شهر؟','الإقامة كم باقي بصلاحيتها؟','متى انتهاء الهوية؟']){
+  const r=await e.handle('validity',text);assert.equal(r.intent,'visa_info');assert.match(r.reply,/6 أشهر.*عند السفر/);assert.match(r.reply,/3 أشهر/);assert.match(r.reply,/مجموعة الرمال/);assert.equal(e.getCase('validity').operatorIntervention,undefined);assert.equal(e.getCase('validity').applicants[0]?.documentType,undefined);assert.doesNotMatch(r.reply,/فوراً|الصحراء/);
+ }
+ await e.handle('paid-validity','سوري جواز عادي لحالي');const c=e.getCase('paid-validity');c.paymentStatus='verified';const before=structuredClone(c);
+ const r=await e.handle('paid-validity','كم صلاحية الجواز المطلوبة؟');assert.equal(r.intent,'visa_info');assert.deepEqual(e.getCase('paid-validity').applicants,before.applicants);assert.deepEqual(e.getCase('paid-validity').quote,before.quote);assert.equal(e.getCase('paid-validity').pendingAmendment,undefined);
+});
+test('multi-entry quote adds actual product validity without changing single-entry child or payment rules',()=>{
+ const {quoteText}=require('../src/saudi-visa-engine');
+ const multi=P.calculateQuote({applicantCount:1,applicants:[tourist],paymentMethod:'link'},{feesEnabled:true});
+ assert.match(quoteText(multi),/صلاحية سنة.*90 يوماً.*شروط التأشيرة الصادرة/);assert.match(quoteText(multi),/640 درهم/);assert.match(quoteText(multi),/672 درهم/);
+ const single=P.calculateQuote({applicantCount:1,applicants:[{nationality:'مصر',documentType:'passport'}]});assert.doesNotMatch(quoteText(single),/صلاحية سنة/);
+ const child=P.calculateQuote({applicantCount:2,applicants:[tourist,{...tourist,age:10}]});assert.doesNotMatch(quoteText(child),/صلاحية سنة|مستردة/);
+});
