@@ -230,7 +230,7 @@ class SaudiVisaEngine{
    complaint=true;c.stage='complaint_pending';reply='منفهم انزعاجك، وبدنا نراجع الموضوع بدقة. رح أرفع المحادثة للإدارة لمراجعة المعاملة والدفعات المرتبطة فيها، من دون ما تحتاج تعيد التفاصيل.';
   }else if(relativeInquiry&&!operational)reply=relativeReply(c.pendingRelative,{question:text,group:/كمان بدن يقدمو|كمان بدهم يقدمو|هنن.*(?:يقدمو|يقدموا)/.test(n)});
   else if(pendingAmendment)reply='وصل طلب التعديل. لأن الدفعة مؤكدة أو المعاملة مقدمة، حفظنا التعديل للمراجعة مع القسم قبل اعتماده. بيانات المعاملة والدفعة الحالية بقيت محفوظة؛ ما تم تعديل تقديم أو احتساب دفعة جديدة تلقائياً.';
-  else if(!first&&(/^(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير)[،,!؟?. 🌷]*$/i.test(n)||decision?.intent==='greeting'&&!documentStep))reply='أهلاً فيك 🌷 أنا معك، ومنكمل على نفس طلب التأشيرة.';
+  else if(!first&&(/^(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير)[،,!؟?. 🌷]*$/i.test(n)))reply='أهلاً فيك 🌷 أنا معك، ومنكمل على نفس طلب التأشيرة.';
   else if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|location|address/.test(n))reply=SERVICE.OFFICE;
   else if(intent==='status'||/حاله الطلب|حاله المعامله|تم التقديم|تقدم الطلب|وصلت الدفعه/.test(n)){
    const verified=c.staffVerification||{},evidence=currentVisaEvidence(c);

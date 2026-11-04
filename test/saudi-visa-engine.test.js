@@ -245,3 +245,5 @@ test('current price is 640 tourist and 850 Umrah while an already paid 700 quote
 test('untrained questions including visa terminology are escalated even without model understanding',async()=>{
  const e=make();await e.handle('unknown','سوري جواز عادي لحالي');const r=await e.handle('unknown','شو نظام أولوية التأشيرة الاستثنائي؟');assert.equal(e.getCase('unknown').operatorIntervention.reason,'untrained_request');assert.match(r.reply,/جواب دقيق/);assert.doesNotMatch(r.reply,/تم التقديم|700/);
 });
+
+test('model greeting classification cannot hide a substantive visa address question',async()=>{const e=make({understand:async()=>({intent:'greeting',fields:{},target:null})});await e.handle('a','سوري جواز عادي لحالي');const r=await e.handle('a','وين مكتبكم؟');assert.match(r.reply,/لا يستقبل العملاء/);assert.doesNotMatch(r.reply,/ومنكمل على نفس/);});
