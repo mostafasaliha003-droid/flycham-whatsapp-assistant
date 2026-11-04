@@ -128,7 +128,7 @@ class VisaMediaStore{
   const lock=customer+':'+media.id;if(this.locks.has(lock))return this.locks.get(lock);
   const work=this.performReceive(customer,media,this.epochs.get(customer)||0);this.locks.set(lock,work);try{return await work;}finally{this.locks.delete(lock);}
  }
- ack(record){return record.type==='audio'?'وصل التسجيل الصوتي وحُفظ للمراجعة. لم يتم تفريغه بعد؛ إذا ممكن اكتب طلبك برسالة حتى نساعدك بسرعة.':'وصل المرفق وحُفظ للمراجعة، شكراً إلك. لم يتم تأكيد وضوحه أو اكتمال بياناته بعد.';}
+ ack(record){return record.type==='audio'?'وصلتني رسالتك الصوتية، شكرًا إلك 🌷 حتى أساعدك بدقة، ممكن تكتبلي ملخّص طلبك؟':'وصل المرفق وحُفظ للمراجعة، شكراً إلك. لم يتم تأكيد وضوحه أو اكتمال بياناته بعد.';}
  async performReceive(customer,media,epoch){
   if(!this.durable)return{ok:false,error:'MEDIA_STORAGE_UNAVAILABLE',reply:'وصل إشعار المرفق، لكن تعذر حفظه بشكل آمن حالياً. لم تتم مراجعة المستند؛ يرجى انتظار تأكيد القسم قبل إرسال بيانات إضافية.'};
   this.prune();if(this.list(customer).length>=50||Object.keys(this.records).length>=500)return{ok:false,error:'MEDIA_CAPACITY_REACHED',reply:'وصل إشعار المرفق، لكن مساحة استقبال المستندات تحتاج مراجعة القسم. لم يُحفظ هذا المرفق؛ يرجى انتظار تأكيد الموظف.'};
