@@ -496,3 +496,33 @@ test('Package 7 dialect price questions retain quote and office wording is not a
 test('Package 7 children dialect keeps pricing in review and summary cannot invent an adult total',async()=>{
  const e=make();await e.handle('children7','انا وعيالي كلنا سوريين جواز عادي');assert.equal(e.getCase('children7').hasMinors,true);assert.equal(e.getCase('children7').quote.requiresReview,true);const r=await e.handle('children7','لخصلي طلبي');assert.match(r.reply,/مراجعة تسعير الأطفال/);assert.doesNotMatch(r.reply,/إجمالي الرسوم المعتمدة|1920/);
 });
+
+async function family11(id='family11'){
+ const e=make();await e.handle(id,'نحنا شخصين انا سوري جواز عادي');await e.handle(id,'لبنانية');await e.handle(id,'وثيقة سفر من لبنان');assert.equal(e.getCase(id).quote.total,1490);return e;
+}
+test('Package 11 named applicant correction changes only the second person, clears issuer and reprices immediately',async()=>{
+ const e=await family11(),first=structuredClone(e.getCase('family11').applicants[0]);let calls=0;e.understand=async()=>{calls++;return{target:'group',correction:true,fields:{applicantCount:1,nationality:'مصر'}};};
+ const r=await e.handle('family11','عفواً المتقدم الثاني معه جواز عادي'),c=e.getCase('family11');
+ assert.deepEqual(c.applicants[0],first);assert.deepEqual(c.applicants[1],{nationality:'لبنان',documentType:'passport'});assert.equal(c.applicantCount,2);assert.equal(c.quote.total,1280);assert.match(r.reply,/1,280/);assert.equal(c.paymentStatus,'unverified');assert.equal(c.submissionStatus,'not_submitted');
+ await e.handle('family11','الشخص الثاني جنسيته مصري وجواز عادي');assert.deepEqual(e.getCase('family11').applicants[0],first);assert.deepEqual(e.getCase('family11').applicants[1],{nationality:'مصر',documentType:'passport'});assert.equal(e.getCase('family11').quote.rows[1].product,'tourist_single');assert.equal(calls,0);
+});
+test('Package 11 explicit person overrides a different pending field, including issuer questions',async()=>{
+ for(const awaiting of ['nationality_0','documentType_0','issuer_0','applicantCount']){
+  const e=await family11(awaiting),c=e.getCase(awaiting),first=structuredClone(c.applicants[0]);c.lastQuestion=awaiting;e.save(awaiting,c);
+  await e.handle(awaiting,'المسافر رقم ٢ معه جواز عادي');assert.deepEqual(e.getCase(awaiting).applicants[0],first);assert.equal(e.getCase(awaiting).applicants[1].documentType,'passport');assert.equal(e.getCase(awaiting).applicants[1].documentIssuer,undefined);assert.equal(e.getCase(awaiting).applicantCount,2);
+ }
+});
+test('Package 11 invalid, unknown and ambiguous applicant references never fall back to the first person',async()=>{
+ const e=await family11('invalid11'),before=structuredClone(e.getCase('invalid11'));let calls=0;e.understand=async()=>{calls++;return{fields:{nationality:'مصر'}};};
+ for(const text of ['المتقدم 0 جواز عادي','المتقدم ٣ جواز عادي','المتقدم 31 جواز عادي','المتقدم 100 جواز عادي','المتقدم السادس جواز عادي','المتقدم الثلاثين جواز عادي','المتقدم الأول والمتقدم الثاني جواز عادي']){
+  const r=await e.handle('invalid11',text);assert.match(r.reply,/حدد رقم متقدم واحد/);assert.deepEqual(e.getCase('invalid11').applicants,before.applicants);assert.deepEqual(e.getCase('invalid11').quote,before.quote);assert.equal(e.getCase('invalid11').applicantCount,2);
+ }assert.equal(calls,0);
+});
+test('Package 11 paid family corrections remain pending review and preserve the approved amount and evidence',async()=>{
+ const e=await family11('paid11'),c=e.getCase('paid11');c.paymentStatus='verified';c.staffVerification={payment:{amount:1490,caseSignature:visaCaseSignature(c),reference:'synthetic-payment'}};e.save('paid11',c);const before=structuredClone(c);
+ await e.handle('paid11','الفرد الثاني معه جواز عادي');const after=e.getCase('paid11');assert.deepEqual(after.applicants,before.applicants);assert.equal(after.quote.total,1490);assert.deepEqual(after.staffVerification,before.staffVerification);assert.equal(after.stage,'amendment_review');assert.equal(after.pendingAmendment.facts.applicants[1].documentType,'passport');assert.equal(after.pendingAmendment.facts.applicants[1].documentIssuer,undefined);
+});
+test('Package 11 possessive document wording binds issuing country only to the named traveller',async()=>{
+ const e=await family11('document11'),first=structuredClone(e.getCase('document11').applicants[0]);
+ for(const word of ['وثيقته','وثيقتها']){await e.handle('document11','الشخص الثاني '+word+' من مصر');assert.deepEqual(e.getCase('document11').applicants[0],first);assert.equal(e.getCase('document11').applicants[1].nationality,'لبنان');assert.equal(e.getCase('document11').applicants[1].documentType,'travel_document');assert.equal(e.getCase('document11').applicants[1].documentIssuer,'مصر');}
+});

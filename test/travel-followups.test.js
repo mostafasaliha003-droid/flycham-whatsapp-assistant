@@ -50,3 +50,16 @@ for(const text of ['بالأسبوع القادم','اسبوع الجاي','في
 test('asking available dates asks only the missing period, then uses the next week',async()=>{
  const {e}=make();const a=await e.handle('followup','اي تواريخ موجود ؟ من ابوظبي',{now});assert.equal(a.complete,false);assert.match(a.reply,/أي فترة/);assert.doesNotMatch(a.reply,/18-11|الشارقة/);const b=await e.handle('followup','بالأسبوع القادم',{now});assert.equal(b.complete,true);assert.equal(b.request.destination,'دمشق');assert.equal(b.request.origin,'أبوظبي');assert.equal(b.request.departureRange.start,'2026-10-26');
 });
+test('Package 10 spoken search confirmations reuse the whole trip without NLU or duplicate jobs',async()=>{
+ for(const text of ['شوفلي','شفلي','شوف لي','دورلي','اعتمد','توكل على الله','نعم ابحث','اي ابحث','اوكي ابحث','تمام ابحث الأسعار']){
+  const {e,calls}=make();await e.prepare('followup',text,{now});const r=await e.handle('followup',text,{now});assert.equal(r.complete,true,text);assert.deepEqual(r.request,request);assert.equal(calls(),0);
+  const repeated=await e.handle('followup',text,{now});assert.equal(repeated.complete,false);assert.equal(repeated.cancel,undefined);assert.match(repeated.reply,/البحث مستمر/);
+ }
+});
+test('Package 10 confirmations cannot invent missing dates, destination, passengers or a booking',async()=>{
+ for(const text of ['توكل على الله','اعتمد','دورلي']){
+  assert.equal(knownTripFollowup(text,{...request,departureDate:null}),null);assert.equal(knownTripFollowup(text,{...request,destination:null}),null);
+  const {e}=make({r:{...request,passengers:null}});const r=await e.handle('followup',text,{now});assert.equal(r.complete,false);assert.match(r.reply,/عدد|كم شخص/);assert.equal(r.handoff,undefined);
+ }
+ for(const text of ['لا تبحث','لا اعتمد','اعتمد الحجز','شوفلي من دبي بكرا'])assert.equal(knownTripFollowup(text,request),null,text);
+});

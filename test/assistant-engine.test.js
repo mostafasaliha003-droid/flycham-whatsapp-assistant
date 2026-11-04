@@ -198,7 +198,7 @@ test('single-person group alternative keeps the original party separately',async
 
 async function masterstrokeFixture(){
  const e=make(),id='masterstroke';await e.handle(id,initial+'، 1 بالغ',{now});const request=e.state(id).base.request;
- for(const [reference,provider,total,flight,date]of [[7,'airarabia','650.10','G9123','2026-10-24'],[9,'flycham','600.01','XH124','2026-10-25'],[11,'flycham','800.00','XH126','2026-10-24']])e.progress(id,{offer:{reference,provider,checkedAt:now,request:{...request,departureRange:null,departureDate:date},timing:{out:{flight,departure:'08:00',arrival:'10:00'}},price:{currency:'AED',sellingTotal:total,weights:[{kg:30}]}}},'shown-'+reference);
+ for(const [reference,provider,total,flight,date]of [[7,'airarabia','650.10','G9123','2026-10-24'],[9,'flycham','600.01','XH124','2026-10-25'],[11,'flycham','800.00','XH126','2026-10-24']])e.progress(id,{offer:{reference,provider,checkedAt:now,request:{...request,provider,departureRange:null,departureDate:date},timing:{out:{flight,departure:'08:00',arrival:'10:00'}},price:{currency:'AED',sellingTotal:total,weights:[{kg:30}]}}},'shown-'+reference);
  return {e,id};
 }
 test('head-to-head comparison uses verified airline minima and exact cents without selecting or changing trip',async()=>{
@@ -231,4 +231,43 @@ test('Package 8 travel advice remains conditional and never claims a service boo
 
 test('Package 8 assistance mentioned in a real itinerary does not discard the travel request',async()=>{
  const e=make();const r=await e.handle('real-assistance8','بدي رحلة من الشارقة إلى دمشق 15/11/2026 ذهاب فقط 1 بالغ وكرسي متحرك',{now});assert.equal(e.state('real-assistance8').base.request.destination,'دمشق');assert.doesNotMatch(r.reply,/بالنسبة لخدمات المساندة/);
+});
+
+test('Package 9 trip summary reads the current journey without NLU, quote selection or search cancellation',async()=>{
+ const {e,id}=await masterstrokeFixture();e.jobState(id,'searching');e.env={CONSULTANT_ORCHESTRATOR_ENABLED:'true'};
+ const state=e.state(id);state.consultant={preferences:{budgetAED:'900'},facts:{private:'PRIVATE_MEMORY'}};state.requestChoice={id:'saved-choice',text:'طلب جديد',expiresAt:now+60000};e.store.set(id,state);
+ const before=structuredClone(e.state(id));let calls=0;e.nlu=async()=>{calls++;return nluDecision({},'cancel');};
+ for(const text of ['لخصلي رحلتي','ملخص حجزي','شو تفاصيل طلبي','على شو عم تبحث؟']){
+  await e.prepare(id,text,{now});const r=await e.handle(id,text,{now,quotedMessageId:'shown-7'});
+  assert.match(r.reply,/ملخص طلب الطيران المحفوظ لديك/);assert.match(r.reply,/من الشارقة إلى دمشق/);assert.match(r.reply,/العروض المتحققة الظاهرة: 3 عرض/);assert.match(r.reply,/جاري التحقق/);assert.match(r.reply,/لا يُعد تأكيد حجز/);assert.doesNotMatch(r.reply,/PRIVATE|undefined|null/);
+  assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.equal(r.handoff,undefined);
+  for(const key of ['base','selected','offers','status','requestChoice','consultant'])assert.deepEqual(e.state(id)[key],before[key],key);
+ }assert.equal(calls,0);
+ const other=await e.handle('summary-stranger','لخصلي رحلتي',{now});assert.match(other.reply,/لسا ما حددنا/);assert.doesNotMatch(other.reply,/دمشق|الشارقة|650/);
+});
+test('Package 9 selected summary retains the exact verified fare and suppresses expired or mismatched offers',async()=>{
+ const {e,id}=await masterstrokeFixture();await e.handle(id,'الخيار 9',{now});const before=structuredClone(e.state(id).base);
+ const selected=await e.handle(id,'ملخص رحلتي',{now});assert.match(selected.reply,/الخيار 9 \(XH124\) — 600\.01 درهم/);assert.deepEqual(e.state(id).base,before);
+ const stale=await e.handle(id,'ملخص رحلتي',{now:now+900001});assert.match(stale.reply,/العروض المتحققة الظاهرة: 0 عرض/);assert.match(stale.reply,/العرض المختار يحتاج إعادة تحقق/);assert.doesNotMatch(stale.reply,/600\.01|650\.10|800\.00/);assert.deepEqual(e.state(id).base,before);
+});
+test('Package 9 summary handles partial, return, party and zero-baggage details without inventing a trip type',()=>{
+ const {tripSummaryReply}=require('../src/assistant-engine');
+ assert.match(tripSummaryReply({base:{request:{origin:'دبي'}},offers:[]},{now}),/نوع الرحلة غير محدد/);
+ const r={origin:'الشارقة',destination:'دمشق',tripType:'round_trip',departureRange:{start:'2026-11-01',end:'2026-11-07'},stayNights:7,passengers:{adults:2,children:1,infants:1},baggageRequest:{checkedWeightKg:0},passport:'PRIVATE_PASSPORT'};
+ const reply=tripSummaryReply({base:{request:r},offers:[],status:'failed'},{now});
+ for(const pattern of [/ذهاب وعودة/,/2026-11-01/,/بعد 7 ليالٍ/,/2 بالغ \+ 1 طفل \+ 1 رضيع/,/حقيبة يد فقط/,/تعذر إكمال البحث/])assert.match(reply,pattern);
+ assert.doesNotMatch(reply,/PRIVATE|undefined|null|جاري التحقق/);
+});
+test('Package 9 seven advisory dialogues preserve the full base and bypass NLU and consultant inference',async()=>{
+ const {e,id}=await masterstrokeFixture();await e.handle(id,'الخيار 9',{now});e.env={CONSULTANT_ORCHESTRATOR_ENABLED:'true'};
+ const before=structuredClone(e.state(id));let calls=0;e.nlu=async()=>{calls++;return nluDecision({destination:'حلب',adults:2},'change');};
+ for(const [text,expected]of [['قبل كم ساعة لازم كون بالمطار؟',/3 ساعات.*60 دقيقة/],['كم سعر الكيلو الزايد؟',/الوزن الإضافي/],['معي الوالدة بدها كرسي متحرك بالمطار',/Wheelchair/],['كم لازم يكون الجواز صالح للسفر؟',/الشرط يختلف/],['جوازي السوري منتهي فيني سافر عالشام؟',/الجواز السوري المنتهي.*ما منأكد إمكانية السفر/],['شو شروط الدخول لسوريا؟',/تعليمات رسمية.*جنسيتك/],['فيني آخذ معي بطارية باور بانك وأدوية بالطيارة؟',/الليثيوم الاحتياطية.*الأدوية والسوائل/]]){
+  await e.prepare(id,text,{now});const r=await e.handle(id,text,{now,quotedMessageId:'shown-7'});assert.match(r.reply,expected,text);assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.equal(r.handoff,undefined);
+  for(const key of ['base','selected','offers','status','consultant'])assert.deepEqual(e.state(id)[key],before[key],text+' '+key);
+ }assert.equal(calls,0);
+});
+test('Package 10 dialects complete or amend flight passengers and baggage without losing itinerary facts',async()=>{
+ const e=make();await e.handle('dialect10',initial,{now});
+ const r=await e.handle('dialect10','بطولي بدون عفش',{now});assert.equal(r.complete,true);assert.equal(r.request.passengers.adults,1);assert.equal(r.request.baggageRequest.checkedWeightKg,0);assert.equal(r.request.origin,'الشارقة');assert.equal(r.request.destination,'دمشق');
+ await e.handle('couple10',initial,{now});await e.handle('couple10','أنا ومراتي',{now});assert.equal(e.state('couple10').base.request.passengers.adults,2);assert.equal(e.state('couple10').base.request.destination,'دمشق');
 });

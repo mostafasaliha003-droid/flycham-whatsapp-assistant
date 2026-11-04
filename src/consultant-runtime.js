@@ -5,7 +5,7 @@ const {searchKnowledge}=require('./consultant-tools');
 const {recordMetric}=require('./consultant-metrics');
 function enabled(env){return env?.CONSULTANT_ORCHESTRATOR_ENABLED==='true';}
 async function finishConsultantTurn(engine,id,text,result,{now}){
- if(!enabled(engine.env))return result;
+ if(!enabled(engine.env)||result.contextOnly)return result;
  const route=require('./travel-language').languagePatch(text),explicitRoute=Boolean(route.origin&&route.destination);
  const s=engine.state(id),c=updateConsultantMemory(s,text,{now}),decision=s.consultantDecision?.at===now?s.consultantDecision:null;
  if(result.complete&&decision&&!(explicitRoute&&['answer','clarify'].includes(decision.action)&&!/(?:لا\s+(?:تبحث|تشيك|تبدا)|الغاء|إلغاء|وقف البحث)/.test(text))&&!['search','amend','compare'].includes(decision.action)){
