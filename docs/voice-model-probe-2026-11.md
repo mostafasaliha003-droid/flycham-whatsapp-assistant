@@ -20,7 +20,7 @@ Protocol references: [Cline Chat Completions](https://github.com/cline/cline/blo
 
 ## Current execution evidence
 
-The owner-recorded 10-second synthetic speech sample is still missing. WER and successful dialect transcription remain unmeasured. No audio model is approved by this report. A single recording can be converted locally to the required MP3/OGG pair without customer data.
+The owner-recorded 10-second synthetic speech sample is still missing. A supplemental public human Arabic speech diagnostic has now measured WER: two samples scored 0%, but one scored 23.3% in both MP3 and OGG, above the 15% threshold. No model qualified across all samples. The specialized Gemini 3.5 Transcribe diagnostic also scored 23.3% on the failing sample. See `public-speech-diagnostic-2026-11.md` for all 38 measured calls and two follow-up probes. No audio model is approved. A single owner recording can be converted locally to the required MP3/OGG pair without customer data.
 
 The existing Render service has Cline and Gemini credentials and `/usr/bin/ffmpeg`. A separate negative probe made 32 real provider requests with generated silence, followed by two requests to the current Gemini model. See `voice-silence-probe-2026-11.md` for every result, including errors and invented speech. Silence rejection does not establish speech accuracy.
 
