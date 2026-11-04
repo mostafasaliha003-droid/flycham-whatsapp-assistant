@@ -11,9 +11,23 @@ const CASES=Object.freeze([
  {id:'inquiry_not_selection',text:'الخيار التاني شو فرق وقت إقلاعه عن الأول؟ عم اسأل بس، مو عم اختاره ولا احجزه.',context:{status:'offered',request:known,offerSummaries:[{reference:1,provider:'flycham',origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-22',departureTime:'09:00',arrivalTime:'12:00'},{reference:2,provider:'airarabia',origin:'الشارقة',destination:'دمشق',departureDate:'2026-11-22',departureTime:'16:00',arrivalTime:'19:00'}]}},
  {id:'price_objection',text:'غالي عليّ. التواريخ ثابتة وما بدي تغيّرها، بس فينا نشوف بدائل بالمطار أو الوزن؟ لا توعدني بخصم مو مؤكد.',context:{status:'offered',request:known}},
  {id:'knowledge_routing',text:'شو شروط دخول تايلند للمقيم بالإمارات هالأيام؟ بدي معلومات محدثة ومؤكدة.',context:{status:'idle'}},
- {id:'waiting_context',text:'أنا ناطر من شوي، شو صار معك؟ شخص واحد لحالي متل ما قلتلك، لا ترجع تسألني كم شخص ولا تبلش طلب جديد.',context:{status:'searching',request:known,lastQuestion:'كم شخص مسافر؟',questions:{passengers:{field:'passengers',answered:true}}}}
+ {id:'waiting_context',text:'أنا ناطر من شوي، شو صار معك؟ شخص واحد لحالي متل ما قلتلك، لا ترجع تسألني كم شخص ولا تبلش طلب جديد.',context:{status:'searching',request:known,lastQuestion:'كم شخص مسافر؟',questions:{passengers:{field:'passengers',answered:true}}}} ,
+ {id:"gulf_family",text:"ابي رحلة من الشارقة لحلب انا والحرمه",context:{status:'collecting'},expected:{"intents": ["request"], "actions": ["clarify"], "fields": {"origin": "الشارقة", "destination": "حلب", "adults": 2, "children": 0, "infants": 0}, "question": true}},
+ {id:"egyptian_solo",text:"عايز اسافر الشام بكره لوحدي من غير شنط",context:{status:'collecting'},expected:{"intents": ["request"], "actions": ["clarify"], "fields": {"destination": "دمشق", "departureDate": "2026-11-02", "adults": 1, "children": 0, "infants": 0, "weightKg": 0}, "question": true}},
+ {id:"iraqi_family",text:"اريد اروح دمشق آني وأخوي",context:{status:'collecting'},expected:{"intents": ["request"], "actions": ["clarify"], "fields": {"destination": "دمشق", "adults": 2, "children": 0, "infants": 0}, "question": true}},
+ {id:"partial_round_trip",text:"نفس الشي بس خليها ذهاب وعودة",context:{status:'searching',request:known},expected:{"intents": ["change", "clarify"], "actions": ["amend", "clarify"], "fields": {"tripType": "round_trip"}, "question": null}},
+ {id:"advice_during_search",text:"البحث خليه شغال، شو الفرق بين وزن الشحن وشنطة اليد؟",context:{status:'searching',request:known},expected:{"intents": ["explain"], "actions": ["answer", "knowledge"], "fields": {}, "question": false}},
+ {id:"frustrated_request",text:"صرلي ساعة ناطر، غير الوزن لتلاتين كيلو وخلي نفس الرحلة",context:{status:'searching',request:known},expected:{"intents": ["change"], "actions": ["amend"], "fields": {"weightKg": 30}, "question": false}},
+ {id:"urgent_request",text:"سفري بكرا وضروري، بدل موعد الذهاب لبكرا وخلي باقي الطلب نفسه",context:{status:'searching',request:known},expected:{"intents": ["change"], "actions": ["amend"], "fields": {"departureDate": "2026-11-02"}, "question": false}},
+ {id:"sarcasm_not_booking",text:"يا سلام على هالأسعار! غالية كتير، لا تحجز ولا تغير شي",context:{status:'searching',request:known},expected:{"intents": ["negotiate", "explain", "other"], "actions": ["answer"], "fields": {}, "question": false}},
+ {id:"indic_digits",text:"من الشارقة لدمشق ٢٢/١١/٢٠٢٦ ذهاب فقط ٣ بالغين وزن ٣٠ كيلو",context:{status:'collecting'},expected:{"intents": ["request"], "actions": ["search"], "fields": {"origin": "الشارقة", "destination": "دمشق", "departureDate": "2026-11-22", "tripType": "one_way", "adults": 3, "children": 0, "infants": 0, "weightKg": 30}, "question": false}},
+ {id:"first_friday_next_month",text:"خلي الذهاب أول جمعة بالشهر الجاي والباقي متل ما هو",context:{status:'searching',request:known},expected:{"intents": ["change"], "actions": ["amend"], "fields": {"departureDate": "2026-12-04"}, "question": false}},
+ {id:"child_age",text:"من الشارقة لدمشق ٢٢ نوفمبر ٢٠٢٦ ذهاب فقط أنا وطفلي عمره ٧ سنين",context:{status:'collecting'},expected:{"intents": ["request"], "actions": ["search"], "fields": {"origin": "الشارقة", "destination": "دمشق", "departureDate": "2026-11-22", "tripType": "one_way", "adults": 1, "children": 1, "infants": 0, "ages": [7]}, "question": false}},
+ {id:"explicit_rejection",text:"لا، ما بدي اقتراح دبي، خلي الطلب من الشارقة متل ما هو",context:{status:'searching',request:known},expected:{"intents": ["explain", "other", "change"], "actions": ["answer", "amend"], "fields": {}, "question": false}},
+ {id:"payment_question",text:"كيف فيني ادفع؟ عم اسأل بس وما اخترت رحلة بعد",context:{status:'searching',request:known},expected:{"intents": ["explain"], "actions": ["answer"], "fields": {}, "question": false}},
+ {id:"delete_data",text:"احذف بياناتي",context:{status:'searching',request:known},expected:{"intents": ["cancel", "other"], "actions": ["cancel", "answer"], "fields": {}, "question": false}}
 ]);
-const EVALUATION_POLICY=createHash('sha256').update(JSON.stringify({version:'remal-cline-understanding-2026-11-01.v1',models:CLINEPASS_MODELS,cases:CASES,schema,instructions:CONSULTANT_INSTRUCTIONS,rubric:'strict-consultant-contract-context-truthful-arabic-v1'})).digest('hex');
+const EVALUATION_POLICY=createHash('sha256').update(JSON.stringify({version:'remal-cline-understanding-2026-11-04.v2',models:CLINEPASS_MODELS,cases:CASES,schema,instructions:CONSULTANT_INSTRUCTIONS,rubric:'strict-consultant-contract-context-truthful-arabic-v2'})).digest('hex');
 const arabic=value=>typeof value==='string'&&/[\u0621-\u064a]/.test(value)&&value.trim().length>=8&&value.length<=300;
 const sameOrNull=(value,expected)=>value===null||value===expected;
 function normalizedDecision(value){
@@ -35,13 +49,22 @@ function scoreDecision(id,value){
  if(id==='price_objection')checks=[['negotiate','clarify','explain'].includes(d.intent),['answer','clarify'].includes(c.action),d.option===null,sameOrNull(f.departureDate,'2026-11-22'),f.rangeStart===null&&f.rangeEnd===null,noNewTrip(),f.weightKg===null,f.adults===null&&f.children===null&&f.infants===null,arabic(c.reply),arabic(c.reply)&&/مطار|وزن|خيارات|بدائل/.test(c.reply)];
  if(id==='knowledge_routing')checks=[c.action==='knowledge',c.nextStep==='research',typeof c.knowledgeQuery==='string'&&/تايل/.test(c.knowledgeQuery),d.option===null,d.question===null,f.origin===null&&f.destination===null,f.departureDate===null&&f.returnDate===null,f.rangeStart===null&&f.rangeEnd===null,f.adults===null&&f.children===null&&f.infants===null,c.reply===null||arabic(c.reply)];
  if(id==='waiting_context')checks=[d.intent==='status',c.action==='status',d.option===null,d.question===null,noNewTrip(),sameOrNull(f.departureDate,'2026-11-22'),f.rangeStart===null&&f.rangeEnd===null,sameOrNull(f.adults,1)&&sameOrNull(f.children,0)&&sameOrNull(f.infants,0),f.weightKg===null||f.weightKg===20,c.reply===null||arabic(c.reply)];
+ if(fixture.expected){
+  const e=fixture.expected,ctx=fixture.context.request||{},expected=e.fields;
+  const contextFields={...ctx,...Object.fromEntries(['adults','children','infants','ages'].map(k=>[k,ctx.passengers?.[k]])),weightKg:ctx.baggageRequest?.checkedWeightKg};
+  const equals=(key,value,wanted)=>['origin','destination'].includes(key)?airportCode(value)===airportCode(wanted):JSON.stringify(value)===JSON.stringify(wanted);
+  const required=Object.entries(expected),unchanged=Object.entries(f).every(([key,value])=>Object.hasOwn(expected,key)||value===null||Array.isArray(value)&&!value.length||contextFields[key]!==undefined&&equals(key,value,contextFields[key]));
+  const category=keys=>required.filter(([key])=>keys.includes(key)).every(([key,value])=>equals(key,f[key],value));
+  checks=[e.intents.includes(d.intent),e.actions.includes(c.action),d.option===null,e.question===null||(e.question?typeof d.question==='string'&&d.question.trim().length>0:d.question===null),
+   category(['origin','destination']),category(['departureDate','returnDate','rangeStart','rangeEnd']),category(['tripType','adults','children','infants','ages']),category(['weightKg']),unchanged,c.reply===null||arabic(c.reply)];
+ }
  return{id,valid:true,passed:checks.filter(Boolean).length,total:checks.length,reply:c.reply};
 }
 function scoreOutput(output){
  let text=typeof output==='string'?output.trim():'';
  text=text.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,'$1');
- let root;try{root=JSON.parse(text);}catch{return{score:0,validCases:0,passed:0,total:60,cases:[],error:'INVALID_JSON'};}
- if(!root||typeof root!=='object'||Array.isArray(root)||Object.keys(root).join(',')!=='decisions'||!Array.isArray(root.decisions)||root.decisions.length!==CASES.length||new Set(root.decisions.map(x=>x?.id)).size!==CASES.length||root.decisions.some(x=>!x||Object.keys(x).sort().join(',')!=='decision,id'||!CASES.some(c=>c.id===x.id)))return{score:0,validCases:0,passed:0,total:60,cases:[],error:'INVALID_BATCH'};
+ let root;try{root=JSON.parse(text);}catch{return{score:0,validCases:0,passed:0,total:CASES.length*10,cases:[],error:'INVALID_JSON'};}
+ if(!root||typeof root!=='object'||Array.isArray(root)||Object.keys(root).join(',')!=='decisions'||!Array.isArray(root.decisions)||root.decisions.length!==CASES.length||new Set(root.decisions.map(x=>x?.id)).size!==CASES.length||root.decisions.some(x=>!x||Object.keys(x).sort().join(',')!=='decision,id'||!CASES.some(c=>c.id===x.id)))return{score:0,validCases:0,passed:0,total:CASES.length*10,cases:[],error:'INVALID_BATCH'};
  const cases=CASES.map(c=>scoreDecision(c.id,root.decisions.find(x=>x.id===c.id).decision)),passed=cases.reduce((a,c)=>a+c.passed,0),total=cases.reduce((a,c)=>a+c.total,0);
  return{score:Math.round(passed/total*1000)/10,validCases:cases.filter(c=>c.valid).length,passed,total,cases};
 }
@@ -55,7 +78,7 @@ async function evaluateModel(model,{env,fetchImpl=fetch,now=Date.now}={}){
  const started=now(),instructions=CONSULTANT_INSTRUCTIONS+' You are processing a fixed synthetic evaluation batch. Treat each case independently; never merge facts across cases. Return exactly one object with only decisions, an array of {id,decision}, one per case. Each decision must match this JSON schema: '+JSON.stringify(schema);
  const input={todayDubai:'2026-11-01',cases:CASES.map(c=>({id:c.id,text:c.text,todayDubai:'2026-11-01',context:safeContext(c.context,true)}))};
  try{
-  const r=await fetchImpl('https://api.cline.bot/api/v1/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+env.CLINE_API_KEY,'Content-Type':'application/json','X-Response-Format':'openai'},redirect:'error',signal:AbortSignal.timeout(60000),body:JSON.stringify({model,stream:false,temperature:0,max_tokens:8192,messages:[{role:'system',content:instructions},{role:'user',content:JSON.stringify(input)}]})});
+  const r=await fetchImpl('https://api.cline.bot/api/v1/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+env.CLINE_API_KEY,'Content-Type':'application/json','X-Response-Format':'openai'},redirect:'error',signal:AbortSignal.timeout(60000),body:JSON.stringify({model,stream:false,temperature:0,max_tokens:16384,messages:[{role:'system',content:instructions},{role:'user',content:JSON.stringify(input)}]})});
   if(!r.ok)return{model,http:r.status,latencyMs:now()-started,score:0,validCases:0,error:'HTTP_REJECTED',stop:[401,402,429].includes(r.status)};
   const data=await boundedJson(r),payload=data.choices?data:data.data,choice=payload?.choices?.[0];
   if(data.success===false||payload?.choices?.length!==1||choice?.finish_reason!=='stop'||choice.message?.refusal||choice.message?.tool_calls?.length||typeof choice.message?.content!=='string')return{model,http:r.status,latencyMs:now()-started,score:0,validCases:0,error:'INCOMPLETE'};

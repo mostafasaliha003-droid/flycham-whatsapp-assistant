@@ -21,6 +21,10 @@ test('consultant returns compatible typed legacy fields and nullable preference 
 test('unsafe commercial and private claims never become conversational replies',()=>{
  for(const reply of ['السعر بس ٥٠٠ درهم','في رحلات متاحة من دبي','الرحلة متاحة','ما في مقاعد','تم الحجز','أنا موظف الحجوزات','آخر مقعد احجز هلق','عنا خصم إلك','رح أستخدم Cline للتسعير','ابعث رمز التحقق','شو تاريخك؟ وكم عددكن؟','ادخل https://example.com','إيميلك user@example.com']){assert.equal(canUseReply(reply),false,reply);const d=decision();d.consultant.reply=reply;assert.throws(()=>validateConsultantDecision(d),/CONSULTANT_UNSAFE_REPLY/);}
  assert.equal(canUseReply('خلّينا نقارن الخيارات حسب أولوياتك، أي مطار بناسبك؟'),true);
+ for(const reply of ['ما بوعدك بخصم','ما عنا تخفيض','ما في شي مجاني','ما بضمن إصدار الفيزا']){
+  assert.equal(canUseReply(reply),false,reply);const d=decision();d.consultant.reply=reply;
+  assert.throws(()=>validateConsultantDecision(d),/CONSULTANT_UNSAFE_REPLY/);
+ }
 });
 test('work-in-progress wording requires a current active search and cannot authorize an incomplete trip',()=>{
  const reply='جاري البحث عن الخيارات المناسبة إلك.';
@@ -31,6 +35,10 @@ test('work-in-progress wording requires a current active search and cannot autho
  assert.equal(validateConsultantDecision(d).consultant.action,'search');assert.equal(canUseReply(d.consultant.reply,{status:'collecting'}),false);
 });
 test('mismatched question/action and arbitrary knowledge queries are rejected',()=>{
+ for(const [intent,action] of [['cancel','answer'],['change','answer'],['negotiate','clarify']]){
+  const bad=decision();bad.intent=intent;bad.consultant.action=action;bad.consultant.reply=null;
+  assert.throws(()=>validateConsultantDecision(bad),/ACTION_INTENT_MISMATCH/);
+ }
  const d=decision();d.intent='clarify';d.question='من أي مطار بدك تطلع؟';d.consultant.action='clarify';d.consultant.reply='شو الوجهة اللي ببالك؟';assert.throws(()=>validateConsultantDecision(d),/QUESTION_MISMATCH/);d.consultant.reply=d.question;assert.doesNotThrow(()=>validateConsultantDecision(d));
  d.consultant.action='knowledge';d.intent='explain';d.question=null;d.consultant.reply=null;d.consultant.nextStep='research';d.consultant.knowledgeQuery='متطلبات دخول سوريا من المصدر الرسمي';assert.doesNotThrow(()=>validateConsultantDecision(d));
  for(const q of ['https://evil.example/a','user@example.com','passport ABC123456789','123456789']){d.consultant.knowledgeQuery=q;assert.throws(()=>validateConsultantDecision(d),/INVALID_QUERY/);}

@@ -1,6 +1,6 @@
 # Masterstroke CX packages 16–20
 
-Built from `main`, independently of the unmerged packages 12–15 branch.
+Originally built from `main`; now integrated with packages 12–15 while preserving the independent speech-acceptance gate.
 
 ## Customer profiles
 
@@ -26,7 +26,7 @@ The protected `GET /internal/assistant/status` response includes `cxAnalytics`; 
 
 Events contain enumerated service, category, reason, language, sentiment and timestamp only. Raw messages, customer identifiers and arbitrary reason strings are rejected. Counts describe events, not unique people. `selfServiceRate` is resolved events divided by resolved plus escalated events. Answered advice/quote turns count as resolved; greetings, intake questions and pending searches do not. Resolution never means payment confirmation, ticket issuance or visa approval. Complaint escalation is recorded once when its acknowledgement is accepted.
 
-Voice categories are supported by the analytics API but are not emitted by the acknowledgement-only voice path on this branch. No speech provider or new external service is enabled by this change.
+Voice categories are emitted only by an explicitly enabled transcription attempt. The default acknowledgement-only path does not claim a transcription event. No speech provider or new external service is enabled by this release.
 
 ## Verification
 
