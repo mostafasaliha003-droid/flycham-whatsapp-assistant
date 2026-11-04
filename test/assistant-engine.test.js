@@ -7,7 +7,7 @@ const initial='من الشارقة على الشام بدي ارخص سعر به
 test('Package 4 advisory questions preserve the selected trip and bypass model and request-choice routing',async()=>{
  const {e,id}=await masterstrokeFixture();await e.handle(id,'الخيار 9',{now});e.jobState(id,'done');
  const before=structuredClone(e.state(id));let calls=0;e.nlu=async()=>{calls++;return nluDecision({origin:'دبي',destination:'حلب',adults:2},'change');};
- for(const [text,expected]of [['شو وزن الرضيع؟',/الرضيع.*شركة الطيران/],['أمتعة الأطفال',/بمقعد مستقل/],['كم ساعة مدة الرحلة؟',/3 إلى 3 ساعات/],['قديش بتاخد الطيارة؟',/فرق التوقيت/],['الفرق بين دبي والشارقة؟',/مكانك.*وقت الوصول/],['أي مطار أقرب؟',/البدائل المتاحة/],['مطار دبي ولا الشارقة؟',/جدول الشركات الفعلي/]]){
+ for(const [text,expected]of [['شو وزن الرضيع؟',/الرضيع.*شركة الطيران/],['أمتعة الأطفال',/بمقعد مستقل/],['كم ساعة مدة الرحلة؟',/3 إلى 3 ساعات/],['قديش بتاخد الطيارة؟',/فرق التوقيت/],['الفرق بين دبي والشارقة؟',/مكانك.*وقت الوصول/],['أي مطار أقرب؟',/البدائل المتاحة/],['مطار دبي ولا الشارقة؟',/جدول الشركات الفعلي/],['بكم الكيلو الزيادة؟',/الوزن الإضافي.*فلاي شام/],['قبل كم ساعة لازم كون بالمطار؟',/3 ساعات على الأقل.*60 دقيقة/],['متى احضر للمطار؟',/موعد الإقلاع/],['عندنا مسن بيحتاج كرسي متحرك',/Wheelchair.*موظف الحجوزات/],['كم لازم يكون الجواز صالح للسفر؟',/6 أشهر من تاريخ السفر/]]){
   await e.prepare(id,text,{now});const r=await e.handle(id,text,{now,quotedMessageId:'shown-7'});
   assert.match(r.reply,expected,text);assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.equal(r.handoff,undefined);
   assert.deepEqual(e.state(id).base,before.base,text);assert.equal(e.state(id).selected,before.selected,text);assert.equal(e.state(id).requestChoice,undefined);
@@ -216,4 +216,19 @@ test('ticket cancellation question and airline comparison without offers never c
  const e=make(),id='ticket-service';await e.handle(id,initial+'، 1 بالغ',{now});const before=structuredClone(e.state(id).base.request);e.nlu=async()=>nluDecision({},'cancel');
  for(const input of ['كيف إلغاء التذكرة؟','تعديل التذكرة','بدي استرجاع التذكرة']){const r=await e.handle(id,input,{now});assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.match(r.reply,/حسب الفئة وشركة الطيران/);assert.deepEqual(e.state(id).base.request,before);}
  const compared=await e.handle(id,'شو الفرق بين العربية وفلاي شام؟',{now});assert.match(compared.reply,/المقارنة الأنسب/);assert.doesNotMatch(compared.reply,/null|undefined/);assert.deepEqual(e.state(id).base.request,before);
+});
+
+test('Package 8 baggage purchase advice does not consume an explicit weight change',async()=>{
+ const e=make();await e.handle('baggage8',initial+'، 1 بالغ',{now});e.jobState('baggage8','done');const request=structuredClone(e.state('baggage8').base.request);
+ assert.match((await e.handle('baggage8','كيف شراء وزن إضافي؟',{now})).reply,/الوزن الإضافي/);assert.deepEqual(e.state('baggage8').base.request,request);
+ const change=await e.handle('baggage8','بدي 20 كيلو وزن إضافي',{now});assert.equal(change.complete,true,JSON.stringify(change));assert.equal(change.request.baggageRequest.checkedWeightKg,20);assert.equal(change.request.destination,request.destination);
+});
+test('Package 8 travel advice remains conditional and never claims a service booking',async()=>{
+ const e=make();assert.match((await e.handle('advice8','حامل بالشهر السابع بدي اسأل عن تقرير طبي',{now})).reply,/تختلف شروط.*أسبوع الحمل.*شركة الطيران/);
+ assert.match((await e.handle('advice8','جوازي منتهي شو اعمل',{now})).reply,/الشرط يختلف.*الجنسية.*الوجهة/);
+ assert.match((await e.handle('advice8','متى يفتح البوردينغ',{now})).reply,/حسب المطار والشركة/);assert.equal(e.state('advice8').handoffId,undefined);
+});
+
+test('Package 8 assistance mentioned in a real itinerary does not discard the travel request',async()=>{
+ const e=make();const r=await e.handle('real-assistance8','بدي رحلة من الشارقة إلى دمشق 15/11/2026 ذهاب فقط 1 بالغ وكرسي متحرك',{now});assert.equal(e.state('real-assistance8').base.request.destination,'دمشق');assert.doesNotMatch(r.reply,/بالنسبة لخدمات المساندة/);
 });

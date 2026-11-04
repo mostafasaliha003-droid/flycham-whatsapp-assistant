@@ -22,3 +22,8 @@ test('isolated unknown inquiry returns an owner intervention without changing th
 test('ambiguous Syrian travel wording cannot silently replace Palestinian document classification',async()=>{const f=setup();await select(f,'new','بالنسبه للفلسطيني السوري شو الوضع');const r=await f.scope.handle(f.id,'سفر سوري');assert.match(r.reply,/وثيقة سفر فلسطينية/);assert.match(r.reply,/جواز سفر سوري/);assert.equal(f.scope.current(f.id).inquiry.applicants.length,0);});
 
 test('new selection preserves the customer request arriving in the same batch',async()=>{const f=setup(),m=await f.scope.handle(f.id,'سلام');f.scope.bind(f.id,m.scopeMenu.token,'sent');const r=await f.scope.handle(f.id,'طلب / استفسار جديد، بدي قدم على فيزا السعودية',{messages:[{text:'طلب / استفسار جديد',visaScopeChoice:{token:m.scopeMenu.token,action:'new'},contextId:'sent'},{text:'بدي قدم على فيزا السعودية'}]});assert.match(r.reply,/نفتح طلب جديد/);assert.ok(f.c.pendingNewApplication);assert.equal(f.scope.current(f.id).mode,'inquiry');});
+
+test('Package 7 summary bypasses saved-case menus but stays inside a separate inquiry',async()=>{
+ const f=setup(),before=visaCaseSignature(f.c);const direct=await f.scope.handle(f.id,'لخصلي طلبي');assert.equal(direct.handled,false);assert.match((await f.engine.handle(f.id,'لخصلي طلبي')).reply,/ملخص طلب/);assert.equal(visaCaseSignature(f.engine.getCase(f.id)),before);
+ await select(f,'new','مصري جواز عادي شخص واحد');const isolated=await f.scope.handle(f.id,'لخصلي طلبي');assert.equal(isolated.handled,true);assert.match(isolated.reply,/مصر/);assert.doesNotMatch(isolated.reply,/سوريا|828601588/);assert.equal(visaCaseSignature(f.engine.getCase(f.id)),before);
+});
