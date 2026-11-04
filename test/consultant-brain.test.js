@@ -21,6 +21,10 @@ test('consultant returns compatible typed legacy fields and nullable preference 
 test('unsafe commercial and private claims never become conversational replies',()=>{
  for(const reply of ['السعر بس ٥٠٠ درهم','في رحلات متاحة من دبي','الرحلة متاحة','ما في مقاعد','تم الحجز','أنا موظف الحجوزات','آخر مقعد احجز هلق','عنا خصم إلك','رح أستخدم Cline للتسعير','ابعث رمز التحقق','شو تاريخك؟ وكم عددكن؟','ادخل https://example.com','إيميلك user@example.com']){assert.equal(canUseReply(reply),false,reply);const d=decision();d.consultant.reply=reply;assert.throws(()=>validateConsultantDecision(d),/CONSULTANT_UNSAFE_REPLY/);}
  assert.equal(canUseReply('خلّينا نقارن الخيارات حسب أولوياتك، أي مطار بناسبك؟'),true);
+ for(const reply of ['ما بوعدك بخصم','ما عنا تخفيض','ما في شي مجاني','ما بضمن إصدار الفيزا']){
+  assert.equal(canUseReply(reply),false,reply);const d=decision();d.consultant.reply=reply;
+  assert.throws(()=>validateConsultantDecision(d),/CONSULTANT_UNSAFE_REPLY/);
+ }
 });
 test('work-in-progress wording requires a current active search and cannot authorize an incomplete trip',()=>{
  const reply='جاري البحث عن الخيارات المناسبة إلك.';
