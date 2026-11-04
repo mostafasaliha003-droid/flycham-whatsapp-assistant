@@ -4,7 +4,7 @@
 const fs=require('node:fs'),path=require('node:path');
 const {CLINEPASS_MODELS}=require('../src/cline-pass-models');
 const {probeCline}=require('./probe-voice-models');
-const {callGemini}=require('../src/voice-transcription');
+const {callGemini,DEFAULT_GEMINI_VOICE_MODEL}=require('../src/voice-transcription');
 const REPORT=path.join(__dirname,'../docs/voice-silence-probe-2026-11.md');
 function loadSample(file,format){
  const size=fs.statSync(file).size;if(!size||size>3*1024*1024)throw Error('VOICE_SAMPLE_INVALID');
@@ -20,7 +20,7 @@ async function runSilenceProbe({mp3,ogg,env=process.env,fetchImpl=fetch,now=Date
  const samples=[];
  try{
   samples.push(loadSample(mp3,'mp3'));samples.push(loadSample(ogg,'ogg'));
-  for(const provider of ['cline','gemini'])for(const model of provider==='cline'?CLINEPASS_MODELS:[env.VOICE_GEMINI_MODEL||'gemini-2.5-flash'])for(const sample of samples){
+  for(const provider of ['cline','gemini'])for(const model of provider==='cline'?CLINEPASS_MODELS:[env.VOICE_GEMINI_MODEL||DEFAULT_GEMINI_VOICE_MODEL])for(const sample of samples){
    const started=now();let rejectedSilence=null,error=null;
    try{const value=await(provider==='cline'?probeCline(model,{...sample,env,fetchImpl}):callGemini({...sample,env,fetchImpl,timeoutMs:25000}));rejectedSilence=value.clear===false&&value.transcript==='';}
    catch(e){error=/^VOICE_[A-Z0-9_]{1,80}$/.test(e?.message||'')?e.message:['TimeoutError','AbortError'].includes(e?.name)?'VOICE_TIMEOUT':'VOICE_REQUEST_FAILED';}

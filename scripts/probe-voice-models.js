@@ -3,7 +3,7 @@
 // The two files must contain only the fixed synthetic reference below.
 const fs=require('node:fs'),path=require('node:path');
 const {CLINEPASS_MODELS}=require('../src/cline-pass-models');
-const {INSTRUCTIONS,parse,callGemini}=require('../src/voice-transcription');
+const {INSTRUCTIONS,parse,callGemini,DEFAULT_GEMINI_VOICE_MODEL}=require('../src/voice-transcription');
 const {normalize}=require('../src/saudi-visa-policy');
 const REFERENCE='بدي من الشارقة للشام الجمعة الجاية أنا ومرتي بدون عفش';
 const REPORT=path.join(__dirname,'../docs/voice-model-probe-2026-11.md');
@@ -27,7 +27,7 @@ async function runProbe({mp3,ogg,env=process.env,fetchImpl=fetch,now=Date.now,wr
  const samples=[{format:'mp3',mimeType:'audio/mpeg',bytes:fs.readFileSync(mp3)},{format:'ogg',mimeType:'audio/ogg',bytes:fs.readFileSync(ogg)}];
  try{
   for(const s of samples)if(!s.bytes.length||s.bytes.length>3*1024*1024||s.format==='ogg'&&s.bytes.subarray(0,4).toString()!=='OggS'||s.format==='mp3'&&!(s.bytes.subarray(0,3).toString()==='ID3'||s.bytes[0]===255&&(s.bytes[1]&224)===224))throw Error('VOICE_SAMPLE_INVALID');
-  for(const provider of ['cline','gemini'])for(const model of provider==='cline'?CLINEPASS_MODELS:[env.VOICE_GEMINI_MODEL||'gemini-2.5-flash'])for(const sample of samples){
+  for(const provider of ['cline','gemini'])for(const model of provider==='cline'?CLINEPASS_MODELS:[env.VOICE_GEMINI_MODEL||DEFAULT_GEMINI_VOICE_MODEL])for(const sample of samples){
    const started=now();let result,wer=null,error=null;
    try{result=await (provider==='cline'?probeCline(model,{...sample,env,fetchImpl}):callGemini({...sample,env,fetchImpl,timeoutMs:25000}));wer=result.clear?wordErrorRate(REFERENCE,result.transcript):1;}catch(e){error=/^VOICE_[A-Z0-9_]+$/.test(e?.message||'')?e.message:'VOICE_REQUEST_FAILED';}
    rows.push({provider,model,format:sample.format,wer,latencyMs:now()-started,supported:wer!==null&&wer<=.15,error});

@@ -2,9 +2,10 @@
 // Voice-note transcription. Audio bytes are sent only to the configured
 // provider, never stored in conversation state; the transcript is redacted
 // before it reaches Ahmed or Ismail. Failure always yields an honest fallback.
-const {oggToMp3}=require('./voice-audio-conversion');
+const {oggToMp3,inspectAudio}=require('./voice-audio-conversion');
 const {CLINEPASS_MODELS}=require('./cline-pass-models');
 const {redactVisaText}=require('./saudi-visa-nlu');
+const DEFAULT_GEMINI_VOICE_MODEL='gemini-3.8-flash';
 const MAX_BYTES=3*1024*1024,MAX_TRANSCRIPT=1500;
 const INSTRUCTIONS='Transcribe this WhatsApp customer voice note verbatim in its original language and dialect (usually Levantine, Gulf, Egyptian or Iraqi Arabic). Do not translate, summarise, correct, answer or add any words. Return one JSON object only: {"transcript":string,"clear":boolean}. Set clear=false and transcript="" when speech is missing, music only, or unintelligible.';
 const CLINE_FORMATS=new Map([['audio/mpeg','mp3'],['audio/wav','wav'],['audio/x-wav','wav']]);
@@ -31,7 +32,7 @@ async function callCline({bytes,mimeType,env,fetchImpl,timeoutMs}){
 }
 async function callGemini({bytes,mimeType,env,fetchImpl,timeoutMs}){
  if(!env.GEMINI_API_KEY)throw Error('VOICE_PROVIDER_UNSUPPORTED');
- const model=env.VOICE_GEMINI_MODEL||'gemini-2.5-flash';
+ const model=env.VOICE_GEMINI_MODEL||DEFAULT_GEMINI_VOICE_MODEL;
  if(!/^gemini-[a-z0-9.\-]{1,60}$/.test(model))throw Error('VOICE_MODEL_NOT_ALLOWED');
  const response=await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',{method:'POST',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'x-goog-api-key':env.GEMINI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({systemInstruction:{parts:[{text:INSTRUCTIONS}]},contents:[{role:'user',parts:[{inline_data:{mime_type:mimeType,data:bytes.toString('base64')}}]}],generationConfig:{temperature:0,maxOutputTokens:1200,responseMimeType:'application/json'}})});
  if(!response.ok)throw Error('VOICE_HTTP_'+response.status);
@@ -43,11 +44,16 @@ function voiceProviders(env=process.env){
  const order=String(env.VOICE_TRANSCRIPTION_PROVIDERS||'cline,gemini').split(',').map(s=>s.trim()).filter(p=>['cline','gemini'].includes(p));
  return [...new Set(order)];
 }
-async function transcribeVoice({bytes,mimeType,env=process.env,fetchImpl=fetch,timeoutMs=25000,convertImpl=oggToMp3}={}){
+async function transcribeVoice({bytes,mimeType,env=process.env,fetchImpl=fetch,timeoutMs=25000,convertImpl=oggToMp3,inspectImpl=inspectAudio}={}){
  if(env.VOICE_TRANSCRIPTION==='off')return {ok:false,reason:'disabled'};
  if(!Buffer.isBuffer(bytes)||!bytes.length)return {ok:false,reason:'empty'};
  if(bytes.length>MAX_BYTES)return {ok:false,reason:'too_long'};
  if(!['audio/ogg','audio/mpeg','audio/mp4','audio/wav','audio/x-wav'].includes(mimeType))return {ok:false,reason:'unsupported'};
+ try{
+  const signal=await inspectImpl(bytes,{mimeType,timeoutMs:Math.min(timeoutMs,8000)});
+  if(signal?.silent===true)return {ok:false,reason:'unclear'};
+  if(signal?.silent!==false)throw Error('VOICE_AUDIO_INSPECTION_FAILED');
+ }catch(error){return error?.message==='VOICE_AUDIO_TOO_LONG'?{ok:false,reason:'too_long'}:{ok:false,reason:'unavailable',errors:['audio:VOICE_AUDIO_INSPECTION_FAILED']};}
  const errors=[];
  for(const provider of voiceProviders(env)){
   try{
@@ -71,4 +77,4 @@ function voiceFallback(reason){
  if(reason==='unclear')return 'وصلتني رسالتك الصوتية 🌷 بس الصوت ما كان واضح كفاية لأفهمه بدقة. ممكن تعيدها بمكان أهدى أو تكتبلي المطلوب بكلمتين؟';
  return 'وصلتني رسالتك الصوتية 🌷 حالياً ما قدرت أفرّغها، فممكن تكتبلي المطلوب بكلمتين ومنكمل فوراً من نفس النقطة؟';
 }
-module.exports={callCline,callGemini,transcribeVoice,voiceProviders,voiceLead,voiceFallback,parse,INSTRUCTIONS};
+module.exports={DEFAULT_GEMINI_VOICE_MODEL,callCline,callGemini,transcribeVoice,voiceProviders,voiceLead,voiceFallback,parse,INSTRUCTIONS};

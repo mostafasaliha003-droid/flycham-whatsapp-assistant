@@ -3,9 +3,11 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {detectSentiment,withEmpathy}=require('../src/customer-sentiment');
 const {staffAvailable,staffExpectation,withStaffExpectation}=require('../src/staff-availability');
 const {requestRating,readRating,parseScore,ratingSummary}=require('../src/service-rating');
-const {transcribeVoice,voiceLead,voiceFallback,voiceProviders}=require('../src/voice-transcription');
+const {transcribeVoice:transcribeRealVoice,voiceLead,voiceFallback,voiceProviders}=require('../src/voice-transcription');
 const {AssistantEngine}=require('../src/assistant-engine');const {AssistantState}=require('../src/assistant-state');
 const {SaudiVisaEngine}=require('../src/saudi-visa-engine');
+// Provider-contract tests use injected signal inspection; real decoding is covered separately.
+const transcribeVoice=options=>transcribeRealVoice({inspectImpl:async()=>({silent:false}),...options});
 const memoryStore=()=>({data:{},saves:0,save(){this.saves++;}});
 const dubai=(h,m=0)=>Date.UTC(2026,10,4,h-4,m);
 

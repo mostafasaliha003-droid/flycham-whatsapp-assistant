@@ -6,7 +6,7 @@ const {AssistantState}=require('../src/assistant-state'),seed=new AssistantState
 const contexts=[{base:{request:{origin:'الشارقة',destination:'دمشق'}}},{selected:'synthetic-offer'}, {handoffId:'synthetic-handoff'}, {offers:[{id:'synthetic-offer'}]},{}];
 const customers=contexts.map((state,i)=>{const id='1555000810'+i;seed.set(id,{introduced:true,status:'collecting',history:[],offers:[],...state});return id;});
 seed.data.serviceSessions=Object.fromEntries(customers.map(id=>[id,{service:'flight',at:Date.now(),revision:0}]));seed.save();
-const cx={voice:'15550008201',failed:'15550008202',rating:'15550008203',skip:'15550008204',handoff:'15550008205',empathy:'15550008206',visaVoice:'15550008207',owned:'15550008208',low:'15550008209',button:'15550008210'};
+const cx={voice:'15550008201',failed:'15550008202',rating:'15550008203',skip:'15550008204',handoff:'15550008205',empathy:'15550008206',visaVoice:'15550008207',owned:'15550008208',low:'15550008209',button:'15550008210',silence:'15550008211'};
 for(const [kind,id]of Object.entries(cx)){seed.set(id,{introduced:true,status:'collecting',history:[],offers:[],...(kind==='handoff'?{status:'unsupported',base:{request:{origin:'الشارقة',destination:'دمشق',departureDate:'2090-11-11',tripType:'one_way',passengers:{adults:2,children:0,infants:0}}}}:{}),...(kind==='owned'?{humanOwned:true}:{} )});seed.data.serviceSessions[id]={service:['rating','skip','visaVoice','button'].includes(kind)?'saudi_visa':'flight',at:Date.now(),revision:0};}
 const {requestRating}=require('../src/service-rating');for(const name of ['rating','skip','low','button'])requestRating(seed,cx[name],{service:'saudi_visa'});seed.save();
 const before=structuredClone(seed.data.customers),{createServer}=require('../src/server');
@@ -27,7 +27,7 @@ test('Packages 12–15 signed webhook voice routing, failure isolation, ratings,
  const original=global.fetch,originalNow=Date.now,out=[],staff='15550008999',calls=[];let transcript='من الشارقة إلى دمشق 15/11/2026 ذهاب فقط لحالي',failure=false;
  Object.assign(process.env,{GEMINI_API_KEY:'synthetic-gemini-key',VOICE_TRANSCRIPTION_PROVIDERS:'gemini',HUMAN_HANDOFF_RECIPIENT:staff,ASSISTANT_ADMIN_KEY:'synthetic-cx-admin-key-xxxxxxxxxxxx'});
  Date.now=()=>Date.UTC(2026,10,4,19); // 23:00 in Dubai.
- const audio=Buffer.from('OggS-synthetic-audio');
+ let audio=require('./helpers/voice-fixtures').encoded('ogg');
  global.fetch=async(url,opt)=>{
   calls.push(String(url));
   if(String(url).includes('generativelanguage.googleapis.com'))return failure?new Response('{}',{status:503}):Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify({clear:true,transcript})}]}}]});
@@ -39,9 +39,10 @@ test('Packages 12–15 signed webhook voice routing, failure isolation, ratings,
  async function send(from,text,{voice=false,button=false}={}){
   const message={from,id:'cx-in-'+(++seq),timestamp:String(Math.floor(Date.now()/1000)),type:voice?'audio':button?'interactive':'text',...(voice?{audio:{id:'123456',mime_type:'audio/ogg; codecs=opus'}}:button?{interactive:{type:'button_reply',button_reply:{id:'not-a-rating',title:text}}}:{text:{body:text}})};
   const body=JSON.stringify({entry:[{changes:[{field:'messages',value:{messages:[message]}}]}]});
-  const status=await new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:server.address().port,path:'/webhooks/whatsapp',method:'POST',headers:{'Content-Type':'application/json','x-hub-signature-256':'sha256='+crypto.createHmac('sha256',secret).update(body).digest('hex')}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);req.end(body);});assert.equal(status,200);return out.filter(x=>x.to===from).at(-1)?.text?.body;
+  const status=await new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:server.address().port,path:'/webhooks/whatsapp',method:'POST',headers:{'Content-Type':'application/json','x-hub-signature-256':'sha256='+crypto.createHmac('sha256',secret).update(body).digest('hex')}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);req.end(body);});assert.equal(status,200);if(voice&&from!==cx.owned){const until=performance.now()+3000;while(!out.some(x=>x.to===from)&&performance.now()<until)await new Promise(r=>setTimeout(r,10));}return out.filter(x=>x.to===from).at(-1)?.text?.body;
  }
  try{
+  const signalAudio=audio;audio=require('./helpers/voice-fixtures').encoded('ogg',{silent:true});const beforeProvider=calls.filter(u=>u.includes('googleapis')).length;const silentReply=await send(cx.silence,'',{voice:true});assert.match(silentReply,/الصوت ما كان واضح/);assert.doesNotMatch(silentReply,/سمعت|فهمت منها/);assert.equal(calls.filter(u=>u.includes('googleapis')).length,beforeProvider);const silentState=new AssistantState({file,key});assert.equal(silentState.data.customers[cx.silence].base,undefined);assert.equal(silentState.data.customers[cx.silence].history.length,0);audio=signalAudio;
   const success=await send(cx.voice,'',{voice:true});assert.match(success,/^سمعت رسالتك الصوتية/);assert.match(success,/الشارقة/);let snapshot=new AssistantState({file,key});assert.equal(snapshot.data.customers[cx.voice].base.request.destination,'دمشق');assert.equal(snapshot.data.visaCases?.[cx.voice],undefined);assert.equal(Object.keys(snapshot.data.visaMedia||{}).length,0);
   failure=true;const failed=await send(cx.failed,'',{voice:true});assert.match(failed,/ما قدرت أفرّغها/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.customers[cx.failed].base,undefined);assert.equal(snapshot.data.customers[cx.failed].history.length,0);assert.equal(snapshot.data.visaCases?.[cx.failed],undefined);failure=false;
   const rated=await send(cx.rating,'5');assert.match(rated,/شكراً كتير لتقييمك/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.visaCases?.[cx.rating],undefined);
