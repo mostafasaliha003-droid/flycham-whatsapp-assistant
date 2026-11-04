@@ -128,7 +128,7 @@ class VisaMediaStore{
   const lock=customer+':'+media.id;if(this.locks.has(lock))return this.locks.get(lock);
   const work=this.performReceive(customer,media,this.epochs.get(customer)||0);this.locks.set(lock,work);try{return await work;}finally{this.locks.delete(lock);}
  }
- ack(record){return record.type==='audio'?'وصلتني رسالتك الصوتية، شكرًا إلك 🌷 حتى أساعدك بدقة، ممكن تكتبلي ملخّص طلبك؟':'وصل المرفق وحُفظ للمراجعة، شكراً إلك. لم يتم تأكيد وضوحه أو اكتمال بياناته بعد.';}
+ ack(record){return record.type==='audio'?'وصلتني رسالتك الصوتية، شكرًا إلك 🌷':'وصل المرفق وحُفظ للمراجعة، شكراً إلك. لم يتم تأكيد وضوحه أو اكتمال بياناته بعد.';}
  async fetchTransient(media){
   if(!media||!/^\d{1,100}$/.test(media.id||'')||!['image','document','audio'].includes(media.type))throw Error('MEDIA_INVALID');
   const token=this.env.WHATSAPP_ACCESS_TOKEN,version=this.env.WHATSAPP_GRAPH_API_VERSION||'v23.0';
