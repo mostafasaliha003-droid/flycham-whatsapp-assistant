@@ -18,12 +18,14 @@ Production OGG uses bounded in-memory conversion for an approved CLINE_AUDIO_MOD
 
 Protocol references: [Cline Chat Completions](https://github.com/cline/cline/blob/main/docs/api/chat-completions.mdx), [Gemini audio](https://ai.google.dev/gemini-api/docs/audio). Documentation does not establish support by any particular Cline subscription model.
 
-## Execution evidence for this PR
+## Current execution evidence
 
-The owner-recorded 10-second synthetic MP3/OGG pair has not been attached, so speech accuracy and Cline audio support remain unmeasured. No real provider audio request was made. Tests inject audio/JSON fixtures to validate routing, WER calculation, redaction and failure handling; these do not establish transcription accuracy.
+The owner-recorded 10-second synthetic speech sample is still missing. WER and successful dialect transcription remain unmeasured. No audio model is approved by this report. A single recording can be converted locally to the required MP3/OGG pair without customer data.
 
-On 2026-11-04 the owner completed secure Google sign-in to Render. The service shell confirmed CLINE_API_KEY and GEMINI_API_KEY are configured using boolean output only. `command -v ffmpeg` returned `/usr/bin/ffmpeg`.
+The existing Render service has Cline and Gemini credentials and `/usr/bin/ffmpeg`. A separate negative probe made 32 real provider requests with generated silence, followed by two requests to the current Gemini model. See `voice-silence-probe-2026-11.md` for every result, including errors and invented speech. Silence rejection does not establish speech accuracy.
 
-The implementation now includes OGG-to-MP3 conversion with fixed pipe-only ffmpeg arguments, one thread, an eight-second timeout, bounded input/output, no filesystem audio writes and cleanup of converted buffers. Conversion is attempted only when an allowlisted CLINE_AUDIO_MODEL is configured; otherwise OGG goes to Gemini. Conversion failure also falls back to Gemini using the original OGG. No production model setting was changed.
+The former Gemini default returned HTTP 404. The candidate branch now uses the authenticated model-list-confirmed `gemini-3.8-flash` default while preserving explicit configuration. It is still subject to speech acceptance testing; no production setting has changed.
 
-An actual local codec check converted one second of generated silence (395-byte OGG to 6525-byte MP3, ID3 header). This verifies codec plumbing only, not speech recognition. The complete isolated test suite after this addition passed 2556/2556 tests with zero failures, cancellations or skips.
+All incoming audio now passes a bounded, pipe-only local decode before contacting a provider. Silence, invalid decoding and recordings over two minutes are rejected honestly. An actual Render check rejected ten-second MP3 and OGG silence with zero provider calls. The isolated signed-webhook test confirms that rejected silence does not create trip facts or conversation history. The full isolated regression suite passed 2565 tests with zero failures, cancellations or skips.
+
+OGG-to-MP3 conversion remains limited to an approved Cline audio model; converted buffers are wiped and conversion failure can fall back to Gemini. Non-silent music/noise and Arabic speech accuracy remain acceptance-test gaps. Do not merge/deploy or change production model settings until the owner speech probe and measured-result review are complete.

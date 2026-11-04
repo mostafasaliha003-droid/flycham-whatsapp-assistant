@@ -46,3 +46,16 @@ No audio, transcripts, keys or customer records are included in this report. HTT
 The first 32 requests used commit `0013587034c15cb60ae47d8e487cf1427a058128` and the former Gemini default. After its HTTP 404, the authenticated model listing confirmed `gemini-3.8-flash` with `generateContent`; two isolated calls to that model returned nonempty speech for generated silence. These failures are retained. The subsequent local silence gate blocks near-silent audio before either provider; it does not make these models accurate speech transcribers. No production configuration changed.
 
 Cline results: 26 HTTP 500 responses, one timeout, one incorrect silence result, and two correct silence rejections from `mimo-v2.6-pro`. Correctly rejecting silence alone does not qualify that model for voice-note transcription.
+
+## Local gate verification in Render
+
+Hash-verified audio modules from commit `343c4f0e9f7b45e67ad6863c0d17eb3f13190b1d` were run in a temporary directory on the existing service. The two generated ten-second silence files were passed through `transcribeVoice` with the real ffmpeg decoder and a counting transport that fails if any provider is called.
+
+| Format | Pipeline result | Provider calls | Elapsed ms |
+|---|---|---:|---:|
+| mp3 | Rejected as unclear | 0 | 179 |
+| ogg | Rejected as unclear | 0 | 184 |
+
+This verifies the local preflight on the host, not speech recognition or a real WhatsApp send. Isolated signed-webhook tests additionally confirm that rejected silence produces an honest reply and no trip/history mutation. Full regression run: 2565 passed, 0 failed, 0 cancelled, 0 skipped (`node scripts/run-tests.cjs`, 340778 ms).
+
+Deployment remains blocked on an owner-recorded speech sample and review of model measurements. `/usr/bin/ffmpeg` is required; unavailable/invalid decoding fails closed. Non-silent noise/music still requires model interpretation and has not been certified by this silence test.
