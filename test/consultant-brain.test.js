@@ -35,6 +35,10 @@ test('work-in-progress wording requires a current active search and cannot autho
  assert.equal(validateConsultantDecision(d).consultant.action,'search');assert.equal(canUseReply(d.consultant.reply,{status:'collecting'}),false);
 });
 test('mismatched question/action and arbitrary knowledge queries are rejected',()=>{
+ for(const [intent,action] of [['cancel','answer'],['change','answer'],['negotiate','clarify']]){
+  const bad=decision();bad.intent=intent;bad.consultant.action=action;bad.consultant.reply=null;
+  assert.throws(()=>validateConsultantDecision(bad),/ACTION_INTENT_MISMATCH/);
+ }
  const d=decision();d.intent='clarify';d.question='من أي مطار بدك تطلع؟';d.consultant.action='clarify';d.consultant.reply='شو الوجهة اللي ببالك؟';assert.throws(()=>validateConsultantDecision(d),/QUESTION_MISMATCH/);d.consultant.reply=d.question;assert.doesNotThrow(()=>validateConsultantDecision(d));
  d.consultant.action='knowledge';d.intent='explain';d.question=null;d.consultant.reply=null;d.consultant.nextStep='research';d.consultant.knowledgeQuery='متطلبات دخول سوريا من المصدر الرسمي';assert.doesNotThrow(()=>validateConsultantDecision(d));
  for(const q of ['https://evil.example/a','user@example.com','passport ABC123456789','123456789']){d.consultant.knowledgeQuery=q;assert.throws(()=>validateConsultantDecision(d),/INVALID_QUERY/);}
