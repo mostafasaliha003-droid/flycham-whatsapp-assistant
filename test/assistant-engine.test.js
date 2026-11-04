@@ -4,6 +4,36 @@ const {AssistantEngine}=require('../src/assistant-engine');const {AssistantState
 const now=Date.parse('2026-10-23T08:00:00Z');
 const make=()=>new AssistantEngine({store:new AssistantState({now:()=>now}),nlu:async()=>null,env:{}});
 const initial='من الشارقة على الشام بدي ارخص سعر بهل اسبوع، ذهاب فقط';
+test('Package 4 advisory questions preserve the selected trip and bypass model and request-choice routing',async()=>{
+ const {e,id}=await masterstrokeFixture();await e.handle(id,'الخيار 9',{now});e.jobState(id,'done');
+ const before=structuredClone(e.state(id));let calls=0;e.nlu=async()=>{calls++;return nluDecision({origin:'دبي',destination:'حلب',adults:2},'change');};
+ for(const [text,expected]of [['شو وزن الرضيع؟',/الرضيع.*شركة الطيران/],['أمتعة الأطفال',/بمقعد مستقل/],['كم ساعة مدة الرحلة؟',/3 إلى 3 ساعات/],['قديش بتاخد الطيارة؟',/فرق التوقيت/],['الفرق بين دبي والشارقة؟',/مكانك.*وقت الوصول/],['أي مطار أقرب؟',/البدائل المتاحة/],['مطار دبي ولا الشارقة؟',/جدول الشركات الفعلي/]]){
+  await e.prepare(id,text,{now});const r=await e.handle(id,text,{now,quotedMessageId:'shown-7'});
+  assert.match(r.reply,expected,text);assert.equal(r.complete,false);assert.equal(r.cancel,undefined);assert.equal(r.handoff,undefined);
+  assert.deepEqual(e.state(id).base,before.base,text);assert.equal(e.state(id).selected,before.selected,text);assert.equal(e.state(id).requestChoice,undefined);
+ }
+ assert.equal(calls,0);
+});
+test('Package 4 duration answers do not assign a UAE–Syria duration to an unknown route',async()=>{
+ const e=make(),r=await e.handle('unknown-duration','كم بتستغرق الرحلة؟',{now});assert.match(r.reply,/حسب المسار/);assert.doesNotMatch(r.reply,/3 إلى 3|دمشق|حلب/);assert.equal(r.complete,false);
+});
+test('Package 4 child baggage advice does not swallow an actual new family travel request',async()=>{
+ const e=make(),r=await e.handle('real-family','بدي رحلة من الشارقة إلى دمشق 15/11/2026 ذهاب فقط 1 بالغ و1 طفل عمره 7 سنوات وزن 30 كيلو',{now});
+ assert.doesNotMatch(r.reply,/بالنسبة لأمتعة الأطفال/);assert.equal(e.state('real-family').base.request.destination,'دمشق');
+});
+test('Package 4 selected-offer and staff handoff cards retain exact reference flight fare and no-ticket disclaimer',async()=>{
+ const {e,id}=await masterstrokeFixture();const r=await e.handle(id,'الخيار 9',{now});
+ for(const pattern of [/الخيار 9/,/فلاي شام/,/600\.01 درهم/,/XH124/,/2026-10-25/,/\*ثبتلي\*/])assert.match(r.reply,pattern);
+ const booked=await e.handle(id,'ثبتلي',{now});assert.ok(booked.handoff);assert.match(booked.reply,/الخيار 9 — رحلة XH124 بتاريخ 2026-10-25/);assert.match(booked.reply,/لم يتم حجز أو إصدار تذكرة بعد/);assert.match(booked.reply,/تحضير صورة الجواز/);
+ assert.equal(e.store.data.handoffs.length,1);assert.equal(e.store.data.handoffs[0].summary.offer.price.sellingTotal,'600.01');
+});
+test('Package 4 flexible UAE departure copy is warm without claiming all airports were checked',async()=>{
+ const e=make(),r=await e.handle('uae-tone','من أي مطار بالإمارات إلى دمشق',{now});
+ assert.match(r.reply,/مرن بمطار المغادرة/);assert.match(r.reply,/الشارقة كأولوية/);assert.doesNotMatch(r.reply,/الربط الحالي|يفحص الشارقة فقط|قارنا كل/);assert.equal(r.complete,false);
+});
+test('Package 4 selection never presents a stale missing or invalid verification timestamp as a fresh fare',async()=>{
+ for(const stamp of [now-900001,now+1,undefined]){const {e,id}=await masterstrokeFixture(),state=e.state(id);state.offers[1].checkedAt=stamp;e.store.set(id,state);const r=await e.handle(id,'الخيار 9',{now});assert.match(r.reply,/الخيار 9/);assert.doesNotMatch(r.reply,/600\.01/);assert.match(r.reply,/إعادة تحقق/);}
+});
 test('Ahmed identifies himself honestly and asks count before starting a flexible-date quote',async()=>{
  const e=make();assert.match((await e.handle('a','مرحبا',{now})).reply,/أحمد.*الافتراضي/);
  const r=await e.handle('a',initial,{now});assert.equal(r.complete,false);assert.match(r.reply,/كم عدد المسافرين/);

@@ -39,12 +39,39 @@ function relativeReply(pending,{group=false,question=''}={}){
  if(person.documentType==='travel_document'&&!person.documentIssuer){pending.awaiting='documentIssuer';return lead+' وثيقته صادرة من أي بلد؟';}
  pending.awaiting='scope';return lead+' بدك نضيفه لنفس المجموعة أو تفتح له طلب مستقل؟';
 }
+function singlePalestinianDescriptor(n,ns){
+ return ns.length===2&&ns.includes('فلسطين')&&!/زوج|مرتي|امي|ابي|والد|ابني|بنتي/.test(n)&&!(countFrom(n)>1);
+}
+function dailyVisaTopics(n){
+ return [
+  [/تامين|تأمين|التامين الطبي/, 'insurance'],
+  [/(?:عمره).*(?:بالسياح|فيزا سياح|تاشيره سياح)|سياحيه.*عمره|تسمح بالعمره|فيني اعتمر|بقدر اعتمر/, 'umrah'],
+  [/منفذ|البطحاء|البطحا|بالسياره|عن طريق البر|(?:^|\s)بري(?=$|[\s،؟?])|اي مطار بالسعوديه|مطار جده|مطار الرياض|مطار المدينه/, 'entry'],
+  [/ستيكر|ملصق|على الجواز|عالجواز|الكترونيه|\bpdf\b|كيف بستلم الفيزا|كيف بتطلع الفيزا|ورقه/, 'delivery'],
+  [/(?:فيزا|تاشيره)\s*زياره|زياره بالامارات|ما معي اقامه|ما عندي اقامه|بدون اقامه|زائر بالامارات/, 'visitor'],
+  [/مهنه|مهنتي|المهنه بالهويه|مسمي وظيفي|المسمي الوظيفي/, 'profession']
+ ].filter(([pattern,key])=>pattern.test(n)&&(key!=='entry'||!/زاجل|مندوب/.test(n))).map(([,key])=>key);
+}
+function dailyVisaCopy(topic,hasUmrah){
+ // Dated office offer; government entry/Umrah instructions remain authoritative.
+ const copy={
+  insurance:`رسوم التأشيرة المعتمدة عندنا (${P.PRICES.tourist} درهم للسياحية و${P.PRICES.umrah} درهماً للعمرة) شاملة رسوم التأشيرة والتأمين الطبي الإلزامي المربوط بالمنصة 🌷 ما في مبلغ إضافي للتأمين ضمن هالعرض. رسوم وسيلة الدفع أو الخدمات الإضافية تُوضح منفصلة قبل الاتفاق.`,
+  umrah:'التأشيرة السياحية السعودية تتيح أداء العمرة خارج موسم الحج، مع الالتزام بالتعليمات الرسمية والتصاريح المطلوبة عبر نسك 🌷 هذا توضيح لاستخدام التأشيرة الصادرة، وما بيغيّر مسار التقديم المناسب لجنسيتك أو بيضمن الموافقة.',
+  entry:'يمكن استخدام التأشيرة السياحية الصادرة عبر المنافذ البرية الرسمية، مثل البطحاء بالسيارة، أو المطارات الدولية السعودية، حسب شروط التأشيرة والتعليمات السارية وقت السفر 🌷 منراجع معك المنفذ المناسب قبل الرحلة؛ القرار النهائي للدخول للجهة المختصة.',
+  delivery:hasUmrah?'بمسار العمرة، التقديم عندنا عبر السفارة بأصل الجواز وأصل الهوية، ومنبلغك بطريقة استلام الجواز والتأشيرة فور صدورها 🌷':'بمسار السياحية الإلكترونية، التأشيرة بعد صدورها بتكون ملف PDF ومنبعتلك إياها هون على واتساب لتحتفظ بنسخة وتطبعها للسفر، بدون الحاجة لملصق على الجواز 🌷',
+  visitor:'مسار التقديم السياحي أونلاين للمقيمين عندنا بيتطلب إقامة خليجية سارية بصلاحية لا تقل عن 3 أشهر، وهوية إماراتية للمقيم بالإمارات 🌷 إذا كنت زائراً بدون إقامة، منراجع مع المسؤول المسار المتاح حسب الجنسية، بما فيه العمرة إن كانت متاحة، قبل أي التزام أو دفع.',
+  profession:'المسمى الوظيفي وحده ما بيكفي للحكم على أهلية التأشيرة 🌷 منراجع الجنسية ونوع الجواز والإقامة وفق شروط المسار الحالي، وما منعتبر اختلاف المهنة سبباً تلقائياً للرفض. منراجع الهوية والجواز قبل تأكيد الطلب والدفع.'
+ };
+ return copy[topic];
+}
 function extractLocal(text,c){
  const n=P.normalize(text),ns=P.nationalities(n),fields={},number=countFrom(n);
  if(number)fields.applicantCount=number;
  const doc=/وثيقه|وثيقة|وثائق|travel document/.test(n)?'travel_document':/جواز|passport/.test(n)?'passport':null;
- if(ns.length===1&&!(doc==='travel_document'&&!/فلسطين/.test(n)))fields.nationality=ns[0];if(doc)fields.documentType=doc;
- if(ns.length>1&&/(?:انا|زوج|مرتي|امي|ابي|والد|ابني|بنتي)/.test(n)&&!doc){fields.applicants=ns.map(nationality=>({nationality}));fields.applicantCount=number||Math.max(c.applicantCount||0,ns.length);}
+ if(ns.length===1&&!(doc==='travel_document'&&!/فلسطين/.test(n)))fields.nationality=ns[0];
+ else if(doc==='travel_document'&&ns.includes('فلسطين')||singlePalestinianDescriptor(n,ns)&&/فلسطينيه?\s+(?:سوري|مصري|لبناني)/.test(n))fields.nationality='فلسطين';
+ if(doc)fields.documentType=doc;
+ if(ns.length>1&&/(?:انا|زوج|مرتي|امي|ابي|والد|ابني|بنتي)/.test(n)&&!doc&&!singlePalestinianDescriptor(n,ns)){fields.applicants=ns.map(nationality=>({nationality}));fields.applicantCount=number||Math.max(c.applicantCount||0,ns.length);}
  if(/كلنا|جميعنا|نحن.{0,10}سوريين|نحنا.{0,10}سوريين/.test(n)&&ns.length===1&&number)fields.applicants=Array.from({length:number},()=>({nationality:ns[0],...(doc?{documentType:doc}:{})}));
  if(/مصريه|مصري/.test(n)&&doc==='travel_document')fields.documentIssuer='مصر';else if(/لبنان/.test(n)&&doc==='travel_document')fields.documentIssuer='لبنان';else if(/سوريا|سوري/.test(n)&&doc==='travel_document')fields.documentIssuer='سوريا';
  if(/تحويل|حساب بنكي|حسابات|ايبان|iban|bank/.test(n))fields.paymentMethod='bank';else if(/تابي|tabby/.test(n))fields.paymentMethod='tabby';else if(/رابط الدفع|لينك|payment link/.test(n))fields.paymentMethod='link';
@@ -104,9 +131,10 @@ class SaudiVisaEngine{
  newCase(){return {id:randomUUID(),service:'saudi_visa',policyVersion:P.POLICY_VERSION,revision:0,stage:'inquiry',createdAt:this.now(),updatedAt:this.now(),applicantCount:null,applicants:[],askedQuestions:[],history:[],paymentStatus:'unverified',documents:[],submissionStatus:'not_submitted',greeted:false};}
  ask(c,key,text){const repeated=c.lastQuestion===key;c.lastQuestion=key;if(!c.askedQuestions.includes(key))c.askedQuestions.push(key);return repeated?'حتى نكمل من نفس النقطة: '+text:text;}
  nextQuestion(c){
-  if(!c.applicants[0]?.nationality)return this.ask(c,'nationality','شو جنسية الشخص اللي بدنا نقدّم له؟');
-  if(!c.applicants[0]?.documentType)return this.ask(c,'documentType','معه جواز سفر عادي أو وثيقة سفر؟');
-  if(!c.applicantCount)return this.ask(c,'applicantCount','كم شخص حابب يقدّم؟');
+  const nat=c.applicants[0]?.nationality;
+  if(!nat)return this.ask(c,'nationality','شو جنسية الشخص اللي بدنا نقدّم له؟');
+  if(!c.applicants[0]?.documentType)return this.ask(c,'documentType',`تمام (${nat}) 🌷 معه جواز سفر عادي أو وثيقة سفر؟`);
+  if(!c.applicantCount)return this.ask(c,'applicantCount','كم شخص حابب يقدّم بالطلب؟');
   for(let i=0;i<c.applicantCount;i++){
    const p=c.applicants[i]||{};if(!p.nationality)return this.ask(c,'nationality_'+i,`شو جنسية المتقدم ${i+1}؟`);
    if(!p.documentType)return this.ask(c,'documentType_'+i,`المتقدم ${i+1} معه جواز عادي أو وثيقة سفر؟`);
@@ -150,7 +178,10 @@ class SaudiVisaEngine{
   // Only privacy-filtered conversation text enters semantic understanding.
   // Preserve a real caption/question beside an attachment, never its pixels.
   const hasAttachments=messages.some(m=>m.media),semanticText=conversationText(text,{hasAttachments});
-  if(this.understand&&semanticText){
+  const adviceTopics=dailyVisaTopics(n);
+  // Questions mentioning a passport/PDF are not declarations of document type.
+  const adviceOnly=adviceTopics.length>0&&!P.nationalities(n).length&&!countFrom(n)&&!/جواز عادي|وثيقه|travel document|معي جواز|عندي جواز|طفل|اطفال|رضيع|(?:مسافر|رايح|رح سافر|بدي سافر|سفري).*بالسياره/.test(n);
+  if(this.understand&&semanticText&&!adviceOnly){
    try{decision=await this.understand(semanticText,{caseId:c.id,revision:c.revision,lastQuestion:c.lastQuestion,applicantCount:c.applicantCount,applicants:c.applicants.map(personFields),transport:c.transport,hasHost:c.hasHost,paymentMethod:c.paymentMethod,history:c.history.slice(-8),stage:c.stage});}catch{}
   }
   // Do not overwrite a case updated by an operator while understanding ran.
@@ -168,7 +199,10 @@ class SaudiVisaEngine{
    const reply=intentForConversation==='complaint'?null:this.followupReply(id,c,text,intentForConversation);if(reply)return this.conversationReply(id,c,text,reply);
   }
   const beforeFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost,hasMinors:c.hasMinors}),beforeCase=structuredClone(c);
-  const aiFields=structuredClone(decision?.fields||decision?.facts||{}),localFields=extractLocal(text,c),awaiting=c.lastQuestion;
+  const aiFields=structuredClone(decision?.fields||decision?.facts||{}),localFields=adviceOnly?{}:extractLocal(text,c),awaiting=c.lastQuestion;
+  // Country of issue and Palestinian identity describe one traveller, even if
+  // a model incorrectly splits them into two applicants.
+  if(singlePalestinianDescriptor(n,P.nationalities(n))){delete aiFields.applicants;delete aiFields.applicantCount;delete aiFields.nationality;}
   if(Array.isArray(aiFields.applicants)&&aiFields.applicants.length){delete localFields.nationality;delete localFields.applicants;}
   if(/ايام|اسبوع|شهر|ساعات|دقايق/.test(n)&&!/(?:نحن|نحنا|صرنا|عددنا|شخص|اشخاص|متقدم)/.test(n)){delete aiFields.applicantCount;delete localFields.applicantCount;}
   if(/انتهاء|ينتهي|تنتهي|صلاحيه/.test(n)){delete aiFields.departureDate;delete aiFields.returnDate;}
@@ -204,7 +238,7 @@ class SaudiVisaEngine{
   }
   mergeFacts(c,aiFields);mergeFacts(c,localFields);
   // Short answers apply only to the field actually requested.
-  if(!relativeInquiry){
+  if(!relativeInquiry&&!adviceOnly){
    if(c.lastQuestion?.startsWith('nationality_')){const index=Number(c.lastQuestion.slice(12)),ns=P.nationalities(text);if(ns.length===1)c.applicants[index]={...c.applicants[index],nationality:ns[0]};}
    if(c.lastQuestion?.startsWith('documentType_')){const index=Number(c.lastQuestion.slice(13)),doc=/وثيق/.test(n)?'travel_document':/عادي|جواز|passport/.test(n)?'passport':null;if(doc)c.applicants[index]={...c.applicants[index],documentType:doc};}
    if(c.lastQuestion?.startsWith('issuer_')){const i=Number(c.lastQuestion.slice(7));if(text.length<80)c.applicants[i]={...c.applicants[i],documentIssuer:safeText(text,70)};}
@@ -216,7 +250,7 @@ class SaudiVisaEngine{
   if(!independentRelative&&(beforeCase.paymentStatus==='verified'||beforeCase.submissionStatus==='submitted')&&afterFacts!==beforeFacts){
    c.pendingAmendment={facts:JSON.parse(afterFacts),requestedAt:this.now()};for(const k of ['applicantCount','applicants','departureDate','returnDate','transport','hasHost','hasMinors']){if(Object.hasOwn(beforeCase,k))c[k]=beforeCase[k];else delete c[k];}c.stage='amendment_review';pendingAmendment=true;
   }
-  c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false;
+  c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false,consultationReply=false;
   const products=c.applicants.map(P.productFor),hasUmrah=products.some(p=>p.code==='umrah');
   c.quote=P.calculateQuote(c,{feesEnabled:true});
   if(beforeCase.paymentStatus==='verified'&&beforeCase.quote&&(pendingAmendment||beforeFacts===afterFacts)&&c.quote?.total!==beforeCase.quote.total)c.quote=beforeCase.quote;
@@ -261,6 +295,10 @@ class SaudiVisaEngine{
   }else if(/حسابات|حسابك|حسابكم|حساب بنكي|الحساب البنكي|ايبان|iban|bank details|بدي احول|كيف احول/.test(n)||intent==='bank_details'){
    reply=SERVICE.response('bank');
   }else if(/رفض|مسترد|استرداد|ترجع المصاري|ترجعو الرسوم/.test(n)||intent==='refund')reply='من ميزات التقديم معنا: رسوم التأشيرة مستردة بالكامل في حال الرفض الرسمي، حسب شروط خدمتنا الموضحة قبل الدفع. هذا التزام من مكتبنا وليس وعداً برد الرسوم من السفارة. التأخير أو التعليق ليس رفضاً، والإلغاء بطلب العميل له رسوم 200 درهم للمعاملة. رسوم الدفع والزاجل والفندق تحتاج توضيحاً منفصلاً قبل الاتفاق.';
+  else if(JSON.stringify(c.applicants)===JSON.stringify(beforeCase.applicants)&&c.applicantCount===beforeCase.applicantCount&&adviceTopics.length&&!products.some(p=>['suspended','unverified'].includes(p.code))){
+   consultationReply=true;reply=adviceTopics.map(topic=>dailyVisaCopy(topic,hasUmrah)).join('\n\n')+(completion?'\n\n'+completion:'');
+   if(adviceTopics.includes('visitor'))intervention('untrained_request');
+  }
   else if(/كم يوم|قديش وقت|مده|مدة|متي تطلع|ايمت تطلع|بسرعه|مستعجل|بكرا|اليوم/.test(n)||intent==='processing_time')reply='المدة المعتادة حسب إجراءاتنا 6–7 أيام عمل، والإنجاز مرتبط بالسفارة. السبت والأحد والعطل المعتمدة ما بتنحسب ضمن أيام المعالجة. ما فينا نضمن الموافقة أو الصدور قبل موعد محدد. إذا سفرك قريب، شو تاريخ السفر؟';
   else if(/زاجل|توصيل|استلام الجواز|ابعت مندوب/.test(n)||intent==='courier')reply='فينا ننسّق استلام أصل الجواز والهوية عن طريق زاجل برسوم 35 درهماً، أو بتسلمهم بالمكتب. قبل ترتيب الاستلام منأكد معك نطاق الخدمة وهل الإعادة مشمولة؛ ما حُجز مندوب بعد.';
   else if(/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply=SERVICE.response('payment');
@@ -288,7 +326,7 @@ class SaudiVisaEngine{
    }
   }
   const compoundInfo=[[/كم يوم|قديش وقت|متى تطلع|ايمت تطلع|مدة المعالجة|مده المعالجه/.test(n)||intent==='processing_time','المدة المعتادة 6–7 أيام عمل حسب السفارة؛ السبت والأحد والعطل لا تُحتسب، دون ضمان لموعد الصدور.'],[/زاجل|توصيل|استلام الجواز|ابعت مندوب/.test(n)||intent==='courier','فينا ننسّق استلام أصول المستندات عبر زاجل برسوم 35 درهماً بعد تأكيد نطاق الخدمة؛ لم يُحجز مندوب.'],[/كيف ادفع|طرق الدفع|وسائل الدفع/.test(n)||intent==='payment_options',SERVICE.response('payment')],[/مده الاقامه|مده الفيزا|كم شهر|كل دخول/.test(n)||intent==='visa_duration','صلاحية السياحية المتعددة سنة، والإقامة تصل إلى 90 يوماً حسب التأشيرة الصادرة؛ السفرة الواحدة والعمرة تختلف شروطهما.'],[/اوراق|مطلوب|مستندات/.test(n)||intent==='requirements',hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS]].filter(([yes])=>yes);
-  if(!hasAttachments&&compoundInfo.length&&(afterFacts!==beforeFacts||compoundInfo.length>1||priceRequested)&&(!intent||['processing_time','courier','payment_options','visa_duration','requirements','price'].includes(intent)))reply=[...compoundInfo.map(([,copy])=>copy),c.quote&&(priceRequested||afterFacts!==beforeFacts)?quoteText(c.quote):null,completion].filter(Boolean).join('\n\n');
+  if(!hasAttachments&&compoundInfo.length&&(consultationReply||afterFacts!==beforeFacts||compoundInfo.length>1||priceRequested)&&(consultationReply||!intent||['processing_time','courier','payment_options','visa_duration','requirements','price'].includes(intent)))reply=[...(consultationReply?adviceTopics.map(topic=>dailyVisaCopy(topic,hasUmrah)):[]),...compoundInfo.map(([,copy])=>copy),c.quote&&(priceRequested||afterFacts!==beforeFacts)?quoteText(c.quote):null,completion].filter(Boolean).join('\n\n');
   if(completion&&reply.includes(completion)){c.lastQuestion=nextQuestion;c.askedQuestions=nextAsked;}
   if(first)reply=INTRO+'\n\n'+reply;
   c.history.push({role:'user',text:(hasAttachments?'[attachment received]'+(semanticText?' '+semanticText:''):redactVisaText(text)).slice(0,1500)},{role:'assistant',text:redactVisaText(reply).slice(0,2500)});c.history=c.history.slice(-16);
