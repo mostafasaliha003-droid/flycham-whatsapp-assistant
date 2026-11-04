@@ -24,7 +24,7 @@ async function finishConsultantTurn(engine,id,text,result,{now}){
   if(decision.action==='knowledge'&&conversational){
    const evidence=await searchKnowledge(decision.knowledgeQuery,{env:engine.env,now});
    c.knowledge={status:evidence.status,checkedAt:now,sources:evidence.sources.map(x=>({title:x.title,url:x.url,checkedAt:x.checkedAt})),requiresVerification:true};
-   result.reply=evidence.status==='available'?'هالمعلومة بتحتاج مراجعة الشروط الرسمية حسب حالتك 🌷 لقيت هالمصادر الرسمية للمراجعة:\n'+evidence.sources.map(x=>x.title+'\n'+x.url).join('\n\n')+'\n\nهذه روابط للمراجعة، وليست تأكيدًا لأهليتك أو شروط دخولك.':'حتى أعطيك معلومة دقيقة، لازم أراجع مصدر رسمي محدث. البحث الخارجي غير متاح عندي حاليًا، لذلك ما رح أعطيك شروط سفر أو أهلية تأشيرة من دون تحقق.';
+   result.reply='حتى نعطيك جواب دقيق، هالنقطة بحاجة مراجعة المختص حسب جنسيتك ووثيقة سفرك 🌷';
   }else if(conversational&&['answer','status','clarify'].includes(decision.action)&&canUseReply(decision.reply,{status:s.status})){
    // Do not replace a genuine missing-field question with unrelated prose.
    const pending=s.base?.awaiting;
