@@ -54,15 +54,15 @@ function quoteFromScans(request,seats,catalogs){
   return{currency:'AED',sellingTotal:formatAED(supplier+margin),weights,serviceNotes};
 }
 function formatLiveQuote(request,price){return `السعر المتاح لشخص بالغ واحد من ${request.origin} إلى ${request.destination}، ذهابًا وعودة:\nالذهاب: ${request.departureDate}\nالعودة: ${request.returnDate}\nالإجمالي: ${price.sellingTotal} درهم، شامل الرسوم وعمولة الخدمة.\nالوزن المسجل: ${price.weights.map(w=>w.kg+' كغ').join(' / ')} حسب اتجاه الرحلة.\nوزن اليد غير مؤكد في هذا العرض. السعر والتوفر قابلان للتغير حتى إصدار التذكرة. لم يتم إجراء حجز.`;}
-function expandLiveRequests(request){
- if(!request.departureRange){validateLiveRequest(request);return [request];}
+function expandLiveRequests(request,now=Date.now()){
+ if(!request.departureRange){validateLiveRequest(request,now);return [request];}
  const {start,end}=request.departureRange;
  const first=new Date(start+'T00:00:00Z'),last=new Date(end+'T00:00:00Z');
  if(!Number.isFinite(+first)||!Number.isFinite(+last)||iso(first)!==start||iso(last)!==end||last<first||last-first>61*86400000)throw Error('LIVE_SCOPE_UNSUPPORTED');
  const dates=[];
  for(let d=first;d<=last;d=addDays(d,1)){
   const candidate={...request,departureDate:iso(d),departureRange:null,returnDate:request.tripType==='one_way'?null:request.stayNights?iso(addDays(d,request.stayNights)):request.returnDate};
-  validateLiveRequest(candidate);dates.push(candidate);
+  validateLiveRequest(candidate,now);dates.push(candidate);
  }
  return dates;
 }

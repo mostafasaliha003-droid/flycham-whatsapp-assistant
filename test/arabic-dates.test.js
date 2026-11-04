@@ -38,3 +38,8 @@ test('cheapest-week request always asks for passenger count before pricing',()=>
  resetSessions();const first=handleMessage('week-auto','من الشارقة إلى دمشق، بدي ارخص تاريخ بهل اسبوع ذهاب فقط',{now});assert.equal(first.complete,false);assert.match(first.reply,/كم عدد المسافرين/);
  const r=handleMessage('week-auto','1 بالغ',{now});assert.equal(r.complete,true);assert.equal(r.request.departureDate,null);assert.equal(r.request.departureRange.end,'2026-10-25');assert.equal(r.request.passengers.adults,1);
 });
+test('named months, weekend, relative days, short dates and ISO are bounded Dubai dates',()=>{
+ for(const [t,d] of [['15 نوفمبر','2026-11-15'],['2 تشرين الثاني','2026-11-02'],['10 كانون الأول 2026','2026-12-10'],['15 November','2026-11-15'],['بعد يومين','2026-10-25'],['بعد 3 ايام','2026-10-26'],['15/11','2026-11-15'],['بتاريخ 20/10','2027-10-20'],['2026/11/15','2026-11-15']])assert.deepEqual(naturalDate(t,now).dates,[d],t);
+ assert.equal(naturalDate('نهاية الاسبوع',now).range.start,'2026-10-24');assert.equal(naturalDate('شهر نوفمبر',now).range.end,'2026-11-30');assert.equal(naturalDate('وزن 15/11 كيلو',now).dates.length,0);
+ const {resolveMonthScope}=require('../src/month-scope');assert.equal(resolveMonthScope('بشهر نوفمبر',{now}).kind,'ask');assert.equal(resolveMonthScope('2 نوفمبر',{now}).kind,'bypass');
+});

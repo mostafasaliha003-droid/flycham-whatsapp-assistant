@@ -247,3 +247,4 @@ test('untrained questions including visa terminology are escalated even without 
 });
 
 test('model greeting classification cannot hide a substantive visa address question',async()=>{const e=make({understand:async()=>({intent:'greeting',fields:{},target:null})});await e.handle('a','سوري جواز عادي لحالي');const r=await e.handle('a','وين مكتبكم؟');assert.match(r.reply,/لا يستقبل العملاء/);assert.doesNotMatch(r.reply,/ومنكمل على نفس/);});
+test('compound qualified visa inquiry retains quote and answers payment and timing',async()=>{const e=make();const r=await e.handle('ux','سوري جواز عادي لحالي كم يوم وطرق الدفع وشو الاوراق');assert.match(r.reply,/640/);assert.match(r.reply,/6–7/);assert.match(r.reply,/5%/);assert.match(r.reply,/جواز/);});

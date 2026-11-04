@@ -1,5 +1,5 @@
 'use strict';
-const {normalize,naturalDate,dubaiDay,iso}=require('./arabic-dates');
+const {normalize,naturalDate,dubaiDay,iso,monthFromName}=require('./arabic-dates');
 const parts=Object.freeze({first:[1,7],second:[8,14],third:[15,21],last:[22,null],middle:[11,20],whole:[1,null]});
 function monthKey(year,month){return `${year}-${String(month).padStart(2,'0')}`;}
 function explicitDates(t){return /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/.test(t);}
@@ -36,10 +36,10 @@ function resolveMonthScope(raw,{now=Date.now(),pending=null,selection=null,reque
  // such as "مو الشهر الجاي، هالشهر" or "مو أوله، آخره".
  t=t.replace(/(?:مو|مش|ليس|ما بدي|لا)\s+(?:بـ?|في)?\s*(?:الشهر\s*(?:الجاي|القادم|المقبل|الحالي|كامل|كله)|هالشهر|هذا الشهر|(?:بدايه|نهايه|منتصف|نص|اول|اخر|كامل)\s*(?:الشهر)?|اوله|اخره|نصه)/g,' ').replace(/\s+/g,' ').trim();
  const today=dubaiDay(now),next=/(?:الشهر|شهر)\s*(?:الجاي|القادم|المقبل|اللي بعده)|next month/.test(t),current=/(?:هالشهر|هلشهر|هل شهر|هال شهر|بهل شهر|هذا الشهر|الشهر الحالي|الشهر هاد|current month)/.test(t);
- const numeric=t.match(/(?:شهر|الشهر)\s*(1[0-2]|[1-9])(?!\d)/),mentionsMonth=next||current||numeric||/الشهر/.test(t);
+ const numeric=t.match(/(?:شهر|الشهر)\s*(1[0-2]|[1-9])(?!\d)/),named=monthFromName(t),mentionsMonth=next||current||numeric||named||/الشهر/.test(t);
  let target=null;
  if(next||current){const d=new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+(next?1:0),1));target={year:d.getUTCFullYear(),month:d.getUTCMonth()+1};}
- else if(numeric){const month=Number(numeric[1]);target={year:today.getUTCFullYear()+(month<today.getUTCMonth()+1?1:0),month};}
+ else if(numeric||named){const month=Number(numeric?.[1]||named);target={year:today.getUTCFullYear()+(month<today.getUTCMonth()+1?1:0),month};}
  else if(pending?.year&&pending?.month)target={year:pending.year,month:pending.month};
  else if(mentionsMonth){const known=request.departureRange?.start?.match(/^(\d{4})-(\d{2})-/);target=known?{year:Number(known[1]),month:Number(known[2])}:{year:today.getUTCFullYear(),month:today.getUTCMonth()+1};}
  if(!target)return {kind:'none'};
