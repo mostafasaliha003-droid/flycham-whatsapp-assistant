@@ -42,6 +42,14 @@ function relativeReply(pending,{group=false,question=''}={}){
 function singlePalestinianDescriptor(n,ns){
  return ns.length===2&&ns.includes('فلسطين')&&!/زوج|مرتي|مراتي|جوزي|الحرمه|امي|ابي|والد|ابني|بنتي|اخوي/.test(n)&&!(countFrom(n)>1);
 }
+function explicitApplicantIndex(n){
+ const matches=[...n.matchAll(/(?:المتقدم|الشخص|المسافر|الفرد)\s*(?:رقم\s*)?(?:(\d+)|(ال\p{L}+))(?=$|[^\p{L}\p{N}])/gu)];
+ if(!matches.length)return null;
+ // Invalid or multiple references must never fall back to the primary person.
+ if(matches.length!==1)return -1;
+ const m=matches[0],index=m[1]?Number(m[1])-1:({الاول:0,الثاني:1,التاني:1,الثالث:2,التالت:2,الرابع:3,الخامس:4})[m[2]];
+ return Number.isInteger(index)&&index>=0&&index<30?index:-1;
+}
 function dailyVisaTopics(n){
  return [
   [/تامين|تأمين|التامين الطبي/, 'insurance'],
@@ -75,7 +83,7 @@ function dailyVisaCopy(topic,hasUmrah){
 function extractLocal(text,c){
  const n=P.normalize(text),ns=P.nationalities(n),fields={},number=countFrom(n);
  if(number)fields.applicantCount=number;
- const doc=/وثيقه|وثيقة|وثائق|travel document/.test(n)?'travel_document':/جواز|باسبور|باسبورت|passport/.test(n)?'passport':null;
+ const doc=/وثيقه|وثيقة|وثيقته|وثيقتها|وثائق|travel document/.test(n)?'travel_document':/جواز|باسبور|باسبورت|passport/.test(n)?'passport':null;
  if(ns.length===1&&!(doc==='travel_document'&&!/فلسطين/.test(n)))fields.nationality=ns[0];
  else if(doc==='travel_document'&&ns.includes('فلسطين')||singlePalestinianDescriptor(n,ns)&&/فلسطينيه?\s+(?:سوري|مصري|لبناني)/.test(n))fields.nationality='فلسطين';
  if(doc)fields.documentType=doc;
@@ -105,9 +113,9 @@ function mergeFacts(c,f){
  if(Number.isInteger(f.applicantCount)&&f.applicantCount>=1&&f.applicantCount<=30){c.applicantCount=f.applicantCount;c.applicants=c.applicants.slice(0,c.applicantCount);}
  if(Array.isArray(f.applicants)&&f.applicants.length&&f.applicants.length<=30){
   if(!c.applicantCount)c.applicantCount=f.applicants.length;
-  for(let i=0;i<Math.min(f.applicants.length,c.applicantCount);i++)c.applicants[i]={...c.applicants[i],...personFields(f.applicants[i])};
+  for(let i=0;i<Math.min(f.applicants.length,c.applicantCount);i++){const entry=personFields(f.applicants[i]);if(!Object.keys(entry).length)continue;c.applicants[i]={...c.applicants[i],...entry};if(c.applicants[i].documentType==='passport')delete c.applicants[i].documentIssuer;}
  }
- const primary=personFields(f);if(Object.keys(primary).length)c.applicants[0]={...c.applicants[0],...primary};
+ const primary=personFields(f);if(Object.keys(primary).length){c.applicants[0]={...c.applicants[0],...primary};if(c.applicants[0].documentType==='passport')delete c.applicants[0].documentIssuer;}
  for(const key of ['departureDate','returnDate'])if(dateValue(f[key]))c[key]=f[key];
  if(['air','car'].includes(f.transport||f.travelMode))c.transport=f.transport||f.travelMode;
  if(typeof f.hasHost==='boolean')c.hasHost=f.hasHost;
@@ -228,9 +236,11 @@ class SaudiVisaEngine{
  }
  async handle(id,text,{messages=[]}={}){
   text=String(text||'').trim().slice(0,12000);const n=P.normalize(text);let c=structuredClone(this.getCase(id)||this.newCase()),decision=null;
+  const explicitIdx=explicitApplicantIndex(n);
   const initialRevision=c.revision;
   if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(n)){this.delete(id);return{reply:'تم حذف ملف فيزا السعودية المحفوظ لدينا. إذا عندك معاملة مقدمة فعلياً أو التزام مالي، مراجعتها بتكون مع القسم المختص.',deleted:true,service:'saudi_visa'};}
   if(conversationIntent(text)==='case_summary'&&!isComplaint(text)){const completion=this.nextQuestion(structuredClone(c));return this.conversationReply(id,c,text,caseSummaryCopy(c,completion));}
+  if(explicitIdx!==null&&(explicitIdx<0||explicitIdx>=Math.max(c.applicantCount||0,c.applicants.length)))return this.conversationReply(id,c,text,'حتى نعدّل ملف الشخص الصحيح، حدد رقم متقدم واحد من الموجودين بملفك. ما غيّرنا أي بيانات.');
   // General validity guidance must not turn document mentions into applicant facts.
   if(/صلاحي[ته]|كم باقي|ينتهي|تنتهي|انتهاء/.test(n)&&/جواز|اقامه|هويه/.test(n)&&!isComplaint(text)){
    const reply='بالنسبة لصلاحية المستندات المطلوبة للتقديم عبر مجموعة الرمال:\n• *جواز السفر:* 6 أشهر على الأقل عند السفر.\n• *الإقامة / الهوية الخليجية للمقيمين:* نراجع بقاء 3 أشهر على الأقل ضمن متطلبات ملفك.\n\nمنراجع تواريخ المستندات ضمن الملف قبل استكمال الطلب؛ هالإرشاد ما بيؤكد قبول التأشيرة.';
@@ -242,7 +252,8 @@ class SaudiVisaEngine{
   const adviceTopics=dailyVisaTopics(n);
   // Questions mentioning a passport/PDF are not declarations of document type.
   const adviceOnly=adviceTopics.length>0&&!P.nationalities(n).length&&!countFrom(n)&&!/(?:جواز|باسبور|باسبورت) عادي|وثيقه|travel document|(?:معي|عندي) (?:جواز|باسبور|باسبورت)|(?:مسافر|رايح|رح سافر|بدي سافر|سفري).*بالسياره/.test(n)&&(adviceTopics.includes('child_passport')||!/طفل|اطفال|رضيع/.test(n));
-  if(this.understand&&semanticText&&!adviceOnly){
+  // An explicit person correction uses local facts, never a model's group rewrite.
+  if(this.understand&&semanticText&&!adviceOnly&&explicitIdx===null){
    try{decision=await this.understand(semanticText,{caseId:c.id,revision:c.revision,lastQuestion:c.lastQuestion,applicantCount:c.applicantCount,applicants:c.applicants.map(personFields),transport:c.transport,hasHost:c.hasHost,paymentMethod:c.paymentMethod,history:c.history.slice(-8),stage:c.stage});}catch{}
   }
   // Do not overwrite a case updated by an operator while understanding ran.
@@ -268,14 +279,14 @@ class SaudiVisaEngine{
   if(Array.isArray(aiFields.applicants)&&aiFields.applicants.length){delete localFields.nationality;delete localFields.applicants;}
   if(/ايام|اسبوع|شهر|ساعات|دقايق/.test(n)&&!/(?:نحن|نحنا|احنا|صرنا|عددنا|شخص|اشخاص|متقدم|انفار|نفر)/.test(n)){delete aiFields.applicantCount;delete localFields.applicantCount;}
   if(/انتهاء|ينتهي|تنتهي|صلاحيه/.test(n)){delete aiFields.departureDate;delete aiFields.returnDate;}
-  if(awaiting?.startsWith('issuer_'))for(const f of [aiFields,localFields]){delete f.nationality;delete f.documentType;delete f.applicants;}
+  if(awaiting?.startsWith('issuer_')&&explicitIdx===null)for(const f of [aiFields,localFields]){delete f.nationality;delete f.documentType;delete f.applicants;}
   const relativeMention=/(?:^|[^\p{L}])(?:[وبل])?(?:صديق(?:ي|تي|ه|ته|ها|تها)?|رفيق(?:ي|تي|ه|ته|ها|تها)?|صاحبي|زوجتي|مرتي|مراتي|جوزي|الحرمه|والدتي|والدي|امي|ابي|اختي|اخي|اخوي|ابني|بنتي)(?=$|[^\p{L}])/u.test(n),pending=c.pendingRelative,ns=P.nationalities(n);
   const ownCorrection=decision?.correction&&decision?.target==='self'&&!pending||/جنسيتي|انا (?:مو|مش|لست)|بالنسبه الي/.test(n)||/^انا\s/.test(n)&&ns.length===1&&!relativeMention;
   const operational=/حساب|ايبان|بنك|دفع|حولت|ايصال|الغاء|كنسل|ارسل(?:ت)? الاوراق|ابعتلك الاوراق/.test(n);
   const shortRelativeAnswer=pending&&!ownCorrection&&!operational&&text.length<100&&(pending.awaiting==='nationality'&&ns.length===1||pending.awaiting==='documentType'&&/^(?:معه |معو |هو )?(?:(?:جواز(?: سفر)?|باسبور|باسبورت)(?: عادي)?|عادي|وثيقه(?: سفر)?)(?:[.!؟? ]*)$/.test(n)||pending.awaiting==='documentIssuer'&&ns.length===1);
   const relativeFollowup=pending&&!ownCorrection&&!operational&&(/كمان بدن يقدمو|كمان بدهم يقدمو|هنن.*(?:يقدمو|يقدموا)/.test(n)||/حتى|له|الو|بتطلع|بيطلع|تفاصيل/.test(n)&&(!ns.length||ns.includes(pending.facts?.nationality)));
   const explicitGroup=countFrom(n)>1&&/نحن|نحنا|احنا|صرنا|عددنا|انا و/.test(n)||decision?.target==='group'&&Number.isInteger(aiFields.applicantCount)&&aiFields.applicantCount>1;
-  const relativeInquiry=Boolean(c.applicants[0]?.nationality)&&!adviceOnly&&!ownCorrection&&!explicitGroup&&!/(?:ضيف|اضف|اضيف).{0,15}(?:معنا|معي|المجموعه|الطلب)|ضيفها|ضيفه/.test(n)&&(relativeMention||shortRelativeAnswer||relativeFollowup||decision?.target==='other');
+  const relativeInquiry=explicitIdx===null&&Boolean(c.applicants[0]?.nationality)&&!adviceOnly&&!ownCorrection&&!explicitGroup&&!/(?:ضيف|اضف|اضيف).{0,15}(?:معنا|معي|المجموعه|الطلب)|ضيفها|ضيفه/.test(n)&&(relativeMention||shortRelativeAnswer||relativeFollowup||decision?.target==='other');
   if(relativeInquiry){
    const nextFacts=personFields({...aiFields,...localFields,...(Array.isArray(aiFields.applicants)&&aiFields.applicants.length===1?aiFields.applicants[0]:{})});
    if(shortRelativeAnswer&&pending.awaiting==='documentType'&&/عادي/.test(n))nextFacts.documentType='passport';
@@ -287,9 +298,11 @@ class SaudiVisaEngine{
    for(const f of [aiFields,localFields])for(const k of Object.keys(f))delete f[k];
   }
   const target=awaiting?.match(/^(nationality|documentType)_(\d+)$/);
-  if(target){for(const f of [aiFields,localFields]){if(f[target[1]]){const i=Number(target[2]),entry={[target[1]]:f[target[1]]};if(target[1]==='documentType'){if(f.documentIssuer)entry.documentIssuer=f.documentIssuer;delete f.documentIssuer;delete f.nationality;}f.applicants=Array.from({length:i+1},(_,j)=>j===i?entry:{});delete f[target[1]];}}}
-  if(awaiting==='applicantCount'&&/^\d{1,2}$/.test(n))localFields.applicantCount=Number(n);
-  if(decision?.correction&&aiFields.nationality){delete localFields.applicants;delete localFields.applicantCount;localFields.nationality=aiFields.nationality;}
+  if(explicitIdx!==null){
+   for(const f of [aiFields,localFields]){const entry=personFields(f);for(const key of Object.keys(f))delete f[key];if(Object.keys(entry).length)f.applicants=Array.from({length:explicitIdx+1},(_,j)=>j===explicitIdx?entry:{});}
+  }else if(target){for(const f of [aiFields,localFields]){if(f[target[1]]){const i=Number(target[2]),entry={[target[1]]:f[target[1]]};if(target[1]==='documentType'){if(f.documentIssuer)entry.documentIssuer=f.documentIssuer;delete f.documentIssuer;delete f.nationality;}f.applicants=Array.from({length:i+1},(_,j)=>j===i?entry:{});delete f[target[1]];}}}
+  if(awaiting==='applicantCount'&&/^\d{1,2}$/.test(n)&&explicitIdx===null)localFields.applicantCount=Number(n);
+  if(decision?.correction&&aiFields.nationality&&explicitIdx===null){delete localFields.applicants;delete localFields.applicantCount;localFields.nationality=aiFields.nationality;}
   if(c.pendingRelative&&!relativeInquiry&&/(?:ضيف|اضف|اضيف).{0,15}(?:معنا|معي|المجموعه|الطلب)|ضيفها|ضيفه/.test(n)){
    const f=c.pendingRelative.facts,people=Array.isArray(f.applicants)&&f.applicants.length?f.applicants:[f];c.applicants.push(...people.map(personFields));c.applicantCount=(c.applicantCount||1)+people.length;delete c.pendingRelative;
   }
@@ -300,11 +313,11 @@ class SaudiVisaEngine{
   }
   mergeFacts(c,aiFields);mergeFacts(c,localFields);
   // Short answers apply only to the field actually requested.
-  if(!relativeInquiry&&!adviceOnly){
+  if(!relativeInquiry&&!adviceOnly&&explicitIdx===null){
    if(c.lastQuestion?.startsWith('nationality_')){const index=Number(c.lastQuestion.slice(12)),ns=P.nationalities(text);if(ns.length===1)c.applicants[index]={...c.applicants[index],nationality:ns[0]};}
-   if(c.lastQuestion?.startsWith('documentType_')){const index=Number(c.lastQuestion.slice(13)),doc=/وثيق/.test(n)?'travel_document':/عادي|جواز|باسبور|باسبورت|passport/.test(n)?'passport':null;if(doc)c.applicants[index]={...c.applicants[index],documentType:doc};}
+   if(c.lastQuestion?.startsWith('documentType_')){const index=Number(c.lastQuestion.slice(13)),doc=/وثيق/.test(n)?'travel_document':/عادي|جواز|باسبور|باسبورت|passport/.test(n)?'passport':null;if(doc){c.applicants[index]={...c.applicants[index],documentType:doc};if(doc==='passport')delete c.applicants[index].documentIssuer;}}
    if(c.lastQuestion?.startsWith('issuer_')){const i=Number(c.lastQuestion.slice(7));if(text.length<80)c.applicants[i]={...c.applicants[i],documentIssuer:P.canonicalIssuer(text)};}
-   if(c.lastQuestion==='documentType'&&/^(?:عادي|عاديه|نظامي|جواز عادي|باسبور عادي|باسبورت عادي)$/.test(n))c.applicants[0]={...c.applicants[0],documentType:'passport'};
+   if(c.lastQuestion==='documentType'&&/^(?:عادي|عاديه|نظامي|جواز عادي|باسبور عادي|باسبورت عادي)$/.test(n)){c.applicants[0]={...c.applicants[0],documentType:'passport'};delete c.applicants[0].documentIssuer;}
   }
   if(!relativeInquiry&&!adviceOnly&&/طفل|اطفال|رضيع|قاصر|ولدين|ولادي الاثنين|عيالي|اولادي|عمره (?:سنه|سنتين|ثلاث|اربع|خمس|ست|سبع|ثمان|تسع|عشر)/.test(n))c.hasMinors=true;
   let pendingAmendment=false;
