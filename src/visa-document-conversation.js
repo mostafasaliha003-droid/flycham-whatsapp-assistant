@@ -8,9 +8,9 @@ const KINDS = Object.freeze({passport: 'الجواز', residence: 'الهوية 
 const CONTEXT_MS = 15 * 60 * 1000;
 const IMAGE_INTENTS = new Set(['merge', 'enhance', 'send_prepared']);
 const ISSUE_COPY = Object.freeze({
-  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس؟',
-  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي؟',
-  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية واضحة بخلفية بيضاء؟'
+  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس أو فلاش (بحيث تظهر الزوايا الأربع والباركود بوضوح)؟ باقي مرفقاتك السليمة محفوظة.',
+  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي الكامل (أو ملف PDF من تطبيق UAEICP للهوية) بدون قص؟',
+  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية أمامية واضحة بخلفية بيضاء وإضاءة جيدة بدون فلتر؟'
 });
 const documentWords = /صور(?:ه|تين)?|الصور|اوراق|جواز|هوي(?:ه|تي|ته|تها|تهم)|اقامه|مستند|مرفق|\b(?:pdf|passport|identity|residence|photo|image|document)s?\b/i;
 function detectDocumentStep(text) {

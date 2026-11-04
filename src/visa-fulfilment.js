@@ -22,19 +22,44 @@ function text(value, max = 150) {
 function asciiDigits(value = '') {
   return String(value ?? '').replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, d => String(d.charCodeAt(0) - 0x06f0));
 }
+// Exact normalized country names only; do not guess from a partial sentence.
+const COUNTRY_CODE_ALIASES = Object.freeze({
+  'سوريا':'SYR','سوري':'SYR','سوريه':'SYR','syria':'SYR','syrian':'SYR',
+  'مصر':'EGY','مصري':'EGY','مصريه':'EGY','egypt':'EGY','egyptian':'EGY',
+  'الاردن':'JOR','اردن':'JOR','اردني':'JOR','اردنيه':'JOR','jordan':'JOR','jordanian':'JOR',
+  'لبنان':'LBN','لبناني':'LBN','لبنانيه':'LBN','lebanon':'LBN','lebanese':'LBN',
+  'فلسطين':'PSE','فلسطيني':'PSE','فلسطينيه':'PSE','palestine':'PSE','palestinian':'PSE',
+  'العراق':'IRQ','عراق':'IRQ','عراقي':'IRQ','عراقيه':'IRQ','iraq':'IRQ','iraqi':'IRQ',
+  'اليمن':'YEM','يمن':'YEM','يمني':'YEM','يمنيه':'YEM','yemen':'YEM','yemeni':'YEM',
+  'السودان':'SDN','سودان':'SDN','سوداني':'SDN','سودانيه':'SDN','sudan':'SDN','sudanese':'SDN',
+  'ليبيا':'LBY','ليبي':'LBY','ليبيه':'LBY','libya':'LBY','libyan':'LBY',
+  'المغرب':'MAR','مغرب':'MAR','مغربي':'MAR','مغربيه':'MAR','morocco':'MAR','moroccan':'MAR',
+  'تونس':'TUN','تونسي':'TUN','تونسيه':'TUN','tunisia':'TUN','tunisian':'TUN',
+  'الجزائر':'DZA','جزائر':'DZA','جزائري':'DZA','جزائريه':'DZA','algeria':'DZA','algerian':'DZA',
+  'موريتانيا':'MRT','موريتاني':'MRT','موريتانيه':'MRT','mauritania':'MRT','mauritanian':'MRT',
+  'الامارات':'ARE','امارات':'ARE','اماراتي':'ARE','uae':'ARE','united arab emirates':'ARE',
+  'السعوديه':'SAU','سعوديه':'SAU','سعودي':'SAU','saudi':'SAU','saudi arabia':'SAU',
+  'تركيا':'TUR','تركي':'TUR','تركيه':'TUR','turkey':'TUR','turkish':'TUR',
+  'باكستان':'PAK','باكستاني':'PAK','باكستانيه':'PAK','pakistan':'PAK','pakistani':'PAK',
+  'الهند':'IND','هند':'IND','هندي':'IND','هنديه':'IND','india':'IND','indian':'IND',
+  'بنغلاديش':'BGD','بنغلادش':'BGD','بنغالي':'BGD','bangladesh':'BGD','bangladeshi':'BGD'
+});
 function normalizeInboundQuestionValue(question = {}, value = '') {
   if (typeof value !== 'string') return value;
   // Do not normalize away invalid control characters or bypass catalog validation.
   if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) return value;
   const raw = value.trim(), ascii = asciiDigits(raw), format = question.format || question.inputType;
   if (format === 'date') {
-    const ymd = ascii.match(/^(\d{4})[/.\-](\d{1,2})[/.\-](\d{1,2})$/);
-    const dmy = ascii.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
+    const ymd = ascii.match(/^(\d{4})(?:[/.\-]|\s+)(\d{1,2})(?:[/.\-]|\s+)(\d{1,2})$/);
+    const dmy = ascii.match(/^(\d{1,2})(?:[/.\-]|\s+)(\d{1,2})(?:[/.\-]|\s+)(\d{4})$/);
     if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
     if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
   }
   // countryCode in the real catalog is ISO alpha-3, never a telephone prefix.
-  if (format === 'countryCode') return raw.toUpperCase();
+  if (format === 'countryCode') {
+    const country=choiceText(raw);
+    return Object.hasOwn(COUNTRY_CODE_ALIASES,country)?COUNTRY_CODE_ALIASES[country]:raw.toUpperCase();
+  }
   if (format === 'country_code' && /^(?:\+|00)?\d{1,4}$/.test(ascii)) return ascii.replace(/^\+|^00/, '');
   if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/\s+/g, '').toUpperCase();
   if (format === 'emiratesId' || format === 'phone_number') return ascii;

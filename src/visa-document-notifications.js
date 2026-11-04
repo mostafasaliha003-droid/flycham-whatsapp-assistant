@@ -23,9 +23,9 @@ const error = (code, notDispatched = false) => Object.assign(Error(code), {code,
 // All customer text is fixed application copy. OCR/provider explanations and
 // extracted names, identifiers, dates and arbitrary issue messages never enter it.
 const ISSUE_TEXT = Object.freeze({
-  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس؟',
-  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي؟',
-  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية واضحة بخلفية بيضاء؟',
+  DOCUMENT_UNREADABLE:'ممكن تبعت صورة أوضح للمستند كاملًا، بدون انعكاس أو فلاش (بحيث تظهر الزوايا الأربع والباركود بوضوح)؟ باقي مرفقاتك السليمة محفوظة.',
+  DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي الكامل (أو ملف PDF من تطبيق UAEICP للهوية) بدون قص؟',
+  DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية أمامية واضحة بخلفية بيضاء وإضاءة جيدة بدون فلتر؟',
   DOCUMENT_SOURCE_UNAVAILABLE:'ممكن تعيد إرسال المرفق الأخير؟',
   MULTIPLE_PASSPORTS:'الجوازات المرسلة كلها للتقديم؟'
 });

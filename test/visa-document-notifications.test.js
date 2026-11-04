@@ -9,6 +9,12 @@ const CUSTOMER = '15550007001', OTHER = '15550007002';
 const PASSPORT = '12345678-1234-4321-abcd-123456789abc';
 const NEW_FILE = '12345678-1234-4321-abcd-123456789abd';
 const NOW = 1900000000000;
+test('Package 4 proactive image notices explain the exact replacement and retain saved attachments',async()=>{
+ for(const [code,pattern]of [['DOCUMENT_UNREADABLE',/الزوايا الأربع والباركود.*باقي مرفقاتك السليمة محفوظة/],['DOCUMENT_IMAGE_UNSUITABLE',/PDF من تطبيق UAEICP.*بدون قص/],['DOCUMENT_PORTRAIT_REQUIRED',/أمامية واضحة.*إضاءة جيدة بدون فلتر/]]){
+  const f=fixture({status:'needs_review'});f.raw.issues=[{code,message:'PRIVATE_DIAGNOSTIC'}];const before=structuredClone(f.store.data.visaMedia);
+  const item=f.service.update(CUSTOMER);await f.service.flush();assert.match(item.payload.text,pattern);assert.doesNotMatch(item.payload.text,/PRIVATE_DIAGNOSTIC|DOCUMENT_/);assert.deepEqual(f.store.data.visaMedia,before);assert.equal(f.count(),1);
+ }
+});
 
 function fixture({status = 'ready', send, owned = false, blocked = false, open = true, quietMs = 0, isInboundBusy = () => false} = {}) {
   let clock = NOW, ownership = owned, blocking = blocked, sequence = 0, sends = 0, saves = 0;

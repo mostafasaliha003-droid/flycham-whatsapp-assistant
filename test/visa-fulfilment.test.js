@@ -31,6 +31,28 @@ function fixture({send, resumeOtp, count = 2, canAutomate} = {}) {
   return {service, options, store, c, inbox, mediaStore, input, receive, approve, activate, drafts, applied, tick: ms => { at += ms; }, claim: value => { claimed = value; }, stats: () => ({saves, paymentCalls, sends})};
 }
 const throwsCode = (run, code) => assert.throws(run, error => error.code === code || error.message === code);
+test('Package 4 exact Arabic and English country answers normalize before strict catalog validation',()=>{
+ const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions'),q=questionFor('nationalityCode',{applicantIndex:0});
+ const countries={SYR:['سوريا','سورية','Syrian'],EGY:['مصر','مصرية','Egypt'],JOR:['الأردن','اردنيه','Jordanian'],LBN:['لبنان','لبنانية','Lebanon'],PSE:['فلسطين','فلسطينية','Palestinian'],IRQ:['العراق','عراق','Iraqi'],YEM:['اليمن','يمن','Yemeni'],SDN:['السودان','سودانية','Sudan'],LBY:['ليبيا','ليبي','Libyan'],MAR:['المغرب','مغرب','Moroccan'],TUN:['تونس','تونسية','Tunisia'],DZA:['الجزائر','جزائر','Algerian'],MRT:['موريتانيا','موريتانية','Mauritanian'],ARE:['الإمارات','إماراتي','  United   Arab Emirates  '],SAU:['السعودية','سعودي','Saudi Arabia'],TUR:['تركيا','تركية','Turkish'],PAK:['باكستان','باكستانية','Pakistani'],IND:['الهند','هندية','India'],BGD:['بنغلادش','بنغالي','Bangladeshi']};
+ for(const [code,aliases]of Object.entries(countries))for(const answer of aliases)assert.equal(validateAnswer('nationalityCode',normalize(q,answer)),code,answer);
+ for(const answer of ['سوريا أو مصر','بدي سوريا','سوريا\n','سوريا\u0085','constructor','__proto__','+971'])assert.throws(()=>validateAnswer('nationalityCode',normalize(q,answer)),/VISA_ANSWER_INVALID/,answer);
+ assert.equal(normalize({inputType:'country_code'},'الإمارات'),'الإمارات');assert.equal(normalize(q,' nZl '),'NZL');
+});
+test('Package 4 space separated dates retain real-date and control-character checks',()=>{
+ const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions'),q=questionFor('birthDate',{applicantIndex:0});
+ for(const answer of ['١٥ ٥ ١٩٩٠','۱۵  ۰۵  ۱۹۹۰','1990 5 15','15\u00a05\u00a01990'])assert.equal(validateAnswer('birthDate',normalize(q,answer)),'1990-05-15',answer);
+ for(const answer of ['31 2 1990','29 2 2023','15 5 90','1990 5 15\n','15\t5\t1990'])assert.throws(()=>validateAnswer('birthDate',normalize(q,answer)),/VISA_ANSWER_INVALID/,answer);
+});
+test('Package 4 bound operator country/date replies stay staged until explicit confirmation',async()=>{
+ const f=fixture({count:1});f.options.env.RAAD_COORDINATION_MODE='operator';f.options.env.RAAD_COORDINATION_WHATSAPP=OWNER;
+ const approval=await f.activate(),id=approval.jobs[0].id,asked=f.service.askQuestions(id,{fields:['nationalityCode','birthDate']});
+ for(const [question,answer,expected]of [[asked.questions[0],'الأردن','JOR'],[asked.questions[1],'١٥ ٥ ١٩٩٠','1990-05-15']]){
+  const out=Object.values(f.service.data().outbox).find(x=>x.payload.token===question.token);await f.service.dispatchMessage(out.id);
+  assert.equal(f.service.handleOperatorMessage({from:OTHER,contextId:out.messageId,text:answer}).handled,false);
+  const r=f.service.handleOperatorMessage({from:OWNER,id:'answer-'+question.field,contextId:out.messageId,text:answer});assert.equal(r.ok,true);assert.equal(f.service.job(id).stagedFields[question.field],expected);
+ }
+ assert.equal(f.service.job(id).state,'awaiting_answer_confirmation');assert.equal(f.service.job(id).answerConfirmation,undefined);
+});
 
 test('receipt only is not payment; accountant approval uses existing financial action and creates independent jobs', () => {
   const f = fixture(); f.receive(); assert.equal(f.c.paymentStatus, 'awaiting_verification'); assert.equal(f.stats().paymentCalls, 0);

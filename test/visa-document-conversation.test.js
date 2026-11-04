@@ -8,6 +8,11 @@ const {visaCaseSignature}=require('../src/visa-case-signature');
 const CUSTOMER='15550004444';
 const ready=()=>({caseId:'case-one',status:'ready',applicants:[{applicantIndex:0,documents:{passport:'prepared-passport',residence:'prepared-residence',photo:'prepared-photo'}}],issues:[]});
 const make=(summary,options={})=>createVisaDocumentConversation({documentIntake:{summary:()=>summary},...options});
+test('Package 4 actionable image copy is specific without exposing provider diagnostics',()=>{
+ for(const [code,pattern]of [['DOCUMENT_UNREADABLE',/الزوايا الأربع والباركود.*باقي مرفقاتك السليمة محفوظة/],['DOCUMENT_IMAGE_UNSUITABLE',/PDF من تطبيق UAEICP.*بدون قص/],['DOCUMENT_PORTRAIT_REQUIRED',/أمامية واضحة.*إضاءة جيدة بدون فلتر/]]){
+  const reply=statusReply({status:'needs_review',applicants:[],issues:[{code,message:'PRIVATE_DIAGNOSTIC'}]});assert.match(reply,pattern);assert.doesNotMatch(reply,/PRIVATE_DIAGNOSTIC|DOCUMENT_/);
+ }
+});
 
 test('received-document followups use actual saved attachments instead of repeating the requirements',async()=>{
  const stamp=1000000,c={id:'case-one',createdAt:stamp-1000,applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}],paymentStatus:'verified'};c.quote=P.calculateQuote(c);

@@ -272,7 +272,7 @@ function handleMessage(sender, text, {now=Date.now(),patch=null}={}) {
     if(routeClarification===missing[0])return{complete:false,clarification:'route_direction',reply:routeClarification==='destination'?`إي، المغادرة من ${request.origin} مسجّلة عندي. لوين${request.destinationCountry?' بسوريا':''} بدك توصل؟`:`تمام، الوجهة ${request.destination} مسجّلة عندي. من وين بدك تنطلق؟`};
     const prompt=missing[0]==='destination'&&request.origin?`مطار المغادرة ${request.origin} واضح. إلى أي مدينة${request.destinationCountry?' بسوريا':''} بدك تسافر؟ مثل دمشق أو حلب.`:missing[0]==='returnDate'&&request.departureRange?'قديش مدة إقامتك؟ مثل أسبوع أو 10 أيام، حتى أقارن أسعار الذهاب والعودة.':missing[0]==='destination'&&request.destinationCountry?'على أي مدينة بسوريا: دمشق أو حلب أو غيرها؟':prompts[missing[0]];
     const understood=request.departureRange?`تمام، رح نبحث ضمن الفترة من ${request.departureRange.start} إلى ${request.departureRange.end}. `:request.departureDate&&/بكر|بكره|غد|الاحد|الاثنين|الاتنين|الثلاث|التلات|الاربع|الخميس|الجمع|السبت/.test(normalize(normalized))?`تمام، موعد السفر ${request.departureDate}. `:'';
-    return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك تقبل أي مطار بالإمارات. الربط الحالي يفحص الشارقة فقط، لذلك المقارنة لا تشمل باقي مطارات الإمارات. ':''}${understood}${prompt}` };
+    return { complete: false, reply: `${request.originScope==='any_uae'?'فهمت إنك مرن بمطار المغادرة من الإمارات 🌷 رح نبدأ بالشارقة كأولوية ومنقارن البدائل المتاحة. ':''}${understood}${prompt}` };
   }
   if(state.submitted&&before===JSON.stringify(request))return{complete:false,reply:'طلبك السابق مسجل. إذا بدك تغيّر الموعد أو المسار، ابعتلي التعديل.'};
   const amendment=state.submitted&&before!==JSON.stringify(request);

@@ -6,6 +6,40 @@ const P=require('../src/saudi-visa-policy');
 const {visaCaseSignature}=require('../src/visa-case-signature');
 const make=options=>new SaudiVisaEngine({store:new AssistantState({file:null}),env:{},privateConfig:{banks:[{bank:'Synthetic Bank',name:'Synthetic Company',account:'00000001',iban:'AE000000000000000000000'}]},...options});
 const tourist={nationality:'سوريا',documentType:'passport'};
+test('Package 4 Palestinian travel document issuer never becomes a second traveller, including a bad model split',async()=>{
+ const {extractLocal}=require('../src/saudi-visa-engine');
+ for(const text of ['أنا فلسطيني سوري','فلسطيني وثيقة سورية','فلسطيني وثيقة مصرية','فلسطيني وثيقة لبنانية']){
+  const fields=extractLocal(text,{applicantCount:null});assert.equal(fields.nationality,'فلسطين',text);assert.equal(fields.applicants,undefined,text);assert.equal(fields.applicantCount,undefined,text);
+  const e=make({understand:async()=>({fields:{applicants:[{nationality:'فلسطين'},{nationality:'سوريا'}],applicantCount:2}})});await e.handle('doc',text);assert.equal(e.getCase('doc').applicants.length,1);assert.equal(e.getCase('doc').applicants[0].nationality,'فلسطين');assert.equal(e.getCase('doc').applicantCount,null);
+ }
+ const group=extractLocal('أنا فلسطيني وزوجتي سورية',{applicantCount:null});assert.equal(group.applicants.length,2);assert.equal(group.applicantCount,2);
+ assert.equal(extractLocal('وثيقة سورية',{applicantCount:null}).nationality,undefined);
+ assert.equal(extractLocal('أنا فلسطيني ومعي جواز فرنسي',{applicantCount:null}).nationality,undefined);
+});
+test('Package 4 qualification mentions the known nationality without repeating the nationality question',async()=>{
+ const e=make();const r=await e.handle('warm','مغربي');assert.match(r.reply,/تمام \(المغرب\) 🌷/);assert.match(r.reply,/جواز سفر عادي أو وثيقة سفر/);assert.doesNotMatch(r.reply,/شو جنسية/);
+ const next=await e.handle('warm','عادي');assert.match(next.reply,/كم شخص حابب يقدّم بالطلب/);
+});
+test('Package 4 daily visa questions answer all six topics without mutating applicants or payment evidence',async()=>{
+ const e=make();await e.handle('faq','سوري جواز عادي لحالي');const original=structuredClone(e.getCase('faq'));let calls=0;e.understand=async()=>{calls++;return {fields:{nationality:'مصر',applicantCount:2}};};
+ for(const [text,pattern]of [['التأمين الطبي مشمول؟',/640.*850.*التأمين الطبي/],['فيني اعتمر بالسياحية؟',/خارج موسم الحج.*نسك/],['بقدر ادخل من منفذ البطحاء بالسيارة؟',/المنافذ البرية.*البطحاء/],['بتطلع إلكترونية PDF أو ملصق على الجواز؟',/PDF.*واتساب/],['ما عندي إقامة أنا زائر بالإمارات',/منراجع مع المسؤول.*قبل أي التزام أو دفع/],['هل المهنة بالهوية بتفرق؟',/المسمى الوظيفي/]]){
+  const r=await e.handle('faq',text);assert.match(r.reply,pattern,text);assert.deepEqual(e.getCase('faq').applicants,original.applicants,text);assert.equal(e.getCase('faq').applicantCount,original.applicantCount,text);assert.equal(e.getCase('faq').paymentStatus,original.paymentStatus);assert.equal(e.getCase('faq').submissionStatus,'not_submitted');
+ }
+ assert.equal(calls,0);assert.equal(e.getCase('faq').operatorIntervention.reason,'untrained_request');
+});
+test('Package 4 visa delivery explains Umrah originals and preserves a travel document while awaiting its issuer',async()=>{
+ const e=make();await e.handle('travel-doc','فلسطيني وثيقة سفر لحالي');const before=structuredClone(e.getCase('travel-doc').applicants);assert.equal(e.getCase('travel-doc').lastQuestion,'issuer_0');
+ const r=await e.handle('travel-doc','كيف بستلم الفيزا، PDF أو على الجواز؟');assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.doesNotMatch(r.reply,/بدون الحاجة لملصق/);assert.deepEqual(e.getCase('travel-doc').applicants,before);assert.match(r.reply,/صادرة من أي بلد/);
+});
+test('Package 4 FAQ guard preserves new qualification facts and does not bypass untrained nationalities',async()=>{
+ const e=make();await e.handle('new-facts','أنا مصري جواز عادي لحالي والتأمين مشمول؟');assert.equal(e.getCase('new-facts').applicants[0].nationality,'مصر');assert.equal(e.getCase('new-facts').quote.total,640);
+ e.understand=async()=>({fields:{nationality:'فيتنام',documentType:'passport',applicantCount:1}});await e.handle('untrained','فيتنام جواز عادي لحالي');const r=await e.handle('untrained','التأمين مشمول؟');assert.match(r.reply,/رح أراجع هالجنسية/);assert.doesNotMatch(r.reply,/ما في مبلغ إضافي/);
+});
+test('Package 4 consultation can accompany requirements and preserves actual travel-mode declarations',async()=>{
+ const e=make();await e.handle('faq-compound','سوري جواز عادي لحالي');
+ const r=await e.handle('faq-compound','التأمين مشمول وشو الأوراق المطلوبة؟');assert.match(r.reply,/التأمين الطبي/);assert.match(r.reply,/نسخة جواز/);
+ await e.handle('faq-compound','أنا مسافر بالسيارة');assert.equal(e.getCase('faq-compound').transport,'car');
+});
 test('office policy exact nationality and document classification does not guess every Asian country',()=>{
  for(const n of ['سوريا','الأردن','لبنان','جزر القمر','اليمن','السودان','ماليزيا','إندونيسيا','الهند','باكستان','بنغلاديش','فرنسا','دومينيكا'])assert.equal(P.productFor({nationality:n,documentType:'passport'}).code,'tourist_multi',n);
  assert.equal(P.productFor({nationality:'مصر',documentType:'passport'}).code,'tourist_single');
