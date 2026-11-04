@@ -1,6 +1,6 @@
 # Voice model probe — November 2026
 
-Status: **blocked_missing_synthetic_mp3_and_ogg**.
+Status: **speech acceptance not approved; production transcription gated off**.
 
 Synthetic reference: بدي من الشارقة للشام الجمعة الجاية أنا ومرتي بدون عفش
 
@@ -14,7 +14,7 @@ A model qualifies only with WER <= 15%. The runner tests both MP3 and OGG, stops
 
 Run with the existing credentials: `node scripts/probe-voice-models.js /path/synthetic.mp3 /path/synthetic.ogg`. Both samples must be the owner-recorded 10-second synthetic phrase above, without customer data.
 
-Production OGG uses bounded in-memory conversion for an approved CLINE_AUDIO_MODEL, with Gemini as fallback. Direct Cline OGG support remains unverified.
+When explicitly enabled after acceptance, OGG uses bounded in-memory conversion for an approved CLINE_AUDIO_MODEL, with Gemini as fallback. Direct Cline OGG support remains unverified.
 
 Protocol references: [Cline Chat Completions](https://github.com/cline/cline/blob/main/docs/api/chat-completions.mdx), [Gemini audio](https://ai.google.dev/gemini-api/docs/audio). Documentation does not establish support by any particular Cline subscription model.
 
@@ -26,6 +26,6 @@ The existing Render service has Cline and Gemini credentials and `/usr/bin/ffmpe
 
 The former Gemini default returned HTTP 404. The candidate branch now uses the authenticated model-list-confirmed `gemini-3.8-flash` default while preserving explicit configuration. It is still subject to speech acceptance testing; no production setting has changed.
 
-All incoming audio now passes a bounded, pipe-only local decode before contacting a provider. Silence, invalid decoding and recordings over two minutes are rejected honestly. An actual Render check rejected ten-second MP3 and OGG silence with zero provider calls. The isolated signed-webhook test confirms that rejected silence does not create trip facts or conversation history. The full isolated regression suite passed 2565 tests with zero failures, cancellations or skips.
+When the approved transcription path is explicitly enabled, incoming audio passes a bounded, pipe-only local decode before contacting a provider. Silence, invalid decoding and recordings over two minutes are rejected honestly. An actual Render check rejected ten-second MP3 and OGG silence with zero provider calls. The isolated signed-webhook test confirms that rejected silence does not create trip facts or conversation history. The full isolated regression suite passed 2565 tests with zero failures, cancellations or skips.
 
-OGG-to-MP3 conversion remains limited to an approved Cline audio model; converted buffers are wiped and conversion failure can fall back to Gemini. Non-silent music/noise and Arabic speech accuracy remain acceptance-test gaps. Do not merge/deploy or change production model settings until the owner speech probe and measured-result review are complete.
+OGG-to-MP3 conversion remains limited to an approved Cline audio model; converted buffers are wiped and conversion failure can fall back to Gemini. Non-silent music/noise and Arabic speech accuracy remain acceptance-test gaps. Do not activate transcription or change production model settings until the speech acceptance probe and measured-result review are complete. The remaining CX changes can be deployed with transcription disabled. The webhook requires both `VOICE_TRANSCRIPTION=on` and `VOICE_ACCEPTANCE_APPROVED=true`; a legacy `on` alone cannot enable it. Otherwise the existing encrypted audio receipt path remains available, with a short acknowledgement and no request for a summary. The protected status endpoint reports the effective gate.

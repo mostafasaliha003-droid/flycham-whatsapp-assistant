@@ -2,7 +2,10 @@
 const {detectSentiment,withEmpathy}=require('./customer-sentiment');
 const {withStaffExpectation}=require('./staff-availability');
 const {sendRating,readRating,ratingSummary}=require('./service-rating');
-const {transcribeVoice,voiceLead,voiceFallback}=require('./voice-transcription');
+const {transcribeVoice,voiceLead,voiceFallback,voiceEnabled}=require('./voice-transcription');
+const {detectLanguageStyle}=require('./bilingual-intake');
+const {recordCxEvent,cxAnalyticsSummary}=require('./cx-analytics');
+const {detectCrossServiceSwitch,transitionBanner,withTransitionBanner,hasSavedFlightContext,hasSavedVisaContext}=require('./cross-service-bridge');
 const {aiStatus}=require('./assistant-nlu');
 const {SaudiVisaEngine}=require('./saudi-visa-engine');
 const {createSaudiVisaUnderstanding,redactVisaText}=require('./saudi-visa-nlu');
@@ -181,13 +184,13 @@ async function sendSearchWaiting(id){
  });
 }
 
-async function sendComplaintAcknowledgment(sender,voiceTexts=[]){
+async function sendComplaintAcknowledgment(sender,{voiceTexts=[],language='ar'}={}){
  return orderedDelivery(sender,async()=>{
  const record=complaints.active(sender),entry=journal.get(sender);
  if(!record||record.ackState||inbox.isOperatorOwned(sender)||inbox.isBlocked(sender)||['pending','uncertain'].includes(entry?.whatsappBlockState))return;
  record.ackState='sending';assistant.store.save();
  const text=(voiceTexts.length?voiceLead(voiceTexts.join('، '))+'\n\n':'')+withStaffExpectation('منفهم انزعاجك، وبدنا نراجع الموضوع بدقة. تم تحويل المحادثة للإدارة لمراجعة معاملتك والدفعات المرتبطة فيها. ما في داعي تعيد التفاصيل.');
- try{const result=await rawSendTextMessage(sender,text);const id=result?.messages?.[0]?.id;if(!id)throw Error('NO_MESSAGE_ID');journal.recordOutbound(sender,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});record.ackState='accepted';}catch{record.ackState='uncertain';}assistant.store.save();
+ try{const result=await rawSendTextMessage(sender,text);const id=result?.messages?.[0]?.id;if(!id)throw Error('NO_MESSAGE_ID');journal.recordOutbound(sender,{id,text,actor:'assistant',timestamp:Date.now(),status:'accepted'});record.ackState='accepted';recordCxEvent(assistant.store,{service:activeService(assistant.store,sender),category:'escalated',reason:'complaint',sentiment:'frustrated',language});}catch{record.ackState='uncertain';}assistant.store.save();
  });
 }
 
@@ -226,23 +229,45 @@ async function processCustomerMessages(sender,messages){
     if(currentTurn())await sendTextMessage(sender,rated.reply);return;
   }
   const voiceTexts=[];
+  // Roll out the checked CX features independently of speech acceptance. An
+  // existing 'on' value alone must never enable the unapproved audio pipeline.
+  if(!voiceEnabled(process.env)&&messages.some(m=>m.media?.type==='audio')){
+    const audioMessages=messages.filter(m=>m.media?.type==='audio'),replies=[];
+    for(const message of audioMessages){const received=await visaMedia.receive(sender,message);if(!currentTurn())return;replies.push(received.ok?received.reply:'ما وصلني التسجيل الصوتي كامل 🌷 ممكن تعيد إرساله؟');}
+    if(replies.some(Boolean))await sendTextMessage(sender,[...new Set(replies.filter(Boolean))].join('\n\n'));
+    messages=messages.filter(m=>m.media?.type!=='audio');if(!messages.length)return;
+  }
   for(const message of messages.filter(m=>m.media?.type==='audio'&&(!m.text||m.text==='[مرفق صوتي يحتاج تفريغاً]'))){
     let audio,result;
     try{audio=await visaMedia.fetchTransient(message.media);if(!currentTurn())return;result=await transcribeVoice({...audio,fetchImpl:(...args)=>fetch(...args)});}catch{result={ok:false,reason:'unavailable'};}finally{audio?.bytes?.fill(0);}
     if(!currentTurn())return;
-    if(!result.ok){console.log('VOICE_FAILED_'+result.reason);await sendTextMessage(sender,voiceFallback(result.reason));return;}
+    if(!result.ok){console.log('VOICE_FAILED_'+result.reason);await sendTextMessage(sender,voiceFallback(result.reason));recordCxEvent(assistant.store,{service:activeService(assistant.store,sender),category:'voice_fallback'});return;}
     console.log('VOICE_TRANSCRIBED_'+result.provider);message.text=result.transcript;message.voiceTranscript=true;delete message.media;voiceTexts.push(result.transcript);
   }
   text=messages.map(m=>m.text).join('، ');
   const sentiment=detectSentiment(text);
   if(sentiment.priority==='urgent'){assistant.store.data.customerPriority||={};assistant.store.data.customerPriority[sender]={priority:'urgent',reason:sentiment.frustrated?'frustrated':'urgent',at:Date.now()};assistant.store.save();}
+
+  if(messages.some(m=>m.visaScopeChoice)&&activeService(assistant.store,sender)!=='saudi_visa'){await sendTextMessage(sender,'هذه الخيارات من محادثة سابقة. ابعت استفسارك الحالي حتى نوجّهك صح 🌷');return;}
+  const flightState=assistant.state(sender),priorService=assistant.store.data.serviceSessions?.[sender]?.service||(hasSavedFlightContext(flightState)?'flight':null),priorVisa=visa.getCase(sender);
+  const requestedSwitch=detectCrossServiceSwitch(priorService,text,{flightState,visaCase:priorVisa});
+  const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
+  // The existing router remains authoritative, including bound menu choices.
+  const switched=priorService&&priorService!==route.service&&['flight','saudi_visa'].includes(route.service);
+  const context=requestedSwitch.switched&&requestedSwitch.to===route.service?requestedSwitch:{preserveFlight:hasSavedFlightContext(flightState),preserveVisa:hasSavedVisaContext(priorVisa)};
+  const banner=switched?transitionBanner(priorService,route.service,context):null;
   const decorate=(reply,{complaint=false,staff=false}={})=>{
     reply=withEmpathy(reply,sentiment,{complaint});if(staff)reply=withStaffExpectation(reply);
+    reply=withTransitionBanner(reply,banner);
     return voiceTexts.length?voiceLead(voiceTexts.join('، '))+'\n\n'+reply:reply;
   };
-  if(messages.some(m=>m.visaScopeChoice)&&activeService(assistant.store,sender)!=='saudi_visa'){await sendTextMessage(sender,'هذه الخيارات من محادثة سابقة. ابعت استفسارك الحالي حتى نوجّهك صح 🌷');return;}
-  const flightState=assistant.state(sender);
-  const route=routeService(assistant.store,sender,text,{serviceChoice:messages.filter(m=>m.serviceChoice).at(-1)?.serviceChoice||null,hasActiveRequest:['searching','queued'].includes(flightState.status),media:messages.some(m=>m.media),hasFlight:Boolean(flightState.base?.request?.origin||flightState.base?.request?.destination)});
+  const language=detectLanguageStyle(text),tone=sentiment.frustrated?'frustrated':sentiment.urgent?'urgent':'neutral';let switchRecorded=false,voiceRecorded=false;
+  const recordOutcome=(category,reason=null,{validityWarning=false}={})=>{
+    if(switched&&!switchRecorded){recordCxEvent(assistant.store,{service:route.service,category:'cross_service_switch',language,sentiment:tone});switchRecorded=true;}
+    if(voiceTexts.length&&!voiceRecorded){recordCxEvent(assistant.store,{service:route.service,category:'voice_transcribed',language,sentiment:tone});voiceRecorded=true;}
+    if(category)recordCxEvent(assistant.store,{service:route.service,category,reason,language,sentiment:tone});
+    if(validityWarning)recordCxEvent(assistant.store,{service:route.service,category:'validity_warning',language,sentiment:tone});
+  };
   if(route.selectedText){text=route.selectedText;messages=[{...messages.at(-1),text:route.selectedText}];}
   if(route.service==='service_inquiry'){if(turnRevision!==incomingRevision(assistant.store,sender))return;await sendTextMessage(sender,decorate(route.reply));return;}
   if(route.service==='choose'){const pending=messages.filter(m=>m.media);if(pending.length){assistant.store.data.pendingVisaMedia||={};assistant.store.data.pendingVisaMedia[sender]=[...(assistant.store.data.pendingVisaMedia[sender]||[]),...pending].slice(-20);assistant.store.save();}await sendServiceMenu(sender,{...route,reply:decorate(route.reply)},turnRevision);return;}
@@ -256,7 +281,7 @@ async function processCustomerMessages(sender,messages){
       if(scoped.intervention){visaCoordinationNotices.queue(sender,scoped.intervention.reason,'inquiry:'+scoped.scopeToken+':'+scoped.intervention.revision,{inquiry:true,question:scoped.intervention.question});visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));}
       scoped.reply=decorate(scoped.reply,{staff:Boolean(scoped.intervention)});
       if(scoped.scopeMenu){const sent=await rawSendVisaScopeMenu(sender,{text:scoped.reply,token:scoped.scopeMenu.token}),messageId=sent?.messages?.[0]?.id;if(messageId){visaConversationScope.bind(sender,scoped.scopeMenu.token,messageId);if(journal.hasCustomer(sender))journal.recordOutbound(sender,{id:messageId,text:scoped.reply,actor:'assistant',timestamp:Date.now(),status:'accepted'});}}
-      else await sendTextMessage(sender,scoped.reply);return;
+      else await sendTextMessage(sender,scoped.reply);recordOutcome(scoped.intervention?'escalated':null,scoped.intervention?.reason);return;
     }
     if(assistant.store.data.pendingVisaMedia?.[sender]){messages=[...assistant.store.data.pendingVisaMedia[sender],...messages];delete assistant.store.data.pendingVisaMedia[sender];assistant.store.save();}
     const attachments=messages.filter(m=>m.media),mediaReplies=[],priorVisaCase=visa.getCase(sender),holdNewMedia=Boolean(priorVisaCase&&(conversationIntent(text)==='new_application'||priorVisaCase.pendingNewApplication));
@@ -272,7 +297,7 @@ async function processCustomerMessages(sender,messages){
     else if(holdNewMedia&&!visa.getCase(sender)?.pendingNewApplication){delete assistant.store.data.pendingNewVisaMedia?.[sender];assistant.store.save();}
     visaDocumentIntake.wake();visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));
     if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
-    if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender,voiceTexts);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
+    if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender,{voiceTexts,language});recordOutcome(null);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
     if(result.superseded||!result.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     if(!documentReply.handled&&!caseConversation&&!/(?:ثبت|تثبيت)/.test(require('./saudi-visa-policy').normalize(text))){documentReply=await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id});if(documentReply.handled){const c=visa.getCase(sender);if(c?.id!==result.caseId||c?.revision!==result.revision)return;const last=c.history?.at(-1);if(last?.role==='assistant'){last.text=redactVisaText(journalSafeText((compoundDocumentRequest?result.reply+'\n\n':'')+documentReply.reply));assistant.store.save();}}}
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
@@ -282,20 +307,22 @@ async function processCustomerMessages(sender,messages){
     let reply=parts.filter(Boolean).join('\n\n');if(!reply)return;
     reply=decorate(reply,{complaint:Boolean(result.complaint),staff:['pricing_review','complaint_pending','amendment_review','cancellation_review','payment_review'].includes(result.stage)||Boolean(visa.getCase(sender)?.operatorIntervention&&visa.getCase(sender).operatorIntervention.revision===result.revision)});
     await sendTextMessage(sender,reply);
+    const current=visa.getCase(sender),intervention=current?.operatorIntervention?.revision===result.revision?current.operatorIntervention:null;
+    recordOutcome(intervention?'escalated':result.intent==='visa_info'||result.resolved?'resolved':null,intervention?.reason,{validityWarning:result.validityWarning});
     if(result.stage==='approved')await sendRating(assistant.store,sender,{service:'saudi_visa',send:sendTextMessage,guard:currentTurn});
     return;
   }
   if(messages.some(m=>m.media)){
     const flightState=assistant.state(sender),hasFlightContext=Boolean(flightState.selected||flightState.handoffId||flightState.base?.request?.origin||flightState.base?.request?.destination||flightState.offers?.length);
-    await sendTextMessage(sender,hasFlightContext?'وصل المرفق بنجاح ضمن محادثة الطيران 🌷 إذا كان صورة جواز أو إيصال لتثبيت الرحلة فسيراجعه موظف الحجوزات مع طلبك، ولأي تعديل على تفاصيل الرحلة اكتبه برسالة نصية.':'وصل المرفق. لمعالجة طلب الطيران اكتب تفاصيل الرحلة برسالة نصية، أو وضّح إذا كان المرفق لمعاملة فيزا السعودية.');return;
+    await sendTextMessage(sender,decorate(hasFlightContext?'وصل المرفق بنجاح ضمن محادثة الطيران 🌷 إذا كان صورة جواز أو إيصال لتثبيت الرحلة فسيراجعه موظف الحجوزات مع طلبك، ولأي تعديل على تفاصيل الرحلة اكتبه برسالة نصية.':'وصل المرفق. لمعالجة طلب الطيران اكتب تفاصيل الرحلة برسالة نصية، أو وضّح إذا كان المرفق لمعاملة فيزا السعودية.'));recordOutcome(null);return;
   }
   const state=assistant.state(sender),prior=state.base?.request;
   if(state.offerPages&&isMoreRequest(text)){
     const page=nextOfferPage(state,{now:Date.now()});
-    if(page.status!=='ready'){await sendTextMessage(sender,decorate(page.text));return;}
+    if(page.status!=='ready'){await sendTextMessage(sender,decorate(page.text));recordOutcome(null);return;}
     const key='offer-page:'+page.pageKey;
     if(!outbox.get(key))outbox.enqueue({key,recipient:sender,chunks:[decorate(page.text)],metadata:{kind:'offer_page',comparisonId:page.comparisonId,revision:page.revision,pageKey:page.pageKey,shownOffers:page.shownOffers,offers:page.shownOffers,journey:state.tripId}});
-    setTimeout(()=>orderedDelivery(sender,async()=>{await batcher.settled(sender);await outbox.flush(key);}).catch(()=>console.log('WHATSAPP_OFFER_PAGE_DELIVERY_FAILED')),0).unref();return;
+    setTimeout(()=>orderedDelivery(sender,async()=>{await batcher.settled(sender);await outbox.flush(key);recordOutcome(null);}).catch(()=>console.log('WHATSAPP_OFFER_PAGE_DELIVERY_FAILED')),0).unref();return;
   }
   const broad=/سوريا|سوريه|سورية|رحلات|طيران|اسعار|أسعار/.test(text)&&!prior?.departureDate&&!prior?.departureRange&&!/\d|بكرا|بكره|اسبوع|أسبوع|الاثنين|الثلاثاء/.test(text);
   const references=[...new Set(messages.map(m=>m.contextId).filter(Boolean))];
@@ -303,10 +330,10 @@ async function processCustomerMessages(sender,messages){
   const buttonChoice=messages.filter(m=>m.requestChoice).at(-1)?.requestChoice||null;
   const result=await assistant.handle(sender,text,{quotedMessageId:references.length===1?references[0]:null,turnMessages,buttonChoice,choiceExtras:buttonChoice?messages.filter(m=>!m.requestChoice).map(m=>m.text):[]});
   if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
-  if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(text.trim()))journal.deleteCustomer(sender);
+  if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(text.trim())){visaMedia.deleteCustomer(sender);journal.deleteCustomer(sender);}
   if(broad&&!result.requestChoiceHandled){const request=assistant.state(sender).base?.request||{};const card=catalog.reply(request);if(card&&!result.complete){
    const missing=[];if(!request.departureDate&&!request.departureRange)missing.push('عندك أيام معيّنة ببالك');if(!request.passengers)missing.push('كم عدد المسافرين');if(!request.tripType)missing.push('ذهاب بس أو مع رجعة');
-   const reply=(result.introduction?result.introduction+'\n\n':'')+card+(missing.length?'\n'+missing.join('، ')+'؟':'');await sendTextMessage(sender,reply);return;
+   const reply=(result.introduction?result.introduction+'\n\n':'')+card+(missing.length?'\n'+missing.join('، ')+'؟':'');await sendTextMessage(sender,decorate(reply));recordOutcome(null);return;
   }}
   let reply=result.reply;
   if(result.cancel)quoteJobs.cancel(sender);
@@ -329,8 +356,12 @@ async function processCustomerMessages(sender,messages){
   reply=withEmpathy(reply,sentiment,{complaint:Boolean(result.complaint)});
   if(result.handoff)reply=withStaffExpectation(reply);
   if(result.introduction&&!reply.includes(result.introduction))reply=result.introduction+'\n\n'+reply;
+  reply=withTransitionBanner(reply,banner);
   if(voiceTexts.length)reply=voiceLead(voiceTexts.join('، '))+'\n\n'+reply;
   const delivery=result.requestChoice?await sendRequestChoiceMessage(sender,reply,result.requestChoice.id):await sendTextMessage(sender,reply);
+  // Resolved means an answered conversational request, never ticket issuance or visa approval.
+  // Intake questions and searches still in progress are excluded from the rate.
+  recordOutcome(result.handoff?'escalated':result.contextOnly?'resolved':null,result.handoff?'staff_handoff':null,{validityWarning:result.validityWarning});
   recordMetric(assistant.store,{customer:sender,journey:assistant.state(sender).tripId,event:'reply_sent'});
   if(result.handoff){const h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h){h.journey=assistant.state(sender).tripId;assistant.store.save();}}
   if(result.handoff&&process.env.HUMAN_HANDOFF_RECIPIENT){
@@ -419,7 +450,7 @@ async function handleWebhookPost(request, response) {
     if(reopenedVisa.requeued>0&&!message.media&&!isComplaint(message.text)&&!inbox.isHumanOwned(message.from)){wakeVisa();continue;}
     if(visaEnabled()&&isComplaint(message.text)&&!inbox.isBlocked(message.from)&&!inbox.isOperatorOwned(message.from)){
       const record=complaints.create(message.from,{caseId:visa.getCase(message.from)?.id});quoteJobs.cancel(message.from);
-      sendComplaintAcknowledgment(message.from).catch(()=>console.log('VISA_COMPLAINT_ACK_FAILED'));
+      sendComplaintAcknowledgment(message.from,{language:detectLanguageStyle(message.text)}).catch(()=>console.log('VISA_COMPLAINT_ACK_FAILED'));
       flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));continue;
     }
     if(message.from===COMPLAINT_RECIPIENT){for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>{});}
@@ -542,7 +573,7 @@ function createServer() {
       if(await handleInboxRequest(request,response,url,readBody,inbox))return;
       if(url.pathname==='/internal/assistant/portal-monitor'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({...portalMonitor.list({airarabia:quoteJobs.ready('airarabia'),flycham:quoteJobs.ready('flycham')}),familyCapabilities:partyCapabilityStatus()}));return;}
       const preview=url.pathname.match(/^\/internal\/assistant\/portal-monitor\/(airarabia|flycham)\/preview$/);if(preview&&request.method==='GET'){const bytes=quoteJobs.ready(preview[1])&&portalMonitor.preview(preview[1]);if(!bytes){response.writeHead(404).end();return;}response.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff','Content-Length':bytes.length}).end(bytes);return;}
-      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({...assistant.status(),ratings:ratingSummary(assistant.store),visa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status(),notifications:{recipientConfigured:Boolean(COMPLAINT_RECIPIENT),templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE),ownerServiceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true}},catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));return;}
+      if(url.pathname==='/internal/assistant/status'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify({...assistant.status(),ratings:ratingSummary(assistant.store),voice:{enabled:voiceEnabled(process.env)},cxAnalytics:cxAnalyticsSummary(assistant.store),visa:{...visa.status(),enabled:visaEnabled(),media:visaMedia.status(),notifications:{recipientConfigured:Boolean(COMPLAINT_RECIPIENT),templateConfigured:Boolean(process.env.SAUDI_VISA_COMPLAINT_TEMPLATE),ownerServiceWindowOpen:journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true}},catalog:catalog.status(),messageWindowMs:batcher.delay,consultant:{enabled:consultantEnabled(process.env),webResearchConfigured:Boolean(process.env.BRAVE_SEARCH_API_KEY),outbox:outbox.stats(),metrics:metricsSummary(assistant.store)}}));return;}
       if(url.pathname==='/internal/assistant/handoffs'&&request.method==='GET'){response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(assistant.store.data.handoffs));return;}
       const issued=url.pathname.match(/^\/internal\/assistant\/handoffs\/([a-f0-9-]+)\/issued$/);
       if(issued&&request.method==='POST'){const data=JSON.parse((await readBody(request)).toString());const h=assistant.store.data.handoffs.find(x=>x.id===issued[1]);if(!h||h.state!=='claimed'||data.ticketConfirmed!==true){response.writeHead(409).end();return;}h.state='issued';h.issuedAt=Date.now();const s=assistant.state(h.customer);updateConsultantStage(s,{type:'ticket_issued',verified:true});s.humanOwned=false;if(journal.hasCustomer(h.customer))inbox.release(h.customer);s.status='done';s.handoffId=null;assistant.store.set(h.customer,s);recordMetric(assistant.store,{customer:h.customer,journey:h.journey||s.tripId,event:'issued'});try{if(inbox.isHumanOwned(h.customer)||journal.summary(h.customer)?.serviceWindowOpen!==true)throw Error('RATING_CUSTOMER_UNAVAILABLE');const sent=await sendTextMessage(h.customer,'تم تأكيد إصدار تذكرتك من موظف الحجوزات 🌷 شكراً لاختيارك مجموعة الرمال.');if(sent?.messages?.[0]?.id){await sendRating(assistant.store,h.customer,{service:'flight',reference:h.id,send:sendTextMessage,guard:()=>!inbox.isHumanOwned(h.customer)&&activeService(assistant.store,h.customer)!=='saudi_visa'});}}catch{console.log('ISSUED_CONFIRMATION_DELIVERY_FAILED');}response.writeHead(200).end('{"ok":true}');return;}

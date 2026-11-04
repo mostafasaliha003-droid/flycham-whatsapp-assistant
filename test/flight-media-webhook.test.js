@@ -25,7 +25,7 @@ test('Package 8 signed flight attachments acknowledge their own trip without vis
 
 test('Packages 12–15 signed webhook voice routing, failure isolation, ratings, staff hours and empathy',async()=>{
  const original=global.fetch,originalNow=Date.now,out=[],staff='15550008999',calls=[];let transcript='من الشارقة إلى دمشق 15/11/2026 ذهاب فقط لحالي',failure=false;
- Object.assign(process.env,{GEMINI_API_KEY:'synthetic-gemini-key',VOICE_TRANSCRIPTION_PROVIDERS:'gemini',HUMAN_HANDOFF_RECIPIENT:staff,ASSISTANT_ADMIN_KEY:'synthetic-cx-admin-key-xxxxxxxxxxxx'});
+ Object.assign(process.env,{GEMINI_API_KEY:'synthetic-gemini-key',VOICE_TRANSCRIPTION:'on',VOICE_ACCEPTANCE_APPROVED:'true',VOICE_TRANSCRIPTION_PROVIDERS:'gemini',HUMAN_HANDOFF_RECIPIENT:staff,ASSISTANT_ADMIN_KEY:'synthetic-cx-admin-key-xxxxxxxxxxxx'});
  Date.now=()=>Date.UTC(2026,10,4,19); // 23:00 in Dubai.
  let audio=require('./helpers/voice-fixtures').encoded('ogg');
  global.fetch=async(url,opt)=>{
@@ -44,7 +44,7 @@ test('Packages 12–15 signed webhook voice routing, failure isolation, ratings,
  try{
   const signalAudio=audio;audio=require('./helpers/voice-fixtures').encoded('ogg',{silent:true});const beforeProvider=calls.filter(u=>u.includes('googleapis')).length;const silentReply=await send(cx.silence,'',{voice:true});assert.match(silentReply,/الصوت ما كان واضح/);assert.doesNotMatch(silentReply,/سمعت|فهمت منها/);assert.equal(calls.filter(u=>u.includes('googleapis')).length,beforeProvider);const silentState=new AssistantState({file,key});assert.equal(silentState.data.customers[cx.silence].base,undefined);assert.equal(silentState.data.customers[cx.silence].history.length,0);audio=signalAudio;
   const success=await send(cx.voice,'',{voice:true});assert.match(success,/^سمعت رسالتك الصوتية/);assert.match(success,/الشارقة/);let snapshot=new AssistantState({file,key});assert.equal(snapshot.data.customers[cx.voice].base.request.destination,'دمشق');assert.equal(snapshot.data.visaCases?.[cx.voice],undefined);assert.equal(Object.keys(snapshot.data.visaMedia||{}).length,0);
-  failure=true;const failed=await send(cx.failed,'',{voice:true});assert.match(failed,/ملخّص طلبك/);assert.doesNotMatch(failed,/تفريغ|أفرّغ|حُفظ|سمعت|فهمت منها/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.customers[cx.failed].base,undefined);assert.equal(snapshot.data.customers[cx.failed].history.length,0);assert.equal(snapshot.data.visaCases?.[cx.failed],undefined);failure=false;
+  failure=true;const failed=await send(cx.failed,'',{voice:true});assert.match(failed,/ما قدرت أفهم.*ممكن تعيدها/);assert.doesNotMatch(failed,/تفريغ|أفرّغ|حُفظ|سمعت|فهمت منها/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.customers[cx.failed].base,undefined);assert.equal(snapshot.data.customers[cx.failed].history.length,0);assert.equal(snapshot.data.visaCases?.[cx.failed],undefined);failure=false;
   const rated=await send(cx.rating,'5');assert.match(rated,/شكراً كتير لتقييمك/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.visaCases?.[cx.rating],undefined);
   await send(cx.skip,'مرحبا');const normal=await send(cx.skip,'2');assert.doesNotMatch(normal,/تقييمك/);snapshot=new AssistantState({file,key});assert.equal(snapshot.data.serviceRatings.history.find(x=>x.customer===cx.skip).skipped,true);
   const handoff=await send(cx.handoff,'ضروري حوّلني للموظف');assert.match(handoff,/بكرا من الساعة 10 الصبح/);assert.match(out.filter(x=>x.to===staff).at(-1).text.body,/أولوية: عميل مستعجل\/منزعج/);
@@ -59,5 +59,5 @@ test('Packages 12–15 signed webhook voice routing, failure isolation, ratings,
   const beforeCalls=calls.length;await send(cx.owned,'',{voice:true});assert.equal(calls.length,beforeCalls);
   const low=await send(cx.low,'1');assert.match(low,/بكرا من الساعة 10 الصبح/);assert.ok(out.some(x=>x.to===staff&&/تقييم منخفض 1\/5/.test(x.text?.body)));
   const button=await send(cx.button,'5',{button:true});assert.doesNotMatch(button||'',/شكراً كتير لتقييمك/);
- }finally{Date.now=originalNow;global.fetch=original;delete process.env.GEMINI_API_KEY;delete process.env.HUMAN_HANDOFF_RECIPIENT;await new Promise(r=>server.close(r));}
+ }finally{Date.now=originalNow;global.fetch=original;delete process.env.GEMINI_API_KEY;delete process.env.VOICE_TRANSCRIPTION;delete process.env.VOICE_ACCEPTANCE_APPROVED;delete process.env.HUMAN_HANDOFF_RECIPIENT;await new Promise(r=>server.close(r));}
 });

@@ -2,9 +2,12 @@
 const {aiConfigured,aiProvider}=require('./assistant-nlu');
 
 const crypto=require('node:crypto');
+const {rememberFlightJourney,returningGreeting,clearCustomerProfile}=require('./customer-profile');
+const {extractMentionedExpiryDates,checkPassportValidityDate,readinessReferenceDate,offerAirportMismatchNotice}=require('./prebooking-readiness');
 const legacy=require('./conversation');
 const {normalize,naturalDate}=require('./arabic-dates');
 const {languagePatch,city}=require('./travel-language');
+const {affirmativeEnglishText,parseEnglishFlightPatch}=require('./bilingual-intake');
 const {understand}=require('./assistant-nlu');
 const {AssistantState}=require('./assistant-state');
 const {POLICY,capabilityIssue}=require('./assistant-policy');
@@ -103,10 +106,10 @@ function flightAdviceKind(text){
  if(/(?:جواز(?:ي)?|باسبور(?:ي)?|باسبورت(?:ي)?)\s*(?:ال)?سوري.*(?:منتهي|تمديد|ممدد)|(?:منتهي|تمديد|ممدد).*(?:جواز(?:ي)?|باسبور(?:ي)?|باسبورت(?:ي)?)\s*(?:ال)?سوري|تذكره مرور|ورقه عبور/.test(t))return 'syrian_passport';
  if(/تصريف\s*(?:100|ميه|مئه)\s*دولار|شروط الدخول.*(?:سوريا|دمشق|حلب|الشام)|موافقه امنيه/.test(t))return 'entry_rules';
  if(/(?:ذهب|موبايلات|جوالات|اجهزه كهربائيه|لابتوب|بطاريه|باور بانك|سوائل|ادويه).*(?:مسموح|بالطياره|بالشحن|بالمطار|معي)|(?:مسموح|فيني ا(?:خد|خذ)).*(?:ذهب|موبايل|لابتوب|باور بانك|بطاريه|سوائل|ادويه)/.test(t))return 'customs_items';
- if(/(?:صلاحيه|انتهاء|منتهي|تجديد|صالح).*(?:جواز|باسبور|باسبورت)|(?:جواز|باسبور|باسبورت).*(?:منتهي|صلاحيته|صالح)/.test(t))return 'passport_validity';
+ if(/(?:صلاحيه|انتهاء|ينتهي|تنتهي|منتهي|تجديد|صالح).*(?:جواز|باسبور|باسبورت)|(?:جواز|باسبور|باسبورت).*(?:ينتهي|تنتهي|منتهي|صلاحيته|صالح)|(?:expiry|expire|validity).*(?:passport)|passport.*(?:expiry|expire|validity|valid until)/i.test(t))return 'passport_validity';
  return null;
 }
-function explainService(t,request={},status){
+function explainService(t,request={},status,now=Date.now()){
  if(/طرق الدفع|وسائل الدفع|كيف الدفع|تحويل بنكي|كاش|بطاقه|فيزا كارد|تابي|اقساط/.test(t))return require('./remal-service-policy').PAYMENT;
  if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|فرع/.test(t))return require('./remal-service-policy').OFFICE;
  const advice=flightAdviceKind(t);
@@ -117,7 +120,7 @@ function explainService(t,request={},status){
  if(advice==='syrian_passport')return 'بخصوص السفر بالجواز السوري المنتهي أو الممدد أو تذكرة المرور 🌷 قبول الصعود للطائرة بيخضع لتعليمات شركة الطيران ومطار المغادرة والوجهة والترانزيت السارية يوم السفر. منتحقق من حالة الجواز والمستندات مع موظف الحجوزات قبل تثبيت التذكرة؛ ما منأكد إمكانية السفر قبل مراجعة الحالة.';
  if(advice==='entry_rules')return 'بخصوص إجراءات وتعليمات الدخول إلى سوريا (مثل تصريف العملة أو الموافقات الرسمية) 🌷 التعليمات الحدودية بتخضع للجهات الرسمية المختصة وقت الوصول وممكن تتحدث دورياً؛ لازم نتأكد من آخر تعليمات رسمية تنطبق على جنسيتك ووثيقة سفرك قبل التثبيت، وما منعتبر أي إجراء قديم شرطاً سارياً دون تحقق.';
  if(advice==='customs_items')return 'بخصوص حمل الأجهزة والمقتنيات على الطائرة 🌷 الباور بانك وبطاريات الليثيوم الاحتياطية تكون بحقيبة اليد وليس بالشحن، مع حماية الأقطاب والالتزام بقيود السعة والعدد لدى الشركة. الأفضل الاحتفاظ بالذهب واللابتوب بحقيبة اليد، مع مراجعة متطلبات التصريح الجمركي. الأدوية والسوائل إلها شروط خاصة حسب المادة والكمية والوجهة؛ منراجع متطلبات الوصفة والتصريح مع الجهة المختصة قبل السفر، وما منأكد السماح لمادة غير محددة.';
- if(advice==='passport_validity')return 'بالنسبة لصلاحية الجواز 🌷 كثير من الوجهات تطلب 6 أشهر من تاريخ السفر، لكن الشرط يختلف حسب الجنسية والوجهة ونوع الإقامة. منراجع المتطلبات الفعلية مع موظف الحجوزات قبل تثبيت التذكرة، خصوصاً إذا كان الجواز قريب الانتهاء.';
+ if(advice==='passport_validity'){const mentioned=extractMentionedExpiryDates(t),check=checkPassportValidityDate(mentioned.passportExpiry,readinessReferenceDate(request,now));return 'بالنسبة لصلاحية الجواز 🌷 كثير من الوجهات تطلب 6 أشهر من تاريخ السفر، لكن الشرط يختلف حسب الجنسية والوجهة ونوع الإقامة. منراجع المتطلبات الفعلية مع موظف الحجوزات قبل تثبيت التذكرة، خصوصاً إذا كان الجواز قريب الانتهاء.'+(check?'\n\n'+check.warningCopy:'');}
  if(advice==='duration'){
   // Indicative only for the named UAE–Syria route, never for an arbitrary trip.
   const uae=/دبي|الشارق|شارق|ابو\s*ظبي|SHJ|DXB|AUH|DWC/i,sy=/دمشق|حلب|DAM|ALP/i;
@@ -254,12 +257,14 @@ class AssistantEngine{
 
  async process(id,text,{now,quotedMessageId,turnMessages=[],choiceMode=null}){
   const s=this.state(id),priorSelection=s.selected,priorBase=s.base;
+  if(!s.humanOwned&&affirmativeEnglishText(text)!==text&&!Object.keys(parseEnglishFlightPatch(text)).length&&!/[\u0621-\u064a]/.test(text)){this.prepared.delete(id);s.consultantDecision=null;const reply='حتى أفهم التعديل صح، شو التفاصيل اللي حابب نعتمدها للرحلة؟';s.history.push({role:'user',text:clean(text)},{role:'assistant',text:reply});this.store.set(id,s);return{complete:false,reply};}
   // Answer before quote selection or route recovery can mutate the saved trip.
   if(!s.humanOwned&&(tripSummaryQuestion(text)||flightAdviceKind(text))){
    this.prepared.delete(id);s.consultantDecision=null;
-   const reply=tripSummaryQuestion(text)?tripSummaryReply(s,{now}):explainService(normalize(text),s.base?.request,s.status);
+   const reply=tripSummaryQuestion(text)?tripSummaryReply(s,{now}):explainService(normalize(text),s.base?.request,s.status,now);
    s.history.push({role:'user',text:clean(text)},{role:'assistant',text:reply});s.history=s.history.slice(-24);
-   this.store.set(id,s);return{complete:false,contextOnly:true,reply};
+   const expiry=extractMentionedExpiryDates(text),check=checkPassportValidityDate(expiry.passportExpiry,readinessReferenceDate(s.base?.request,now));
+   this.store.set(id,s);return{complete:false,contextOnly:true,reply,validityWarning:Boolean(check&&check.status!=='valid')};
   }
   const prepared=this.prepared.get(id),preparedKey=this.preparationKey(s,text,turnMessages);
   const usePrepared=!quotedMessageId&&prepared?.key===preparedKey&&now-prepared.at<120000;
@@ -313,13 +318,13 @@ class AssistantEngine{
    return {...say(`أكيد 🌷 بشيكلك التواريخ المتاحة من ${next.request.origin} إلى ${next.request.destination}. أي فترة بتناسبك: هالأسبوع، الأسبوع الجاي، أو الشهر الجاي؟`),cancel:true};
   }
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
-  if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
+  if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(t)){clearCustomerProfile(this.store,id);this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
   // Explicit service questions read the current trip; model routing cannot cancel it.
   if(airlineComparisonQuestion(t)){
    s.selected=priorSelection;s.base=priorBase;legacy.importSession(id,priorBase);
    const comparison=compareShownAirlines(s,now);
-   return say(comparison||((s.offers.length?'ما عندي الآن عرضان حديثان متحققان للشركتين ضمن طلبك. ':'')+(explainService(t,s.base?.request,s.status)||'منقارن السعر والتوقيت والوزن لكل شركة حسب الخيارات المتحققة لرحلتك.')));
+   return say(comparison||((s.offers.length?'ما عندي الآن عرضان حديثان متحققان للشركتين ضمن طلبك. ':'')+(explainService(t,s.base?.request,s.status,now)||'منقارن السعر والتوقيت والوزن لكل شركة حسب الخيارات المتحققة لرحلتك.')));
   }
   if(ticketServiceQuestion(t)){
    s.selected=priorSelection;s.base=priorBase;legacy.importSession(id,priorBase);
@@ -411,7 +416,7 @@ class AssistantEngine{
   }
 
   hasChange ||= hasDecisionFields||followup?.start;
-  if(!followup?.start&&!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
+  if(!followup?.start&&!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;const welcome=!s.base?.request?.origin&&!s.base?.request?.destination?returningGreeting(this.store,id,'flight',{now}):null;if(welcome){if(decision)decision.reply=null;return say(welcome);}return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
   if(!hasDecisionFields&&(!hasChange||/^(?:كتير )?غالي|^ارخص من هيك|^ما في ارخص/.test(t))&&(socialIntent==='negotiate'||/زبط|تزبط|خصم|تخفيض|نزل.*سعر|غالي|ارخص من هيك|ما في ارخص/.test(t))){
    const advice=priceSavingAdvice(s,now);
    if(advice){if(s.consultantDecision)s.consultantDecision.reply=null;return say(advice);}
@@ -437,7 +442,7 @@ class AssistantEngine{
    const provider=offer.provider||offer.request?.provider||'airarabia',airline=provider==='flycham'?'فلاي شام':provider==='airarabia'?'العربية للطيران':'';
    const checkedAt=Number.isFinite(offer.checkedAt)?offer.checkedAt:Date.parse(offer.verifiedAt);
    const verified=Number.isFinite(checkedAt)&&checkedAt<=now&&now-checkedAt<=15*60000?verifiedOffer(offer,offer.request,provider):null,priceText=verified?` بسعر إجمالي ${verified.price.sellingTotal} درهم`:'';
-   return say(`تمام 🌷 اخترت الخيار ${offer.reference||index+1}${airline?' ('+airline+')':''} بتاريخ ${offer.request.departureDate}، رحلة ${offer.timing.out.flight}${priceText}. السعر والتوفر يحتاجان إعادة تحقق عند التثبيت. لإتمام التثبيت مع موظف الحجوزات أرسل: *ثبتلي*، أو خبرني إذا عندك أي تعديل.`);
+   return say(`تمام 🌷 اخترت الخيار ${offer.reference||index+1}${airline?' ('+airline+')':''} بتاريخ ${offer.request.departureDate}، رحلة ${offer.timing.out.flight}${priceText}. السعر والتوفر يحتاجان إعادة تحقق عند التثبيت. لإتمام التثبيت مع موظف الحجوزات أرسل: *ثبتلي*، أو خبرني إذا عندك أي تعديل.`+(offerAirportMismatchNotice(offer)?'\n\n'+offerAirportMismatchNotice(offer):''));
   };
   const selection=t.match(/(?:الخيار|العرض)\s*(\d+)|^(الاول|التاني|الثاني|الثالث)$/);
   if(selection&&!hasDecisionFields&&!/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|ذهاب|عوده|رجعه/.test(t))return selectOffer(selection[1]?Number(selection[1])-1:({الاول:0,التاني:1,الثاني:1,الثالث:2})[selection[2]]);
@@ -467,7 +472,7 @@ class AssistantEngine{
   if(/مو هيك|ما فهمت|ما قلت|بدي اخف|غيره$|مو .*|لا تغير/.test(t)&&!decision)return say('خلينا نضبطها بدون تغيير التفاصيل الثانية: قصدك نعدّل الوزن، أو الموعد، أو نبحث عن سعر أقل؟');
   if(/الا |باستثناء|لازم.*(?:اوصل|وصول)|بدون ترانزيت|مباشر حصرا|قطعتين|قطعه|قطعة/.test(t)&&!decision)return say('فهمت إن عندك شرط إضافي على الرحلة. حتى ما نعرض خيارًا غير مناسب، حدد الشرط بدقة؛ التحقق الآلي من بعض شروط الوصول وعدد القطع غير مكتمل حاليًا.');
   if(!hasDecisionFields&&(decision?.intent==='explain'||/طرق الدفع|وسائل الدفع|كيف الدفع|تحويل بنكي|كاش|بطاقه|فيزا كارد|تابي|اقساط|عنوان|وين مكتب|مكان المكتب|موقع المكتب|فرع|اشرح|فهمني|كيف يعني|شو يعني|ليش السعر|تغير السعر|الوزن|الامتع[هة]|مطار بديل|ترانزيت|مباشر|رضيع|بيبي|كم ساع[هة]|مد[هة] الرحل[هة]|قديش بتاخد الطيار[هة]|كم بتستغرق|الفرق بين|اي مطار/.test(t))){
-   const facts=explainService(t,s.base?.request,s.status);
+   const facts=explainService(t,s.base?.request,s.status,now);
    if(facts)return say(facts);
   }
   if(!recoveredRoute&&!hasDecisionFields&&['uncertain','other','explain'].includes(decision?.intent)&&decision?.question&&!knownQuestion(decision.question,s.base?.request)){
@@ -477,7 +482,7 @@ class AssistantEngine{
   }
   reconcileSupplierRestriction(id,s,text,decision?.fields);
   const previous=legacy.exportSession(id);
-  let result=legacy.handleMessage(id,clean(text),{now,patch:decision?.fields});let base;
+  let result=legacy.handleMessage(id,affirmativeEnglishText(clean(text)),{now,patch:decision?.fields});let base;
   base=legacy.exportSession(id);
   const changed=JSON.stringify(previous?.request||{})!==JSON.stringify(base?.request||{});
   for(const [field,q]of Object.entries(s.questions)){
@@ -507,6 +512,7 @@ class AssistantEngine{
    result.reply=`تفاصيل رحلتك عندي 🌷 من ${r.origin} إلى ${r.destination}${dates?'، '+dates:''}. إذا بدك أعيد التحقق من السعر على نفس التفاصيل، قلّي «أعد البحث».`;
   }
   if(!result.complete&&['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply))result.reply='شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك. أي تعديل تبعته منضيفه على نفس الطلب.';
+  if(result.complete&&!result.comparison)rememberFlightJourney(this.store,id,result.request,{now});
   if(result.complete)s.lastQuestion=null;else if(/[؟?]/.test(result.reply))s.lastQuestion=result.reply;
   if(/^(?:يسلمو|شكرا|شكراً|مشكور)/.test(t)&&result.complete)result.reply='تكرم عيونك. '+result.reply;
   s.history.push({role:'assistant',text:result.reply});s.history=s.history.slice(-24);

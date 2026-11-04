@@ -40,6 +40,8 @@ async function callGemini({bytes,mimeType,env,fetchImpl,timeoutMs}){
  if(data.promptFeedback?.blockReason||candidate?.finishReason!=='STOP')throw Error('VOICE_INCOMPLETE');
  return parse((candidate.content?.parts||[]).filter(p=>!p.thought&&typeof p.text==='string').map(p=>p.text).join(''));
 }
+// Production rollout requires both explicit enablement and a recorded speech-acceptance decision.
+function voiceEnabled(env=process.env){return env.VOICE_TRANSCRIPTION==='on'&&env.VOICE_ACCEPTANCE_APPROVED==='true';}
 function voiceProviders(env=process.env){
  const order=String(env.VOICE_TRANSCRIPTION_PROVIDERS||'cline,gemini').split(',').map(s=>s.trim()).filter(p=>['cline','gemini'].includes(p));
  return [...new Set(order)];
@@ -73,8 +75,8 @@ function voiceLead(transcript){
  return `سمعت رسالتك الصوتية 🌷 فهمت منها: «${shown}${String(transcript||'').length>160?'…':''}». إذا في شي ما فهمته صح، صحّحلي بكلمة.`;
 }
 function voiceFallback(reason){
- if(reason==='too_long')return 'وصلتني رسالتك الصوتية 🌷 لأنها طويلة شوي، ممكن تلخصلي المطلوب برسالة صوتية أقصر (أقل من دقيقتين) أو بكم كلمة مكتوبة؟ ومنكمل فوراً من نفس النقطة.';
+ if(reason==='too_long')return 'وصلتني رسالتك الصوتية 🌷 ما قدرت أفهمها كاملة بسبب طولها. ممكن تقسّمها لرسائل أقصر من دقيقتين؟ ومنكمل فوراً من نفس النقطة.';
  if(reason==='unclear')return 'وصلتني رسالتك الصوتية 🌷 بس الصوت ما كان واضح كفاية لأفهمه بدقة. ممكن تعيدها بمكان أهدى أو تكتبلي المطلوب بكلمتين؟';
- return 'وصلتني رسالتك الصوتية، شكرًا إلك 🌷 حتى أساعدك بدقة، ممكن تكتبلي ملخّص طلبك؟';
+ return 'ما قدرت أفهم رسالتك الصوتية بوضوح 🌷 ممكن تعيدها، أو تكتبلي الجزء اللي حابب أساعدك فيه؟';
 }
-module.exports={DEFAULT_GEMINI_VOICE_MODEL,callCline,callGemini,transcribeVoice,voiceProviders,voiceLead,voiceFallback,parse,INSTRUCTIONS};
+module.exports={voiceEnabled,DEFAULT_GEMINI_VOICE_MODEL,callCline,callGemini,transcribeVoice,voiceProviders,voiceLead,voiceFallback,parse,INSTRUCTIONS};

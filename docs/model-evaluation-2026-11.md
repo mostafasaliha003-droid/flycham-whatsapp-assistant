@@ -60,4 +60,4 @@ The evaluator loaded hash-verified files from commit `264bdb5e99211310ce05aa74df
 
 **Do not select a new production understanding model from this run.** None meets the required readiness gate. No CLINE_MODEL or CLINE_AUDIO_MODEL setting was changed. A separately scoped, representative single-turn performance investigation would be needed to explain the batch failures; these batch timings must not be presented as customer-turn latency.
 
-Voice accuracy and Cline audio support remain unmeasured until the requested owner-recorded synthetic MP3/OGG pair is available; see [voice-model-probe-2026-11.md](voice-model-probe-2026-11.md). The PR remains a draft and does not claim 100% readiness.
+This model-selection decision is separate from the release of the locally verified customer-experience changes. Production model settings remain unchanged. Speech is disabled by default and requires both `VOICE_TRANSCRIPTION=on` and `VOICE_ACCEPTANCE_APPROVED=true`; the acceptance gate remains unmet. See [voice-model-probe-2026-11.md](voice-model-probe-2026-11.md). No claim of 100% readiness or speech accuracy is made.

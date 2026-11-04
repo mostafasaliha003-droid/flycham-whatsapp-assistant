@@ -3,12 +3,13 @@ const {normalize}=require('./arabic-dates');
 const aliases=[
  ['الشارقة',/^(?:ال)?شار(?:ق[هة]?|ج[هة])$|^sharjah$|^shj$/i],['دمشق',/^(?:ال)?شام$|^دمشق$|^damascus$|^dam$/i],
  ['حلب',/^حلا?ب$|^aleppo$|^alp$/i],['آل مكتوم',/^(?:ال\s*مكتوم|المكتوم|دبي وورلد سنترال|al\s*maktoum|dubai world central|dwc)$/i],['دبي',/^دبي(?: الدولي)?$|^dubai$|^dxb$/i],['أبوظبي',/^ابو\s*ظبي$|^ab[uou]\s*dhabi$|^auh$/i],
- ['رأس الخيمة',/^راس\s*الخيم[هة]$|^rak$/i],['الفجيرة',/^(?:ال)?فجير[هة]$|^fjr$/i],['اللاذقية',/^(?:ال)?لاذقي[هة]$|^latakia$|^ltk$/i]
+ ['رأس الخيمة',/^راس\s*الخيم[هة]$|^ras\s*al\s*khaimah$|^rak$/i],['الفجيرة',/^(?:ال)?فجير[هة]$|^fujairah$|^fjr$/i],['اللاذقية',/^(?:ال)?لاذقي[هة]$|^latakia$|^ltk$/i]
 ];
 function city(value){const text=normalize(String(value||'')).replace(/^مطار\s+/,'').trim();return aliases.find(([,p])=>p.test(text))?.[0]||null;}
 function languagePatch(raw,awaiting){
+ raw=require('./bilingual-intake').affirmativeEnglishText(raw);
  const t=normalize(String(raw)).replace(/ة/g,'ه');const out={};
- const names='(?:مطار\\s*)?(?:الشارق[هة]|الشارج[هة]|شارق[هة]?|شارج[هة]|دمشق|الشام|شام|حلاب|حلب|ال\\s*مكتوم|المكتوم|دبي وورلد سنترال|دبي(?: الدولي)?|ابو\\s*ظبي|راس\\s*الخيم[هة]|الفجير[هة]|اللاذقي[هة]|sharjah|damascus|aleppo|dubai|shj|dam|alp|al\\s*maktoum|dubai world central|dwc|dxb|auh|rak|fjr|ltk)';
+ const names='(?:مطار\\s*)?(?:الشارق[هة]|الشارج[هة]|شارق[هة]?|شارج[هة]|دمشق|الشام|شام|حلاب|حلب|ال\\s*مكتوم|المكتوم|دبي وورلد سنترال|دبي(?: الدولي)?|ابو\\s*ظبي|راس\\s*الخيم[هة]|الفجير[هة]|اللاذقي[هة]|sharjah|damascus|aleppo|dubai world central|dubai|shj|dam|alp|al\\s*maktoum|dubai world central|dwc|dxb|auh|rak|fjr|ltk)';
  const pattern=new RegExp('(^|[\\s،,])(?:(من|from)\\s+|(الى|الي|على|علي|ع|to)\\s*|(لل|ل)(?='+names+'))('+names+')(?=$|[\\s\\d،,.؟?])','gi');
  for(const m of t.matchAll(pattern)){const prefix=t.slice(Math.max(0,m.index-24),m.index+m[1].length);if(/(?:مو|مش|ليس|لا|بدون|الا)\s*$/.test(prefix))continue;const value=city(m[5]);if(value)out[m[2]?'origin':'destination']=value;}
  const single=city(t);if(single&&['origin','destination'].includes(awaiting)&&!Object.keys(out).length)out[awaiting]=single;
@@ -27,6 +28,8 @@ function languagePatch(raw,awaiting){
  if(typeof out.providerExclusive==='boolean')out.providerRestrictionSource=out.providerExclusive?'customer':null;
  if(/العربي[هة]|air\s*arabia/.test(t))out.provider='airarabia';
  else if(/فلاي\s*شام|fly\s*cham/.test(t))out.provider='flycham';
+ const en=require('./bilingual-intake').parseEnglishFlightPatch(raw);
+ for(const [k,v]of Object.entries(en))if(out[k]===undefined)out[k]=v;
  return out;
 }
 function applyDefaultBaggage(request){if(!request.baggageRequest)request.baggageRequest={checkedWeightKg:30,source:'default30',requestedByCustomer:false};return request;}

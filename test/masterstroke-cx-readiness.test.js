@@ -62,7 +62,7 @@ test('Package 14 voice transcription prefers configured Cline audio model, falls
  assert.equal((await transcribeVoice({bytes:Buffer.alloc(3*1024*1024+1),mimeType:'audio/ogg',env:{GEMINI_API_KEY:'g'}})).reason,'too_long');
  assert.equal((await transcribeVoice({bytes,mimeType:'audio/ogg',env:{VOICE_TRANSCRIPTION:'off'}})).reason,'disabled');
  assert.deepEqual(voiceProviders({VOICE_TRANSCRIPTION_PROVIDERS:'gemini,evil,cline'}),['gemini','cline']);
- assert.match(voiceLead('بدي من الشارقة للشام'),/سمعت رسالتك الصوتية/);for(const r of ['too_long','unclear','unavailable'])assert.match(voiceFallback(r),/وصلتني رسالتك الصوتية/);assert.doesNotMatch(voiceFallback('unclear'),/سمعت|فهمت منها/);
+ assert.match(voiceLead('بدي من الشارقة للشام'),/سمعت رسالتك الصوتية/);for(const r of ['too_long','unclear','unavailable']){assert.match(voiceFallback(r),/ممكن/);assert.doesNotMatch(voiceFallback(r),/تفريغ|حُفظ|API|نموذج/)};assert.doesNotMatch(voiceFallback('unclear'),/سمعت|فهمت منها/);
 });
 test('Package 13 family flight request gets a full saved card with two clear paths and keeps the handoff path',async()=>{
  const now=Date.parse('2026-10-23T08:00:00Z'),e=new AssistantEngine({store:new AssistantState({now:()=>now}),nlu:async()=>null,env:{}});

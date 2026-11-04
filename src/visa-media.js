@@ -167,7 +167,7 @@ class VisaMediaStore{
  }
  deleteCustomer(customer){if(!validCustomer(customer))return;this.epochs.set(customer,(this.epochs.get(customer)||0)+1);for(const [id,r]of Object.entries(this.records))if(r.customer===customer){if(this.directory)try{fs.unlinkSync(path.join(this.directory,id+'.enc'));}catch{}delete this.records[id];}this.store.save();}
  prune(){let changed=false;for(const [id,r]of Object.entries(this.records))if(r.expiresAt<=this.now()){if(this.directory)try{fs.unlinkSync(path.join(this.directory,id+'.enc'));}catch{}delete this.records[id];changed=true;}if(changed)this.store.save();}
- status(){return{configured:this.durable,reviewMode:this.env.RAAD_DOCUMENT_OCR_ENABLED==='true'&&Boolean(this.env.GEMINI_API_KEY)?'automatic_with_exceptions':'staff',transcriptionConfigured:this.env.VOICE_TRANSCRIPTION!=='off'&&Boolean(this.env.GEMINI_API_KEY||this.env.CLINE_API_KEY&&this.env.CLINE_AUDIO_MODEL)};}
+ status(){return{configured:this.durable,reviewMode:this.env.RAAD_DOCUMENT_OCR_ENABLED==='true'&&Boolean(this.env.GEMINI_API_KEY)?'automatic_with_exceptions':'staff',transcriptionConfigured:require('./voice-transcription').voiceEnabled(this.env)&&Boolean(this.env.GEMINI_API_KEY||this.env.CLINE_API_KEY&&this.env.CLINE_AUDIO_MODEL)};}
 }
 async function handleVisaMediaRequest(request,response,url,mediaStore){
  const match=url.pathname.match(/^\/internal\/assistant\/visa-media\/([a-f0-9-]{36})$/);if(!match)return false;
