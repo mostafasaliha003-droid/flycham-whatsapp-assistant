@@ -20,7 +20,7 @@ function make(script,options={}){
 test('semantic payment-after-issuance paraphrase is answered rather than repeating a quote',async()=>{
  const {engine:e}=make({'سجلني للزيارة':d('apply',{...syr,applicantCount:1}),'ممكن أسدد لما تطلع':d('payment_after')});
  await e.handle('a','سجلني للزيارة');const r=await e.handle('a','ممكن أسدد لما تطلع');
- assert.match(r.reply,/ما عنا دفع بعد الإصدار/);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(r.quote.total,700);
+ assert.match(r.reply,/ما عنا دفع بعد الإصدار/);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(r.quote.total,640);
 });
 test('semantic duration, courtesy and deferral intents do not silently launch a new application',async()=>{
  const {engine:e}=make({'سجلني للزيارة':d('apply',{...syr,applicantCount:1}),'قريب بتجهز إن شاء الله':d('processing_time'),'وقديش فيني ضل هناك':d('visa_duration'),'براجعكم على مهلي':d('goodbye'),'الله يعطيك العافية':d('thanks')});
@@ -34,7 +34,7 @@ test('semantic duration, courtesy and deferral intents do not silently launch a 
 test('family semantic extraction preserves each applicant country and applies only authorised group pricing',async()=>{
  const text='أنا ورفيقتي وزوجها بدنا نقدم وهي جنسيتها مصر وزوجها متلي';
  const {engine:e}=make({[text]:d('apply',{applicantCount:3,applicants:[syr,egy,syr]},{target:'group'})});
- const r=await e.handle('a',text);assert.equal(r.quote.total,1950);assert.deepEqual(r.quote.rows.map(x=>x.product),['tourist_multi','tourist_single','tourist_multi']);
+ const r=await e.handle('a',text);assert.equal(r.quote.total,1920);assert.deepEqual(r.quote.rows.map(x=>x.product),['tourist_multi','tourist_single','tourist_multi']);
  assert.deepEqual(e.getCase('a').applicants.map(x=>x.nationality),['سوريا','مصر','سوريا']);
 });
 test('asking about a relative never silently changes the existing primary applicant nationality',async()=>{
@@ -65,9 +65,9 @@ test('complaint paraphrase invokes management handoff without confirming money r
  const {engine:e}=make({[text]:d('complaint')});const r=await e.handle('a',text);
  assert.equal(r.complaint,true);assert.equal(r.stage,'complaint_pending');assert.doesNotMatch(r.reply,/تم استرداد|تم رد المبلغ|تم التحويل/);
 });
-test('payment fees stay disabled without merchant configuration even if model chooses Tabby',async()=>{
+test('approved Tabby fee is deterministic but never implies payment or creates a payment link',async()=>{
  const {engine:e}=make({'بدنا نكمل':d('apply',{...syr,applicantCount:1,paymentMethod:'tabby'})});
- const r=await e.handle('a','بدنا نكمل');assert.equal(r.quote.total,700);assert.equal(r.quote.feePending,true);assert.doesNotMatch(r.reply,/763/);
+ const r=await e.handle('a','بدنا نكمل');assert.equal(r.quote.subtotal,640);assert.equal(r.quote.paymentFee,57.6);assert.equal(r.quote.total,697.6);assert.equal(r.quote.feePending,false);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.equal(e.getCase('a').submissionStatus,'not_submitted');assert.doesNotMatch(r.reply,/https?:|تم الدفع|تم التقديم/);
 });
 test('model receives state facts and bounded context but not attached bytes, document names or bank receipt payloads',async()=>{
  const {engine:e,requests}=make({'سجلني للزيارة':d('apply',{...syr,applicantCount:1}),'عندي سؤال':d('other')});
@@ -76,7 +76,7 @@ test('model receives state facts and bounded context but not attached bytes, doc
 });
 test('untrusted model price fields are rejected and deterministic price remains authoritative',async()=>{
  const {engine:e}=make({'سجلني للزيارة':d('apply',{...syr,applicantCount:1}),'اعطيني السعر الجديد':{...d('price'),discount:600,paid:true}});
- await e.handle('a','سجلني للزيارة');const r=await e.handle('a','اعطيني السعر الجديد');assert.equal(r.quote.total,700);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.doesNotMatch(r.reply,/600/);
+ await e.handle('a','سجلني للزيارة');const r=await e.handle('a','اعطيني السعر الجديد');assert.equal(r.quote.total,640);assert.equal(e.getCase('a').paymentStatus,'unverified');assert.doesNotMatch(r.reply,/600/);
 });
 test('confirmed quota fallback uses the same visa validator and excludes conversation history',async()=>{
  const calls=[],env={ASSISTANT_AI_PROVIDER:'cline',CLINE_API_KEY:'synthetic-quota-'+Math.random(),GEMINI_API_KEY:'synthetic-gemma-'+Math.random()};
@@ -95,5 +95,5 @@ test('generic rate limiting never authorises a fallback provider or loses existi
  let calls=0;const env={ASSISTANT_AI_PROVIDER:'cline',CLINE_API_KEY:'synthetic-rate-'+Math.random(),GEMINI_API_KEY:'synthetic-unused-'+Math.random()};
  const understand=createSaudiVisaUnderstanding({env,fetchImpl:async url=>{calls++;assert.match(url,/cline.bot/);return{ok:false,status:429,json:async()=>({error:{code:'rate_limit_exceeded'}})};}});
  const e=new SaudiVisaEngine({store:new AssistantState({file:null}),env,understand});const c=e.newCase();c.applicantCount=1;c.applicants=[syr];e.save('a',c);
- const r=await e.handle('a','شو المطلوب');assert.equal(calls,1);assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(r.quote.total,700);assert.equal(e.getCase('a').submissionStatus,'not_submitted');
+ const r=await e.handle('a','شو المطلوب');assert.equal(calls,1);assert.equal(e.getCase('a').applicants[0].nationality,'سوريا');assert.equal(r.quote.total,640);assert.equal(e.getCase('a').submissionStatus,'not_submitted');
 });

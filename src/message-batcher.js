@@ -1,4 +1,8 @@
 'use strict';
+const {normalize}=require('./arabic-dates');
+function urgentMessage(message){
+ return Boolean(message?.serviceChoice||message?.requestChoice)||/^(?:خلص[،, ]*(?:ابحث|ابدا)(?: هلق)?|ابدا هلق|وقف البحث|اوقف البحث|الغاء|احذف بياناتي|امسح بياناتي|حذف بياناتي|القائمة|القائمه|الخدمات|شو خدماتكم|شو صار|وين وصلت|وين وصلتوا|المزيد|باقي العروض|باقي الخيارات|(?:الخيار|العرض)\s*\d+|ثبتلي|بدي ثبت|حولني للموظف|شوف سعر شخص واحد|حسابكم البنكي|عنوان المكتب)[.!؟?]*$/.test(normalize(message?.text||'').replace(/\s+([.!؟?])/g,'$1'));
+}
 // One quiet window per customer. Webhook acknowledgement must never await it.
 class MessageBatcher{
  constructor(handler,{delay=35000,maxWait=180000,now=Date.now,store=null,prepare=null,prepareDelay=10000,onError=()=>{}}={}){
@@ -11,7 +15,7 @@ class MessageBatcher{
  push(id,message){if(this.delay===0)return this.serial(id,[message]);return new Promise((resolve,reject)=>{
   let item=this.pending.get(id);if(!item){item={messages:[],waiters:[],firstAt:this.now()};this.pending.set(id,item);}
   item.messages.push(message);item.messages=item.messages.slice(-50);item.waiters.push({resolve,reject});item.lastAt=this.now();this.persist();
-  const urgent=/^(?:خلص[،, ]*(?:ابحث|ابدأ|ابدا)(?: هلق)?|ابدأ هلق|ابدا هلق|وقف البحث|اوقف البحث|الغاء|إلغاء|احذف بياناتي|امسح بياناتي|حذف بياناتي|القائمة|القائمه|الخدمات|شو خدماتكم|شو صار|وين وصلت|وين وصلتوا)[.!؟?]*$/.test(String(message.text||'').trim());
+  const urgent=urgentMessage(message);
   this.schedule(id,item,urgent);
  });}
  flush(id){const item=this.pending.get(id);if(!item)return Promise.resolve();clearTimeout(item.timer);clearTimeout(item.prepareTimer);const token=Symbol('batch');if(!this.active.has(id))this.active.set(id,new Map());this.active.get(id).set(token,item);this.pending.delete(id);this.persist();
@@ -23,4 +27,4 @@ class MessageBatcher{
  busy(id){return this.pending.has(id)||this.running.has(id)||this.flushing.has(id);}
  close(){for(const item of this.pending.values()){clearTimeout(item.timer);clearTimeout(item.prepareTimer);}this.persist();}
 }
-module.exports={MessageBatcher};
+module.exports={MessageBatcher,urgentMessage};

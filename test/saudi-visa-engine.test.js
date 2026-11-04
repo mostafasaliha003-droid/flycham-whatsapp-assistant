@@ -248,3 +248,41 @@ test('untrained questions including visa terminology are escalated even without 
 
 test('model greeting classification cannot hide a substantive visa address question',async()=>{const e=make({understand:async()=>({intent:'greeting',fields:{},target:null})});await e.handle('a','سوري جواز عادي لحالي');const r=await e.handle('a','وين مكتبكم؟');assert.match(r.reply,/لا يستقبل العملاء/);assert.doesNotMatch(r.reply,/ومنكمل على نفس/);});
 test('compound qualified visa inquiry retains quote and answers payment and timing',async()=>{const e=make();const r=await e.handle('ux','سوري جواز عادي لحالي كم يوم وطرق الدفع وشو الاوراق');assert.match(r.reply,/640/);assert.match(r.reply,/6–7/);assert.match(r.reply,/5%/);assert.match(r.reply,/جواز/);});
+
+test('additional trained nationalities accept Arabic and English aliases without guessing Vietnam',async()=>{
+ const aliases={
+  'المغرب':['المغرب','مغربي','مغربيه','morocco','moroccan'],
+  'تونس':['تونس','تونسي','تونسيه','tunisia','tunisian'],
+  'الجزائر':['الجزائر','جزائري','جزائريه','algeria','algerian'],
+  'موريتانيا':['موريتانيا','موريتاني','موريتانيه','mauritania','mauritanian'],
+  'تركيا':['تركيا','تركي','تركيه','turkey','turkish'],
+  'روسيا':['روسيا','روسي','روسيه','russia','russian'],
+  'أستراليا':['استراليا','استرالي','استراليه','australia','australian'],
+  'نيوزيلندا':['نيوزيلندا','نيوزيلندي','new zealand']
+ };
+ for(const [country,words]of Object.entries(aliases))for(const word of words){
+  assert.equal(P.canonicalNationality(word),country);assert.deepEqual(P.nationalities('انا '+word+' جواز عادي'),[country]);
+  const e=make(),r=await e.handle('a',word+' جواز عادي لحالي');assert.equal(e.getCase('a').applicants[0].nationality,country);assert.equal(r.quote.total,640);assert.equal(r.quote.rows[0].product,'tourist_multi');
+ }
+ assert.deepEqual(P.nationalities('فيتنام vietnam'),[]);assert.equal(P.productFor({nationality:'فيتنام',documentType:'passport'}).code,'unverified');
+});
+test('child pricing gives only adult guidance for a group and never quotes a child total or refund',()=>{
+ const {quoteText}=require('../src/saudi-visa-engine');
+ for(const [person,expected]of [[tourist,640],[{nationality:'العراق',documentType:'passport'},850]]){
+  for(const extra of [{hasMinors:true},{applicants:[person,{...person,age:7}]}]){
+   const q=P.calculateQuote({applicantCount:2,applicants:[person,person],...extra});
+   assert.equal(q.requiresReview,true);assert.equal(q.reason,'child_pricing');assert.equal(q.adultReferenceAmount,expected);assert.equal(q.adultLabel,P.productFor(person).label);assert.equal(q.total,undefined);assert.equal(q.rows,undefined);
+   const reply=quoteText(q);assert.match(reply,new RegExp('رسوم الشخص البالغ.*'+expected));assert.match(reply,/يُؤكد الإجمالي بعد مراجعة تسعير الطفل مع المسؤول/);assert.doesNotMatch(reply,/مسترد|استرداد|إجمالي رسوم التأشيرات/);
+  }
+ }
+ const single=P.calculateQuote({applicantCount:1,applicants:[{...tourist,age:6}]});assert.equal(single.adultReferenceAmount,undefined);assert.doesNotMatch(quoteText(single),/للإرشاد|640|مسترد/);
+ const adults=P.calculateQuote({applicantCount:2,applicants:[{...tourist,age:18},tourist]});assert.equal(adults.total,1280);
+});
+test('qualified family with a child receives adult reference while remaining pending review',async()=>{
+ const e=make();await e.handle('a','نحنا 2 كلنا سوريين جواز عادي');const r=await e.handle('a','معي طفل');
+ assert.equal(r.quote.requiresReview,true);assert.equal(r.stage,'pricing_review');assert.match(r.reply,/للإرشاد.*640/);assert.doesNotMatch(r.reply,/مسترد|تم التقديم/);assert.equal(e.getCase('a').paymentStatus,'unverified');
+});
+test('mentioning a child after verified payment proposes review without changing the paid quote',async()=>{
+ const e=make();await e.handle('a','نحنا 2 كلنا سوريين جواز عادي');const c=e.getCase('a');c.paymentStatus='verified';c.quote.rows.forEach(row=>row.amount=700);c.quote.subtotal=1400;c.quote.total=1400;e.save('a',c);const paid=structuredClone(c.quote);
+ await e.handle('a','معي طفل');const after=e.getCase('a');assert.equal(after.stage,'amendment_review');assert.equal(after.pendingAmendment.facts.hasMinors,true);assert.equal(after.hasMinors,undefined);assert.deepEqual(after.quote,paid);assert.equal(after.paymentStatus,'verified');
+});

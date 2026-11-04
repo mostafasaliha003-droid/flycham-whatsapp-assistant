@@ -6,6 +6,14 @@ const REFUND_BENEFIT='🛡️ *ميزة خاصة لعملائنا: رسوم ال
 const OFFICE_ADDRESS='📍 دائرة السياحة والاقتصاد، نفس البناء الحكومي\nBlock B، مكتب رقم 610\nميناء سعيد، دبي';
 function normalize(s){return String(s||'').normalize('NFKC').replace(/[\u064B-\u065F\u0670]/g,'').replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).toLowerCase().trim();}
 const COUNTRY_ALIASES={
+ 'المغرب':['المغرب','مغربي','مغربيه','morocco','moroccan'],
+ 'تونس':['تونس','تونسي','تونسيه','tunisia','tunisian'],
+ 'الجزائر':['الجزائر','جزائري','جزائريه','algeria','algerian'],
+ 'موريتانيا':['موريتانيا','موريتاني','موريتانيه','mauritania','mauritanian'],
+ 'تركيا':['تركيا','تركي','تركيه','turkey','turkish'],
+ 'روسيا':['روسيا','روسي','روسيه','russia','russian'],
+ 'أستراليا':['استراليا','استرالي','استراليه','australia','australian'],
+ 'نيوزيلندا':['نيوزيلندا','نيوزيلندي','new zealand'],
  'سوريا':['سوريا','سوري','سوريه','syrian','syria'], 'الأردن':['الاردن','اردني','اردنيه','jordan','jordanian'],
  'لبنان':['لبنان','لبناني','لبنانيه','lebanon','lebanese'], 'جزر القمر':['جزر القمر','قمري','comoros'],
  'اليمن':['اليمن','يمني','يمنيه','yemen','yemeni'], 'السودان':['السودان','سوداني','سودانيه','sudan','sudanese'],
@@ -46,7 +54,7 @@ function calculateQuote(c,{feesEnabled=false}={}){
  const people=Array.from({length:count},(_,i)=>c.applicants?.[i]||{}),products=people.map(productFor);
  if(products.some(p=>['suspended','unverified'].includes(p.code))||people.some(p=>!p.documentType))return null;
  // Child pricing and mixed-group discounts have not been authorised.
- if(c.hasMinors||people.some(p=>Number.isFinite(p.age)&&p.age<18))return {requiresReview:true,reason:'child_pricing'};
+ if(c.hasMinors||people.some(p=>Number.isFinite(p.age)&&p.age<18))return {requiresReview:true,reason:'child_pricing',...(count>1&&products[0]?{adultReferenceAmount:products[0].code==='umrah'?PRICES.umrah:PRICES.tourist,adultLabel:products[0].label}:{})};
  const tourist=products.filter(p=>p.code.startsWith('tourist')).length,umrah=products.filter(p=>p.code==='umrah').length;
  const group=tourist>=3&&umrah===0,rows=products.map((p,i)=>({applicant:i+1,product:p.code,label:p.label,amount:p.code==='umrah'?PRICES.umrah:group?PRICES.touristGroup:PRICES.tourist}));
  const subtotal=rows.reduce((s,r)=>s+r.amount,0),rate=feesEnabled?(c.paymentMethod==='link'?0.05:c.paymentMethod==='tabby'?0.09:0):0;
