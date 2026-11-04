@@ -18,6 +18,62 @@ function text(value, max = 150) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) fail('VISA_VALUE_INVALID', 400);
   return value.trim();
 }
+
+function asciiDigits(value = '') {
+  return String(value ?? '').replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, d => String(d.charCodeAt(0) - 0x06f0));
+}
+function normalizeInboundQuestionValue(question = {}, value = '') {
+  if (typeof value !== 'string') return value;
+  // Do not normalize away invalid control characters or bypass catalog validation.
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) return value;
+  const raw = value.trim(), ascii = asciiDigits(raw), format = question.format || question.inputType;
+  if (format === 'date') {
+    const ymd = ascii.match(/^(\d{4})[/.\-](\d{1,2})[/.\-](\d{1,2})$/);
+    const dmy = ascii.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
+    if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  // countryCode in the real catalog is ISO alpha-3, never a telephone prefix.
+  if (format === 'countryCode') return raw.toUpperCase();
+  if (format === 'country_code' && /^(?:\+|00)?\d{1,4}$/.test(ascii)) return ascii.replace(/^\+|^00/, '');
+  if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/\s+/g, '').toUpperCase();
+  if (format === 'emiratesId' || format === 'phone_number') return ascii;
+  return raw;
+}
+function choiceText(value) { return asciiDigits(value).normalize('NFKC').trim().toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/\s+/g, ' '); }
+const CHOICE_ALIASES = Object.freeze({
+  yes: ['نعم','اي','ايوه','اجل','صح','موجود','لدي','عندي','yes','y','true'],
+  no: ['لا','كلا','ما عندي','ماعندي','لا يوجد','مافي','ما في','ليس لدي','no','n','false'],
+  single: ['اعزب','عازب','عزباء','غير متزوج','غير متزوجه','single','unmarried'],
+  married: ['متزوج','متزوجه','married'], divorced: ['مطلق','مطلقه','divorced'],
+  widowed: ['ارمل','ارمله','widowed','widow'], separated: ['منفصل','منفصله','separated'],
+  male: ['ذكر','رجل','شاب','ولد','male','m'], female: ['انثى','امراه','بنت','سيده','female','f'],
+  ordinary: ['عادي','عاديه','جواز عادي','ordinary','normal','regular'],
+  diplomatic: ['دبلوماسي','دبلوماسيه','diplomatic'], service: ['خدمه','جواز خدمه','service'],
+  special: ['خاص','جواز خاص','special'], travel_document: ['وثيقه','وثيقه سفر','travel document']
+});
+function matchChoiceOption(questionKey = '', options = [], value = '') {
+  if (typeof value !== 'string' || value.length > 150 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return null;
+  // These aliases are for factual questions only; authorization uses its bound button.
+  if (options.some(o => ['confirm','correct'].includes(o.id))) return null;
+  const clean = choiceText(value), index = clean.match(/^\d{1,2}$/);
+  if (index && options[Number(clean) - 1]) return options[Number(clean) - 1];
+  return options.find(o => clean === choiceText(o.label) || clean === choiceText(o.id)) ||
+    options.find(o => (CHOICE_ALIASES[o.id === 'normal' ? 'ordinary' : o.id] || []).includes(clean)) || null;
+}
+function parseOperatorQuestionAnswer(question, rawValue) {
+  if (question.type === 'choice') {
+    const option = matchChoiceOption(question.field, question.options, rawValue);
+    if (!option) fail('VISA_ANSWER_OPTION_INVALID', 400);
+    return {option: option.id};
+  }
+  return {value: normalizeInboundQuestionValue(question, rawValue)};
+}
+function questionProgress(job, extra = 0) {
+  const questions = Object.values(job.questions || {}), answered = questions.filter(q => q.state === 'answered').length;
+  return {answered, total: questions.length + extra, remaining: questions.length + extra - answered};
+}
+
 function amountMinor(value) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null; }
 function providerMessageId(value) { return typeof value === 'string' && value.length > 0 && value.length <= 500 && value === value.trim() && !/[\u0000-\u0020\u007f-\u009f]/u.test(value); }
 function setField(target, field, value) {
@@ -537,7 +593,7 @@ class VisaFulfilment {
       const selected = question.options.find(item => item.id === option);
       if (!selected || value !== undefined) fail('VISA_ANSWER_OPTION_INVALID', 400);
       answer = validateAnswer(question.field, selected.value);
-    } else { if (option !== undefined) fail('VISA_ANSWER_OPTION_INVALID', 400); answer = validateAnswer(question.field, value); }
+    } else { if (option !== undefined) fail('VISA_ANSWER_OPTION_INVALID', 400); answer = validateAnswer(question.field, normalizeInboundQuestionValue(question, value)); }
     return this.commit(() => {
       question.state = 'answered'; question.answer = answer; question.answeredAt = this.now();
       job.stagedFields ||= clone(job.confirmedFields);
@@ -550,12 +606,12 @@ class VisaFulfilment {
         const required = requiredQuestions(answers, {requestedFields: Object.values(job.questions).map(item => item.field)});
         if (required.length) {
           job.state = 'needs_followup'; job.followupFields = required;
-          return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, followupFields: required};
+          return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, followupFields: required, progress: questionProgress(job, required.length)};
         }
         this.queueAnswerSummary(job, answers);
       }
       if(job.coordination&&job.state==='awaiting_answers'){const next=Object.values(job.questions).find(q=>q.state==='pending');if(next)this.enqueueQuestion(job,next);}
-      return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state};
+      return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state, progress: questionProgress(job)};
     });
   }
   confirmAnswers({sender, token, confirm, messageId} = {}) {
@@ -564,7 +620,7 @@ class VisaFulfilment {
     const job = this.guardJob(found.id);
     this.assertDocumentFactsCurrent(job);
     if (job.state !== 'awaiting_answer_confirmation' || job.summary.questionRevision !== job.questionRevision || job.summary.caseRevision !== job.caseRevision) fail('VISA_ANSWER_TOKEN_STALE');
-    if (confirm !== true) return this.commit(() => { job.state = 'needs_followup'; job.followupFields = Object.keys(job.summary.answers).flatMap(field => object(job.summary.answers[field]) ? Object.keys(job.summary.answers[field]).map(name => field + '.' + name) : [field]); delete job.summary; delete job.stagedFields; return {ok: true, state: job.state, followupFields: job.followupFields}; });
+    if (confirm !== true) return this.commit(() => { job.state = 'needs_followup'; job.followupFields = Object.keys(job.summary.answers).flatMap(field => object(job.summary.answers[field]) ? Object.keys(job.summary.answers[field]).map(name => field + '.' + name) : [field]); delete job.summary; delete job.stagedFields; return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state, followupFields: job.followupFields}; });
     const incomingMessageId = messageId === undefined ? null : text(messageId, 500);
     const answers = clone(job.summary.answers);
     return this.commit(() => { job.confirmedFields = answers; job.answerConfirmation = {at: this.now(), grantedAt: this.now(), granted: true, scope: 'saudi_visa_application', ...(job.coordination?{actor:'operator',representedCustomer:job.customer,verifiedAnswers:true}:{}), caseSignature: job.caseSignature, messageId: incomingMessageId, sender, questionRevision: job.questionRevision, documentEvidence: clone(job.summary.documentEvidence || null)}; job.state = 'ready'; job.revision++; delete job.summary; delete job.stagedFields; this.audit('applicant_answers_confirmed', {customer: job.customer, jobId: job.id, applicantIndex: job.applicantIndex, messageId: incomingMessageId, scope: 'saudi_visa_application', fields: Object.values(job.questions).map(item => item.field)}); return {ok: true, jobId: job.id, applicantIndex: job.applicantIndex, state: job.state}; });
@@ -607,7 +663,7 @@ class VisaFulfilment {
     if(!sender||sender!==this.coordinationOwner())return {handled:false};
     const bound=Object.values(this.data().outbox).find(item=>item.coordination?.actor==='operator'&&phone(item.recipient)===sender&&(
       message.visaAnswer?.token===item.payload?.token||message.visaConfirmation?.token===item.payload?.token||message.contextId&&message.contextId===item.messageId));
-    const pendingText=!message.contextId&&typeof message.text==='string'&&Object.values(this.data().jobs).some(job=>job.coordination?.recipient===sender&&job.state==='awaiting_answers'&&Object.values(job.questions||{}).some(q=>q.state==='pending'&&q.type==='text'));
+    const pendingText=!message.contextId&&typeof message.text==='string'&&Object.values(this.data().jobs).some(job=>job.coordination?.recipient===sender&&job.state==='awaiting_answers'&&Object.values(job.questions||{}).some(q=>q.state==='pending'));
     if(!bound&&!message.visaAnswer&&!message.visaConfirmation&&!pendingText)return {handled:false};
     // The owner's sales-chat takeover is not the subject customer's pause.
     // guardJob still independently checks the actual customer and payment.
@@ -620,18 +676,22 @@ class VisaFulfilment {
     if(this.coordinationOwner()&&phone(sender)!==this.coordinationOwner()&&(message.visaAnswer||message.visaConfirmation))return {handled:true,ok:true,reply:'طلبك معنا، وعم نتابعه. منخبرك بأول تحديث.'};
     const existing = message.id && this.data().cases[sender]?.handledMessages?.[message.id];
     if (existing) return clone(existing);
-    let operation = null;
-    if (object(message.visaAnswer)) operation = () => this.answerQuestion({...message.visaAnswer, sender});
+    let operation = null, activeQuestion = null;
+    if (object(message.visaAnswer)) {
+      const job = Object.values(this.data().jobs).find(job => this.answerRecipient(job) === phone(sender) && Object.hasOwn(job.questions || {}, message.visaAnswer.token));
+      activeQuestion = job?.questions[message.visaAnswer.token];
+      operation = () => this.answerQuestion({...message.visaAnswer, sender});
+    }
     else if (object(message.visaConfirmation)) operation = () => this.confirmAnswers({...message.visaConfirmation, sender, messageId: message.id});
     else if (typeof message.text === 'string' && message.text.trim()) {
       const matchingMessage = message.contextId && Object.values(this.data().outbox).find(item => phone(item.recipient) === phone(sender) && item.messageId === message.contextId && ['applicant_question', 'applicant_answer_summary'].includes(item.kind));
       if (matchingMessage) {
-        if (matchingMessage.kind === 'applicant_question' && this.data().jobs[matchingMessage.jobId]?.questions[matchingMessage.payload.token]?.type === 'text') operation = () => this.answerQuestion({sender, token: matchingMessage.payload.token, value: message.text});
+        if (matchingMessage.kind === 'applicant_question' && ['accepted','delivered'].includes(matchingMessage.state) && this.data().jobs[matchingMessage.jobId]?.questions[matchingMessage.payload.token]) { activeQuestion = this.data().jobs[matchingMessage.jobId].questions[matchingMessage.payload.token]; operation = () => this.answerQuestion({sender, token: matchingMessage.payload.token, ...parseOperatorQuestionAnswer(activeQuestion, message.text)}); }
         else return {handled: true, reply: 'يرجى اختيار الإجابة من خيارات السؤال المرسل أو طلب تصحيح البيانات.'};
       } else if (!message.contextId) {
         const acceptedTokens = new Set(Object.values(this.data().outbox).filter(item => phone(item.recipient) === phone(sender) && item.kind === 'applicant_question' && ['accepted', 'delivered'].includes(item.state)).map(item => item.payload.token));
         const pending = Object.values(this.data().jobs).filter(job => this.answerRecipient(job) === phone(sender) && job.state === 'awaiting_answers').flatMap(job => Object.values(job.questions).filter(question => question.state === 'pending' && acceptedTokens.has(question.token)).map(question => ({job, question})));
-        if (pending.length === 1 && pending[0].question.type === 'text') operation = () => this.answerQuestion({sender, token: pending[0].question.token, value: message.text});
+        if (pending.length === 1) { activeQuestion = pending[0].question; operation = () => this.answerQuestion({sender, token: activeQuestion.token, ...parseOperatorQuestionAnswer(activeQuestion, message.text)}); }
       }
     }
     if (!operation) return this.coordinationOwner()===phone(sender)&&Object.values(this.data().jobs).some(job=>job.coordination?.recipient===phone(sender)&&['awaiting_answers','awaiting_answer_confirmation'].includes(job.state))&&typeof message.text==='string'&&message.text.trim()?{handled:true,ok:false,reply:'حتى أربط إجابتك بالملف الصحيح، اضغط «رد» على سؤال رعد المطلوب وأرسل إجابتك، أو اختار من أزرار السؤال.'}:{handled: false};
@@ -639,10 +699,13 @@ class VisaFulfilment {
     try {
       const outcome = operation();
       if (outcome.followupFields?.length) this.askQuestions(outcome.jobId, {fields: outcome.followupFields});
-      result = {handled: true, ok: true, applicantIndex: outcome.applicantIndex, reply: outcome.followupFields?.length ? 'شكراً، نحتاج بعض التفاصيل الإضافية لهذا المسافر قبل عرض ملخص التأكيد.' : outcome.state === 'ready' ? 'تم تأكيد إجابات هذا المسافر واعتمادها لتجهيز الطلب.' : 'تم تسجيل إجابتك لهذا المسافر. يرجى إكمال الأسئلة ومراجعة ملخص الإجابات قبل اعتمادها.'};
+      result = {handled: true, ok: true, progress: outcome.progress, applicantIndex: outcome.applicantIndex, reply: outcome.followupFields?.length ? 'شكراً، نحتاج بعض التفاصيل الإضافية لهذا المسافر قبل عرض ملخص التأكيد.' : outcome.state === 'ready' ? 'تم تأكيد إجابات هذا المسافر واعتمادها لتجهيز الطلب.' : 'تم تسجيل إجابتك لهذا المسافر. يرجى إكمال الأسئلة ومراجعة ملخص الإجابات قبل اعتمادها.'};
+      if (outcome.progress) result.reply += `\nالأسئلة الحالية: تم إنجاز ${outcome.progress.answered} من ${outcome.progress.total} — بقي ${outcome.progress.remaining} أسئلة.`;
     } catch (error) {
       const invalid = ['VISA_ANSWER_INVALID', 'VISA_ANSWER_OPTION_INVALID'].includes(error?.code);
       result = {handled: true, ok: false, error: invalid ? 'VISA_ANSWER_INVALID' : 'VISA_ANSWER_CONTEXT_STALE', reply: invalid ? 'لم نعتمد هذه الإجابة. يرجى الإجابة بالصيغة المطلوبة أو استخدام خيارات السؤال.' : 'هذه الإجابة مرتبطة بسؤال قديم أو بمعاملة متوقفة. لم نغيّر بيانات الطلب؛ يرجى انتظار السؤال الحالي.'};
+      if (invalid && activeQuestion?.format === 'date') result.reply = 'التاريخ المدخل غير صالح. اكتبه يوم/شهر/سنة (مثال: 15/05/1990) أو 1990-05-15، ومنسجّله بعد التحقق من صحته.';
+      else if (invalid && activeQuestion?.type === 'choice') result.reply = 'اختار من قائمة السؤال، أو اكتب رقم الإجابة أو اسمها:\n' + activeQuestion.options.map((option, index) => `${index + 1}. ${option.label}`).join('\n');
     }
     if (message.id && typeof message.id === 'string' && message.id.length <= 500 && this.data().cases[sender]) this.commit(() => { const record = this.data().cases[sender]; record.handledMessages ||= {}; record.handledMessages[message.id] = result; const ids = Object.keys(record.handledMessages); for (const id of ids.slice(0, Math.max(0, ids.length - 100))) delete record.handledMessages[id]; });
     return result;
@@ -828,4 +891,4 @@ class VisaFulfilment {
   }
 }
 
-module.exports = {VisaFulfilment, OTP_TTL, DOCUMENT_FACT_FIELDS};
+module.exports = {asciiDigits, normalizeInboundQuestionValue, matchChoiceOption, VisaFulfilment, OTP_TTL, DOCUMENT_FACT_FIELDS};

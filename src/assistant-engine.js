@@ -11,7 +11,8 @@ const {POLICY,capabilityIssue}=require('./assistant-policy');
 const {formatOffer,verifiedOffer}=require('./quote-comparison');
 const {knownTripFollowup}=require('./travel-followups');
 const {understandConsultant}=require('./consultant-brain');
-const {updateConsultantMemory}=require('./consultant-memory');
+const {updateConsultantMemory,recommendVerifiedOffers}=require('./consultant-memory');
+const {toFils,formatAED}=require('./money');
 const {enabled,finishConsultantTurn}=require('./consultant-runtime');
 const {chooseApprovedReply}=require('./response-library');
 const {shouldOfferRequestChoice,createRequestChoice,readRequestChoice}=require('./request-choice');
@@ -52,12 +53,30 @@ function knownQuestion(question,r={}){return answeredField(questionField(questio
 function explainService(t,request={},status){
  if(/طرق الدفع|وسائل الدفع|كيف الدفع|تحويل بنكي|كاش|بطاقه|فيزا كارد|تابي|اقساط/.test(t))return require('./remal-service-policy').PAYMENT;
  if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|فرع/.test(t))return require('./remal-service-policy').OFFICE;
- if(/(?:فرق|مقارنه|احسن|افضل).*(?:فلاي|العربي)|(?:فلاي|العربي).*(?:فرق|احسن|افضل)/.test(t))return 'فلاي شام بتشمل حسب سياسة خدمتنا المعتادة ثلاثين كيلو وزن مسجّل وعشرة كيلو يد. العربية منراجع وزنها وتكلفتها حسب الخيار الفعلي. المقارنة الأنسب بتكون على نفس المسار والأيام والوزن، ومنعرضلك التواقيت والسعر المتحقق لكل خيار.';
- if(/وزن|شنط|امتعه|كيلو/.test(t))return request.provider==='flycham'?'فلاي شام بتشمل ثلاثين كيلو وزن مسجّل وعشرة كيلو يد بالعرض المعتاد. إذا صار عرض وزن إضافي منحدّثه حسب الإعلان المعتمد. أي طلب مختلف لازم نتحقق من توفره قبل تأكيده.':'البحث المعتاد بيكون على ثلاثين كيلو وزن مسجّل. إذا بتفضّل أقل وزن لحتى نقارن بسعر أوفر على العربية، منحافظ على باقي تفاصيل رحلتك ومنتحقق من التكلفة الفعلية.';
+ if(/(?:فرق|مقارن[هة]|قارن|احسن|افضل).*(?:فلاي|العربي)|(?:فلاي|العربي).*(?:فرق|احسن|افضل)/.test(t))return 'فلاي شام بتشمل حسب سياسة خدمتنا المعتادة ثلاثين كيلو وزن مسجّل وعشرة كيلو يد. العربية منراجع وزنها وتكلفتها حسب الخيار الفعلي. المقارنة الأنسب بتكون على نفس المسار والأيام والوزن، ومنعرضلك التواقيت والسعر المتحقق لكل خيار.';
+ if(/وزن|شنط|امتع[هة]|كيلو/.test(t))return request.provider==='flycham'?'فلاي شام بتشمل ثلاثين كيلو وزن مسجّل وعشرة كيلو يد بالعرض المعتاد. إذا صار عرض وزن إضافي منحدّثه حسب الإعلان المعتمد. أي طلب مختلف لازم نتحقق من توفره قبل تأكيده.':'البحث المعتاد بيكون على ثلاثين كيلو وزن مسجّل. إذا بتفضّل أقل وزن لحتى نقارن بسعر أوفر على العربية، منحافظ على باقي تفاصيل رحلتك ومنتحقق من التكلفة الفعلية.';
+ if(/مطار بديل|ترانزيت|مباشر|ليش السعر|تغير السعر/.test(t))return 'السعر بيتأثر بالموعد والمطار وفئة الأمتعة. الرحلة المباشرة ما فيها تبديل طائرة، والترانزيت فيه توقف وربما تبديل؛ منراجع تفاصيل العرض الفعلي قبل تأكيد أي مسار أو سعر. إذا بتحب نقارن مطاراً أو موعداً بديلاً، حدد الأنسب إلك.';
  if(/دفع|تثبيت|حجز|اصدار/.test(t))return 'منرتّبلك الخيارات المتحققة أولًا، وبتختار الأنسب. لما تطلب متابعة التثبيت، بيتابع معك موظف الحجوزات بعد مراجعة السعر والتوفر؛ الاستعلام بحد ذاته ما بيحجز ولا بيصدر تذكرة.';
  if(/تعديل|الغاء|استرجاع/.test(t))return 'شروط التعديل والإلغاء بتختلف حسب التذكرة والخيار المحدد. ما منأكد مرونة أو رسوم قبل مراجعة شروط العرض نفسه؛ فينا نحافظ على هالنقطة ضمن طلبك.';
  if(/طول|تأخير|تاخير|تعب|مستعجل/.test(t))return ['searching','queued'].includes(status)?'معك، وبقدّر وقتك. طلبك قيد التحقق على نفس التفاصيل؛ ما رح أغيّر المسار أو الوزن من عندي، ومنبعتلك النتيجة بعد تأكدها.':'معك، وبقدّر وقتك. التفاصيل اللي ذكرتها محفوظة؛ منكمل من آخر نقطة واضحة حتى ما تعيد طلبك.';
  return null;
+}
+function airlineComparisonQuestion(t){return /فرق|مقارن[هة]|قارن|ايهم افضل|ايهما افضل/.test(t)&&/فلاي|الشام|العربي/.test(t)||/فلاي|الشام/.test(t)&&/العربي/.test(t)&&/افضل|ارخص|احسن/.test(t);}
+function ticketServiceQuestion(t){return /(?:تعديل|الغاء|استرجاع|استرداد).*(?:تذكر[هة]|تذاكر)|(?:تذكر[هة]|تذاكر).*(?:تعديل|الغاء|استرجاع|استرداد)|استرجاع/.test(t);}
+function currentShownOffers(s,now){
+ return recommendVerifiedOffers(s.offers.map((o,i)=>({...o,reference:o.reference||i+1})),s.base?.request,s.consultant?.preferences||{},{now}).offers;
+}
+function compareShownAirlines(s,now){
+ const offers=currentShownOffers(s,now),aa=offers.find(o=>o.provider==='airarabia'),fc=offers.find(o=>o.provider==='flycham');
+ if(!aa||!fc)return null;
+ const difference=toFils(aa.price.sellingTotal,'Price')-toFils(fc.price.sellingTotal,'Price');
+ const conclusion=difference===0n?'السعر الإجمالي متساوٍ في هذين الخيارين':`${difference<0n?'العربية للطيران':'فلاي شام'} أوفر بـ${formatAED(difference<0n?-difference:difference)} درهم بين هذين الخيارين`;
+ return ['📊 *مقارنة مباشرة بين أقل عرض متحقق لكل شركة ضمن خياراتك الحالية:*',formatOffer(aa),formatOffer(fc),`💡 *الخلاصة:* ${conclusion}. راجع اختلاف المطار والتاريخ والتوقيت والوزن أعلاه.`,`أرسل رقم الخيار الأنسب لنراجع متابعة تثبيته مع الموظف. السعر والتوفر يُعاد التحقق منهما؛ لم يُنشأ حجز.`].join('\n\n');
+}
+function priceSavingAdvice(s,now){
+ const cheapest=currentShownOffers(s,now)[0];
+ if(!cheapest)return null;
+ return ['أقدّر حرصك على أفضل سعر 🌷 هذا الأقل سعراً بين العروض الحديثة المتحققة والمطابقة لطلبك:',formatOffer(cheapest),'💡 *خيارات ممكن تساعدنا نوفر بعد فحص السعر الفعلي:*','1. تاريخ قريب قبل أو بعد بيوم أو يومين.','2. وزن شحن أقل، مثل 20 كيلو أو بدون شحن، إذا كانت الفئة متاحة.','3. مطار قريب بديل يناسبك؛ إذا مغادرتك من الإمارات فينا نقارن الشارقة ودبي وأبوظبي.','أي مسار توفير بتفضّل نفحصه؟ السعر والتوفر يحتاجان إعادة تحقق قبل التثبيت، ولم يتم حجز تذكرة.'].join('\n\n');
 }
 function acceptsExpansion(base,text,now){const p=base?.proposal,t=normalize(text).replace(/[؟?!،,.]+$/g,'');return Boolean(p?.choiceCount===1&&p.expiresAt>=now&&p.requestFingerprint===JSON.stringify(base.request)&&/^(?:شفلي|شوفلي|شوف لي|اي شفلي|اي شوفلي|نعم|اي|تابع|كمل|تمام)$/.test(t));}
 function selectedSupplierRequest(request){return {...request,providerExclusive:true,providerRestrictionSource:request.providerExclusive&&request.providerRestrictionSource==='customer'?'customer':'selection'};}
@@ -112,6 +131,7 @@ class AssistantEngine{
  }
  async processRequestChoice(id,text,{now,quotedMessageId,turnMessages=[],buttonChoice,choiceExtras=[]}){
   let state=this.state(id);if(state.humanOwned)return null;
+  if(!buttonChoice&&(airlineComparisonQuestion(normalize(text))||ticketServiceQuestion(normalize(text))))return null;
   const oldChoice=state.requestChoice,quotedElsewhere=!buttonChoice&&quotedMessageId&&quotedMessageId!==oldChoice?.messageId;
   const followup=knownTripFollowup(text,state.base?.request,now,{monthScope:state.base?.monthScope});
   let picked=quotedElsewhere?{action:'none'}:readRequestChoice(state,text,{now,buttonChoice});
@@ -215,6 +235,16 @@ class AssistantEngine{
   let hasChange=/كيلو|كغ|\bkg\b|بدل|خلي|غير|قصدي|شخص|بالغ|طفل|رضيع|مسافر|على |الى |من |بكرا|بكره|اسبوع|شهر|الجمعة|السبت|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|\d|مطار|دمشق|الشام|حلب|الشارق|شارق|دبي|ذهاب|عوده|رجعه|وزن|شنط|رحله|توقيت/.test(t);
   if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(t)){this.store.delete(id);legacy.importSession(id,null);return{complete:false,cancel:true,reply:'تم حذف بيانات محادثتك المحفوظة وإيقاف طلب البحث الحالي.'};}
   if(/^(?:الغاء|الغي|وقف البحث|اوقف البحث|الغاء الطلب|cancel|ابد[اأ] من جديد)$/.test(t)){s.status='cancelled';s.pendingRequests=[];s.offers=[];s.selected=null;s.comparison=null;s.previous=[];s.questions={};delete s.pendingQuotedOffer;s.lastQuestion=null;s.tripId=crypto.randomUUID();legacy.importSession(id,null);return{...say('تم إيقاف بحث الأسعار. إذا قصدك إلغاء تذكرة صادرة، وضّحلي حتى نميّزها عن طلب الاستعلام.'),cancel:true};}
+  // Explicit service questions read the current trip; model routing cannot cancel it.
+  if(airlineComparisonQuestion(t)){
+   s.selected=priorSelection;s.base=priorBase;legacy.importSession(id,priorBase);
+   const comparison=compareShownAirlines(s,now);
+   return say(comparison||((s.offers.length?'ما عندي الآن عرضان حديثان متحققان للشركتين ضمن طلبك. ':'')+(explainService(t,s.base?.request,s.status)||'منقارن السعر والتوقيت والوزن لكل شركة حسب الخيارات المتحققة لرحلتك.')));
+  }
+  if(ticketServiceQuestion(t)){
+   s.selected=priorSelection;s.base=priorBase;legacy.importSession(id,priorBase);
+   return say('شروط تعديل التذكرة أو إلغائها والاسترداد بتختلف حسب الفئة وشركة الطيران. موظف الحجوزات بيراجع شروط تذكرتك والرسوم قبل أي إجراء؛ هالسؤال ما ألغى بحثك أو تذكرتك.');
+  }
   const followup=!quotedOfferReferences.length&&!s.pendingQuotedOffer?(acceptsExpansion(s.base,text,now)?{fields:{},proposal:true}:knownTripFollowup(text,s.base?.request,now,{monthScope:s.base?.monthScope})):null;
   if(followup&&!followup.proposal&&s.base?.submitted&&['queued','searching'].includes(s.status)&&Object.entries(followup.fields).every(([key,value])=>value===s.base.request[key]))return say('شكرًا لمتابعتك 🌷 البحث مستمر على نفس تفاصيل رحلتك، وأول ما تتأكد الأسعار والتواقيت منرسلها إلك.');
   let decision=followup?{intent:'change',fields:followup.fields,question:null,option:null}:null;
@@ -279,7 +309,7 @@ class AssistantEngine{
   const hasDecisionFields=Boolean(decision&&Object.values(decision.fields||{}).some(v=>Array.isArray(v)?v.length:v!==null));
   if(hasDecisionFields&&s.questions.clarification){s.questions.clarification.answered=true;s.questions.clarification.status='answered';s.questions.clarification.answeredAt=now;}
   const socialIntent=!hasDecisionFields?decision?.intent:null;
-  const asksShownOffer=decision?.intent==='explain'&&(decision.option!==null||/سعر|قديش|بكم|افضل|احسن|ارخص|بتنصح|تنصحني|العرض|الخيار/.test(t)&&!hasDecisionFields);
+  const asksShownOffer=!/غالي|خصم|ارخص من هيك|ما في ارخص/.test(t)&&decision?.intent==='explain'&&(decision.option!==null||/سعر|قديش|بكم|افضل|احسن|ارخص|بتنصح|تنصحني|العرض|الخيار/.test(t)&&!hasDecisionFields);
   if(asksShownOffer){
    // An inquiry reads existing verified data; it never selects, changes or books.
    s.selected=priorSelection;legacy.importSession(id,priorBase);s.base=priorBase;
@@ -302,7 +332,9 @@ class AssistantEngine{
 
   hasChange ||= hasDecisionFields||followup?.start;
   if(!followup?.start&&!hasDecisionFields&&(socialIntent==='greeting'||/^(?:مرحبا|اهلا|هلا|السلام عليكم|hi|hello|ابد[اأ])$/.test(t))){const greeted=s.greeted;s.greeted=true;return sayApproved(greeted?'welcome_back':'greeting',{allowFreshModel:true});}
-  if(!hasChange&&(socialIntent==='negotiate'||/زبط|تزبط|خصم|تخفيض|نزل.*سعر|غالي|ارخص من هيك/.test(t))){
+  if(!hasDecisionFields&&(!hasChange||/^(?:كتير )?غالي|^ارخص من هيك|^ما في ارخص/.test(t))&&(socialIntent==='negotiate'||/زبط|تزبط|خصم|تخفيض|نزل.*سعر|غالي|ارخص من هيك|ما في ارخص/.test(t))){
+   const advice=priceSavingAdvice(s,now);
+   if(advice){if(s.consultantDecision)s.consultantDecision.reply=null;return say(advice);}
    const proposal=legacy.proposeExpansion(id,{now});
    return sayApproved('negotiation_ack',{suffix:proposal?'فينا نقارن سبعة أيام بعد آخر موعد مع الحفاظ على المسار والوزن. بتناسبك نوسّع البحث لهالفترة؟':'فينا نقارن أيام أو تواقيت أوسع إذا بتناسبك، بدون تغيير تفاصيلك من عندنا.'});
   }
@@ -349,7 +381,7 @@ class AssistantEngine{
   if(/زيادة|اضافي|إضافي/.test(t)&&/كيلو|كغ/.test(t)&&!s.base?.request?.baggageRequest)return say('قصدك الوزن الإجمالي للشنط، أو زيادة فوق الوزن الموجود بالعرض؟');
   if(/مو هيك|ما فهمت|ما قلت|بدي اخف|غيره$|مو .*|لا تغير/.test(t)&&!decision)return say('خلينا نضبطها بدون تغيير التفاصيل الثانية: قصدك نعدّل الوزن، أو الموعد، أو نبحث عن سعر أقل؟');
   if(/الا |باستثناء|لازم.*(?:اوصل|وصول)|بدون ترانزيت|مباشر حصرا|قطعتين|قطعه|قطعة/.test(t)&&!decision)return say('فهمت إن عندك شرط إضافي على الرحلة. حتى ما نعرض خيارًا غير مناسب، حدد الشرط بدقة؛ التحقق الآلي من بعض شروط الوصول وعدد القطع غير مكتمل حاليًا.');
-  if(!hasDecisionFields&&(decision?.intent==='explain'||/طرق الدفع|وسائل الدفع|كيف الدفع|تحويل بنكي|كاش|بطاقه|فيزا كارد|تابي|اقساط|عنوان|وين مكتب|مكان المكتب|موقع المكتب|فرع/.test(t))){
+  if(!hasDecisionFields&&(decision?.intent==='explain'||/طرق الدفع|وسائل الدفع|كيف الدفع|تحويل بنكي|كاش|بطاقه|فيزا كارد|تابي|اقساط|عنوان|وين مكتب|مكان المكتب|موقع المكتب|فرع|اشرح|فهمني|كيف يعني|شو يعني|ليش السعر|تغير السعر|الوزن|الامتع[هة]|مطار بديل|ترانزيت|مباشر/.test(t))){
    const facts=explainService(t,s.base?.request,s.status);
    if(facts)return say(facts);
   }

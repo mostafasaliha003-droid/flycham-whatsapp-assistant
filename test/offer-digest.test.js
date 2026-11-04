@@ -74,3 +74,11 @@ test('nearby dates keep explicit before/after labels relative to the requested d
  }
  const same=offer(2);same.request.departureDate=target.departureDate;assert.doesNotMatch(buildOfferDigest({request:target,offers:[same],ready:true}).text,/بديل قبل|بديل بعد/);
 });
+
+
+test('dual-airline digest summary uses only cheapest shown options on each page',()=>{
+ const offers=[offer(1,{price:'550.01'}),offer(2,{price:'600.10'}),offer(3,{price:'700.00'}),offer(4,{price:'750.00'})],snapshot={request,offers,ready:true};
+ const first=buildOfferDigest(snapshot);assert.match(first.text,/ملخص الشركتين ضمن هذه الصفحة.*600\.10.*550\.01/);
+ const later=buildOfferDigest(snapshot,{excludeRefs:[1,2]});assert.match(later.text,/ملخص الشركتين ضمن هذه الصفحة.*750\.00.*700\.00/);assert.doesNotMatch(later.text,/550\.01|600\.10/);
+ const single=buildOfferDigest(snapshot,{excludeRefs:[2,4]});assert.doesNotMatch(single.text,/ملخص الشركتين/);assert.match(later.text,/يُعاد التحقق.*لم يُنشأ حجز/);
+});

@@ -169,11 +169,11 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     }
     if (!request.kind && previous?.lastKind && pronounReference(normalize(text || '').replace(/\s+/g, ' '))) request = {...request, kind: previous.lastKind};
     const result = {handled: true, intent: request.intent, kind: request.kind};
-    if(operatorCoordination&&['status','prepare_application'].includes(request.intent)){remember(customer,summary);return {...result,reply:require('./remal-service-policy').response('processing')};}
     if (['status','prepare_application'].includes(request.intent)) {
       const progress=workflowProgressReply(store,customer,summary,now());
       if(progress){remember(customer,summary);return {...result,reply:progress};}
     }
+    if(operatorCoordination&&['status','prepare_application'].includes(request.intent)){remember(customer,summary);return {...result,reply:require('./remal-service-policy').response('processing')};}
     if (['prepare_application', 'will_send'].includes(request.intent)) {
       const currentCase = store?.data?.visaCases?.[customer], received = receivedDocuments(store, customer, summary, now());
       const products = currentCase?.applicants?.map(person => P.productFor(person)) || [];

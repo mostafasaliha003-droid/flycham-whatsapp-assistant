@@ -517,3 +517,12 @@ test('saving a changed field invalidates every old review and failed saves roll 
   assert.throws(() => f.workflow.prepare(CUSTOMER, {expectedRevision: 3, fields: {latinFirstName: 'Unsaved'}, confirm: true}), /synthetic-write-failure/);
   assert.deepEqual(f.store.data.raadApplications, before);
 });
+
+
+test('expanded sales nationalities flow into Raad ISO alpha-3 source facts', () => {
+  for (const [nationality, code] of Object.entries({'المغرب':'MAR','تونس':'TUN','الجزائر':'DZA','موريتانيا':'MRT','تركيا':'TUR','روسيا':'RUS','أستراليا':'AUS','نيوزيلندا':'NZL'})) {
+    const f = fixture({nationality});
+    const fields = applicant({issuingCountryCode: code}); delete fields.nationalityCode;
+    const saved = prepare(f, {fields}); assert.equal(saved.fields.nationalityCode, code);
+  }
+});

@@ -30,17 +30,15 @@ function workflowProgressReply(store,customer,summary,now=Date.now()){
   const jobs=Object.values(data.visaFulfilment?.jobs||{}).filter(j=>j.customer===customer&&j.caseId===c.id&&j.caseSignature===signature&&j.approvalId===approval.id&&!['cancelled','stale'].includes(j.state));
   // Multiple applicants must be reported individually by the existing workflow.
   if(jobs.length!==1)return null;const job=jobs[0],run=data.visaPortalRuns?.[job.id];
-  if(job.state==='portal_review_required')return job.blockedReason==='OTP_CHALLENGE_EXPIRED'
-   ? 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.'
-   : 'طلبك معنا، ومنبلغك بأول تحديث. ما مطلوب منك أي إجراء حاليًا.';
-  if(job.coordination&&['awaiting_answers','needs_followup','awaiting_answer_confirmation','queued','ready'].includes(job.state))return 'طلبك معنا، وعم نتابع تجهيزه. منرسل لك رقم الطلب بعد إتمام التقديم.';
+  if(job.state==='portal_review_required')return 'طلب التأشيرة قيد المراجعة لدى فريقنا المختص، ومنبلغك بأول تحديث 🌷 ما مطلوب منك أي إجراء حاليًا.';
+  if(job.coordination&&['awaiting_answers','needs_followup','awaiting_answer_confirmation','queued','ready'].includes(job.state))return 'فريق التأشيرات عم ينسّق تفاصيل طلبك وبيتابع تجهيزه 🌷 منرسل لك رقم الطلب بعد إتمام التقديم.';
   if(['awaiting_answers','needs_followup'].includes(job.state))return 'استكمال الطلب بانتظار إجابات الأسئلة المرسلة لك في هذه المحادثة. جاوب على السؤال الحالي لنكمل على نفس الملف؛ لا داعي لإعادة إرسال الأوراق.';
   if(job.state==='awaiting_answer_confirmation')return 'بيانات الطلب بانتظار اعتمادك على ملخص الإجابات المرسل في هذه المحادثة. راجع الملخص وأكّد صحته لنكمل على نفس الملف.';
   const lease=data.visaFulfilment?.lease;
   if(!lease||lease.jobId!==job.id||lease.cancelled||lease.expiresAt<=now)return null;
-  if(job.state==='waiting_otp'&&run?.phase==='waiting_operator')return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
+  if(job.state==='waiting_otp'&&run?.phase==='waiting_operator')return 'طلبك بمتابعة فريق التأشيرات لاستكمال إجراءات التحقق 🌷 منبلغك أول ما تكتمل خطوة التقديم.';
   if(job.state==='waiting_otp'&&run?.phase==='waiting_otp')return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
-  if(job.state==='running'&&['starting','running'].includes(run?.phase))return 'عم نتابع إجراءات طلبك، ومنبلغك أول ما تكتمل خطوة التقديم.';
+  if(job.state==='running'&&['starting','running'].includes(run?.phase))return 'عم نجهّز طلب التأشيرة فعليًا الآن 🌷 منبلغك أول ما تكتمل خطوة التقديم، ومنرسل لك رقم الطلب بعد تأكيده.';
  }catch{}
  return null;
 }
