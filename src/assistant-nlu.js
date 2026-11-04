@@ -21,7 +21,7 @@ function validateDecision(d){
  if(d.option!==null&&(!Number.isInteger(d.option)||d.option<1||d.option>80))throw Error('NLU_INVALID');return d;
 }
 const {aiProvider,aiConfigured,aiStatus,routeDecision}=require('./assistant-providers');
-const SENSITIVE=/(?:passport|password|api[_ -]?key|access[_ -]?token|جواز|كلمة\s*(?:السر|المرور)|رمز التحقق)/i;
+const SENSITIVE=/(?:passport|password|api[_ -]?key|access[_ -]?token|رقم\s*(?:ال)?جواز|كلمة\s*(?:السر|المرور)|رمز التحقق)/i;
 function redact(value){
  if(typeof value==='string')return value.replace(/[A-Za-z0-9_-]{40,}/g,'[redacted]').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[email]').replace(/\+?[\d٠-٩۰-۹][\d٠-٩۰-۹ ()-]{8,}[\d٠-٩۰-۹]/g,m=>(m.match(/[\d٠-٩۰-۹]/g)||[]).length<10?m:'[number]').replace(/(?:اسمي|اسم العميل|my name is)\s*[:：]?\s*[^،,.\n]{1,80}/gi,'[name]');
  if(Array.isArray(value))return value.map(redact);

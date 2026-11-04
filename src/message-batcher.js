@@ -11,7 +11,7 @@ class MessageBatcher{
  push(id,message){if(this.delay===0)return this.serial(id,[message]);return new Promise((resolve,reject)=>{
   let item=this.pending.get(id);if(!item){item={messages:[],waiters:[],firstAt:this.now()};this.pending.set(id,item);}
   item.messages.push(message);item.messages=item.messages.slice(-50);item.waiters.push({resolve,reject});item.lastAt=this.now();this.persist();
-  const urgent=/^(?:خلص[،, ]*(?:ابحث|ابدأ|ابدا)(?: هلق)?|ابدأ هلق|ابدا هلق|وقف البحث|اوقف البحث|الغاء|إلغاء|احذف بياناتي)[.!؟?]*$/.test(String(message.text||'').trim());
+  const urgent=/^(?:خلص[،, ]*(?:ابحث|ابدأ|ابدا)(?: هلق)?|ابدأ هلق|ابدا هلق|وقف البحث|اوقف البحث|الغاء|إلغاء|احذف بياناتي|امسح بياناتي|حذف بياناتي|القائمة|القائمه|الخدمات|شو خدماتكم|شو صار|وين وصلت|وين وصلتوا)[.!؟?]*$/.test(String(message.text||'').trim());
   this.schedule(id,item,urgent);
  });}
  flush(id){const item=this.pending.get(id);if(!item)return Promise.resolve();clearTimeout(item.timer);clearTimeout(item.prepareTimer);const token=Symbol('batch');if(!this.active.has(id))this.active.set(id,new Map());this.active.get(id).set(token,item);this.pending.delete(id);this.persist();

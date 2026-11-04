@@ -212,7 +212,7 @@ async function processCustomerMessages(sender,messages){
   if(route.service==='service_inquiry'){if(turnRevision!==incomingRevision(assistant.store,sender))return;await sendTextMessage(sender,route.reply);return;}
   if(route.service==='choose'){const pending=messages.filter(m=>m.media);if(pending.length){assistant.store.data.pendingVisaMedia||={};assistant.store.data.pendingVisaMedia[sender]=[...(assistant.store.data.pendingVisaMedia[sender]||[]),...pending].slice(-20);assistant.store.save();}await sendServiceMenu(sender,route,turnRevision);return;}
   if(route.service==='saudi_visa'){
-    if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim())){
+    if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(text.trim())){
       visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
     }
     const scoped=await visaConversationScope.handle(sender,text,{messages});
@@ -261,7 +261,7 @@ async function processCustomerMessages(sender,messages){
   const buttonChoice=messages.filter(m=>m.requestChoice).at(-1)?.requestChoice||null;
   const result=await assistant.handle(sender,text,{quotedMessageId:references.length===1?references[0]:null,turnMessages,buttonChoice,choiceExtras:buttonChoice?messages.filter(m=>!m.requestChoice).map(m=>m.text):[]});
   if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
-  if(/^(?:احذف بياناتي|امسح بياناتي)$/.test(text.trim()))journal.deleteCustomer(sender);
+  if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(text.trim()))journal.deleteCustomer(sender);
   if(broad&&!result.requestChoiceHandled){const request=assistant.state(sender).base?.request||{};const card=catalog.reply(request);if(card&&!result.complete){
    const missing=[];if(!request.departureDate&&!request.departureRange)missing.push('عندك أيام معيّنة ببالك');if(!request.passengers)missing.push('كم عدد المسافرين');if(!request.tripType)missing.push('ذهاب بس أو مع رجعة');
    const reply=(result.introduction?result.introduction+'\n\n':'')+card+(missing.length?'\n'+missing.join('، ')+'؟':'');await sendTextMessage(sender,reply);return;
@@ -378,7 +378,7 @@ async function handleWebhookPost(request, response) {
       flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));continue;
     }
     if(message.from===COMPLAINT_RECIPIENT){for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>{});}
-    const fast=Boolean(message.serviceChoice)||Boolean(message.requestChoice)||!batcher.busy(message.from)&&['searching','queued'].includes(assistant.state(message.from).status)&&/^(?:شكرا|شكراً|ناطر|ناطرين|بانتظاركن|بانتظار|منتظر|شو صار|وين وصلتوا|شكرا ناطرك|تمام|اوكي|حاضر)[؟?!. ]*$/.test(message.text);
+    const fast=/^(?:القائمة|القائمه|الخدمات|احذف بياناتي|امسح بياناتي|حذف بياناتي|وقف البحث|شو صار|وين وصلت|وين وصلتوا)[؟?!. ]*$/.test(message.text)||Boolean(message.serviceChoice)||Boolean(message.requestChoice)||!batcher.busy(message.from)&&['searching','queued'].includes(assistant.state(message.from).status)&&/^(?:شكرا|شكراً|ناطر|ناطرين|بانتظاركن|بانتظار|منتظر|شو صار|وين وصلتوا|شكرا ناطرك|تمام|اوكي|حاضر)[؟?!. ]*$/.test(message.text);
     const pending=(process.env.ASSISTANT_DEBOUNCE_MS==='0'||fast)?batcher.serial(message.from,[message]):batcher.push(message.from,message);pending.catch(()=>console.error('WHATSAPP_REPLY_FAILED'));
     if(process.env.ASSISTANT_DEBOUNCE_MS==='0')await pending;
   }

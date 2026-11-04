@@ -101,7 +101,7 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   if(/سوريا|سورية|سوريه/.test(text))request.destinationCountry='سوريا';
   if(request.origin&&request.origin===request.destination)request.destination=null;
 
-  const dateTokens = [...text.matchAll(/\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/g)].map((m) => m[0]);
+  const dateTokens = [...text.matchAll(/(?<![\d/-])\d{1,2}[-/.]\d{1,2}[-/.]\d{4}(?!\d)/g)].map((m) => m[0]);
   const dates = dateTokens.map((token) => parseDate(token));
   const today = iso(dubaiDay(now));
   if (dates.some((date) => !date || date < today)) invalidDate = true;
@@ -121,6 +121,8 @@ function applyParsed(request, text, {now=Date.now(),awaiting}={}) {
   const duration=plain.match(/(?:بعد|لمدة|مده|مدة)\s*(\d+)\s*(?:ايام|يوم|ليالي|ليلة)/);
   let nights=duration?Number(duration[1]):/(?:بعد|لمدة|مده|مدة)\s*اسبوعين/.test(plain)?14:/(?:بعد|لمدة|مده|مدة)\s*اسبوع/.test(plain)?7:null;
   if(awaiting==='returnDate'&&plain==='اسبوع')nights=7;
+  if(/بعد\s*يومين/.test(plain))nights=2;
+  if(!(awaiting==='returnDate'||/اقام|إقام|مكوث|بقاء|لمدة|مد[ةه]|رجع|عود/.test(plain)||request.departureDate||request.departureRange))nights=null;
   if(nights&&nights<=90){request.stayNights=nights;if(request.departureDate)request.returnDate=iso(addDays(new Date(request.departureDate+'T00:00:00Z'),nights));}
   if(!dates.length && !nights){
     const natural=naturalDate(text,now);

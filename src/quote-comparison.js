@@ -119,6 +119,8 @@ function renderComparison(parent,{excludeOfferKeys=[]}={}){
   else parts.push('لم يتأكد عرض في الأيام القريبة التي فحصناها؛ هالنتيجة ما تعني عدم وجود رحلات في الأيام التي لم يكتمل فحصها.');
   if(alternatives.some(c=>['partial','unverified','auth_required','pending'].includes(c.status))&&offers.length)parts.push('هذه البدائل تأكدت؛ بعض الأيام أو التواقيت القريبة لم يكتمل فحصها.');
  }
+ const freshAll=allParentOffers.filter(o=>!sent.has(offerKey(o))).sort((a,b)=>Number(a.price.sellingTotal)-Number(b.price.sellingTotal));
+ if(!pending&&freshAll.length>=2){const o=freshAll[0];parts.push(`💡 *خلاصة المقارنة:* الأوفر سعراً بين الخيارات المتأكدة أعلاه هو *الخيار ${o.reference}* بتاريخ ${o.request.departureDate} على ${LABELS[o.provider]} بسعر إجمالي *${o.price.sellingTotal} درهم*.`);}
  if(allParentOffers.length){
   parts.push('\nالأسعار تشمل الرسوم وعمولة الخدمة، حسب الوزن الموضح لكل عرض. المواعيد كما تظهر في البوابة. السعر والتوفر قابلان للتغير حتى إصدار التذكرة؛ لم يتم إنشاء حجز.');
   parts.push(pending?'بقية الخيارات لسه قيد التحقق؛ العروض الموضحة أعلاه متأكدة حسب آخر مراجعة.':'أي خيار من هالخيارات بناسبك لنكمل عليه؟');

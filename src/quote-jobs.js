@@ -8,7 +8,7 @@ const sameRoute=(a,b)=>a.origin===b.origin&&a.destination===b.destination;
 // Bounded pilot queue, persisted through the encrypted state store when configured.
 // The worker only receives trip details, never the WhatsApp recipient number.
 class QuoteJobs {
-  constructor({now=Date.now,ttl=60*60*1000,store=null,comparisonTimeoutMs=8*60*1000}={}) {this.now=now;this.ttl=ttl;this.store=store;this.comparisonTimeoutMs=comparisonTimeoutMs;this.jobs=new Map(store?.data?.quoteQueue?.jobs||[]);this.seen=new Map(store?.data?.quoteQueue?.seen||[]);this.comparisons=new Map(store?.data?.quoteQueue?.comparisons||[]);this.revisions=new Map(store?.data?.quoteQueue?.revisions||[]);this.workerAt=0;this.providerAt=new Map();for(const j of this.jobs.values()){j.state='pending';delete j.lease;delete j.progress;}this.prune();}
+  constructor({now=()=>Date.now(),ttl=60*60*1000,store=null,comparisonTimeoutMs=8*60*1000}={}) {this.now=now;this.ttl=ttl;this.store=store;this.comparisonTimeoutMs=comparisonTimeoutMs;this.jobs=new Map(store?.data?.quoteQueue?.jobs||[]);this.seen=new Map(store?.data?.quoteQueue?.seen||[]);this.comparisons=new Map(store?.data?.quoteQueue?.comparisons||[]);this.revisions=new Map(store?.data?.quoteQueue?.revisions||[]);this.workerAt=0;this.providerAt=new Map();for(const j of this.jobs.values()){j.state='pending';delete j.lease;delete j.progress;}this.prune();}
   save(){if(this.store){this.store.data.quoteQueue={jobs:[...this.jobs],seen:[...this.seen].slice(-3000),comparisons:[...this.comparisons],revisions:[...this.revisions].slice(-3000)};this.store.save();}}
   prune(){for(const [id,j] of this.jobs)if(j.expires<=this.now())this.jobs.delete(id);for(const [id,t]of this.seen)if(t<=this.now())this.seen.delete(id);for(const [id,c]of this.comparisons)if(c.expires<=this.now())this.comparisons.delete(id);}
   ready(provider='airarabia'){const at=provider==='airarabia'?this.workerAt:this.providerAt.get(provider)||0;const age=this.now()-at;return at>0&&(age<20000||(age<120000&&[...this.jobs.values()].some(j=>j.state==='claimed'&&(j.request.provider||'airarabia')===provider)));}
@@ -25,7 +25,7 @@ class QuoteJobs {
   enqueueComparison(recipient,request,{providers=PROVIDERS,seedOffers=[],allowAlternatives=true,compareFlyChamAirports=false,waitForProviders=false}={}){
     this.prune();providers=[...new Set(providers)];if(!providers.length||providers.some(p=>!PROVIDERS.includes(p)))throw Error('QUEUE_PROVIDER_INVALID');
     const plan=compareFlyChamAirports?airportSearchPlan(request,providers):{requests:providers.map(provider=>({provider,request:{...structuredClone(request),provider},phase:'exact'})),routing:{}};
-    const needed=plan.requests.reduce((n,r)=>n+expandLiveRequests(r.request).length,0);
+    const needed=plan.requests.reduce((n,r)=>n+expandLiveRequests(r.request,this.now()).length,0);
     if(compareFlyChamAirports)providers.sort((a,b)=>Number(b==='flycham')-Number(a==='flycham'));
     const own=[...this.jobs.values()].filter(j=>j.recipient===recipient).length;
     const ownComparisons=[...this.comparisons.values()].filter(c=>c.recipient===recipient).length;
@@ -37,7 +37,7 @@ class QuoteJobs {
     if(plan.requests.some(r=>r.phase==='airports'))parent.deadline=this.now()+Math.max(this.comparisonTimeoutMs,20*60*1000);
     // Interleave dates across airports: a monthly scan must not finish every
     // day at one airport before it checks the next airport's first day.
-    const routes=plan.requests.sort((a,b)=>Number(b.provider==='flycham')-Number(a.provider==='flycham')).map(item=>({...item,dates:expandLiveRequests(item.request)}));
+    const routes=plan.requests.sort((a,b)=>Number(b.provider==='flycham')-Number(a.provider==='flycham')).map(item=>({...item,dates:expandLiveRequests(item.request,this.now())}));
     for(let day=0;day<Math.max(...routes.map(r=>r.dates.length));day++)for(const route of routes){
       const date=route.dates[day];if(!date)continue;
       const provider=route.provider,r={...structuredClone(date),provider},seeds=seedOffers.filter(o=>Number.isFinite(o.checkedAt)&&o.checkedAt<=this.now()&&this.now()-o.checkedAt<=15*60*1000).map(o=>verifiedOffer(o,r,provider)).filter(Boolean);
