@@ -19,7 +19,8 @@ class VisaConversationScope {
   if(button){const choice=button.visaScopeChoice;if(!s||s.mode!=='choice'||s.token!==choice.token||!s.messageId||button.contextId!==s.messageId||!['new','followup'].includes(choice.action))return this.menu(id,'');
    if(choice.action==='followup'){s.mode='followup';s.expiresAt=this.now()+TTL;delete s.pendingText;this.store.save();return{handled:true,reply:'أكيد 🌷 ابعت رقم الطلب الحالي حتى نتابع الملف الصحيح.'};}
    s.mode='inquiry';s.inquiry=this.engine.newCase();s.inquiry.greeted=true;this.store.save();
-   text=s.pendingText||'';delete s.pendingText;
+   const following=messages.filter(m=>!m.visaScopeChoice).map(m=>m.text||'').filter(Boolean).join('، ');
+   text=following||s.pendingText||'';delete s.pendingText;
    if(!text||greeting(P.normalize(text)))return{handled:true,reply:'أكيد 🌷 شو الخدمة اللي حابب تستفسر عنها؟ وإذا سؤالك عن فيزا السعودية، شو جنسية المتقدم؟'};
   }
   // Never divert a complaint, cancellation, privacy request or explicit reference.
