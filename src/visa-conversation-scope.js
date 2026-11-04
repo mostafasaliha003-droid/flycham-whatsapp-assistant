@@ -27,6 +27,7 @@ class VisaConversationScope {
   const intent=conversationIntent(text),ref=applicationReference(text,{awaiting:s?.mode==='followup',known:jobs.map(j=>j.applicationReference)});
   if(isComplaint(text)||/احذف بياناتي|امسح بياناتي|شكوي|اشتك|الغاء|كنسل|استرداد|رجع.*(?:مصاري|فلوس)/.test(n))return{handled:false};
   if(ref){delete this.store.data.visaConversationScopes[id];this.store.save();return{handled:true,reply:(await this.engine.handle(id,'رقم الطلب '+ref,{messages:[]})).reply};}
+  if(intent==='case_summary'&&s?.mode!=='inquiry')return{handled:false};
   if(jobs.length&&intent==='status'&&/طلبي|طلبنا|حاله الطلب|حاله المعامله|رقم الطلب|الطلب الحالي/.test(n)){this.store.data.visaConversationScopes[id]={token:randomUUID(),caseId:c.id,mode:'followup',expiresAt:this.now()+TTL};this.store.save();return{handled:true,reply:'أكيد 🌷 ابعت رقم الطلب الحالي حتى نتابع الملف الصحيح.'};}
   if(c.pendingNewApplication&&/^(?:نعم|اي|تمام|اوافق|موافق|اكد|نعم طلب جديد|لا|الغاء)[.! ]*$/.test(n)){delete this.store.data.visaConversationScopes[id];this.store.save();return{handled:false};}
   if(c.pendingNewApplication&&s?.mode==='inquiry'){delete c.pendingNewApplication;this.engine.save(id,c);}

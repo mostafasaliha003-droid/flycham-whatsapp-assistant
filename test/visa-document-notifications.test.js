@@ -348,3 +348,11 @@ test('old, unsent, foreign, invalid and staff-paused lists cannot record an answ
 test('restart upgrades the existing open dossier to a list once and the same list never repeats',async()=>{const f=choiceFixture(),restarted=new VisaDocumentNotifications(f.options);assert.equal(Object.values(restarted.data().items).length,1);await restarted.flush();assert.equal(f.count(),1);const again=new VisaDocumentNotifications(f.options);await again.flush();assert.equal(f.count(),1);assert.equal(Object.values(again.data().items).filter(i=>i.state==='accepted').length,1);});
 
 test('removing an unrelated receipt retains the passport-type choice only for the exact unchanged original source set',async()=>{const f=choiceFixture(),item=f.service.update(CUSTOMER);await f.service.flush();assert.equal(f.service.receive({from:CUSTOMER,id:'wamid.selected',visaAnswer:{token:item.payload.token,option:'ordinary'}}).ok,true);const app=f.raw.applicants[0];app.id='12345678-1234-4321-abcd-123456789a98';app.sourceManifest=[{mediaId:f.source.id,sha256:f.source.checksum}];const read=()=>require('../src/visa-document-client-answers').documentClientAnswers(f.store,CUSTOMER,app,NOW);assert.deepEqual(read(),{passportType:'ordinary'});app.sourceManifest[0].sha256='f'.repeat(64);assert.deepEqual(read(),{});app.sourceManifest=[];assert.deepEqual(read(),{});});
+
+test('Package 6 MRZ and validity notices use fixed targeted copy and preserve deduplication and privacy',async()=>{
+ for(const [code,pattern]of [['PASSPORT_MRZ_REQUIRED',/السطران السفليان.*بدون قص/],['PASSPORT_VALIDITY',/أقل من 6 أشهر.*مجدد/],['RESIDENCE_VALIDITY',/أقل من 3 أشهر.*مجددة/]]){
+  const f=fixture({status:'needs_review'}),before=structuredClone(f.c);f.raw.issues=[{code,message:'PRIVATE_PROVIDER_DIAGNOSTIC'}];
+  const item=f.service.update(CUSTOMER);assert.match(item.payload.text,pattern);assert.doesNotMatch(item.payload.text,/PRIVATE_|PASSPORT_|RESIDENCE_/);await f.service.flush();f.service.update(CUSTOMER);await f.service.flush();assert.equal(f.count(),1);assert.deepEqual(f.c,before);
+ }
+ const f=fixture({status:'needs_review'});f.raw.issues=[{code:'CASE_DATA_MISMATCH',field:'nationalityCode'},{code:'PASSPORT_VALIDITY'}];assert.match(f.service.update(CUSTOMER).payload.text,/لنفس الشخص/);
+});

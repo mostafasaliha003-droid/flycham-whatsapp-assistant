@@ -957,7 +957,7 @@ test('delivered bound choices accept synonyms with progress but never auto-confi
  const choice=asked.questions[0],date=asked.questions[1];
  assert.equal(f.service.handleCustomerMessage(CUSTOMER,{text:'أعزب'}).handled,false);
  const outgoing=Object.values(f.service.data().outbox).find(item=>item.payload.token===choice.token);await f.service.dispatchMessage(outgoing.id);
- const first=f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-choice',text:'أعزب'});assert.equal(first.ok,true);assert.deepEqual(first.progress,{answered:1,total:2,remaining:1});assert.match(first.reply,/تم إنجاز 1 من 2 — بقي 1 أسئلة/);
+ const first=f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-choice',text:'أعزب'});assert.equal(first.ok,true);assert.deepEqual(first.progress,{answered:1,total:2,remaining:1});assert.match(first.reply,/تم إنجاز 1 من 2 — بقي سؤال واحد/);
  assert.deepEqual(f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-choice',text:'أعزب'}),first);
  const second=f.service.handleCustomerMessage(CUSTOMER,{id:'normalized-date',visaAnswer:{token:date.token,value:'١٥/٠٥/١٩٩٠'}});assert.equal(second.ok,true);assert.deepEqual(second.progress,{answered:2,total:2,remaining:0});
  assert.equal(f.service.job(jobId).stagedFields.birthDate,'1990-05-15');assert.equal(f.service.job(jobId).state,'awaiting_answer_confirmation');
@@ -983,4 +983,25 @@ test('bare choice is not assigned when two accepted questions could match',async
  for(const item of f.service.pendingMessages())await f.service.dispatchMessage(item.id);
  assert.equal(f.service.handleCustomerMessage(CUSTOMER,{text:'نعم'}).handled,false);
  assert.ok(Object.values(f.service.job(jobId).questions).every(q=>q.state==='pending'));
+});
+
+test('Package 6 additional labels normalize only explicit prefixes and preserve strict validators',()=>{
+ const {normalizeInboundQuestionValue:normalize}=require('../src/visa-fulfilment'),{questionFor,validateAnswer}=require('../src/visa-client-questions');
+ for(const prefix of ['رقم جواز السفر:','جواز سفر #','جواز:','Passport No.:','Passport number:'])assert.equal(validateAnswer('passportNumber',normalize(questionFor('passportNumber',{applicantIndex:0}),prefix+' n ١٢٣٤٥٦٧٨')),'N12345678',prefix);
+ for(const prefix of ['رقم الإقامة:','رقم الاقامة:','الهوية الإماراتية:','الهوية الاماراتية:','الهوية #'])assert.equal(validateAnswer('emiratesId',normalize(questionFor('emiratesId',{applicantIndex:0}),prefix+' 784-1990-1234567-1')),'784199012345671',prefix);
+ assert.equal(normalize({format:'passportNumber'},'PASSPORT123'),'PASSPORT123');
+ for(const [field,input]of [['passportNumber','جواز: N/123'],['emiratesId','الهوية: 123199012345671'],['nationalityCode','بدي سوريا'],['latinFirstName','A\tB']])assert.throws(()=>validateAnswer(field,normalize(questionFor(field,{applicantIndex:0}),input)),/VISA_ANSWER_INVALID/);
+});
+test('Package 6 empathetic question copy and progress retain staged answers and consent requirements',async()=>{
+ const {questionFor,QUESTION_CATALOG}=require('../src/visa-client-questions');
+ for(const field of Object.keys(QUESTION_CATALOG).filter(f=>f.startsWith('health.'))){const q=questionFor(field,{applicantIndex:0});assert.match(q.prompt,/🌷.*سؤال روتيني مطلوب/);assert.deepEqual(q.options.map(o=>o.value),[true,false]);}
+ for(const field of ['birthDate','issueDate','expiryDate','residenceExpiry','entryDate']){const q=questionFor(field,{applicantIndex:0});assert.match(q.prompt,/يوم\/شهر\/سنة.*مثال.*YYYY-MM-DD/);assert.equal(q.format,'date');assert.equal(q.maxLength,10);}
+ const f=fixture({count:1}),a=await f.activate(),id=a.jobs[0].id,asked=f.service.askQuestions(id,{fields:['passportNumber','emiratesId','arabicFirstName']});
+ const answers=['رقم الجواز: n12345678','رقم الهوية: 784-1990-1234567-1','أحمد   علي'],patterns=[/بقي سؤالان/,/بقي سؤال واحد/,/اكتملت الإجابات ✅/];
+ for(let i=0;i<asked.questions.length;i++){
+  const q=asked.questions[i],out=Object.values(f.service.data().outbox).find(item=>item.payload.token===q.token);await f.service.dispatchMessage(out.id);
+  assert.equal(f.service.handleCustomerMessage(OTHER,{contextId:out.messageId,text:answers[i]}).handled,false);
+  const r=f.service.handleCustomerMessage(CUSTOMER,{contextId:out.messageId,text:answers[i],id:'progress6-'+i});assert.equal(r.ok,true);assert.match(r.reply,patterns[i]);
+ }
+ assert.equal(f.service.job(id).stagedFields.arabicFirstName,'أحمد علي');assert.equal(f.service.job(id).state,'awaiting_answer_confirmation');assert.equal(f.applied.length,0);
 });

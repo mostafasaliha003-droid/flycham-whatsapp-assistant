@@ -31,3 +31,25 @@ test('other service inquiry and its price followup remain separate from an activ
  assert.equal(routeService(s,'a','بدي اسال عن فيزا تركيا').service,'service_inquiry');assert.equal(activeService(s,'a'),'saudi_visa');assert.equal(routeService(s,'a','قديش تكلفتها').service,'service_inquiry');assert.equal(s.data.visaCases.a.id,'original');assert.equal(routeService(s,'a','شو صار بطلبي').service,'saudi_visa');assert.equal(routeService(s,'a','فيزا السعودية').service,'saudi_visa');assert.equal(s.data.serviceSessions.a.serviceInquiry,undefined);
 });
 test('family visits and plural flight requests route without guessing Saudi intent',()=>{for(const t of ['زيارة عائلية للسعودية','زيارة شخصية'])assert.equal(routeService(make(),t,t).service,'saudi_visa');for(const t of ['تذاكر اللاذقية','تيكتات أجنحة الشام','العربية للطيران'])assert.equal(routeService(make(),t,t).service,'flight');assert.equal(routeService(make(),'x','بدي السعودية').service,'choose');});
+
+test('Package 6 known references inside punctuated sentences and multiple numbers retain customer isolation',()=>{
+ const {applicationReference}=require('../src/visa-conversation-intent'),known=['828999111'];
+ for(const text of ['مرحبا، طلبي E828999111 شو صار فيه؟','بخصوص(E828999111)،لو سمحت','هاتفي 15550007001 وبخصوص E828999111 شكراً'])assert.equal(applicationReference(text,{known}),'828999111',text);
+ for(const text of ['بخصوص E828999112','بخصوص XE828999111','بخصوص E8289991119'])assert.equal(applicationReference(text,{known}),null,text);
+ const store=make();store.data.visaFulfilment={jobs:{a:{customer:'a',applicationReference:known[0]}}};
+ assert.equal(routeService(store,'a','مرحبا، طلبي E828999111 شو صار فيه؟').service,'saudi_visa');
+ assert.equal(routeService(store,'b','بخصوص(E828999111)،لو سمحت').service,'choose');
+ assert.equal(routeService(make(),'a','بدي السعودية').service,'choose');
+});
+
+test('Package 7 Egyptian Gulf and summary intents preserve service boundaries',()=>{
+ const {conversationIntent}=require('../src/visa-conversation-intent');
+ for(const text of ['اخبار طلبي ايه','طلبي وصل لفين','المعاملة وصلت لوين','شصار على طلبي','وين صارت المعاملة']){assert.equal(conversationIntent(text),'status',text);assert.equal(routeService(make(),'dialect',text).service,'saudi_visa');}
+ for(const text of ['لخصلي طلبي','شو سجلتوا عندي بملفي؟']){assert.equal(conversationIntent(text),'case_summary');assert.equal(routeService(make(),'summary',text).service,'saudi_visa');}
+ const s=make();routeService(s,'flight','بدي طيران');assert.equal(routeService(s,'flight','اخبار طلبي ايه',{hasFlight:true}).service,'flight');assert.equal(routeService(s,'flight','ملخص طلبي',{hasFlight:true}).service,'flight');assert.equal(routeService(make(),'a','بدي السعودية').service,'choose');
+ assert.equal(conversationIntent('اخبار أوراق طلبي ايه'),null);
+});
+test('Package 8 specialist service captures confirmed nationality and travel date without altering active visa',()=>{
+ const s=make();s.data.visaCases={a:{id:'keep-case',applicants:[{nationality:'سوريا'}]}};const before=structuredClone(s.data.visaCases);routeService(s,'a','فيزا السعودية');routeService(s,'a','فيزا تركيا');routeService(s,'a','سوري');const r=routeService(s,'a','20/12/2026');assert.match(r.reply,/حفظت الجنسية \(سوريا\) وتاريخ السفر \(2026-12-20\) لخدمة تركيا/);assert.match(r.reply,/ما في سعر أو شروط معتمدة/);assert.deepEqual(s.data.visaCases,before);
+ for(const country of ['قطر','البحرين']){const fresh=make();assert.equal(routeService(fresh,'a','فيزا '+country).service,'service_inquiry');assert.equal(fresh.data.serviceSessions.a.serviceInquiry.service,country);routeService(fresh,'a','سوري');routeService(fresh,'a','31/02/2027');assert.equal(fresh.data.serviceSessions.a.serviceInquiry.travelDate,undefined);}
+});

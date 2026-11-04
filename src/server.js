@@ -247,7 +247,10 @@ async function processCustomerMessages(sender,messages){
     const reply=parts.filter(Boolean).join('\n\n');if(!reply)return;
     await sendTextMessage(sender,reply);return;
   }
-  if(messages.some(m=>m.media)){await sendTextMessage(sender,'وصل المرفق. لمعالجة طلب الطيران اكتب تفاصيل الرحلة برسالة نصية، أو وضّح إذا كان المرفق لمعاملة فيزا السعودية.');return;}
+  if(messages.some(m=>m.media)){
+    const flightState=assistant.state(sender),hasFlightContext=Boolean(flightState.selected||flightState.handoffId||flightState.base?.request?.origin||flightState.base?.request?.destination||flightState.offers?.length);
+    await sendTextMessage(sender,hasFlightContext?'وصل المرفق بنجاح ضمن محادثة الطيران 🌷 إذا كان صورة جواز أو إيصال لتثبيت الرحلة فسيراجعه موظف الحجوزات مع طلبك، ولأي تعديل على تفاصيل الرحلة اكتبه برسالة نصية.':'وصل المرفق. لمعالجة طلب الطيران اكتب تفاصيل الرحلة برسالة نصية، أو وضّح إذا كان المرفق لمعاملة فيزا السعودية.');return;
+  }
   const state=assistant.state(sender),prior=state.base?.request;
   if(state.offerPages&&isMoreRequest(text)){
     const page=nextOfferPage(state,{now:Date.now()});

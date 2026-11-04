@@ -9,7 +9,7 @@ const tourist={nationality:'سوريا',documentType:'passport'};
 test('Package 5 family counts understand spoken groups without counting a separate friend inquiry',async()=>{
  const {countFrom}=require('../src/saudi-visa-engine');
  for(const [text,count]of [['عيلتي 4',4],['عايلتي ٣',3],['عائلة من 5',5],['أنا وأمي',2],['أنا ووالدي',2],['أنا وأختي',2],['أنا والمدام وطفلين',4],['أنا وزوجتي وولدين',4],['أنا وزوجي وبنتي',3],['فردين',2],['أنا لحالي',1]])assert.equal(countFrom(text),count,text);
- for(const text of ['أنا وصديقي','أنا ورفيقي','صلاحية 6 أشهر','عمري 40'])assert.equal(countFrom(text),null,text);
+ for(const text of ['صديقي مصري','أنا ورفيقي','صلاحية 6 أشهر','عمري 40'])assert.equal(countFrom(text),null,text);
  const e=make();await e.handle('family','سوري باسبور عادي لحالي');await e.handle('family','أنا والمدام وطفلين');assert.equal(e.getCase('family').applicantCount,4);assert.equal(e.getCase('family').hasMinors,true);assert.equal(e.getCase('family').pendingRelative,undefined);assert.equal(e.getCase('family').quote?.total,undefined);
  await e.handle('friend','سوري جواز عادي لحالي');await e.handle('friend','صديقي مصري');await e.handle('friend','معه باسبورت عادي');assert.equal(e.getCase('friend').applicantCount,1);assert.equal(e.getCase('friend').applicants[0].nationality,'سوريا');assert.equal(e.getCase('friend').pendingRelative.facts.nationality,'مصر');assert.equal(e.getCase('friend').pendingRelative.facts.documentType,'passport');
 });
@@ -390,4 +390,109 @@ test('multi-entry quote adds actual product validity without changing single-ent
  assert.match(quoteText(multi),/صلاحية سنة.*90 يوماً.*شروط التأشيرة الصادرة/);assert.match(quoteText(multi),/640 درهم/);assert.match(quoteText(multi),/672 درهم/);
  const single=P.calculateQuote({applicantCount:1,applicants:[{nationality:'مصر',documentType:'passport'}]});assert.doesNotMatch(quoteText(single),/صلاحية سنة/);
  const child=P.calculateQuote({applicantCount:2,applicants:[tourist,{...tourist,age:10}]});assert.doesNotMatch(quoteText(child),/صلاحية سنة|مستردة/);
+});
+
+test('Package 6 family language counts explicit companions without absorbing an independent inquiry',async()=>{
+ const {countFrom}=require('../src/saudi-visa-engine');
+ for(const [text,count]of [['انا واهلي',3],['انا وامي وابوي',3],['انا ووالدي ووالدتي',3],['انا واخوي',2],['انا وابوي',2],['انا وزوجتي وطفلين',4],['عيلتي 5',5]])assert.equal(countFrom(text),count,text);
+ const e=make();await e.handle('family6','سوري باسبور عادي لحالي');await e.handle('family6','أنا وأخوي');assert.equal(e.getCase('family6').applicantCount,2);assert.equal(e.getCase('family6').applicants[1]?.nationality,undefined);
+ const other=make();await other.handle('friend6','سوري باسبور عادي لحالي');await other.handle('friend6','صديقي مصري');assert.equal(other.getCase('friend6').applicantCount,1);assert.equal(other.getCase('friend6').pendingRelative.facts.nationality,'مصر');
+});
+test('Package 6 shared issuer canonicalization preserves conflicts and handles additional cities',()=>{
+ for(const [value,country]of [['من الشام','سوريا'],['من طرطوس','سوريا'],['من بيروت','لبنان'],['من صور','لبنان'],['من القاهرة','مصر'],['من اسكندرية','مصر'],['من الجيزة','مصر'],['أردنية','الأردن'],['من بغداد','العراق']])assert.equal(P.canonicalIssuer(value),country,value);
+ for(const value of ['دمشق أو بيروت','طرابلس ليبيا','سلطنة عمان'])assert.equal(P.canonicalIssuer(value),value);
+ assert.equal(P.canonicalIssuer(''),null);
+});
+test('Package 6 travel dates retain written order, validate calendar days and exclude document expiry',()=>{
+ const {extractLocal}=require('../src/saudi-visa-engine');
+ for(const date of ['15/11/2026','15.11.2026','15-11-2026','١٥/١١/٢٠٢٦'])assert.equal(extractLocal('سفري '+date,{}).departureDate,'2026-11-15');
+ const mixed=extractLocal('الذهاب 15/11/2026 والعودة 2026-11-25',{});assert.equal(mixed.departureDate,'2026-11-15');assert.equal(mixed.returnDate,'2026-11-25');
+ assert.equal(extractLocal('العودة 25/11/2026',{departureDate:'2026-11-15'}).returnDate,'2026-11-25');
+ for(const date of ['31/02/2026','2026-02-31','29/02/2025','15/13/2026'])assert.equal(extractLocal('سفري '+date,{}).departureDate,undefined);
+ assert.equal(extractLocal('سفري 29/02/2028',{}).departureDate,'2028-02-29');assert.equal(extractLocal('جواز السفر ينتهي 15/11/2026',{}).departureDate,undefined);
+});
+test('Package 6 business-day estimates skip weekends and never promise an issuance date',async()=>{
+ const {workingDaysBetween,travelFitCopy}=require('../src/saudi-visa-engine'),now=Date.parse('2026-11-04T12:00:00Z');
+ assert.equal(workingDaysBetween(Date.parse('2026-11-06T12:00Z'),Date.parse('2026-11-10T23:00Z')),2);
+ assert.equal(workingDaysBetween(Date.parse('2026-11-06'),Date.parse('2026-11-08')),0);
+ assert.equal(workingDaysBetween(now,now+14*86400000),10);for(const value of [NaN,Infinity,now-1])assert.equal(workingDaysBetween(now,value),0);
+ assert.match(travelFitCopy('2026-11-06',now),/2 أيام عمل.*الوقت ضيق.*ما فينا نضمن/);
+ assert.match(travelFitCopy('2026-11-18',now),/10 أيام عمل.*العطل الرسمية.*ما بيضمن/);
+ for(const date of ['2026-02-31','2026-11-03','bad'])assert.equal(travelFitCopy(date,now),'');
+ const e=make({now:()=>now});const r=await e.handle('travel6','سوري جواز عادي لحالي سفري 06/11/2026');assert.match(r.reply,/640/);assert.match(r.reply,/الوقت ضيق/);
+ const follow=await e.handle('travel6','كم يوم بتاخد؟');assert.match(follow.reply,/2026-11-06/);assert.doesNotMatch(follow.reply,/شو تاريخ السفر/);
+});
+test('Package 6 followup timeline uses saved evidence and preserves approved and private states',async()=>{
+ const now=Date.parse('2026-11-10T12:00Z'),e=make({now:()=>now}),c=savedConversation(e,'timeline6','828999111');const job=Object.values(e.store.data.visaFulfilment.jobs)[0];
+ job.createdAt=Date.parse('2026-10-01');job.savedAt=Date.parse('2026-11-06T10:00Z');assert.match((await e.handle('timeline6','شو صار بطلبي')).reply,/مرّ 2 من أصل 6–7 أيام عمل/);
+ delete job.savedAt;job.manualCompletion={at:Date.parse('2026-11-06T10:00Z')};assert.match(e.applicationUpdate(job),/مرّ 2/);
+ delete job.manualCompletion;job.state='portal_review_required';assert.doesNotMatch(e.applicationUpdate(job),/مرّ|تم تقديم/);
+ c.staffVerification={decision:{caseSignature:visaCaseSignature(c),value:'approved'}};e.save('timeline6',c);assert.match(e.applicationUpdate(job),/قرار موافقة/);assert.doesNotMatch(e.applicationUpdate(job),/مرّ/);
+ const wrong=await e.handle('outsider6','رقم الطلب 828999111');assert.match(wrong.reply,/لخصوصية ملفك/);assert.doesNotMatch(wrong.reply,/قرار موافقة|مرّ|828999111/);
+});
+test('Package 6 refund disclosure is recorded only when shown, survives restart and resets per case',async()=>{
+ const e=make(),first=await e.handle('refund6','سوري جواز عادي لحالي');assert.ok(first.reply.includes(P.REFUND_BENEFIT));assert.deepEqual(e.getCase('refund6').disclosuresShown,['refund']);
+ const restarted=make({store:e.store});for(const text of ['كم السعر؟','بدي رابط دفع','غالي','شو السعر؟']){const r=await restarted.handle('refund6',text);assert.doesNotMatch(r.reply,/ميزة خاصة لعملائنا/);assert.match(r.reply,/مستردة بالكامل.*الرفض الرسمي/);}
+ assert.deepEqual(restarted.getCase('refund6').disclosuresShown,['refund']);assert.deepEqual(restarted.newCase().disclosuresShown,[]);
+ const unseen=make();await unseen.handle('unseen6','سوري جواز عادي لحالي كم يوم وطرق الدفع');assert.deepEqual(unseen.getCase('unseen6').disclosuresShown,['refund']);
+ const bank=make();await bank.handle('bank6','سوري جواز عادي لحالي حسابكم البنكي',{messages:[{media:{id:'synthetic'}}]});assert.deepEqual(bank.getCase('bank6').disclosuresShown,[]);const quoted=await bank.handle('bank6','كم السعر؟');assert.ok(quoted.reply.includes(P.REFUND_BENEFIT));
+ const umrah=make();assert.ok((await umrah.handle('umrah6','فلسطيني جواز عادي لحالي')).reply.includes(P.REFUND_BENEFIT));assert.doesNotMatch((await umrah.handle('umrah6','ليش عمرة ما فينا سياحية؟')).reply,/ميزة خاصة لعملائنا/);
+});
+test('Package 6 multi-intent answers cover timing address bank and eligibility without losing financial guards',async()=>{
+ const e=make(),r=await e.handle('compound6','سوري جواز عادي لحالي كم يوم وبدّي عنوان المكتب وحسابكم البنكي');
+ for(const pattern of [/6–7/,/610/,/AE800500/,/إجمالي رسوم التأشيرات: 640/])assert.match(r.reply,pattern);
+ const before=structuredClone(e.getCase('compound6'));const follow=await e.handle('compound6','كم يوم ووين مكتبكم وحسابكم البنكي؟');for(const pattern of [/6–7/,/610/,/AE800500/])assert.match(follow.reply,pattern);assert.doesNotMatch(follow.reply,/إجمالي رسوم/);assert.equal(visaCaseSignature(e.getCase('compound6')),visaCaseSignature(before));
+ const bank=await e.handle('compound6','كم يوم وحسابكم البنكي',{messages:[{media:{id:'synthetic'}}]});assert.match(bank.reply,/AE800500/);assert.doesNotMatch(bank.reply,/إجمالي رسوم/);
+ const mixed=await e.handle('newadvice6','سوري باسبور عادي لحالي لازم تبصيم وشهادة راتب وكم يوم؟');assert.match(mixed.reply,/البصمة/);assert.match(mixed.reply,/ما منطلب كشف حساب/);assert.match(mixed.reply,/6–7/);assert.match(mixed.reply,/640/);assert.doesNotMatch(mixed.reply,/AE800500/);
+ e.getCase('compound6').paymentStatus='verified';const amendment=await e.handle('compound6','نحنا 3 وكم يوم وحسابكم البنكي');assert.match(amendment.reply,/التعديل/);assert.doesNotMatch(amendment.reply,/إجمالي رسوم/);assert.equal(e.getCase('compound6').applicantCount,1);
+});
+test('Package 6 expanded advisory synonyms do not create a child or alter payment',async()=>{
+ const e=make();await e.handle('faq6','سوري جواز عادي لحالي');const before=structuredClone(e.getCase('faq6'));
+ for(const [text,pattern]of [['تبصيم ضروري؟',/البصمة/],['تعريف بالراتب لازم؟',/ما منطلب كشف حساب/],['مقيم بسلطنة عمان',/عُمان/],['إقامة خليجية',/الخليج/],['بنتي على جواز الأم',/جواز سفر مستقل/],['مضافة على جواز',/جواز سفر مستقل/],['طفل على جواز الأب',/جواز سفر مستقل/]]){const r=await e.handle('faq6',text);assert.match(r.reply,pattern,text);assert.equal(visaCaseSignature(e.getCase('faq6')),visaCaseSignature(before));assert.equal(e.getCase('faq6').hasMinors,undefined);assert.equal(e.getCase('faq6').pendingRelative,undefined);}
+});
+test('Package 6 payment acknowledgement cannot confirm a stale or forged verified flag',async()=>{
+ const e=make();await e.handle('payment6','سوري جواز عادي لحالي');e.getCase('payment6').paymentStatus='verified';
+ const r=await e.handle('payment6','حولت وأرسلت الإيصال');assert.match(r.reply,/نتحقق من وصول الدفعة/);assert.doesNotMatch(r.reply,/الدفعة مؤكدة بالفعل|تم تقديم/);assert.equal(e.getCase('payment6').paymentStatus,'awaiting_verification');assert.equal(e.getCase('payment6').submissionStatus,'not_submitted');
+});
+
+
+test('Package 7 dialect counts preserve family membership and separate friends',async()=>{
+ const {countFrom,extractLocal}=require('../src/saudi-visa-engine');
+ for(const [text,count]of [['أنا لوحدي',1],['بطولي',1],['بس انا',1],['أنا ومراتي',2],['أنا وجوزي',2],['أنا والحرمة',2],['نفرين',2],['احنا اتنين',2],['أنا وعيالي',3],['احنا 4 انفار',4],['أنا ومراتي وطفلين',4],['أنا وأمي وأبوي',3]])assert.equal(countFrom(text),count,text);
+ for(const text of ['أنا وصديقي','أنا ورفيقي','صديقي مصري','جوازه صالح 6 أشهر'])assert.equal(countFrom(text),null,text);
+ assert.equal(extractLocal('مسافر بالعربية',{}).transport,'car');assert.equal(extractLocal('مسافر بالعربية للطيران',{}).transport,'air');assert.equal(extractLocal('احنا 4 كلنا سوريين جواز عادي',{}).applicants.length,4);
+ const e=make();await e.handle('dialect7','سوري جواز عادي لحالي');await e.handle('dialect7','أنا وصديقي');assert.equal(e.getCase('dialect7').applicantCount,1);assert.ok(e.getCase('dialect7').pendingRelative);
+});
+test('Package 7 case summary reads only this customer without model extraction or changing evidence',async()=>{
+ const e=make();const empty=await e.handle('summary7','لخصلي طلبي');assert.match(empty.reply,/لسا ما سجلنا بيانات/);
+ await e.handle('summary7','سوري جواز عادي لحالي سفري 20/12/2026 بالسيارة');const c=e.getCase('summary7');c.applicants[0].passportNumber='PRIVATE-PASSPORT';c.applicants[0].name='PRIVATE-NAME';c.paymentStatus='verified';e.save('summary7',c);
+ const before=visaCaseSignature(c);let calls=0;e.understand=async()=>{calls++;return {fields:{applicantCount:20,nationality:'مصر'}};};
+ for(const text of ['لخصلي طلبي','شو سجلتوا عندي بملفي؟','ايش تفاصيل طلبي']){const answer=await e.handle('summary7',text);for(const pattern of [/ملخص طلب/,/عدد المتقدمين: 1/,/سوريا/,/2026-12-20/,/برًا بالسيارة/,/640 درهم/])assert.match(answer.reply,pattern);assert.doesNotMatch(answer.reply,/PRIVATE|الدفعة مؤكدة|تم تقديم/);assert.equal(visaCaseSignature(e.getCase('summary7')),before);}
+ assert.equal(calls,0);assert.match((await e.handle('stranger7','ملخص ملفي')).reply,/لسا ما سجلنا بيانات/);
+ e.getCase('summary7').staffVerification={payment:{caseSignature:before,amount:640}};assert.match((await e.handle('summary7','ملخص طلبي')).reply,/الدفعة مؤكدة من القسم/);
+});
+test('Package 7 mixed family links issuer to second applicant and distinguishes document paths',async()=>{
+ const e=make();await e.handle('mixed7','أنا سوري ومراتي فلسطينية');assert.equal(e.getCase('mixed7').applicantCount,2);assert.equal(e.getCase('mixed7').lastQuestion,'documentType');
+ await e.handle('mixed7','جواز عادي');assert.equal(e.getCase('mixed7').lastQuestion,'documentType_1');
+ const result=await e.handle('mixed7','وثيقة سفر من مصر');const c=e.getCase('mixed7');assert.equal(c.applicants[0].nationality,'سوريا');assert.equal(c.applicants[0].documentType,'passport');assert.equal(c.applicants[0].documentIssuer,undefined);assert.equal(c.applicants[1].nationality,'فلسطين');assert.equal(c.applicants[1].documentIssuer,'مصر');assert.equal(c.applicants[1].documentType,'travel_document');assert.equal(c.quote.total,1490);
+ for(const pattern of [/توضيح مسار المستندات للمجموعة المختلطة/,/المتقدم \(1 — سياحية أونلاين\)/,/المتقدم \(2 — عمرة عبر السفارة\)/,/35 درهماً/])assert.match(result.reply,pattern);
+ assert.doesNotMatch(result.reply,/بتفضّل تسلّم أصل/);assert.match(result.reply,/حسب مسار كل متقدم/);
+ const flight=await e.handle('mixed7','رح نسافر بالطيران');assert.match(flight.reply,/قسم الطيران.*تجهيزها/);assert.equal(e.getCase('mixed7').transport,'air');assert.equal(e.getCase('mixed7').submissionStatus,'not_submitted');
+});
+test('Package 7 targeted issuer ignores a model nationality for the issuing country',async()=>{
+ const e=make();await e.handle('target7','أنا سوري ومراتي فلسطينية');await e.handle('target7','جواز عادي');
+ e.understand=async()=>({fields:{documentType:'travel_document',documentIssuer:'مصر',nationality:'مصر'}});
+ await e.handle('target7','وثيقة سفر من مصر');assert.equal(e.getCase('target7').applicants[0].nationality,'سوريا');assert.equal(e.getCase('target7').applicants[1].nationality,'فلسطين');assert.equal(e.getCase('target7').applicants[1].documentIssuer,'مصر');
+});
+test('Package 7 dialect receipt and paperwork acknowledgements never verify payment or submit',async()=>{
+ for(const text of ['طرشت الاوراق','دزيت الورق','بعت الورق']){const e=make();await e.handle('papers7','سوري جواز عادي لحالي');const reply=await e.handle('papers7',text);assert.match(reply.reply,/وصلت أوراقك/);assert.equal(e.getCase('papers7').stage,'documents_pending_review');assert.equal(e.getCase('papers7').paymentStatus,'unverified');}
+ for(const text of ['طرشت التحويل','دزيت التحويل','طرشت الايصال']){const e=make();await e.handle('receipt7','سوري جواز عادي لحالي');const reply=await e.handle('receipt7',text);assert.match(reply.reply,/نتحقق من وصول الدفعة/);assert.equal(e.getCase('receipt7').paymentStatus,'awaiting_verification');assert.equal(e.getCase('receipt7').submissionStatus,'not_submitted');assert.match((await e.handle('receipt7','لخصلي طلبي')).reply,/إشعار التحويل بانتظار التحقق/);}
+});
+test('Package 7 dialect price questions retain quote and office wording is not a price request',async()=>{
+ const e=make();await e.handle('price7','سوري جواز عادي لحالي');for(const text of ['بكام؟','جم السعر؟','شقد؟','شحال؟'])assert.match((await e.handle('price7',text)).reply,/إجمالي رسوم التأشيرات: 640/);
+ assert.doesNotMatch((await e.handle('price7','وين مكتبكم وكم يوم؟')).reply,/إجمالي رسوم/);
+});
+
+test('Package 7 children dialect keeps pricing in review and summary cannot invent an adult total',async()=>{
+ const e=make();await e.handle('children7','انا وعيالي كلنا سوريين جواز عادي');assert.equal(e.getCase('children7').hasMinors,true);assert.equal(e.getCase('children7').quote.requiresReview,true);const r=await e.handle('children7','لخصلي طلبي');assert.match(r.reply,/مراجعة تسعير الأطفال/);assert.doesNotMatch(r.reply,/إجمالي الرسوم المعتمدة|1920/);
 });

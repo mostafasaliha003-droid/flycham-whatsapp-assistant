@@ -27,14 +27,17 @@ const ISSUE_TEXT = Object.freeze({
   DOCUMENT_IMAGE_UNSUITABLE:'ممكن تبعت الصورة بحجمها الأصلي الكامل (أو ملف PDF من تطبيق UAEICP للهوية) بدون قص؟',
   DOCUMENT_PORTRAIT_REQUIRED:'ممكن تبعت صورة شخصية أمامية واضحة بخلفية بيضاء وإضاءة جيدة بدون فلتر؟',
   DOCUMENT_SOURCE_UNAVAILABLE:'ممكن تعيد إرسال المرفق الأخير؟',
-  MULTIPLE_PASSPORTS:'الجوازات المرسلة كلها للتقديم؟'
+  MULTIPLE_PASSPORTS:'الجوازات المرسلة كلها للتقديم؟',
+  PASSPORT_MRZ_REQUIRED:'ممكن تبعت صورة كاملة لصفحة بيانات الجواز يظهر فيها السطران السفليان (رموز وأحرف أسفل الصفحة) بوضوح بدون قص؟',
+  PASSPORT_VALIDITY:'صلاحية الجواز الظاهرة أقل من 6 أشهر؛ إذا عندك جواز مجدد ابعت صورته هون، أو منراجع الحالة معك.',
+  RESIDENCE_VALIDITY:'صلاحية الإقامة الظاهرة أقل من 3 أشهر؛ إذا عندك هوية أو إقامة مجددة ابعتها هون، أو منراجع الحالة معك.'
 });
 function copyFor(status, issues, summary) {
   const prefix = '';
   if (status === 'ready') return prefix + 'وصلت أوراقك، شكرًا إلك. ملفك جاهز لنكمل إجراءات الطلب.';
   if (status === 'needs_confirmation') return prefix + documentConfirmationCopy({...summary,issues});
   const clarification=documentClarificationCopy({...summary,issues});if(clarification)return clarification;
-  const actionable=new Set(['DOCUMENT_UNREADABLE','DOCUMENT_IMAGE_UNSUITABLE','DOCUMENT_PORTRAIT_REQUIRED','DOCUMENT_SOURCE_UNAVAILABLE','MULTIPLE_PASSPORTS']);
+  const actionable=new Set(Object.keys(ISSUE_TEXT));
   const lines=[...new Set(issues.filter(issue=>actionable.has(issue?.code)).map(issue=>ISSUE_TEXT[issue.code]).filter(Boolean))].slice(0,1);
   return 'وصلت أوراقك، شكرًا إلك. '+(lines.length?'حتى نكمل:\n'+lines.map(line=>'• '+line).join('\n'):'منخبرك إذا احتجنا أي معلومة إضافية.');
 }
