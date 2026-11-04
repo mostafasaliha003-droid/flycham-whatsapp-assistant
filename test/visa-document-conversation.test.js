@@ -16,7 +16,7 @@ test('Package 5 document diagnostics explain the exact fix and never echo extrac
 test('Package 5 partial prepared checklist is scoped to one applicant and not a claim of submission',async()=>{
  const summary={caseId:'case-one',status:'needs_review',applicants:[{documents:{passport:'prepared-passport',residence:'prepared-residence'},issues:[]}],issues:[]},before=structuredClone(summary);
  const c={id:'case-one',applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}]};c.quote=P.calculateQuote(c);const store={data:{visaCases:{[CUSTOMER]:c}},save(){}};
- const r=await make(summary,{store}).handle(CUSTOMER,'شو ناقص');assert.match(r.reply,/✅ الجواز، الهوية أو الإقامة/);assert.match(r.reply,/⏳ الصورة الشخصية/);assert.doesNotMatch(r.reply,/أرسل.*الجواز|تم تقديم|تم تأكيد.*دفعة|prepared-/);assert.deepEqual(summary,before);
+ const r=await make(summary,{store}).handle(CUSTOMER,'شو ناقص');assert.match(r.reply,/وصلنا ضمن ملفك: الجواز والهوية أو الإقامة ✅/);assert.match(r.reply,/بقي تبعت: الصورة الشخصية/);assert.doesNotMatch(r.reply,/أرسل.*الجواز|تم تقديم|تم تأكيد.*دفعة|prepared-/);assert.deepEqual(summary,before);
  assert.doesNotMatch(statusReply(summary,{kind:'passport'}),/⏳|✅/);
  assert.doesNotMatch(statusReply({...summary,applicants:[summary.applicants[0],{documents:{photo:'other-person'}}]}),/⏳|✅/);
  assert.doesNotMatch(statusReply({...summary,applicants:[{documents:{}}]}),/⏳|✅/);
@@ -221,3 +221,12 @@ test('proactive upload failure keeps the useful next step without invented URLs 
  assert.equal(result.handled,true);assert.equal(links,0);assert.match(result.reply,/منخبرك إذا احتجنا أي معلومة إضافية/);assert.doesNotMatch(result.reply,/رح نطلب منك تأكيدها|https:|رابط الرفع|تم تقديم|تم استلام دفعتك/);assert.deepEqual(c,before);
  });
 test('which-document followups refer to the existing dossier and pending receipt instead of restarting requirements',async()=>{const summary={...ready(),status:'needs_review',receiptPendingReview:true,unidentifiedAttachment:true,issues:[{code:'DOCUMENT_UNREADABLE'}]},app=make(summary);for(const text of ['اي مستند','أي مستند؟','شو اللي مو واضح','شو مو مقروء بالجواز؟']){const r=await app.handle(CUSTOMER,text);assert.equal(r.handled,true,text);assert.match(r.reply,/الجواز والهوية والصورة الشخصية جاهزين/);assert.match(r.reply,/إيصال التحويل وصل/);assert.doesNotMatch(r.reply,/صورة أوضح|للتقديم السياحي|ستة أشهر|6 أشهر|UAEICP/);}assert.equal(detectDocumentIntent('اي مستند'),null);});
+
+test('Package 6 checklist includes only prepared documents without leaking paths or merging applicants',()=>{
+ const summary={status:'needs_review',applicants:[{documents:{passport:'private-passport-path',residence:'private-residence-path'}}],issues:[]};
+ assert.equal(statusReply(summary),'وصلنا ضمن ملفك: الجواز والهوية أو الإقامة ✅\nبقي تبعت: الصورة الشخصية لنكمل تجهيز الطلب.');
+ assert.doesNotMatch(statusReply(summary),/private-|دفعة|تم تقديم/);
+ assert.doesNotMatch(statusReply({...summary,applicants:[...summary.applicants,{documents:{photo:'private-photo'}}]}),/وصلنا ضمن ملفك|بقي تبعت/);
+ assert.doesNotMatch(statusReply({...summary,status:'processing'}),/بقي تبعت/);
+ assert.doesNotMatch(statusReply({...summary,status:'needs_confirmation'}),/بقي تبعت/);
+});

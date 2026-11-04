@@ -31,3 +31,13 @@ test('other service inquiry and its price followup remain separate from an activ
  assert.equal(routeService(s,'a','بدي اسال عن فيزا تركيا').service,'service_inquiry');assert.equal(activeService(s,'a'),'saudi_visa');assert.equal(routeService(s,'a','قديش تكلفتها').service,'service_inquiry');assert.equal(s.data.visaCases.a.id,'original');assert.equal(routeService(s,'a','شو صار بطلبي').service,'saudi_visa');assert.equal(routeService(s,'a','فيزا السعودية').service,'saudi_visa');assert.equal(s.data.serviceSessions.a.serviceInquiry,undefined);
 });
 test('family visits and plural flight requests route without guessing Saudi intent',()=>{for(const t of ['زيارة عائلية للسعودية','زيارة شخصية'])assert.equal(routeService(make(),t,t).service,'saudi_visa');for(const t of ['تذاكر اللاذقية','تيكتات أجنحة الشام','العربية للطيران'])assert.equal(routeService(make(),t,t).service,'flight');assert.equal(routeService(make(),'x','بدي السعودية').service,'choose');});
+
+test('Package 6 known references inside punctuated sentences and multiple numbers retain customer isolation',()=>{
+ const {applicationReference}=require('../src/visa-conversation-intent'),known=['828999111'];
+ for(const text of ['مرحبا، طلبي E828999111 شو صار فيه؟','بخصوص(E828999111)،لو سمحت','هاتفي 15550007001 وبخصوص E828999111 شكراً'])assert.equal(applicationReference(text,{known}),'828999111',text);
+ for(const text of ['بخصوص E828999112','بخصوص XE828999111','بخصوص E8289991119'])assert.equal(applicationReference(text,{known}),null,text);
+ const store=make();store.data.visaFulfilment={jobs:{a:{customer:'a',applicationReference:known[0]}}};
+ assert.equal(routeService(store,'a','مرحبا، طلبي E828999111 شو صار فيه؟').service,'saudi_visa');
+ assert.equal(routeService(store,'b','بخصوص(E828999111)،لو سمحت').service,'choose');
+ assert.equal(routeService(make(),'a','بدي السعودية').service,'choose');
+});

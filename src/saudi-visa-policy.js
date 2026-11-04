@@ -41,6 +41,21 @@ const MULTI=new Set(Object.keys(COUNTRY_ALIASES).filter(n=>!['مصر','فلسط�
 function boundaryFind(text,word){const a=normalize(word),pattern=new RegExp('(^|[^\\p{L}])'+a.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?=$|[^\\p{L}])','u');return pattern.test(text);}
 function nationalities(text){const n=normalize(text);return Object.entries(COUNTRY_ALIASES).filter(([k,a])=>a.some(x=>boundaryFind(n,x)||/[ي]$/.test(normalize(x))&&boundaryFind(n,x+'ين'))).map(([k])=>k);}
 function canonicalNationality(value){const n=normalize(value);for(const [country,aliases]of Object.entries(COUNTRY_ALIASES))if(normalize(country)===n||aliases.some(a=>normalize(a)===n))return country;return typeof value==='string'?value.trim().slice(0,70):null;}
+const ISSUER_CITY_ALIASES=Object.freeze({
+ 'سوريا':['دمشق','الشام','حلب','حمص','حماه','اللاذقيه','طرطوس'],
+ 'لبنان':['بيروت','صيدا','طرابلس','صور'],
+ 'مصر':['القاهره','اسكندريه','الاسكندريه','الجيزه'],
+ 'الأردن':['عمان','اربد','الزرقاء'],
+ 'العراق':['بغداد','البصره','اربيل']
+});
+function canonicalIssuer(value){
+ const n=normalize(value);if(!n)return null;
+ const ns=nationalities(n),matches=Object.entries(ISSUER_CITY_ALIASES).filter(([country,cities])=>ns.includes(country)||cities.some(city=>boundaryFind(n,city)&&(city!=='صور'||n==='صور'||/(?:من|في)\s+صور(?=$|[^\p{L}])/u.test(n)))).map(([country])=>country);
+ // Do not guess between cities/countries, including Tripoli in Libya or Oman.
+ if(matches.length===1&&!/سلطنه عمان/.test(n)&&!ns.some(country=>country!=='فلسطين'&&country!==matches[0]))return matches[0];
+ if(!matches.length&&ns.length===1)return ns[0];
+ return typeof value==='string'&&value.trim()?value.trim().slice(0,70):null;
+}
 function productFor(person={}){
  const n=canonicalNationality(person.nationality),doc=person.documentType;
  if(['أفغانستان','إيران','تشاد'].includes(n))return {code:'suspended',label:'التقديم متوقف حالياً لدينا',policyVersion:POLICY_VERSION};
@@ -71,4 +86,4 @@ function umrahConsultation(person={}, {objection=false}={}) {
 }
 function umrahQuestion(text){return /ليش.{0,15}(?:عمره|سياح)|(?:مافينا|ما فينا|ممكن|فينا|نجرب|نحاول|نقدم|نقدمه|نقدمها|بدي).{0,25}سياح|ليش ما.{0,15}سياح/.test(normalize(text));}
 
-module.exports={UMRAH_ROUTE,umrahConsultation,umrahQuestion,POLICY_VERSION,PRICES,REFUND_BENEFIT,OFFICE_ADDRESS,normalize,nationalities,canonicalNationality,productFor,calculateQuote,TOURIST_DOCS,UMRAH_DOCS};
+module.exports={UMRAH_ROUTE,umrahConsultation,umrahQuestion,POLICY_VERSION,PRICES,REFUND_BENEFIT,OFFICE_ADDRESS,normalize,nationalities,canonicalNationality,canonicalIssuer,productFor,calculateQuote,TOURIST_DOCS,UMRAH_DOCS};

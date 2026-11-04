@@ -112,7 +112,7 @@ function statusReply(summary, {kind = null, hasAttachments = false} = {}) {
   if (!kind && Array.isArray(summary.applicants) && summary.applicants.length === 1) {
     const present = ['passport', 'residence', 'photo'].filter(item => hasPrepared(summary, item));
     const missing = ['passport', 'residence', 'photo'].filter(item => !hasPrepared(summary, item));
-    if (present.length > 0 && missing.length > 0) return `المرفقات الجاهزة بملفك: ✅ ${present.map(item => KINDS[item]).join('، ')} — وبقي لإكمال الملف: ⏳ ${missing.map(item => KINDS[item]).join('، ')}.`;
+    if (present.length > 0 && missing.length > 0) return `وصلنا ضمن ملفك: ${present.map(item => KINDS[item]).join(' و')} ✅\nبقي تبعت: ${missing.map(item => KINDS[item]).join(' و')} لنكمل تجهيز الطلب.`;
   }
   return 'أوراقك محفوظة معنا، ومنخبرك إذا احتجنا أي معلومة إضافية.';
 }

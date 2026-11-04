@@ -7,8 +7,11 @@ function applicationReference(text,{awaiting=false,known=[]}={}){
  if(labelled)return referenceKey(labelled[1]);
  const bare=t.match(/^\s*(E?\d{7,12})\s*[.!؟?]*$/);
  if(bare&&(awaiting||known.some(value=>referenceKey(value)===referenceKey(bare[1]))))return referenceKey(bare[1]);
- const inline=t.match(/(?:^|\s)(E?\d{7,12})(?=\s|$|[.!؟?،,])/);
- if(inline&&(known.some(value=>referenceKey(value)===referenceKey(inline[1]))||awaiting&&/(?:رقم|طلبي|الطلب|تفضل|هاد|هذا|مرجع|بخصوص)/.test(t)))return referenceKey(inline[1]);
+ const inline=[...t.matchAll(/(?:^|[^\p{L}\p{N}])(E?\d{7,12})(?=$|[^\p{L}\p{N}])/gu)].map(m=>referenceKey(m[1]));
+ const matched=inline.find(ref=>known.some(value=>referenceKey(value)===ref));
+ if(matched)return matched;
+ // An awaiting followup can still receive one unambiguous, explicitly cued reference.
+ if(inline.length===1&&awaiting&&/(?:رقم|طلبي|الطلب|تفضل|هاد|هذا|مرجع|بخصوص)/.test(t))return inline[0];
  return null;
 }
 function conversationIntent(text){

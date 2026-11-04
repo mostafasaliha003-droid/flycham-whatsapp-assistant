@@ -61,8 +61,8 @@ function normalizeInboundQuestionValue(question = {}, value = '') {
     return Object.hasOwn(COUNTRY_CODE_ALIASES,country)?COUNTRY_CODE_ALIASES[country]:raw.toUpperCase();
   }
   if (format === 'country_code' && /^(?:\+|00)?\d{1,4}$/.test(ascii)) return ascii.replace(/^\+|^00/, '');
-  if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/^(?:رقم\s*الجواز|جواز\s*رقم|passport\s*(?:no|number)?)\s*[:：-]?\s*/i, '').replace(/\s+/g, '').toUpperCase();
-  if (format === 'emiratesId') return ascii.replace(/^(?:رقم\s*الهوي[ةه]|هويتي|emirates\s*id|eid)\s*[:：-]?\s*/i, '');
+  if (format === 'passportNumber' || format === 'passport_number') return ascii.replace(/^(?:رقم\s*(?:الجواز|جواز\s*السفر)|جواز\s*رقم|جواز(?:\s*سفر)?|passport(?:\s*(?:number|no\.?))?)(?=\s|[:：#-])\s*[:：#-]?\s*/iu, '').replace(/\s+/g, '').toUpperCase();
+  if (format === 'emiratesId') return ascii.replace(/^(?:رقم\s*(?:الهوي[ةه]|ال[اإ]قام[ةه]|[اإ]قام[ةه])|هويتي|الهوي[ةه](?:\s*ال[اإ]ماراتي[ةه])?|emirates\s*id|eid)(?=\s|[:：#-])\s*[:：#-]?\s*/iu, '').trim();
   if (format === 'phone_number') return ascii;
   if (format === 'latinName' || format === 'arabicName') return raw.replace(/\s+/g, ' ');
   return raw;
@@ -726,16 +726,20 @@ class VisaFulfilment {
     try {
       const outcome = operation();
       if (outcome.followupFields?.length) this.askQuestions(outcome.jobId, {fields: outcome.followupFields});
-      result = {handled: true, ok: true, progress: outcome.progress, applicantIndex: outcome.applicantIndex, reply: outcome.followupFields?.length ? 'شكراً، نحتاج بعض التفاصيل الإضافية لهذا المسافر قبل عرض ملخص التأكيد.' : outcome.state === 'ready' ? 'تم تأكيد إجابات هذا المسافر واعتمادها لتجهيز الطلب.' : 'تم تسجيل إجابتك لهذا المسافر. يرجى إكمال الأسئلة ومراجعة ملخص الإجابات قبل اعتمادها.'};
-      if (outcome.progress) result.reply += `\nالأسئلة الحالية: تم إنجاز ${outcome.progress.answered} من ${outcome.progress.total} — بقي ${outcome.progress.remaining} أسئلة.`;
+      result = {handled: true, ok: true, progress: outcome.progress, applicantIndex: outcome.applicantIndex, reply: outcome.followupFields?.length ? 'شكراً إلك 🌷 نحتاج بعض التفاصيل الإضافية لهذا المسافر قبل عرض ملخص التأكيد.' : outcome.state === 'ready' ? 'تم تأكيد إجابات هذا المسافر واعتمادها لتجهيز الطلب 🌷' : 'تم تسجيل إجابتك لهذا المسافر 🌷 يرجى إكمال الأسئلة ومراجعة ملخص الإجابات قبل اعتمادها.'};
+      if (outcome.progress) {
+        const rem=outcome.progress.remaining;
+        const remCopy=rem===0?'اكتملت الإجابات ✅':rem===1?'بقي سؤال واحد':rem===2?'بقي سؤالان':rem<=10?`بقي ${rem} أسئلة`:`بقي ${rem} سؤالاً`;
+        result.reply += `\nالأسئلة الحالية: تم إنجاز ${outcome.progress.answered} من ${outcome.progress.total} — ${remCopy}.`;
+      }
     } catch (error) {
       const invalid = ['VISA_ANSWER_INVALID', 'VISA_ANSWER_OPTION_INVALID'].includes(error?.code);
-      result = {handled: true, ok: false, error: invalid ? 'VISA_ANSWER_INVALID' : 'VISA_ANSWER_CONTEXT_STALE', reply: invalid ? 'لم نعتمد هذه الإجابة. يرجى الإجابة بالصيغة المطلوبة أو استخدام خيارات السؤال.' : 'هذه الإجابة مرتبطة بسؤال قديم أو بمعاملة متوقفة. لم نغيّر بيانات الطلب؛ يرجى انتظار السؤال الحالي.'};
-      if (invalid && activeQuestion?.format === 'date') result.reply = 'التاريخ المدخل غير صالح. اكتبه يوم/شهر/سنة (مثال: 15/05/1990) أو 1990-05-15، ومنسجّله بعد التحقق من صحته.';
-      else if (invalid && activeQuestion?.format === 'latinName') result.reply = 'يرجى كتابة الاسم بالأحرف الإنجليزية (اللاتينية) فقط كما هو مطبوع في جواز السفر (مثال: AHMAD).';
-      else if (invalid && activeQuestion?.format === 'arabicName') result.reply = 'يرجى كتابة الاسم بالأحرف العربية فقط كما هو مثبت في المستندات.';
-      else if (invalid && activeQuestion?.format === 'emiratesId') result.reply = 'رقم الهوية الإماراتية غير صالح؛ يرجى إرسال الرقم المكون من 15 خانة والذي يبدأ بـ 784.';
-      else if (invalid && activeQuestion?.format === 'passportNumber') result.reply = 'يرجى إرسال رقم الجواز بالأحرف الإنجليزية والأرقام فقط بدون رموز إضافية.';
+      result = {handled: true, ok: false, error: invalid ? 'VISA_ANSWER_INVALID' : 'VISA_ANSWER_CONTEXT_STALE', reply: invalid ? 'لم نعتمد هذه الإجابة بعد 🌷 يرجى الإجابة بالصيغة المطلوبة أو استخدام خيارات السؤال.' : 'هذه الإجابة مرتبطة بسؤال قديم أو بمعاملة متوقفة. لم نغيّر بيانات الطلب؛ يرجى انتظار السؤال الحالي.'};
+      if (invalid && activeQuestion?.format === 'date') result.reply = 'التاريخ المدخل غير صالح 🌷 اكتبه يوم/شهر/سنة (مثال: 15/05/1990) أو 1990-05-15، ومنسجّله بعد التحقق من صحته.';
+      else if (invalid && activeQuestion?.format === 'latinName') result.reply = 'كرمال نسجّل الاسم بشكل صحيح، اكتبه بالأحرف الإنجليزية (اللاتينية) كما هو مكتوب في جواز السفر 🌷';
+      else if (invalid && activeQuestion?.format === 'arabicName') result.reply = 'كرمال نسجّل الاسم بشكل صحيح، اكتبه بالأحرف العربية كما هو مثبت في المستندات 🌷';
+      else if (invalid && activeQuestion?.format === 'emiratesId') result.reply = 'رقم الهوية الإماراتية غير صالح 🌷 اكتب الرقم المكوّن من 15 خانة والذي يبدأ بـ 784 كما هو على الهوية.';
+      else if (invalid && ['passportNumber','passport_number'].includes(activeQuestion?.format)) result.reply = 'يرجى إرسال رقم الجواز بالأحرف الإنجليزية والأرقام فقط بدون رموز إضافية كما هو في الجواز 🌷';
       else if (invalid && activeQuestion?.format === 'countryCode') result.reply = 'يرجى كتابة اسم الدولة (مثل: سوريا، مصر، الأردن) أو رمزها المكون من 3 أحرف (مثل: SYR).';
       else if (invalid && activeQuestion?.type === 'choice') result.reply = 'اختار من قائمة السؤال، أو اكتب رقم الإجابة أو اسمها:\n' + activeQuestion.options.map((option, index) => `${index + 1}. ${option.label}`).join('\n');
     }

@@ -24,9 +24,9 @@ const CATALOG = {
   gccResident: choice('هل لديك حالياً إقامة سارية في إحدى دول مجلس التعاون الخليجي؟'),
   priorGccDeportation: choice('هل سبق أن صدر بحقك إبعاد أو ترحيل من إحدى دول مجلس التعاون الخليجي؟'),
   priorGccRuleViolation: choice('هل سبق أن صدر بحقك منع دخول أو مخالفة لأنظمة الإقامة أو الزيارة في إحدى دول مجلس التعاون الخليجي؟'),
-  'health.hospitalizedOrEmergency': choice('هل هناك حالة تنويم في المستشفى حالياً أو تتلقى علاج الطوارئ؟'),
-  'health.accidentDisability': choice('هل تعرضت لحادث أدى إلى إصابتك بعلة أو إعاقة؟'),
-  'health.congenitalCondition': choice('هل لديك حالات ضعف أو تشوه خلقي؟'),
+  'health.hospitalizedOrEmergency': choice('(سؤال روتيني مطلوب في استمارة المنصة والتأمين الطبي) هل هناك حالة تنويم في المستشفى حالياً أو تتلقى علاج الطوارئ؟'),
+  'health.accidentDisability': choice('(سؤال روتيني مطلوب في استمارة المنصة) هل تعرضت لحادث أدى إلى إصابتك بعلة أو إعاقة؟'),
+  'health.congenitalCondition': choice('(سؤال روتيني مطلوب في استمارة المنصة) هل لديك حالات ضعف أو تشوه خلقي؟'),
   saudiAddress: text('ما عنوان الإقامة المقصود داخل السعودية؟ اذكر العنوان الفعلي أو اسم الفندق والمدينة بعد تأكيدهما.', 1500),
   birthPlace: text('ما مكان الميلاد كما هو مثبت في جواز السفر؟'),
   sex: choice('ما الجنس المثبت في جواز السفر؟', [
@@ -51,12 +51,12 @@ const CATALOG = {
   ]),
   nationalityCode: text('ما رمز الجنسية الحالي المكون من ثلاثة أحرف كما هو في الجواز؟', 3, 'countryCode'),
   issuingCountryCode: text('ما رمز دولة إصدار الجواز المكون من ثلاثة أحرف كما هو في الجواز؟', 3, 'countryCode'),
-  birthDate: text('ما تاريخ الميلاد الكامل كما هو في الجواز؟ أرسله بصيغة سنة-شهر-يوم (YYYY-MM-DD).', 10, 'date'),
-  issueDate: text('ما تاريخ إصدار الجواز؟ أرسله بصيغة سنة-شهر-يوم (YYYY-MM-DD).', 10, 'date'),
-  expiryDate: text('ما تاريخ انتهاء الجواز؟ أرسله بصيغة سنة-شهر-يوم (YYYY-MM-DD).', 10, 'date'),
-  residenceExpiry: text('ما تاريخ انتهاء الإقامة الحالية؟ أرسله بصيغة سنة-شهر-يوم (YYYY-MM-DD).', 10, 'date'),
+  birthDate: text('ما تاريخ الميلاد الكامل كما هو في الجواز؟ أرسله بصيغة يوم/شهر/سنة (مثال: 15/05/1990) أو YYYY-MM-DD.', 10, 'date'),
+  issueDate: text('ما تاريخ إصدار الجواز؟ أرسله بصيغة يوم/شهر/سنة (مثال: 15/05/2023) أو YYYY-MM-DD.', 10, 'date'),
+  expiryDate: text('ما تاريخ انتهاء الجواز؟ أرسله بصيغة يوم/شهر/سنة (مثال: 15/05/2030) أو YYYY-MM-DD.', 10, 'date'),
+  residenceExpiry: text('ما تاريخ انتهاء الإقامة الحالية؟ أرسله بصيغة يوم/شهر/سنة (مثال: 15/05/2028) أو YYYY-MM-DD.', 10, 'date'),
   emiratesId: text('ما رقم الهوية الإماراتية كما هو مثبت على الهوية؟', 30, 'emiratesId'),
-  entryDate: text('ما تاريخ الدخول المقصود إلى السعودية؟ أرسله بصيغة سنة-شهر-يوم (YYYY-MM-DD).', 10, 'date'),
+  entryDate: text('ما تاريخ الدخول المقصود إلى السعودية؟ أرسله بصيغة يوم/شهر/سنة (مثال: 15/05/2027) أو YYYY-MM-DD.', 10, 'date'),
   'guardian.relationship': choice('ما صلة ولي الأمر لهذا المتقدم القاصر؟', [
     {id: 'father', label: 'الأب', value: 'father'},
     {id: 'mother', label: 'الأم', value: 'mother'}
@@ -96,7 +96,7 @@ function questionFor(field, {applicantIndex, applicantName} = {}) {
   return {
     field, applicantIndex,
     ...structuredClone(question),
-    prompt: `للمتقدم رقم ${applicantIndex + 1}${name ? ` (${name})` : ''}: ${question.prompt}`
+    prompt: `للمتقدم رقم ${applicantIndex + 1}${name ? ` (${name})` : ''} 🌷 ${question.prompt}`
   };
 }
 function realDate(value) {
