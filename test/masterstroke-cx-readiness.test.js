@@ -182,3 +182,16 @@ test('failed rating delivery dismisses numeric capture and respects the cooldown
  assert.equal(await sendRating(store,id,{service:'flight',send:async()=>{calls++;throw Error('synthetic failure');}}),false);
  assert.equal(calls,1);assert.equal(readRating(store,id,'2').handled,false);assert.equal(requestRating(store,id,{service:'flight'}),null);assert.equal(store.data.serviceRatings.history[0].deliveryUnconfirmed,true);
 });
+
+test('verified server converter uses only bounded pipes and no customer paths',async()=>{
+ const {oggToMp3}=require('../src/voice-audio-conversion'),{EventEmitter}=require('node:events'),{PassThrough}=require('node:stream');let args,options,command,killed=false,input;
+ const spawnImpl=(exe,argv,opts)=>{command=exe;args=argv;options=opts;const c=new EventEmitter();c.stdin=new PassThrough();c.stdout=new PassThrough();c.kill=()=>{killed=true;};c.stdin.on('data',b=>input=Buffer.from(b));c.stdin.on('finish',()=>{c.stdout.write(Buffer.from('ID3-synthetic-mp3'));c.emit('close',0);});return c;};
+ const bytes=Buffer.from('OggS-synthetic'),converted=await oggToMp3(bytes,{spawnImpl});assert.equal(converted.toString(),'ID3-synthetic-mp3');assert.equal(command,'/usr/bin/ffmpeg');assert.deepEqual(input,bytes);assert.ok(args.includes('pipe:0')&&args.includes('pipe:1'));assert.equal(args[args.indexOf('-protocol_whitelist')+1],'pipe');assert.deepEqual(options.stdio,['pipe','pipe','ignore']);assert.equal(killed,false);
+ const oversized=()=>{const c=new EventEmitter();c.stdin=new PassThrough();c.stdout=new PassThrough();c.kill=()=>{killed=true;};c.stdin.on('finish',()=>c.stdout.write(Buffer.alloc(3*1024*1024+1)));return c;};await assert.rejects(oggToMp3(bytes,{spawnImpl:oversized}),/VOICE_AUDIO_CONVERSION_FAILED/);assert.equal(killed,true);
+});
+test('OGG conversion targets only an approved Cline audio model, wipes converted bytes and falls back unchanged',async()=>{
+ const bytes=Buffer.from('OggS-synthetic'),converted=Buffer.from('ID3-synthetic'),env={CLINE_API_KEY:'synthetic',CLINE_AUDIO_MODEL:'cline-pass/qwen3.8-max',GEMINI_API_KEY:'synthetic'};let calls=0;
+ const result=await transcribeVoice({bytes,mimeType:'audio/ogg',env,convertImpl:async()=>converted,fetchImpl:async(url,init)=>{calls++;const body=JSON.parse(init.body);assert.equal(body.messages[1].content[0].input_audio.format,'mp3');return Response.json({choices:[{finish_reason:'stop',message:{content:'{"clear":true,"transcript":"بدي رحلة للشام"}'}}]});}});
+ assert.equal(result.provider,'cline');assert.equal(calls,1);assert.ok(converted.every(b=>b===0));assert.equal(bytes.toString(),'OggS-synthetic');
+ const fallback=await transcribeVoice({bytes,mimeType:'audio/ogg',env,convertImpl:async()=>{throw Error('VOICE_AUDIO_CONVERSION_FAILED');},fetchImpl:async(url,init)=>{assert.match(url,/googleapis/);assert.equal(JSON.parse(init.body).contents[0].parts[0].inline_data.mime_type,'audio/ogg');return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'{"clear":true,"transcript":"بدي رحلة للشام"}'}]}}]});}});assert.equal(fallback.provider,'gemini');
+});

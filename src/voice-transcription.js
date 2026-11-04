@@ -2,6 +2,7 @@
 // Voice-note transcription. Audio bytes are sent only to the configured
 // provider, never stored in conversation state; the transcript is redacted
 // before it reaches Ahmed or Ismail. Failure always yields an honest fallback.
+const {oggToMp3}=require('./voice-audio-conversion');
 const {CLINEPASS_MODELS}=require('./cline-pass-models');
 const {redactVisaText}=require('./saudi-visa-nlu');
 const MAX_BYTES=3*1024*1024,MAX_TRANSCRIPT=1500;
@@ -42,7 +43,7 @@ function voiceProviders(env=process.env){
  const order=String(env.VOICE_TRANSCRIPTION_PROVIDERS||'cline,gemini').split(',').map(s=>s.trim()).filter(p=>['cline','gemini'].includes(p));
  return [...new Set(order)];
 }
-async function transcribeVoice({bytes,mimeType,env=process.env,fetchImpl=fetch,timeoutMs=25000}={}){
+async function transcribeVoice({bytes,mimeType,env=process.env,fetchImpl=fetch,timeoutMs=25000,convertImpl=oggToMp3}={}){
  if(env.VOICE_TRANSCRIPTION==='off')return {ok:false,reason:'disabled'};
  if(!Buffer.isBuffer(bytes)||!bytes.length)return {ok:false,reason:'empty'};
  if(bytes.length>MAX_BYTES)return {ok:false,reason:'too_long'};
@@ -50,7 +51,11 @@ async function transcribeVoice({bytes,mimeType,env=process.env,fetchImpl=fetch,t
  const errors=[];
  for(const provider of voiceProviders(env)){
   try{
-   const result=await (provider==='cline'?callCline:callGemini)({bytes,mimeType,env,fetchImpl,timeoutMs});
+   let converted,result;
+   try{
+    if(provider==='cline'&&mimeType==='audio/ogg'&&env.CLINE_API_KEY&&CLINEPASS_MODELS.includes(env.CLINE_AUDIO_MODEL))converted=await convertImpl(bytes,{timeoutMs:Math.min(timeoutMs,8000)});
+    result=await (provider==='cline'?callCline:callGemini)({bytes:converted||bytes,mimeType:converted?'audio/mpeg':mimeType,env,fetchImpl,timeoutMs});
+   }finally{converted?.fill(0);}
    if(!result.clear)return {ok:false,reason:'unclear',provider};
    return {ok:true,provider,transcript:redactVisaText(result.transcript).slice(0,MAX_TRANSCRIPT)};
   }catch(error){if(error?.message==='VOICE_PROVIDER_UNSUPPORTED')continue;errors.push(provider+':'+(/^VOICE_[A-Z0-9_]+$/.test(error?.message||'')?error.message:['TimeoutError','AbortError'].includes(error?.name)?'VOICE_TIMEOUT':'VOICE_NETWORK'));}
