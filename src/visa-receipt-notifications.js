@@ -45,7 +45,7 @@ class VisaReceiptNotifications{
    if(this.current(item)){this.data().items[key]=item;changed=true;}
   }if(changed)this.store.save();
  }
- text(item){return 'وصل إيصال تحويل جديد وبانتظار مراجعتك.\nرقم العميل: +'+item.customer+'\nمرجع الملف: '+item.caseId+'\nافتح الملف لمراجعة الإيصال واعتماد الدفعة بعد التحقق من وصولها للحساب:\n'+OPS;}
+ text(item){return (this.store.data.customerPriority?.[item.customer]?.priority==='urgent'?'⚠️ أولوية: عميل مستعجل/منزعج\n':'')+'وصل إيصال تحويل جديد وبانتظار مراجعتك.\nرقم العميل: +'+item.customer+'\nمرجع الملف: '+item.caseId+'\nافتح الملف لمراجعة الإيصال واعتماد الدفعة بعد التحقق من وصولها للحساب:\n'+OPS;}
  async flush(){if(this.busy)return;this.busy=true;try{await this.recoverPdfReceipts();this.sync();for(const item of Object.values(this.data().items)){
   if(item.state==='paused'&&item.retryAt<=this.now())item.state='pending';
   if(item.state!=='pending')continue;if(!this.current(item)){item.state='cancelled';this.store.save();continue;}

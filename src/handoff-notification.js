@@ -2,12 +2,13 @@
 const {toFils,formatAED}=require('./money');
 const clean=value=>typeof value==='string'||typeof value==='number'?String(value).replace(/[\r\n\u0000-\u001f*`_]/g,' ').trim().slice(0,140):'';
 const present=value=>clean(value)||'غير محدد';
-function formatHandoffCard(customer,summary={}){
+function formatHandoffCard(customer,summary={},priority){
  const r=summary.request||{},offer=summary.offer,p=r.passengers||{};
  const phone=String(customer||'').replace(/^\+/,''),validPhone=/^[1-9]\d{6,14}$/.test(phone);
  const count=value=>Number.isInteger(value)&&value>=0?String(value):'غير محدد';
  const date=r.departureRange?`${present(r.departureRange.start)} إلى ${present(r.departureRange.end)}`:present(r.departureDate);
  const lines=['*طلب متابعة مع موظف الحجوزات ✈️*',`👤 رقم العميل: ${validPhone?'+'+phone:present(customer)}`];
+ if(priority?.priority==='urgent')lines.push('⚠️ أولوية: عميل مستعجل/منزعج');
  if(validPhone)lines.push(`💬 https://wa.me/${phone}`);
  lines.push(`📍 المسار: ${present(r.origin)} ← ${present(r.destination)}`,`📅 الذهاب: ${date}`);
  if(r.tripType==='round_trip')lines.push(`📅 العودة: ${r.returnDate?present(r.returnDate):r.stayNights?`بعد ${present(r.stayNights)} ليلة`:'غير محددة'}`);

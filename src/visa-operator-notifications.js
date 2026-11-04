@@ -21,7 +21,7 @@ class VisaOperatorNotifications{
   if(!this.current(item))return;records[item.id]=item;
   try{this.store.save();}catch{delete records[item.id];throw Error('OPERATOR_NOTICE_SAVE_FAILED');}
  }
- text(){return 'تنبيه من رعد: مطلوب إكمال التحقق المرئي لمتابعة طلب التأشيرة.\nافتح مركز المحادثات، ثم قسم التأشيرات وملف الطلب، واضغط «إكمال التحقق المرئي».\n'+OPS+'\nلا ترسل رمز الصورة على واتساب؛ أدخله في صفحة التحقق المرتبطة بالجلسة.';}
+ text(item){const customer=item&&this.fulfilment.job(item.jobId)?.customer;return (this.store.data.customerPriority?.[customer]?.priority==='urgent'?'⚠️ أولوية: عميل مستعجل/منزعج\n':'')+'تنبيه من رعد: مطلوب إكمال التحقق المرئي لمتابعة طلب التأشيرة.\nافتح مركز المحادثات، ثم قسم التأشيرات وملف الطلب، واضغط «إكمال التحقق المرئي».\n'+OPS+'\nلا ترسل رمز الصورة على واتساب؛ أدخله في صفحة التحقق المرتبطة بالجلسة.';}
  async flush(){
   if(this.busy||!this.recipient())return;this.busy=true;
   try{for(const item of Object.values(this.store.data.visaOperatorNotices)){
@@ -30,7 +30,7 @@ class VisaOperatorNotifications{
    item.state='sending';try{this.store.save();}catch{item.state='pending';throw Error('OPERATOR_NOTICE_SAVE_FAILED');}
    const guard=()=>{if(!this.current(item))throw Error('OPERATOR_NOTICE_STALE');};
    try{
-    const result=await this.send({recipient:item.recipient,jobId:item.jobId,noticeId:item.id,text:this.text(),noticeMessageId:item.noticeMessageId},guard);
+    const result=await this.send({recipient:item.recipient,jobId:item.jobId,noticeId:item.id,text:this.text(item),noticeMessageId:item.noticeMessageId},guard);
     if(accepted(result)){item.state='accepted';item.messageId=result.messages[0].id;}
     else if(result?.paused===true){item.state=typeof result.noticeMessageId==='string'?'waiting_owner':'paused';if(result.noticeMessageId)item.noticeMessageId=result.noticeMessageId;}
     else item.state='uncertain';

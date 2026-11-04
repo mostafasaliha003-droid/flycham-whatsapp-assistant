@@ -50,6 +50,13 @@ function answeredField(field,r={}){
  return Boolean(r?.[field]);
 }
 function knownQuestion(question,r={}){return answeredField(questionField(question),r);}
+function familyRequestCard(r={}){
+ const p=r.passengers||{},dates=r.departureDate||(r.departureRange?`${r.departureRange.start} – ${r.departureRange.end}`:null);
+ const people=[`${p.adults||0} بالغ`,p.children?`${p.children} طفل`:null,p.infants?`${p.infants} رضيع`:null].filter(Boolean).join(' + ');
+ const lines=['*طلب سفر عائلي ✈️*',r.origin||r.destination?`• المسار: من ${r.origin||'—'} إلى ${r.destination||'—'}${r.tripType==='round_trip'?' (ذهاب وعودة)':' (ذهاب فقط)'}`:null,dates?`• الموعد: ${dates}`:null,`• المسافرون: ${people}`].filter(Boolean);
+ return lines.join('\n')+'\n\nكل تفاصيلكم محفوظة 🌷 التسعير الآلي المتحقق حالياً للشخص الواحد، وما منعطي سعر عائلة بالتخمين أو بضرب سعر الشخص.\nاختار اللي بيريحك:\n1️⃣ «شوف سعر شخص واحد» — مقارنة أولية فورية، مع حفظ عددكم الأصلي.\n2️⃣ «حوّلني للموظف» — بيجهزلكم تسعير العائلة كاملاً من نفس الملف بدون ما تعيدوا أي معلومة.';
+}
+
 function tripSummaryQuestion(text){
  const t=normalize(text).replace(/ة/g,'ه');
  return /(?:لخص|تلخيص|ملخص)\s*(?:لي\s*)?(?:طلبي|الطلب|رحلتي|الرحله|حجزي)|(?:شو|ايش|ما هي)\s*(?:تفاصيل|بيانات|ملخص)\s*(?:رحلتي|طلبي)|(?:شو|ايش)\s*(?:سجلت|سجلتوا|سجلتو)\s*(?:عندي|لي|برحلتي)|عل[ىي] شو عم تبحث/.test(t);
@@ -494,7 +501,7 @@ class AssistantEngine{
   if(base?.request?.passengers){const p=base.request.passengers;if(p.children+p.infants>(p.ages?.length||0)){result={complete:false,reply:s.questions.childrenAges&&!s.questions.childrenAges.answered?'عدد المسافرين محفوظ؛ باقي أعمار الأطفال والرضّع وقت السفر حتى نميّز الفئة الصحيحة.':'كم أعمار الأطفال والرضّع وقت السفر؟ اذكر عمر كل واحد حتى ما نحسب سعرًا لفئة غير صحيحة.'};s.questions.childrenAges ||= {field:'childrenAges',tripId:s.tripId,askedAt:now,answered:false,status:'asked',reason:'passenger_category'};}}
   if(hypothetical&&result.complete){result.comparison=true;s.comparison={request:result.request,base:previous};legacy.importSession(id,previous);}
   else if(result.complete){delete s.pendingQuotedOffer;if(previous)s.previous.push(previous);s.previous=s.previous.slice(-5);s.offers=[];s.selected=null;s.comparison=null;}
-  if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';const blocked=legacy.exportSession(id);if(blocked){blocked.submitted=false;legacy.importSession(id,blocked);}result={complete:false,reply:issue==='passengers'?'فهمت عدد المسافرين. التسعير الآلي المتحقق منه حاليًا يدعم بالغًا واحدًا فقط؛ ما رح أعطيك سعر مجموعة بتخمين أو بضرب سعر الشخص. اختار: «شوف سعر شخص واحد» للمقارنة الأولية مع حفظ عددكم الأصلي، أو «حوّلني للموظف» لمراجعة المجموعة.':issue==='route'?'ما عندي سعر مؤكّد لهالمسار حاليًا. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
+  if(result.complete){const issue=capabilityIssue(result.request.provider==='flycham'&&!result.request.providerExclusive?{...result.request,provider:'airarabia'}:result.request);if(issue){s.status='unsupported';const blocked=legacy.exportSession(id);if(blocked){blocked.submitted=false;legacy.importSession(id,blocked);}result={complete:false,reply:issue==='passengers'?familyRequestCard(result.request):issue==='route'?'ما عندي سعر مؤكّد لهالمسار حاليًا. بتحب نقارن من الشارقة إلى دمشق أو حلب، أو بالعكس؟':'سجّلت تفاصيلك، لكن شروط القطع أو المقعد الخاص أو قيود الوصول تحتاج تحققًا لا يدعمه الربط الحالي. لن أعرض خيارًا وكأنه يحققها دون تأكيد.'};}else{s.status='queued';s.coverage=[];}}
   if(!result.complete&&!['searching','queued'].includes(s.status)&&/طلبك السابق مسجل/.test(result.reply)){
    const r=base.request,dates=r.departureRange?`من ${dateText(r.departureRange.start)} إلى ${dateText(r.departureRange.end)}`:r.departureDate?dateText(r.departureDate):null;
    result.reply=`تفاصيل رحلتك عندي 🌷 من ${r.origin} إلى ${r.destination}${dates?'، '+dates:''}. إذا بدك أعيد التحقق من السعر على نفس التفاصيل، قلّي «أعد البحث».`;

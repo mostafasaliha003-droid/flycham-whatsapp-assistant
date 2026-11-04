@@ -129,6 +129,24 @@ class VisaMediaStore{
   const work=this.performReceive(customer,media,this.epochs.get(customer)||0);this.locks.set(lock,work);try{return await work;}finally{this.locks.delete(lock);}
  }
  ack(record){return record.type==='audio'?'وصل التسجيل الصوتي وحُفظ للمراجعة. لم يتم تفريغه بعد؛ إذا ممكن اكتب طلبك برسالة حتى نساعدك بسرعة.':'وصل المرفق وحُفظ للمراجعة، شكراً إلك. لم يتم تأكيد وضوحه أو اكتمال بياناته بعد.';}
+ async fetchTransient(media){
+  if(!media||!/^\d{1,100}$/.test(media.id||'')||!['image','document','audio'].includes(media.type))throw Error('MEDIA_INVALID');
+  const token=this.env.WHATSAPP_ACCESS_TOKEN,version=this.env.WHATSAPP_GRAPH_API_VERSION||'v23.0';
+  if(!token||!/^v\d{1,2}\.\d{1,2}$/.test(version))throw Error('MEDIA_PROVIDER_UNAVAILABLE');
+  const headers={Authorization:'Bearer '+token},signal=AbortSignal.timeout(20000);
+  const infoResponse=await this.fetchImpl('https://graph.facebook.com/'+version+'/'+media.id,{headers,redirect:'error',signal});
+  if(!infoResponse.ok)throw Error('MEDIA_DOWNLOAD_FAILED');
+  const info=await infoResponse.json();if(info.id&&String(info.id)!==media.id)throw Error('MEDIA_SOURCE_REJECTED');
+  const mime=cleanMime(info.mime_type);if(!MIME.has(mime)||media.type==='document'&&mime!=='application/pdf'||media.type==='image'&&!mime.startsWith('image/')||media.type==='audio'&&!mime.startsWith('audio/'))throw Error('MEDIA_UNSUPPORTED');
+  if(media.mimeType&&cleanMime(media.mimeType)!==mime)throw Error('MEDIA_CONTENT_INVALID');
+  if(!Number.isSafeInteger(info.file_size)||info.file_size<=0||info.file_size>MAX_BYTES)throw Error('MEDIA_SIZE_INVALID');
+  const response=await this.fetchImpl(mediaURL(info.url),{headers,redirect:'error',signal});if(!response.ok)throw Error('MEDIA_DOWNLOAD_FAILED');
+  const contentType=cleanMime(response.headers?.get?.('content-type'));if(contentType&&contentType!==mime&&contentType!=='application/octet-stream')throw Error('MEDIA_CONTENT_INVALID');
+  const bytes=await boundedBody(response);validateBytes(bytes,mime);if(bytes.length!==info.file_size)throw Error('MEDIA_SIZE_INVALID');
+  const checksum=crypto.createHash('sha256').update(bytes).digest('hex');
+  if(typeof info.sha256==='string'&&info.sha256!==checksum&&info.sha256!==Buffer.from(checksum,'hex').toString('base64'))throw Error('MEDIA_CONTENT_INVALID');
+  return {bytes,mimeType:mime,checksum};
+ }
  async performReceive(customer,media,epoch){
   if(!this.durable)return{ok:false,error:'MEDIA_STORAGE_UNAVAILABLE',reply:'وصل إشعار المرفق، لكن تعذر حفظه بشكل آمن حالياً. لم تتم مراجعة المستند؛ يرجى انتظار تأكيد القسم قبل إرسال بيانات إضافية.'};
   this.prune();if(this.list(customer).length>=50||Object.keys(this.records).length>=500)return{ok:false,error:'MEDIA_CAPACITY_REACHED',reply:'وصل إشعار المرفق، لكن مساحة استقبال المستندات تحتاج مراجعة القسم. لم يُحفظ هذا المرفق؛ يرجى انتظار تأكيد الموظف.'};
@@ -136,18 +154,7 @@ class VisaMediaStore{
   if(!token||!/^v\d{1,2}\.\d{1,2}$/.test(version))return{ok:false,error:'MEDIA_PROVIDER_UNAVAILABLE',reply:'وصل إشعار المرفق، لكن لم نتمكن من تنزيله للمراجعة حالياً. يرجى إعادة المحاولة لاحقاً.'};
   let savedPath;
   try{
-   const headers={Authorization:'Bearer '+token},signal=AbortSignal.timeout(20000);
-   const infoResponse=await this.fetchImpl('https://graph.facebook.com/'+version+'/'+media.id,{headers,redirect:'error',signal});
-   if(!infoResponse.ok)throw Error('MEDIA_DOWNLOAD_FAILED');
-   const info=await infoResponse.json();if(info.id&&String(info.id)!==media.id)throw Error('MEDIA_SOURCE_REJECTED');
-   const mime=cleanMime(info.mime_type);if(!MIME.has(mime)||media.type==='document'&&mime!=='application/pdf'||media.type==='image'&&!mime.startsWith('image/')||media.type==='audio'&&!mime.startsWith('audio/'))throw Error('MEDIA_UNSUPPORTED');
-   if(media.mimeType&&cleanMime(media.mimeType)!==mime)throw Error('MEDIA_CONTENT_INVALID');
-   if(!Number.isSafeInteger(info.file_size)||info.file_size<=0||info.file_size>MAX_BYTES)throw Error('MEDIA_SIZE_INVALID');
-   const response=await this.fetchImpl(mediaURL(info.url),{headers,redirect:'error',signal});if(!response.ok)throw Error('MEDIA_DOWNLOAD_FAILED');
-   const contentType=cleanMime(response.headers?.get?.('content-type'));if(contentType&&contentType!==mime&&contentType!=='application/octet-stream')throw Error('MEDIA_CONTENT_INVALID');
-   const bytes=await boundedBody(response);validateBytes(bytes,mime);if(bytes.length!==info.file_size)throw Error('MEDIA_SIZE_INVALID');
-   const checksum=crypto.createHash('sha256').update(bytes).digest('hex');
-   if(typeof info.sha256==='string'&&info.sha256!==checksum&&info.sha256!==Buffer.from(checksum,'hex').toString('base64'))throw Error('MEDIA_CONTENT_INVALID');
+   const {bytes,mimeType:mime,checksum}=await this.fetchTransient(media);
    if((this.epochs.get(customer)||0)!==epoch)throw Error('MEDIA_RECEIVE_CANCELLED');
    const id=crypto.randomUUID(),receivedAt=this.now(),filename=(media.type==='audio'?'voice-message':'visa-document')+'.'+MIME.get(mime);
    const record={id,customer,sourceId:media.id,type:media.type,mimeType:mime,filename,size:bytes.length,checksum,status:media.type==='audio'?'pending_transcription':'pending_review',receivedAt,expiresAt:receivedAt+RETENTION_MS};
@@ -160,7 +167,7 @@ class VisaMediaStore{
  }
  deleteCustomer(customer){if(!validCustomer(customer))return;this.epochs.set(customer,(this.epochs.get(customer)||0)+1);for(const [id,r]of Object.entries(this.records))if(r.customer===customer){if(this.directory)try{fs.unlinkSync(path.join(this.directory,id+'.enc'));}catch{}delete this.records[id];}this.store.save();}
  prune(){let changed=false;for(const [id,r]of Object.entries(this.records))if(r.expiresAt<=this.now()){if(this.directory)try{fs.unlinkSync(path.join(this.directory,id+'.enc'));}catch{}delete this.records[id];changed=true;}if(changed)this.store.save();}
- status(){return{configured:this.durable,reviewMode:this.env.RAAD_DOCUMENT_OCR_ENABLED==='true'&&Boolean(this.env.GEMINI_API_KEY)?'automatic_with_exceptions':'staff',transcriptionConfigured:false};}
+ status(){return{configured:this.durable,reviewMode:this.env.RAAD_DOCUMENT_OCR_ENABLED==='true'&&Boolean(this.env.GEMINI_API_KEY)?'automatic_with_exceptions':'staff',transcriptionConfigured:this.env.VOICE_TRANSCRIPTION!=='off'&&Boolean(this.env.GEMINI_API_KEY||this.env.CLINE_API_KEY&&this.env.CLINE_AUDIO_MODEL)};}
 }
 async function handleVisaMediaRequest(request,response,url,mediaStore){
  const match=url.pathname.match(/^\/internal\/assistant\/visa-media\/([a-f0-9-]{36})$/);if(!match)return false;
