@@ -6,6 +6,60 @@ const P=require('../src/saudi-visa-policy');
 const {visaCaseSignature}=require('../src/visa-case-signature');
 const make=options=>new SaudiVisaEngine({store:new AssistantState({file:null}),env:{},privateConfig:{banks:[{bank:'Synthetic Bank',name:'Synthetic Company',account:'00000001',iban:'AE000000000000000000000'}]},...options});
 const tourist={nationality:'سوريا',documentType:'passport'};
+test('Package 5 family counts understand spoken groups without counting a separate friend inquiry',async()=>{
+ const {countFrom}=require('../src/saudi-visa-engine');
+ for(const [text,count]of [['عيلتي 4',4],['عايلتي ٣',3],['عائلة من 5',5],['أنا وأمي',2],['أنا ووالدي',2],['أنا وأختي',2],['أنا والمدام وطفلين',4],['أنا وزوجتي وولدين',4],['أنا وزوجي وبنتي',3],['فردين',2],['أنا لحالي',1]])assert.equal(countFrom(text),count,text);
+ for(const text of ['أنا وصديقي','أنا ورفيقي','صلاحية 6 أشهر','عمري 40'])assert.equal(countFrom(text),null,text);
+ const e=make();await e.handle('family','سوري باسبور عادي لحالي');await e.handle('family','أنا والمدام وطفلين');assert.equal(e.getCase('family').applicantCount,4);assert.equal(e.getCase('family').hasMinors,true);assert.equal(e.getCase('family').pendingRelative,undefined);assert.equal(e.getCase('family').quote?.total,undefined);
+ await e.handle('friend','سوري جواز عادي لحالي');await e.handle('friend','صديقي مصري');await e.handle('friend','معه باسبورت عادي');assert.equal(e.getCase('friend').applicantCount,1);assert.equal(e.getCase('friend').applicants[0].nationality,'سوريا');assert.equal(e.getCase('friend').pendingRelative.facts.nationality,'مصر');assert.equal(e.getCase('friend').pendingRelative.facts.documentType,'passport');
+});
+test('Package 5 colloquial passports and issuer cities preserve nationality and the requested applicant',async()=>{
+ const {extractLocal}=require('../src/saudi-visa-engine');
+ for(const word of ['باسبور','باسبورت'])assert.equal(extractLocal('سوري '+word,{ }).documentType,'passport');
+ const cities={'سوريا':['الشام','دمشق','حلب','حمص','حماة','اللاذقية','سورية'],'لبنان':['بيروت','صيدا','طرابلس','لبنانية'],'مصر':['القاهرة','الإسكندرية','مصرية'],'الأردن':['الأردن','عمان','إربد','الزرقاء','أردنية'],'العراق':['بغداد','البصرة','أربيل','عراقية']};
+ for(const [country,aliases]of Object.entries(cities))for(const city of aliases){
+  const f=extractLocal('فلسطيني وثيقة من '+city,{});assert.equal(f.documentIssuer,country,city);assert.equal(f.nationality,'فلسطين',city);
+  const e=make();await e.handle('issuer','فلسطيني وثيقة لحالي');await e.handle('issuer',city);assert.equal(e.getCase('issuer').applicants[0].documentIssuer,country,city);assert.equal(e.getCase('issuer').applicants[0].nationality,'فلسطين');assert.equal(e.getCase('issuer').applicantCount,1);
+ }
+ for(const text of ['وثيقة من دمشق أو بيروت','وثيقة من طرابلس ليبيا','وثيقة من سلطنة عمان'])assert.equal(extractLocal(text,{}).documentIssuer,undefined,text);
+ const e=make(),c=e.newCase();Object.assign(c,{applicantCount:2,applicants:[tourist,{nationality:'فلسطين',documentType:'travel_document'}],lastQuestion:'issuer_1'});e.save('group',c);await e.handle('group','بيروت');assert.deepEqual(e.getCase('group').applicants[0],tourist);assert.equal(e.getCase('group').applicants[1].documentIssuer,'لبنان');
+});
+test('Package 5 financial-document advice never switches payment method or sends company bank details',async()=>{
+ const e=make();await e.handle('bank-question','سوري جواز عادي لحالي');e.getCase('bank-question').paymentMethod='tabby';let calls=0;e.understand=async()=>{calls++;return {intent:'bank_details',fields:{paymentMethod:'bank'}};};
+ for(const text of ['هل مطلوب كشف حساب بنكي؟','شهادة راتب مطلوبة؟','بدنا رسالة لا مانع NOC؟','حساب بنكي للتقديم ضروري؟']){
+  const r=await e.handle('bank-question',text);assert.match(r.reply,/ما منطلب كشف حساب/);assert.doesNotMatch(r.reply,/AE800500|AE830030|19198423/);assert.equal(e.getCase('bank-question').paymentMethod,'tabby');assert.equal(e.getCase('bank-question').paymentStatus,'unverified');
+ }assert.equal(calls,0);
+ const fresh=await e.handle('fresh-financial','أنا سوري باسبور عادي لحالي هل مطلوب كشف حساب بنكي؟');assert.doesNotMatch(fresh.reply,/AE800500|AE830030/);assert.equal(e.getCase('fresh-financial').paymentMethod,undefined);
+ const bank=await e.handle('bank-question','بعتلي حسابكم البنكي',{messages:[{media:{id:'synthetic'}}]});assert.match(bank.reply,/AE800500/);assert.doesNotMatch(bank.reply,/إجمالي رسوم/);
+});
+test('Package 5 new advisory topics preserve qualified and paid cases without a new relative or minors flag',async()=>{
+ for(const paid of [false,true]){
+  const e=make();await e.handle('faq5','سوري جواز عادي لحالي');if(paid)e.getCase('faq5').paymentStatus='verified';const before=structuredClone(e.getCase('faq5'));let calls=0;e.understand=async()=>{calls++;return {target:'other',fields:{applicantCount:2,nationality:'مصر'}};};
+  for(const [text,pattern]of [['هل في بصمة أو مقابلة؟',/عن بُعد.*البصمة/],['مقيم بقطر فيني قدم؟',/قطر.*ثلاثة أشهر.*ستة أشهر/],['معي إقامة كويتية',/الكويت/],['مقيم بالخليج',/دول الخليج/],['ابني مضاف على الجواز بيحتاج فيزا؟',/جواز سفر مستقل.*تأشيرة مستقلة/],['الأطفال مضافين عالجواز',/جواز سفر مستقل/],['جواز مستقل للطفل ضروري؟',/تسعير الأطفال/]]){
+   const r=await e.handle('faq5',text);assert.match(r.reply,pattern,text);const c=e.getCase('faq5');assert.deepEqual(c.applicants,before.applicants);assert.equal(c.applicantCount,before.applicantCount);assert.equal(c.hasMinors,before.hasMinors);assert.equal(c.pendingRelative,undefined);assert.equal(c.pendingAmendment,undefined);assert.equal(c.paymentStatus,before.paymentStatus);assert.equal(c.submissionStatus,before.submissionStatus);assert.deepEqual(c.quote,before.quote);
+   if(/مضاف|للطفل/.test(text))assert.doesNotMatch(r.reply,/PDF|ملصق/);
+  }assert.equal(calls,0);
+ }
+});
+test('Package 5 Umrah biometrics and compound financial questions remain conditional and use the current route',async()=>{
+ const e=make();await e.handle('umrah','فلسطيني وثيقة مصرية لحالي');
+ const r=await e.handle('umrah','هل لازم حضور شخصي وبصمة وكشف حساب؟');assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.match(r.reply,/إذا طُلب تسجيل بصمة/);assert.match(r.reply,/ما منطلب كشف حساب/);assert.doesNotMatch(r.reply,/فقط عند منفذ|من دون مقابلة.*وتُؤخذ/);
+ await e.handle('held','إيراني جواز عادي لحالي');assert.doesNotMatch((await e.handle('held','مقيم بقطر')).reply,/مسار السياحية الإلكترونية يشمل/);
+});
+test('Package 5 inline reference extraction needs a known reference or an awaited contextual answer',()=>{
+ const {applicationReference}=require('../src/visa-conversation-intent');
+ for(const text of ['شو صار بخصوص E828000077 لو سمحت','بخصوص ٨٢٨٠٠٠٠٧٧، لو سمحت'])assert.equal(applicationReference(text,{known:['828000077']}),'828000077');
+ assert.equal(applicationReference('تفضل هاد رقمي 828000077',{awaiting:true}),'828000077');
+ for(const text of ['تفضل هاد رقمي 828000077','وصل مبلغ 828000077','رقمي 82800007777777','بخصوص A828000077'])assert.equal(applicationReference(text),null,text);
+ assert.equal(applicationReference('المبلغ 828000077 درهم',{awaiting:true}),null);
+ assert.equal(applicationReference('بخصوص E828000099 لو سمحت',{known:['828000077']}),null);
+});
+test('Package 5 natural reference followups select only the owned signed application',async()=>{
+ const e=make();savedConversation(e,'inline','828000077');savedConversation(e,'other','828000099');const before=structuredClone(e.getCase('inline'));
+ assert.match((await e.handle('inline','شو صار بخصوص E828000077 لو سمحت')).reply,/828000077 محفوظ معنا/);
+ assert.deepEqual(e.getCase('inline').applicants,before.applicants);assert.equal(e.getCase('inline').paymentStatus,before.paymentStatus);
+ await e.handle('unknown','بدي تابع طلب');const r=await e.handle('unknown','تفضل هاد رقمي 828000099');assert.match(r.reply,/ما قدرت أربط/);assert.doesNotMatch(r.reply,/828000099|محفوظ معنا|موافقة/);assert.equal(e.getCase('unknown').applicantCount,null);
+});
 test('Package 4 Palestinian travel document issuer never becomes a second traveller, including a bad model split',async()=>{
  const {extractLocal}=require('../src/saudi-visa-engine');
  for(const text of ['أنا فلسطيني سوري','فلسطيني وثيقة سورية','فلسطيني وثيقة مصرية','فلسطيني وثيقة لبنانية']){

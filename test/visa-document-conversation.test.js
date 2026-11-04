@@ -8,6 +8,27 @@ const {visaCaseSignature}=require('../src/visa-case-signature');
 const CUSTOMER='15550004444';
 const ready=()=>({caseId:'case-one',status:'ready',applicants:[{applicantIndex:0,documents:{passport:'prepared-passport',residence:'prepared-residence',photo:'prepared-photo'}}],issues:[]});
 const make=(summary,options={})=>createVisaDocumentConversation({documentIntake:{summary:()=>summary},...options});
+test('Package 5 document diagnostics explain the exact fix and never echo extracted details',()=>{
+ for(const [code,pattern]of [['PASSPORT_MRZ_REQUIRED',/السطران السفليان.*بدون قص/],['PASSPORT_VALIDITY',/أقل من 6 أشهر.*جواز مجدد/],['RESIDENCE_VALIDITY',/أقل من 3 أشهر.*مجددة/]]){
+  const summary={status:'needs_review',applicants:[{documents:{passport:'prepared'},issues:[{code,message:'PRIVATE_SOURCE_VALUE'}]}],issues:[]};const r=statusReply(summary);assert.match(r,pattern);assert.doesNotMatch(r,/PRIVATE_SOURCE_VALUE|PASSPORT_|RESIDENCE_|⏳/);
+ }
+});
+test('Package 5 partial prepared checklist is scoped to one applicant and not a claim of submission',async()=>{
+ const summary={caseId:'case-one',status:'needs_review',applicants:[{documents:{passport:'prepared-passport',residence:'prepared-residence'},issues:[]}],issues:[]},before=structuredClone(summary);
+ const c={id:'case-one',applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport'}]};c.quote=P.calculateQuote(c);const store={data:{visaCases:{[CUSTOMER]:c}},save(){}};
+ const r=await make(summary,{store}).handle(CUSTOMER,'شو ناقص');assert.match(r.reply,/✅ الجواز، الهوية أو الإقامة/);assert.match(r.reply,/⏳ الصورة الشخصية/);assert.doesNotMatch(r.reply,/أرسل.*الجواز|تم تقديم|تم تأكيد.*دفعة|prepared-/);assert.deepEqual(summary,before);
+ assert.doesNotMatch(statusReply(summary,{kind:'passport'}),/⏳|✅/);
+ assert.doesNotMatch(statusReply({...summary,applicants:[summary.applicants[0],{documents:{photo:'other-person'}}]}),/⏳|✅/);
+ assert.doesNotMatch(statusReply({...summary,applicants:[{documents:{}}]}),/⏳|✅/);
+ assert.doesNotMatch(statusReply({...summary,applicants:ready().applicants}),/⏳|✅/);
+});
+test('Package 5 checklist preserves processing, confirmation and document-clarification priority',()=>{
+ const summary={caseId:'case-one',status:'needs_review',applicants:[{documents:{passport:'prepared'},issues:[]}],issues:[]};
+ assert.match(statusReply({...summary,status:'processing'}),/عم نجهّز ملفك/);
+ assert.match(statusReply({...summary,status:'needs_confirmation',issues:[{code:'DOCUMENT_FIELD_REQUIRED',field:'passportType'}]}),/اختار نوع جواز السفر/);
+ assert.match(statusReply({...summary,issues:[{code:'CASE_DATA_MISMATCH',field:'nationalityCode'},{code:'PASSPORT_VALIDITY'}]}),/لنفس الشخص/);
+ assert.match(statusReply({...summary,issues:[{code:'MULTIPLE_PASSPORTS'}]}),/أكثر من جواز/);
+});
 test('Package 4 actionable image copy is specific without exposing provider diagnostics',()=>{
  for(const [code,pattern]of [['DOCUMENT_UNREADABLE',/الزوايا الأربع والباركود.*باقي مرفقاتك السليمة محفوظة/],['DOCUMENT_IMAGE_UNSUITABLE',/PDF من تطبيق UAEICP.*بدون قص/],['DOCUMENT_PORTRAIT_REQUIRED',/أمامية واضحة.*إضاءة جيدة بدون فلتر/]]){
   const reply=statusReply({status:'needs_review',applicants:[],issues:[{code,message:'PRIVATE_DIAGNOSTIC'}]});assert.match(reply,pattern);assert.doesNotMatch(reply,/PRIVATE_DIAGNOSTIC|DOCUMENT_/);

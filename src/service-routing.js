@@ -31,7 +31,7 @@ function routeService(store,id,text,{env=process.env,media=false,hasFlight=false
  // The customer can still open the menu or explicitly choose another service.
  if(generic&&s?.service==='saudi_visa')return{service:'saudi_visa'};
  if(generic&&!hasActiveRequest)return serviceMenu(store,id);
- const visa=/زيار[ةه]\s*(?:عائلي[ةه]|شخصي[ةه]|للسعودي[ةه]|سعودي[ةه])|معامل[ةه]\s*(?:فيزا|تاشير|تأشير)|فيزا|فيزه|تاشير|عمره|عمرة|نسك|اسماعيل|ismail|saudi visa|umrah/i.test(t);
+ const visa=/زيار[ةه]\s*(?:عائلي[ةه]|شخصي[ةه]|للسعودي[ةه]|سعودي[ةه])|(?:تقديم|اقدم|نقدم|(?:ال)?اوراق|(?:ال)?مطلوب[ةه]?)(?:\s+(?:ال)?مطلوب[ةه]?)?\s+(?:عل[ىي]\s*ال|ل(?:ل)?|ال)سعودي[ةه]|معامل[ةه]\s*(?:فيزا|تاشير|تأشير|السعودي[ةه])|منفذ البطحاء|فيزا|فيزه|تاشير|عمره|عمرة|نسك|اسماعيل|رعد|ismail|raad|saudi visa|umrah/i.test(t);
  const flight=/(?:من|مغادر).{0,30}(?:دبي|الشارق[هة]|ابوظبي|ابو ظبي|دمشق|الشام|حلب|سوريا).{0,15}(?:الي|الى|لل|لدمشق|للشام|لحلب|للشارق|لدبي)|ذهاب (?:بس|فقط)|ذهاب وعود|فلاي شام|flycham|airarabia/i.test(t)||/تذاكر|تيكتات|العربي[ةه]\s*للطيران|اجنح[ةه]\s*الشام|أجنحة\s*الشام|اللاذقي[ةه]|لاذقي[ةه]|طيران|طياره|تذكره|تيكت|رحلات|حجز.*رحله|flight|ticket|احمد/i.test(t);
  if(visa&&flight&&!s?.service)return serviceMenu(store,id,'فينا نساعدك بالتأشيرة والطيران. بأي خدمة بتحب نبدأ؟');
  if(visa&&!flight){setService(store,id,'saudi_visa');return{service:'saudi_visa'};}
