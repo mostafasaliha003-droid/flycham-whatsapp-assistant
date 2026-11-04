@@ -147,7 +147,7 @@ test('unknown or failing preview result retains truthful exception copy instead 
 });
 test('actual apply/how-to/will-send sequence offers one private link and never repeats known quote or rotates the opened link',async()=>{
  let at=1000000,links=0;const store={data:{},save(){}},engine=new SaudiVisaEngine({store,now:()=>at,env:{},privateConfig:{banks:[]}});
- const initial=await engine.handle(CUSTOMER,'سوري جواز عادي لحالي');assert.match(initial.reply,/700/);const before=structuredClone(engine.getCase(CUSTOMER)),signature=visaCaseSignature(before);
+ const initial=await engine.handle(CUSTOMER,'سوري جواز عادي لحالي');assert.match(initial.reply,/640/);const before=structuredClone(engine.getCase(CUSTOMER)),signature=visaCaseSignature(before);
  const summary={status:'not_started',caseId:before.id,applicants:[],issues:[]},conversation=createVisaDocumentConversation({store,now:()=>at,documentIntake:{summary:()=>summary},createUploadLink:async()=>({url:'https://remal.example.test/documents#private-'+(++links)})});
  const replies=[];
  for(const text of ['هلا، بدي قدم فيزا السعودية لو سمحت','كيف بقدم شو ابعتلك','طيب رح ابعتلك']){
@@ -155,7 +155,7 @@ test('actual apply/how-to/will-send sequence offers one private link and never r
  }
  assert.match(replies[0],/صفحة بيانات الجواز/);assert.match(replies[0],/وجهي الهوية الإماراتية/);assert.match(replies[0],/https:\/\/remal\.example\.test/);
  assert.match(replies[1],/رابط الرفع اللي أرسلته قبل شوي/);assert.doesNotMatch(replies[1],/https:/);assert.match(replies[2],/^تمام، ابعتهن هون/);assert.ok(replies[2].length<160);assert.equal(links,1);
- assert.doesNotMatch(replies.join('\n'),/700|650|إجمالي رسوم|عرض تأشيرات|تم تأكيد.*دفعتك|تم تقديم الطلب/);assert.equal(visaCaseSignature(engine.getCase(CUSTOMER)),signature);assert.deepEqual(engine.getCase(CUSTOMER).quote,before.quote);assert.equal(engine.getCase(CUSTOMER).paymentStatus,'unverified');
+ assert.doesNotMatch(replies.join('\n'),/640|700|650|إجمالي رسوم|عرض تأشيرات|تم تأكيد.*دفعتك|تم تقديم الطلب/);assert.equal(visaCaseSignature(engine.getCase(CUSTOMER)),signature);assert.deepEqual(engine.getCase(CUSTOMER).quote,before.quote);assert.equal(engine.getCase(CUSTOMER).paymentStatus,'unverified');
  const context=store.data.serviceSessions[CUSTOMER].documentConversation;assert.equal(context.caseId,before.id);assert.ok(Number.isFinite(context.uploadOfferedAt));assert.doesNotMatch(JSON.stringify(context),/https|private-|token|الجواز/);
  const fresh=await conversation.handle(CUSTOMER,'ارسل رابط رفع جديد');assert.match(fresh.reply,/https:/);assert.equal(links,2);
 });

@@ -12,3 +12,26 @@ test('explicit flexible cheapest picks Dubai; fixed airport excludes alternative
 test('stale future malformed group mismatched dates and route cannot enter recommendation',()=>{const invalid=[offer({checkedAt:NOW-900001}),offer({checkedAt:NOW+1}),offer({checkedAt:undefined}),offer({request:request({passengers:{adults:2,children:0,infants:0}})}),offer({request:request({destination:'حلب'})}),offer({request:request({departureDate:'2090-12-20'})}),offer({price:{sellingTotal:'1.001',weights:[{kg:30}]}})];const result=recommendVerifiedOffers(invalid,request(),{},{now:NOW,maxAgeMs:9999999});assert.equal(result.primary,null);assert.deepEqual(result.offers,[]);assert.equal(recommendVerifiedOffers([offer()],request({passengers:{adults:2,children:0,infants:0}}),{},{now:NOW}).primary,null);});
 test('different actual weights never produce a like-for-like savings claim; explicit carrier and return date are respected',()=>{const a=offer(),b=offer({reference:2,request:request({origin:'دبي'}),price:{sellingTotal:'500.00',weights:[{kg:40}]}});assert.equal(recommendVerifiedOffers([a,b],request(),{},{now:NOW}).comparisonText,null);assert.equal(recommendVerifiedOffers([a],request({provider:'airarabia',providerExclusive:true}),{},{now:NOW}).primary,null);const r=request({tripType:'round_trip',returnDate:'2090-11-20'}),round=offer({request:{...r,returnDate:'2090-11-21'},timing:{out:{flight:'XH123',departure:'08:00',arrival:'10:00'},back:{flight:'XH124',departure:'10:00',arrival:'12:00'}}});assert.equal(recommendVerifiedOffers([round],r,{},{now:NOW}).primary,null);});
 test('time preference recommends a matching verified time without making flight availability claims',()=>{const a=offer(),b=offer({reference:2,price:{sellingTotal:'700.00',weights:[{kg:30}]},timing:{out:{flight:'XH124',departure:'18:00',arrival:'20:00'}}});const r=recommendVerifiedOffers([a,b],request(),{priority:'time',preferredTime:'evening'},{now:NOW});assert.equal(r.primary.reference,2);assert.equal(r.reason,'matches_requested_time');});
+
+test('budget variants are extracted from customer wording with decimal precision and provenance',()=>{
+ for(const text of ['ميزانيتي ٧٥٠٫٢٥ درهم'.replace('٫','.'),'حدي 750.25 AED','ما بقدر ادفع اكتر من 750.25 درهم','حد أقصى 750.25 درهم','بحدود 750.25 درهم','تحت ال750.25 درهم','تحت 750.25 درهم','أقل من 750.25 درهم']){
+  const state={};const c=updateConsultantMemory(state,text,{now:NOW});assert.equal(c.preferences.budgetAED,'750.25',text);assert.equal(c.facts.budgetAED.source,'customer_explicit');assert.equal(c.facts.budgetAED.evidence,text);
+ }
+ const s={};updateConsultantMemory(s,'مرحبا',{preferences:{budgetAED:'100.00'}});assert.equal(s.consultant.preferences.budgetAED,null);
+});
+test('budget compares both primary and cheapest in fils without changing ranking',()=>{
+ const a=offer(),b=offer({reference:2,request:request({origin:'دبي'}),price:{currency:'AED',sellingTotal:'600.01',weights:[{kg:30}]}});
+ let r=recommendVerifiedOffers([a,b],request(),{budgetAED:'600.01'},{now:NOW});assert.equal(r.primary.reference,1);assert.equal(r.cheapest.reference,2);assert.match(r.comparisonText,/الخيار المقترح 1: أعلى من الميزانية المحددة بـ50\.09 درهم/);assert.match(r.comparisonText,/الخيار الأوفر 2: ضمن الميزانية المحددة \(600\.01 درهم\)/);assert.match(r.comparisonText,/أوفر بـ50\.09/);
+ r=recommendVerifiedOffers([a,b],request(),{budgetAED:500},{now:NOW});assert.match(r.comparisonText,/بـ150\.10 درهم/);assert.match(r.comparisonText,/بـ100\.01 درهم/);
+ r=recommendVerifiedOffers([a,b],request(),{budgetAED:'700',priority:'cheapest',airportFlexibility:'flexible'},{now:NOW});assert.equal(r.primary.reference,2);assert.equal((r.comparisonText.match(/ضمن الميزانية/g)||[]).length,1);
+});
+test('invalid budgets do not break valid recommendations and budget never admits stale prices',()=>{
+ for(const budgetAED of [undefined,null,'invalid','0',-1,'1.001',Infinity,{},'9999999999999999999999']){
+  const r=recommendVerifiedOffers([offer()],request(),{budgetAED},{now:NOW});assert.equal(r.primary.reference,1);assert.equal(r.comparisonText,null);
+ }
+ const r=recommendVerifiedOffers([offer({checkedAt:NOW-900001})],request(),{budgetAED:'900'},{now:NOW});assert.equal(r.primary,null);assert.equal(r.comparisonText,null);
+});
+test('budget guidance does not claim equivalent savings for mismatched baggage',()=>{
+ const b=offer({reference:2,request:request({origin:'دبي'}),price:{sellingTotal:'500.00',weights:[{kg:40}]}});
+ const r=recommendVerifiedOffers([offer(),b],request(),{budgetAED:'600'},{now:NOW});assert.match(r.comparisonText,/أعلى من الميزانية.*50\.10/);assert.match(r.comparisonText,/ضمن الميزانية/);assert.doesNotMatch(r.comparisonText,/أوفر بـ|لنفس.*الوزن/);
+});

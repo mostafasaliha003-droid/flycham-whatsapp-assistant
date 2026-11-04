@@ -48,7 +48,8 @@ const {InboxService,handleInboxRequest}=require('./inbox-http');
 const {PortalMonitor}=require('./portal-monitor');
 const {VERIFIED_FAMILY_PROVIDERS,partyCapabilityStatus}=require('./party-capabilities');
 const {POLICY}=require('./assistant-policy');
-const { MessageBatcher } = require('./message-batcher');
+const { MessageBatcher, urgentMessage } = require('./message-batcher');
+const {formatHandoffCard}=require('./handoff-notification');
 const {handleVoucherRequest}=require('./voucher-http');
 const { sendVisaScopeMenu:rawSendVisaScopeMenu,sendServiceMenu:rawSendServiceMenu,sendImageMessage,sendTextMessage:rawSendTextMessage,sendRequestChoiceMessage:rawSendRequestChoiceMessage,checkWhatsAppConnection,changeWhatsAppBlock,sendComplaintNotification } = require('./graph-api');
 const {createServiceMenuSender}=require('./service-menu-delivery');
@@ -289,7 +290,7 @@ async function processCustomerMessages(sender,messages){
   recordMetric(assistant.store,{customer:sender,journey:assistant.state(sender).tripId,event:'reply_sent'});
   if(result.handoff){const h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h){h.journey=assistant.state(sender).tripId;assistant.store.save();}}
   if(result.handoff&&process.env.HUMAN_HANDOFF_RECIPIENT){
-    try{const s=assistant.state(sender),h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h&&h.state==='pending'){await rawSendTextMessage(process.env.HUMAN_HANDOFF_RECIPIENT,JSON.stringify({customer:sender,request:h.summary.request,offer:h.summary.offer,needsPriceRecheck:true}));h.state='notified';assistant.store.save();}}catch{console.log('HUMAN_HANDOFF_NOTIFICATION_FAILED');}
+    try{const h=assistant.store.data.handoffs.find(x=>x.id===result.handoff);if(h&&h.state==='pending'){await rawSendTextMessage(process.env.HUMAN_HANDOFF_RECIPIENT,formatHandoffCard(sender,h.summary));h.state='notified';assistant.store.save();}}catch{console.log('HUMAN_HANDOFF_NOTIFICATION_FAILED');}
   }
   console.log(delivery?.dryRun?'WHATSAPP_TEST_REPLY_SUPPRESSED':'WHATSAPP_REPLY_ACCEPTED_BY_META');
 }
@@ -378,7 +379,7 @@ async function handleWebhookPost(request, response) {
       flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));continue;
     }
     if(message.from===COMPLAINT_RECIPIENT){for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>{});}
-    const fast=/^(?:القائمة|القائمه|الخدمات|احذف بياناتي|امسح بياناتي|حذف بياناتي|وقف البحث|شو صار|وين وصلت|وين وصلتوا)[؟?!. ]*$/.test(message.text)||Boolean(message.serviceChoice)||Boolean(message.requestChoice)||!batcher.busy(message.from)&&['searching','queued'].includes(assistant.state(message.from).status)&&/^(?:شكرا|شكراً|ناطر|ناطرين|بانتظاركن|بانتظار|منتظر|شو صار|وين وصلتوا|شكرا ناطرك|تمام|اوكي|حاضر)[؟?!. ]*$/.test(message.text);
+    const fast=!batcher.busy(message.from)&&(urgentMessage(message)||['searching','queued'].includes(assistant.state(message.from).status)&&/^(?:شكرا|شكراً|ناطر|ناطرين|بانتظاركن|بانتظار|منتظر|شو صار|وين وصلتوا|شكرا ناطرك|تمام|اوكي|حاضر)[؟?!. ]*$/.test(message.text));
     const pending=(process.env.ASSISTANT_DEBOUNCE_MS==='0'||fast)?batcher.serial(message.from,[message]):batcher.push(message.from,message);pending.catch(()=>console.error('WHATSAPP_REPLY_FAILED'));
     if(process.env.ASSISTANT_DEBOUNCE_MS==='0')await pending;
   }

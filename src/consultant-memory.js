@@ -39,7 +39,7 @@ function updateConsultantMemory(state,text,{now=Date.now(),preferences}={}){
   else if(/المسا|مساء/.test(t))patch.preferredTime='evening';
   else if(/بالليل|نص الليل/.test(t))patch.preferredTime='night';
  }
- const budget=t.match(/(?:ميزانيتي|حدي|ما بقدر ادفع اكتر من|حد اقصي)\s*(\d{1,6}(?:\.\d{1,2})?)\s*(?:درهم|aed)/);
+ const budget=t.match(/(?:ميزانيتي|حدي|ما بقدر ادفع اكتر من|حد اقصي|بحدود|تحت(?:\s*ال)?|اقل من)\s*(\d{1,6}(?:\.\d{1,2})?)\s*(?:درهم|aed)/);
  if(budget&&Number(budget[1])>0)patch.budgetAED=formatAED(toFils(budget[1],'Budget'));
  for(const [key,value]of Object.entries(patch)){c.preferences[key]=value;c.facts[key]={value,source:'customer_explicit',at,evidence:String(text).slice(0,180)};}
  const objections=[];
@@ -99,6 +99,17 @@ function recommendVerifiedOffers(offers,request,preferences={},options={}){
  if(primary!==cheapest&&weightSignature(primary)===weightSignature(cheapest)){
   const saving=toFils(primary.price.sellingTotal,'Price')-toFils(cheapest.price.sellingTotal,'Price');
   if(saving>0n)comparisonText=`الخيار ${cheapest.reference||'الأقل سعرًا'} أوفر بـ${formatAED(saving)} درهم ضمن العروض المتحققة لنفس عدد المسافرين والوزن. المغادرة من ${cheapest.request.origin} بتاريخ ${cheapest.request.departureDate} الساعة ${cheapest.timing.out.departure}، مقابل ${primary.request.origin} بتاريخ ${primary.request.departureDate} الساعة ${primary.timing.out.departure}${request.tripType==='round_trip'?`؛ العودة ${cheapest.request.returnDate} مقابل ${primary.request.returnDate}`:''}. تغيير المطار أو الموعد يكون حسب اختيارك.`;
+ }
+ // Budget is customer guidance, never a reason to admit an unverified offer.
+ let budgetFils=null;
+ try{const amount=toFils(preferences.budgetAED,'Budget');if(amount>0n)budgetFils=amount;}catch{}
+ if(budgetFils!==null){
+  const budgetNote=o=>{
+   const excess=toFils(o.price.sellingTotal,'Price')-budgetFils;
+   const label=o===primary?'الخيار المقترح':'الخيار الأوفر';
+   return `${label}${o.reference?' '+o.reference:''}: ${excess<=0n?`ضمن الميزانية المحددة (${formatAED(budgetFils)} درهم)`:`أعلى من الميزانية المحددة بـ${formatAED(excess)} درهم (الميزانية ${formatAED(budgetFils)} درهم)`}.`;
+  };
+  comparisonText=[comparisonText,budgetNote(primary),primary!==cheapest?budgetNote(cheapest):null].filter(Boolean).join('\n');
  }
  return {primary,cheapest,reason,comparisonText,offers:verified};
 }

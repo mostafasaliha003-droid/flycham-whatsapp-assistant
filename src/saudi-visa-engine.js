@@ -75,7 +75,7 @@ function mergeFacts(c,f){
 }
 function quoteText(q){
  if(!q)return '';
- if(q.requiresReview)return 'حتى نعطيك سعر الأطفال بشكل دقيق، بدنا نراجع تسعير الحالة قبل تأكيد المبلغ؛ ما رح نحسب الطفل تلقائياً بسعر البالغ.';
+ if(q.requiresReview)return 'حتى نعطيك سعر الأطفال بشكل دقيق، بدنا نراجع تسعير الحالة قبل تأكيد المبلغ؛ ما رح نحسب الطفل تلقائياً بسعر البالغ.'+(q.adultReferenceAmount?'\n(للإرشاد: رسوم الشخص البالغ لـ'+q.adultLabel+' هي '+MONEY(q.adultReferenceAmount)+' درهم، ويُؤكد الإجمالي بعد مراجعة تسعير الطفل مع المسؤول).':'');
  let text='*عرض تأشيرات السعودية 🇸🇦*\n'+q.rows.map(r=>`• المتقدم ${r.applicant}: ${r.label} — ${MONEY(r.amount)} درهم`).join('\n');
  if(q.rows.some(row=>row.product==='tourist_single'))text+='\n\n'+EGYPT_SINGLE_COPY;
  text+=`\n*إجمالي رسوم التأشيرات: ${MONEY(q.subtotal)} درهم*`;
@@ -161,7 +161,7 @@ class SaudiVisaEngine{
   }else{
    const reply=intentForConversation==='complaint'?null:this.followupReply(id,c,text,intentForConversation);if(reply)return this.conversationReply(id,c,text,reply);
   }
-  const beforeFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost}),beforeCase=structuredClone(c);
+  const beforeFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost,hasMinors:c.hasMinors}),beforeCase=structuredClone(c);
   const aiFields=structuredClone(decision?.fields||decision?.facts||{}),localFields=extractLocal(text,c),awaiting=c.lastQuestion;
   if(Array.isArray(aiFields.applicants)&&aiFields.applicants.length){delete localFields.nationality;delete localFields.applicants;}
   if(/ايام|اسبوع|شهر|ساعات|دقايق/.test(n)&&!/(?:نحن|نحنا|صرنا|عددنا|شخص|اشخاص|متقدم)/.test(n)){delete aiFields.applicantCount;delete localFields.applicantCount;}
@@ -206,14 +206,14 @@ class SaudiVisaEngine{
   }
   if(!relativeInquiry&&/طفل|اطفال|رضيع|قاصر|عمره (?:سنه|سنتين|ثلاث|اربع|خمس|ست|سبع|ثمان|تسع|عشر)/.test(n))c.hasMinors=true;
   let pendingAmendment=false;
-  const afterFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost});
+  const afterFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost,hasMinors:c.hasMinors});
   if(!independentRelative&&(beforeCase.paymentStatus==='verified'||beforeCase.submissionStatus==='submitted')&&afterFacts!==beforeFacts){
-   c.pendingAmendment={facts:JSON.parse(afterFacts),requestedAt:this.now()};for(const k of ['applicantCount','applicants','departureDate','returnDate','transport','hasHost']){if(Object.hasOwn(beforeCase,k))c[k]=beforeCase[k];else delete c[k];}c.stage='amendment_review';pendingAmendment=true;
+   c.pendingAmendment={facts:JSON.parse(afterFacts),requestedAt:this.now()};for(const k of ['applicantCount','applicants','departureDate','returnDate','transport','hasHost','hasMinors']){if(Object.hasOwn(beforeCase,k))c[k]=beforeCase[k];else delete c[k];}c.stage='amendment_review';pendingAmendment=true;
   }
   c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false;
   const products=c.applicants.map(P.productFor),hasUmrah=products.some(p=>p.code==='umrah');
   c.quote=P.calculateQuote(c,{feesEnabled:true});
-  if(beforeCase.paymentStatus==='verified'&&beforeCase.quote&&beforeFacts===afterFacts&&c.quote?.total!==beforeCase.quote.total)c.quote=beforeCase.quote;
+  if(beforeCase.paymentStatus==='verified'&&beforeCase.quote&&(pendingAmendment||beforeFacts===afterFacts)&&c.quote?.total!==beforeCase.quote.total)c.quote=beforeCase.quote;
   const previousQuestion=c.lastQuestion,previousAsked=[...c.askedQuestions],completion=this.nextQuestion(c),nextQuestion=c.lastQuestion,nextAsked=[...c.askedQuestions];
   c.lastQuestion=previousQuestion;c.askedQuestions=previousAsked;
   const intent=({documents:'requirements',payment_after:'pay_after_issue',negotiation:'negotiate',bank:'bank_details',address:'address',payment:'payment_options'})[decision?.intent]||localIntent||decision?.intent;
