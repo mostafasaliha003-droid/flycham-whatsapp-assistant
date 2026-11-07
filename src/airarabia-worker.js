@@ -9,7 +9,8 @@ const { continueWithTestPassenger } = require('./portal-test-passenger');
 const { scanSeatPrices } = require('./portal-seat-prices');
 const { scanAncillaryCatalogs } = require('./portal-ancillary-catalogs');
 const { validateLiveRequest, quoteFromScans, expandLiveRequests, formatQuoteOptions } = require('./live-quote');
-const { waitForFlightResults, readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
+const { readFlightTimes, selectFlightTimes, flightPairs } = require('./portal-flight-times');
+const { captureSearchBaseline, waitForSearchIdentity, assertSearchIdentity } = require('./airarabia-search-identity');
 const { startQuotePolling } = require('./quote-poller');
 const { PortalSession, randomHeartbeatDate, HEARTBEAT_IDLE_MS, HEARTBEAT_CHECK_MS } = require('./portal-session');
 const { IdlePortalSession } = require('./idle-portal-session');
@@ -410,6 +411,79 @@ class AirArabiaPortalAdapter {
     this.loginResponsePages.add(page);
   }
 
+  async partialLoginRecoveryEligible() {
+    // A sign-out header by itself is not an authenticated portal. Permit one
+    // ordinary protected-page navigation only when the selected supplier
+    // window is fully observable and has no visible login/security response.
+    // Do not combine evidence from the hidden launcher or another popup.
+    try {
+      if (this.page.isClosed?.() || new URL(this.page.url()).origin !== new URL(LOGIN_URL).origin) return false;
+      const frames = this.page.frames();
+      if (!frames.length) return false;
+      let signOut = false;
+      for (const frame of frames) {
+        const url = new URL(frame.url());
+        if (url.origin !== new URL(LOGIN_URL).origin || /\/(?:sendOTP|verifyOTP)(?:\.action)?$/.test(url.pathname.split(';')[0])) return false;
+        const state = await frame.evaluate(() => {
+          if (!document.body) return { observed: false };
+          const visible = element => {
+            if (!element || !element.getClientRects().length) return false;
+            for (let current = element; current; current = current.parentElement) {
+              const style = getComputedStyle(current);
+              if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+            }
+            return true;
+          };
+          let frameVisible = true;
+          try {
+            for (let view = window; view !== view.top; view = view.parent) {
+              if (view.parent.location.origin !== location.origin || !visible(view.frameElement)) { frameVisible = false; break; }
+            }
+          } catch { return { observed: false }; }
+          const shown = element => frameVisible && visible(element);
+          const chunks = [];
+          if (document.body) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const parent = walker.currentNode.parentElement;
+              if (parent && !parent.closest('script,style,noscript') && shown(parent)) chunks.push(walker.currentNode.textContent);
+            }
+          }
+          const text = chunks.join(' ').replace(/\s+/g, ' ');
+          const controls = Array.from(document.querySelectorAll('a,button,img,input,[role="button"],[role="link"],[role="menuitem"]')).filter(shown);
+          const named = element => ['alt', 'title', 'value', 'aria-label'].map(name => element.getAttribute(name) || '').concat(element.textContent || '');
+          return {
+            observed: true,
+            signOut: controls.some(element => named(element).some(label => /^(?:sign|log)\s*out$/i.test(label.trim()))),
+            visibleLogin: Array.from(document.querySelectorAll('#username_txt,#j_password,#btnLogin,input[type="password"]')).some(shown),
+            verification: Array.from(document.querySelectorAll('#userOtp,#captcha_txt,iframe[src*="captcha"]')).some(shown) || /captcha|verify (?:you|that you) are human|one[- ]time|\botp\b|verification code|security (?:code|challenge)|looked like a bot/i.test(text),
+            accessDenied: /access denied|request (?:was )?(?:blocked|rejected)|forbidden|not authorized|account.{0,20}(?:locked|disabled|inactive)/i.test(text),
+            invalidCredentials: /invalid.{0,30}(?:password|user)|incorrect.{0,30}(?:password|user)|credentials? (?:are |were )?(?:invalid|rejected)/i.test(text),
+            passwordChange: /change (?:your )?password|password.{0,20}expir/i.test(text),
+            sessionNotice: /already logged|active session|another session|concurrent session/i.test(text),
+            supplierError: Array.from(document.querySelectorAll('#errorMSG,#spnError')).some(element => shown(element) && Boolean(element.textContent?.trim())),
+          };
+        });
+        const vetoes = ['visibleLogin', 'verification', 'accessDenied', 'invalidCredentials', 'passwordChange', 'sessionNotice', 'supplierError'];
+        if (state?.observed !== true || typeof state.signOut !== 'boolean' || vetoes.some(key => typeof state[key] !== 'boolean' || state[key])) return false;
+        signOut ||= state.signOut;
+      }
+      return signOut;
+    } catch { return false; }
+  }
+
+  async recoverPartialLogin() {
+    if (!await this.partialLoginRecoveryEligible()) return false;
+    this.report('PORTAL_PARTIAL_LOGIN_RECOVERY_STARTED');
+    const response = await this.page.goto(LOGIN_ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (response && response.status() >= 400) throw new PortalError('LOGIN_CONFIRM', 'HTTP_ERROR');
+    // This is a single normal navigation, without credentials or an OTP
+    // resubmission. A new challenge still stops through the usual guard.
+    const confirmed = await this.waitForAuthentication(30000);
+    this.report(confirmed ? 'PORTAL_PARTIAL_LOGIN_RECOVERY_CONFIRMED' : 'PORTAL_PARTIAL_LOGIN_RECOVERY_NOT_CONFIRMED');
+    return confirmed;
+  }
+
   async signIn() {
     this.verificationAttempted = false;
     this.verificationNavigationResumed = false;
@@ -450,7 +524,7 @@ class AirArabiaPortalAdapter {
     });
     this.report('PORTAL_STAGE_LOGIN_CONFIRM');
     await atStage('LOGIN_CONFIRM', async () => {
-      if (!await this.waitForAuthentication(30000, { operatorVerification: true })) {
+      if (!await this.waitForAuthentication(30000, { operatorVerification: true }) && !await this.recoverPartialLogin()) {
         await this.assertNoChallenge();
         await this.reportLoginResult();
         throw new PortalError('LOGIN_CONFIRM', 'LOGIN_NOT_CONFIRMED');
@@ -622,14 +696,20 @@ class AirArabiaPortalAdapter {
     // New protected page for every request, serialized by PortalSession.run.
     await this.refreshProtectedPage();
     if(!await this.inspectReservationSearch())throw Error('SEARCH_NOT_READY');
+    const baseline=await captureSearchBaseline(this.searchFrame);
     const prepared=await submitProbe(this.searchFrame,{...config,requestedReturnDate:config.returnDate,requestTripType:request.tripType,report:this.report});
+    const identity={...config,carrier:prepared.carrier,currency:prepared.currency};
     const oneWay=request.tripType==='one_way';
     if(prepared.tripKind!==(oneWay?'one-way':'return'))throw Error('TRIP_NOT_CONFIRMED');
     this.report('PORTAL_QUOTE_WAITING_FOR_FLIGHT_RESULTS');
-    await waitForFlightResults(this.searchFrame,oneWay);
+    const confirmed=await waitForSearchIdentity(this.searchFrame,identity,baseline,{report:this.report});
+    // Empty results establish absence only after a fresh successful supplier
+    // response is bound to this exact route, dates, party and search option.
+    if(!confirmed.outbound||!oneWay&&!confirmed.inbound)throw Error('NO_FLIGHTS_CONFIRMED');
     this.report('PORTAL_QUOTE_FLIGHT_RESULTS_READY');
     if(oneWay&&!await this.searchFrame.evaluate(()=>UI_tabSearchFlights.strRetDate===''))throw Error('ONE_WAY_NOT_CONFIRMED');
     const choices=await readFlightTimes(this.searchFrame,oneWay);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{report:this.report});
     if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
     this.onAuthenticatedActivity?.();
     if(discoverOnly)return{choices};
@@ -637,6 +717,7 @@ class AirArabiaPortalAdapter {
       out:choices.out.find(f=>f.selected)||choices.out[0],back:choices.back.find(f=>f.selected)||choices.back[0]};
     if(!timing.out||(!oneWay&&!timing.back))throw Error('FLIGHT_TIMES_UNCONFIRMED');
     if(!choice)await selectFlightTimes(this.searchFrame,timing);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{selected:timing,report:this.report});
     this.report('PORTAL_QUOTE_TIMING_FARE_CONFIRMED');
     const safe=await this.searchFrame.evaluate(()=>typeof DATA_ResPro!=='undefined' && DATA_ResPro.initialParams?.seatBlock===false);
     if(!safe)throw Error('TEMPORARY_BLOCK_NOT_DISABLED');
@@ -644,6 +725,7 @@ class AirArabiaPortalAdapter {
     await continueWithTestPassenger(this.searchFrame,this.report);
     const seats=await scanSeatPrices(this.searchFrame,this.page,this.report);
     const catalogs=await scanAncillaryCatalogs(this.searchFrame,this.page,this.report);
+    await assertSearchIdentity(this.searchFrame,identity,baseline,{selected:timing,report:this.report});
     const price=quoteFromScans(request,seats,catalogs);
     if(!await this.isAuthenticated())throw new PortalError('SESSION','LOGIN_NOT_CONFIRMED');
     this.onAuthenticatedActivity?.();
