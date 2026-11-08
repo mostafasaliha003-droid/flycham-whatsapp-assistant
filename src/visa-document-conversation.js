@@ -87,6 +87,18 @@ function receivedDocuments(store, customer, summary, now) {
 function receivedCopy(received) {
   return received.count === 1 ? 'وصلني مرفق واحد ضمن ملفك.' : received.count > 1 ? `وصلتني ${received.count} مرفقات ضمن ملفك.` : 'المستندات الموجودة محفوظة ضمن ملفك.';
 }
+function hasIntakeEvidence(store, customer, summary, received) {
+  if (received.exists) return true;
+  const current = store?.data?.visaCases?.[customer];
+  if (summary?.caseId && current?.id && summary.caseId !== current.id) return false;
+  if (['passport','residence','photo'].some(kind => hasPrepared(summary,kind))) return true;
+  // Empty cases can already be labelled processing/needs_review and have
+  // missing-document placeholders. Neither status nor an applicant ID proves
+  // that the customer actually sent a document.
+  const issues = [...(Array.isArray(summary?.issues) ? summary.issues : []), ...(Array.isArray(summary?.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
+  if (issues.some(issue => ['CASE_DATA_MISMATCH','MULTIPLE_PASSPORTS'].includes(issue?.code))) return true;
+  return Boolean(current?.id && Object.values(store?.data?.visaDocumentIntake?.jobs || {}).some(job => job?.customer === customer && job.caseId === current.id && typeof job.mediaId === 'string' && job.mediaId.length > 0 && ['queued','running','retry','waiting_case','ready','failed'].includes(job.status) && (!summary?.caseSignature || job.caseSignature === summary.caseSignature)));
+}
 function preparationCopy(summary, received) {
   if (!received.exists) return 'للبداية ابعت صفحة بيانات الجواز كاملة، وجهي الهوية الإماراتية، وصورة شخصية واضحة بخلفية بيضاء. الصور أو PDF مناسبين، وإذا المستند صفحتين ابعتهن سوا.';
   const issues = [...(Array.isArray(summary?.issues) ? summary.issues : []), ...(Array.isArray(summary?.applicants) ? summary.applicants.flatMap(applicant => Array.isArray(applicant?.issues) ? applicant.issues : []) : [])];
@@ -166,7 +178,11 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
     const possibleContextual = detectDocumentIntent(text, {hasAttachments, hasDocumentContext: true}), roleAnswer = shortKind(text);
     const linkFollowup = stored(customer)?.uploadOfferedAt != null && /رابط|لينك|\blink\b/.test(normalize(text || '')) && !/دفع|تامين|حساب|بنك/.test(normalize(text || ''));
     if (!direct && !possibleContextual && !roleAnswer && !hasAttachments && !linkFollowup) { clear(customer); return {handled: false}; }
-    const summary = snapshot(documentIntake, customer), previous = context(customer, summary);
+    const observed = snapshot(documentIntake, customer), currentCaseId = store?.data?.visaCases?.[customer]?.id;
+    // A prior case's prepared documents cannot establish receipt or readiness
+    // for the current application, including while the intake worker catches up.
+    const summary = currentCaseId && observed?.caseId && observed.caseId !== currentCaseId ? null : observed;
+    const previous = context(customer, summary);
     const hasDocumentContext = Boolean(caseId(summary, customer) && (previous || receivedDocuments(store, customer, summary, now()).exists || ['processing', 'queued', 'running', 'retry', 'ready', 'needs_confirmation', 'needs_review'].includes(summary?.status)));
     let request = direct || (hasDocumentContext ? possibleContextual : null);
     if (!request && linkFollowup && previous?.uploadOfferedAt != null) request = {intent: 'upload_link', kind: null};
@@ -182,7 +198,19 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
       const progress=workflowProgressReply(store,customer,summary,now());
       if(progress){remember(customer,summary);return {...result,reply:progress};}
     }
-    if(operatorCoordination&&['status','prepare_application'].includes(request.intent)){remember(customer,summary);return {...result,reply:require('./remal-service-policy').response('processing')};}
+    if (operatorCoordination && ['status','prepare_application'].includes(request.intent)) {
+      const received = receivedDocuments(store, customer, summary, now());
+      if (hasIntakeEvidence(store,customer,summary,received)) {
+        remember(customer,summary);
+        return {...result,reply:require('./remal-service-policy').response('processing')};
+      }
+      if (request.intent === 'status') {
+        remember(customer,summary);
+        return {...result,reply:'لسه ما تأكد وصول المستندات ضمن ملفك. إذا أرسلتها هون، منتحقق من وصولها قبل ما نطلب منك تعيدها.'};
+      }
+      // No documents have arrived: answer the actual requirements question.
+      // Product qualification below keeps originals-only routes with the engine.
+    }
     if (['prepare_application', 'will_send'].includes(request.intent)) {
       const currentCase = store?.data?.visaCases?.[customer], received = receivedDocuments(store, customer, summary, now());
       const products = currentCase?.applicants?.map(person => P.productFor(person)) || [];
@@ -198,7 +226,7 @@ function createVisaDocumentConversation({documentIntake, createUploadLink, sendP
       if (documentsPresent || received.exists) return {...result, reply:[reply,paymentReceiptFollowup(store,customer,summary)].filter(Boolean).join('\n\n')};
       const recentlyOffered = Number.isFinite(previous?.uploadOfferedAt) && now() - previous.uploadOfferedAt <= CONTEXT_MS;
       if (recentlyOffered) reply += received.exists ? '\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط الرفع اللي أرسلته قبل شوي.' : '\nفيك تستخدم رابط الرفع اللي أرسلته قبل شوي، أو تبعت الصور هون.';
-      else if (typeof createUploadLink === 'function') {
+      else if (!operatorCoordination && typeof createUploadLink === 'function') {
         try {
           const url = uploadUrl(await createUploadLink(customer, {kind: null}));
           if (url) { remember(customer, summary, {uploadOfferedAt: now()}); reply += (received.exists ? '\n\nإذا بدك تضيف صورة ناقصة، فيك تستخدم رابط ملفك الخاص:' : '\n\nوفيك ترفعهم من رابط ملفك الخاص بدل إرسالهم على واتساب:') + '\n' + url + '\nبعد ما تخلص اضغط «تم» وارجع لهالمحادثة.'; }

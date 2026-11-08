@@ -235,12 +235,42 @@ test('model correction overrides stale multi-nationality extraction',async()=>{
 test('staff revision cancels stale understanding output',async()=>{
  let finish;const e=make({understand:()=>new Promise(resolve=>finish=resolve)});e.save('a',e.newCase());const pending=e.handle('a','مرحبا');e.getCase('a').revision++;finish({intent:'price',fields:{nationality:'سوريا',documentType:'passport',applicantCount:1}});assert.equal((await pending).superseded,true);assert.equal(e.getCase('a').quote,undefined);
 });
-test('attachments bypass external understanding and cannot claim quality review',async()=>{
- let called=false;const e=make({understand:async()=>{called=true;return null;}});const r=await e.handle('a','[ملف جواز]',{messages:[{media:{id:'test'}}]});assert.equal(called,false);assert.match(r.reply,/وصلت أوراقك/);assert.equal(e.getCase('a').stage,'documents_pending_review');
+test('attachment metadata alone bypasses external understanding but cannot confirm receipt',async()=>{
+ let called=false;const e=make({understand:async()=>{called=true;return null;}});const r=await e.handle('a','[ملف جواز]',{messages:[{media:{type:'image',id:'10101'}}]});assert.equal(called,false);assert.doesNotMatch(r.reply,/وصلت أوراقك|عم نجهز/);assert.equal(e.getCase('a').stage,'inquiry');
+ e.store.data.visaMedia={saved:{id:'saved',customer:'a',sourceId:'10101',type:'image',expiresAt:Date.now()+60000}};
+ const stored=await e.handle('a','[ملف جواز]',{messages:[{media:{type:'image',id:'10101'}}]});assert.match(stored.reply,/وصل المرفق/);assert.equal(e.getCase('a').stage,'documents_pending_review');assert.equal(called,false);
 });
 test('sensitive history is redacted and deleting visa data does not delete flight state',async()=>{
  const e=make();e.store.set('a',{status:'flight_active'});await e.handle('a','رقم الجواز N016671869 ورقم الهوية 784-1990-4260790-5');assert.doesNotMatch(JSON.stringify(e.getCase('a').history),/N016671869|784-1990/);
  await e.handle('a','احذف بياناتي');assert.equal(e.getCase('a'),null);assert.equal(e.store.get('a').status,'flight_active');
+});
+test('a short acknowledgment after a quote preserves the case and does not invent progress',async()=>{
+ const e=make();await e.handle('ack','سوري جواز عادي لحالي');const before=structuredClone(e.getCase('ack'));
+ let semanticCalls=0;e.understand=async()=>{semanticCalls++;return null;};
+ for(const text of ['👍','تمام','تسلم','ماشي']){
+  const r=await e.handle('ack',text);const c=e.getCase('ack');
+  assert.doesNotMatch(r.reply,/رقم الطلب|قيد التنفيذ|عم نتابع|640|ارسل|ابعت|تم التقديم/);
+  assert.equal(c.stage,before.stage);assert.deepEqual(c.quote,before.quote);assert.equal(c.paymentStatus,'unverified');
+ }
+ assert.equal(semanticCalls,0);e.understand=null;const status=await e.handle('ack','شو صار بطلبي؟');assert.match(status.reply,/العرض جاهز/);assert.match(status.reply,/ما في تقديم مسجّل/);
+});
+test('a document question or negated sending cannot set the case to document review',async()=>{
+ const e=make();await e.handle('doc-q','سوري جواز عادي لحالي');const before=structuredClone(e.getCase('doc-q'));
+ const negated=await e.handle('doc-q','لسا ما أرسلت الأوراق');assert.match(negated.reply,/لما تجهز الأوراق/);
+ const question=await e.handle('doc-q','أرسل الجواز ولا الهوية؟');assert.match(question.reply,/نسخة جواز/);assert.match(question.reply,/وجه الهوية وخلفها/);
+ for(const r of [negated,question])assert.doesNotMatch(r.reply,/وصلت أوراقك|عم نجهز ملفك|إجمالي رسوم/);
+ assert.equal(e.getCase('doc-q').stage,before.stage);assert.deepEqual(e.getCase('doc-q').applicants,before.applicants);
+});
+test('mixed tourist and Umrah followups show each traveler the correct document route',async()=>{
+ const e=make(),c=e.newCase();Object.assign(c,{greeted:true,stage:'quoted',applicantCount:2,applicants:[tourist,{nationality:'فلسطين',documentType:'travel_document',documentIssuer:'لبنان'}]});c.quote=P.calculateQuote(c,{feesEnabled:true});e.save('mixed-docs',c);
+ const r=await e.handle('mixed-docs','شو الأوراق المطلوبة؟');
+ assert.match(r.reply,/المتقدم \(1 — سياحية أونلاين\)/);assert.match(r.reply,/المتقدم \(2 — عمرة عبر السفارة\)/);
+ assert.match(r.reply,/نسخة جواز/);assert.match(r.reply,/أصل الجواز وأصل الهوية/);assert.doesNotMatch(r.reply,/إجمالي رسوم|1490/);
+});
+test('a casual okay does not confirm cancellation, while an explicit bound yes still works',async()=>{
+ const e=make();await e.handle('cancel-ok','سوري جواز عادي لحالي');await e.handle('cancel-ok','بدي الغي');
+ await e.handle('cancel-ok','تمام');assert.equal(e.getCase('cancel-ok').cancellation.state,'awaiting_confirmation');
+ await e.handle('cancel-ok','نعم');assert.equal(e.getCase('cancel-ok').cancellation.state,'review_requested');
 });
 test('unknown children price is not silently quoted as adults',async()=>{
  const e=make();const r=await e.handle('a','سوري جواز عادي شخص واحد طفل');assert.equal(r.quote.requiresReview,true);assert.match(r.reply,/تسعير الحالة/);
@@ -457,7 +487,7 @@ test('Package 6 followup timeline uses saved evidence and preserves approved and
 });
 test('Package 6 refund disclosure is recorded only when shown, survives restart and resets per case',async()=>{
  const e=make(),first=await e.handle('refund6','سوري جواز عادي لحالي');assert.ok(first.reply.includes(P.REFUND_BENEFIT));assert.deepEqual(e.getCase('refund6').disclosuresShown,['refund']);
- const restarted=make({store:e.store});for(const text of ['كم السعر؟','بدي رابط دفع','غالي','شو السعر؟']){const r=await restarted.handle('refund6',text);assert.doesNotMatch(r.reply,/ميزة خاصة لعملائنا/);assert.match(r.reply,/مستردة بالكامل.*الرفض الرسمي/);}
+ const restarted=make({store:e.store});for(const text of ['كم السعر؟','بدي رابط دفع','غالي','شو السعر؟']){const r=await restarted.handle('refund6',text);assert.doesNotMatch(r.reply,/ميزة خاصة لعملائنا/);if(text==='غالي')assert.doesNotMatch(r.reply,/مستردة بالكامل/);else assert.match(r.reply,/مستردة بالكامل.*الرفض الرسمي/);}
  assert.deepEqual(restarted.getCase('refund6').disclosuresShown,['refund']);assert.deepEqual(restarted.newCase().disclosuresShown,[]);
  const unseen=make();await unseen.handle('unseen6','سوري جواز عادي لحالي كم يوم وطرق الدفع');assert.deepEqual(unseen.getCase('unseen6').disclosuresShown,['refund']);
  const bank=make();await bank.handle('bank6','سوري جواز عادي لحالي حسابكم البنكي',{messages:[{media:{id:'synthetic'}}]});assert.deepEqual(bank.getCase('bank6').disclosuresShown,[]);const quoted=await bank.handle('bank6','كم السعر؟');assert.ok(quoted.reply.includes(P.REFUND_BENEFIT));
@@ -510,7 +540,7 @@ test('Package 7 targeted issuer ignores a model nationality for the issuing coun
  await e.handle('target7','وثيقة سفر من مصر');assert.equal(e.getCase('target7').applicants[0].nationality,'سوريا');assert.equal(e.getCase('target7').applicants[1].nationality,'فلسطين');assert.equal(e.getCase('target7').applicants[1].documentIssuer,'مصر');
 });
 test('Package 7 dialect receipt and paperwork acknowledgements never verify payment or submit',async()=>{
- for(const text of ['طرشت الاوراق','دزيت الورق','بعت الورق']){const e=make();await e.handle('papers7','سوري جواز عادي لحالي');const reply=await e.handle('papers7',text);assert.match(reply.reply,/وصلت أوراقك/);assert.equal(e.getCase('papers7').stage,'documents_pending_review');assert.equal(e.getCase('papers7').paymentStatus,'unverified');}
+ for(const text of ['طرشت الاوراق','دزيت الورق','بعت الورق']){const e=make();await e.handle('papers7','سوري جواز عادي لحالي');const reply=await e.handle('papers7',text);assert.match(reply.reply,/بعد التحقق من الملفات/);assert.equal(e.getCase('papers7').stage,'quoted');assert.equal(e.getCase('papers7').paymentStatus,'unverified');}
  for(const text of ['طرشت التحويل','دزيت التحويل','طرشت الايصال']){const e=make();await e.handle('receipt7','سوري جواز عادي لحالي');const reply=await e.handle('receipt7',text);assert.match(reply.reply,/نتحقق من وصول الدفعة/);assert.equal(e.getCase('receipt7').paymentStatus,'awaiting_verification');assert.equal(e.getCase('receipt7').submissionStatus,'not_submitted');assert.match((await e.handle('receipt7','لخصلي طلبي')).reply,/إشعار التحويل بانتظار التحقق/);}
 });
 test('Package 7 dialect price questions retain quote and office wording is not a price request',async()=>{

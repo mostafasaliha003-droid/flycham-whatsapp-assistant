@@ -104,7 +104,7 @@ test('semantic multi-question turn renders all requested information without new
  e.understand=async()=>decision('price',['price','processing_time','documents']);
  const before=structuredClone(e.getCase('a'));
  const r=await e.handle('a','How much, how long and which documents?');
- assert.match(r.reply,/إجمالي رسوم التأشيرات/);assert.match(r.reply,/أيام عمل/);assert.match(r.reply,/نسخة جواز/);
+ assert.match(r.reply,/إجمالي رسوم التأشيرات/);assert.match(r.reply,/6–7 working days/);assert.match(r.reply,/clear passport scan/);
  assert.equal(e.getCase('a').paymentStatus,before.paymentStatus);
  assert.deepEqual(e.getCase('a').quote,before.quote);
 });
