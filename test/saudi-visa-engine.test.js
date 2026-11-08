@@ -6,6 +6,19 @@ const P=require('../src/saudi-visa-policy');
 const {visaCaseSignature}=require('../src/visa-case-signature');
 const make=options=>new SaudiVisaEngine({store:new AssistantState({file:null}),env:{},privateConfig:{banks:[{bank:'Synthetic Bank',name:'Synthetic Company',account:'00000001',iban:'AE000000000000000000000'}]},...options});
 const tourist={nationality:'سوريا',documentType:'passport'};
+test('payment fee questions and comparisons preserve the chosen method without requesting coordination',async()=>{
+ for(const text of ['كم رسوم تابي؟','أدفع بتحويل بنكي ولا تابي؟','بدي أعرف الفرق بين التحويل البنكي وتابي','كيف الدفع برابط؟'])for(const model of [false,true]){
+  const e=make();await e.handle('payment-info','سوري جواز عادي لحالي');await e.handle('payment-info','بدي دفع تابي');const before=structuredClone(e.getCase('payment-info'));
+  if(model)e.understand=async()=>({intent:'payment',fields:{paymentMethod:'bank'},informationIntents:['payment']});
+  const r=await e.handle('payment-info',text),after=e.getCase('payment-info');
+  assert.equal(after.paymentMethod,before.paymentMethod,text);assert.deepEqual(after.quote,before.quote,text);
+  assert.deepEqual(after.operatorIntervention,before.operatorIntervention,text);
+  assert.equal(after.paymentStatus,'unverified');assert.match(r.reply,/خيارات الدفع/);assert.doesNotMatch(r.reply,/رح ننسّق لك/);
+ }
+ const e=make();await e.handle('payment-choice','سوري جواز عادي لحالي');await e.handle('payment-choice','بدي أدفع تابي، كم العمولة؟');
+ assert.equal(e.getCase('payment-choice').paymentMethod,'tabby');assert.equal(e.getCase('payment-choice').quote.total,697.6);assert.equal(e.getCase('payment-choice').operatorIntervention.reason,'tabby');
+ await e.handle('payment-choice','أرسل رابط دفع');assert.equal(e.getCase('payment-choice').operatorIntervention.reason,'payment_link');
+});
 test('Package 5 family counts understand spoken groups without counting a separate friend inquiry',async()=>{
  const {countFrom}=require('../src/saudi-visa-engine');
  for(const [text,count]of [['عيلتي 4',4],['عايلتي ٣',3],['عائلة من 5',5],['أنا وأمي',2],['أنا ووالدي',2],['أنا وأختي',2],['أنا والمدام وطفلين',4],['أنا وزوجتي وولدين',4],['أنا وزوجي وبنتي',3],['فردين',2],['أنا لحالي',1]])assert.equal(countFrom(text),count,text);
@@ -23,6 +36,18 @@ test('Package 5 colloquial passports and issuer cities preserve nationality and 
  }
  for(const text of ['وثيقة من دمشق أو بيروت','وثيقة من طرابلس ليبيا','وثيقة من سلطنة عمان'])assert.equal(extractLocal(text,{}).documentIssuer,undefined,text);
  const e=make(),c=e.newCase();Object.assign(c,{applicantCount:2,applicants:[tourist,{nationality:'فلسطين',documentType:'travel_document'}],lastQuestion:'issuer_1'});e.save('group',c);await e.handle('group','بيروت');assert.deepEqual(e.getCase('group').applicants[0],tourist);assert.equal(e.getCase('group').applicants[1].documentIssuer,'لبنان');
+});
+test('an issuer prompt accepts a place, not a greeting, question, or ambiguous answer',async()=>{
+ const e=make(),c=e.newCase();
+ Object.assign(c,{applicantCount:2,applicants:[tourist,{nationality:'فلسطين',documentType:'travel_document'}],lastQuestion:'issuer_1',greeted:true});
+ e.save('issuer',c);
+ for(const text of ['مرحبا','شكراً','كم رسوم الوثيقة اللبنانية؟','سوريا أو لبنان','مش لبنان']){
+  await e.handle('issuer',text);
+  assert.deepEqual(e.getCase('issuer').applicants,c.applicants,text);
+  assert.equal(e.getCase('issuer').lastQuestion,'issuer_1',text);
+ }
+ await e.handle('issuer','الوثيقة صادرة من بيروت');
+ assert.deepEqual(e.getCase('issuer').applicants,[tourist,{nationality:'فلسطين',documentType:'travel_document',documentIssuer:'لبنان'}]);
 });
 test('Package 5 financial-document advice never switches payment method or sends company bank details',async()=>{
  const e=make();await e.handle('bank-question','سوري جواز عادي لحالي');e.getCase('bank-question').paymentMethod='tabby';let calls=0;e.understand=async()=>{calls++;return {intent:'bank_details',fields:{paymentMethod:'bank'}};};

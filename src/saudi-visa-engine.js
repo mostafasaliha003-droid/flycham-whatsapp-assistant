@@ -12,12 +12,18 @@ const {detectDocumentStep}=require('./visa-document-conversation');
 const {documentClarificationCopy}=require('./visa-workflow-progress');
 const {referenceKey,applicationReference,conversationIntent}=require('./visa-conversation-intent');
 const {CONSULTATION_INTENTS,consultationIntent,consultationReply:seniorConsultationReply}=require('./visa-consultation');
+const {visaReplyLanguage,englishVisaQuestion,englishVisaConsultationReply,VISA_INTRO_EN,REFUND_BENEFIT_EN,REFUND_REMINDER_EN}=require('./visa-reply-language');
 const INTRO='أهلاً وسهلاً فيك بمجموعة الرمال 🌷 أنا إسماعيل، المساعد الافتراضي المختص بفيز السعودية.';
 const EGYPT_SINGLE_COPY='حسب سياسة منصة التقديم الحالية، التأشيرة السياحية المتاحة للجنسية المصرية خلال هذا الموسم هي سفرة واحدة، والتأشيرة متعددة الدخول غير متاحة حاليًا.';
 const MONEY=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
 function countFrom(text){const n=P.normalize(text);if(/لحالي|لوحدي|بطولي|شخص واحد|شخص بالغ|انا فقط|انا بس|بس انا|one person|just me/.test(n))return 1;const m=n.match(/(?:نحن|نحنا|احنا|صرنا|عددنا|عدد الاشخاص|عدد المتقدمين|عيلتي|عايلتي|عائله من)\s*(\d{1,2})|\b(\d{1,2})\s*(?:اشخاص|شخص|افراد|متقدم|انفار|نفر)/);if(m)return Number(m[1]||m[2]);if(/(?:ثلاثه|ثلاث|تلاته|تلات)\s*(?:اشخاص|افراد|متقدمين)|(?:نحن|نحنا|احنا|صرنا|عددنا)\s*(?:ثلاثه|ثلاث|تلاته|تلات)/.test(n))return 3;if(/انا و(?:ام وابوي|امي وابوي|ابوي وامي|والدي ووالدتي)(?=$|[\s،,.؟?!])/.test(n))return 3;if(/شخصين|فردين|نفرين|(?:نحن|نحنا|احنا|صرنا|عددنا)\s*(?:اتنين|اثنين)|انا و(?:مرتي|مراتي|زوجتي|زوجي|جوزي|امي|والدتي|ابي|ابوي|والدي|اخي|اخوي|اختي|المدام|خطيبتي|الحرمه)/.test(n))return /(?:ولادي الاثنين|طفلين|ولدين)/.test(n)?4:/(?:ابني|بنتي|الولد|الطفل)/.test(n)?3:2;if(/اربعه اشخاص|اربع اشخاص/.test(n))return 4;if(/خمسه اشخاص|خمس اشخاص/.test(n))return 5;return null;}
 function isComplaint(text){const n=P.normalize(text);const accusation=/نصاب|نصبتم|نصبتو|نصبتوا|حراميه|سرقتو|سرقتوا/.test(n),existing=/قدمت|مقدم|معاملتي|معامله|دفعت|حولت|فلوسي|مصرياتي|مصاري|مبلغ|ترجعو|رجعتو/.test(n);return existing&&(accusation||/(?:ما|لم|مو|ليس).{0,25}(?:طلعت|صدرت|رجعت|رجعتو|رجعوا|رجعتوا|استلمت)|شكوي|اشتك/.test(n));}
 function safeText(s,max=120){return typeof s==='string'?s.trim().slice(0,max):null;}
+function issuerAnswer(text){
+ const place=P.normalize(text).replace(/[.!]+$/u,'').trim()
+  .replace(/^(?:(?:ال)?وثيقه(?: السفر)?\s+)?(?:(?:صادره?|صدرت|اصدرت)\s+(?:من|في)\s+|من\s+)/u,'');
+ return P.canonicalIssuer(place,{exact:true});
+}
 function dateValue(v){return typeof v==='string'&&/^20\d{2}-\d{2}-\d{2}$/.test(v)&&Number.isFinite(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v?v:null;}
 function conversationText(text,{hasAttachments=false}={}){
  const withoutPlaceholders=hasAttachments?String(text||'').replace(/\[[^\[\]\n]{0,80}(?:مرفق|ملف|مراجعة|مراجعه)[^\[\]\n]{0,80}\]/g,''):String(text||'');
@@ -94,6 +100,19 @@ function assertedVisaText(text){
   .filter(part=>!/^(?:هل|شو|ايش|وش|ايه|ما|what|which)\s.*(?:فرق|بين|جواز|وثيق|جنسي|passport|document|nationality)/iu.test(part.trim()))
   .filter(part=>!/(?:^|\s)(?:مو|مش|ماني|مانيش|مب|لست|ليس|ما|لا|لم|بدون|ماعندي|معنديش|مافيش|ماحولت|مادفعت|ماسددت)(?=\s|$)/u.test(part))
   .join('، ').trim();
+}
+function paymentMethodInquiry(text,decision){
+ const n=P.normalize(text),asserted=assertedVisaText(text);
+ const methods=[/تابي|\btabby\b/.test(n),/تحويل|بنكي|البنك|حساب بنكي|\bbank\b/.test(n),/رابط|لينك|\blink\b/.test(n)].filter(Boolean).length;
+ const comparing=methods>1&&/(?:^|\s)(?:ولا|او|or|versus|vs)(?=\s)|فرق|قارن|مقارنه|difference|compare/.test(n);
+ // A request for fees or a comparison is not a payment-method selection.
+ // An explicit selection in the same turn still takes effect, unless the
+ // customer is weighing alternatives rather than choosing one.
+ const selected=/(?:بدي|بدنا|عايز|عاوز|ابي|ابغي|اريد|اشتي|حابب)\s+(?:(?:ادفع|دفع|الدفع|اسدد|احول)\s+)?(?:ب|عبر|عن طريق|على)?\s*(?:تابي|تحويل|البنك|حسابكم|رابط|لينك)|(?:اختار|اخترت|باختار|بدفع|بحول|بسدد|دفعت|حولت|سددت)\s*(?:ب|عبر|عن طريق|على)?\s*(?:تابي|تحويل|البنك|حسابكم|رابط|لينك)|(?:ارسل|ابعت|بعتلي|عطيني)\s+(?:رابط|لينك)|\b(?:i (?:choose|prefer)|i(?:'ll| will| want to) pay (?:via|by|with)|send (?:me )?(?:a |the )?payment link)\b/i.test(asserted);
+ const information=methods>0&&/كم|قديش|شقد|رسوم|عمول|كيف|فرق|قارن|طرق|خيارات|وسائل|\b(?:how|what|fees?|charges?|cost|difference|compare)\b/i.test(n);
+ const semanticChoice=['bank','link','tabby'].includes(decision?.fields?.paymentMethod||decision?.facts?.paymentMethod);
+ const semanticInformation=!semanticChoice&&(decision?.intent==='payment'||Array.isArray(decision?.informationIntents)&&decision.informationIntents.includes('payment'));
+ return comparing||!selected&&(information||semanticInformation);
 }
 function extractLocal(text,c){
  const original=P.normalize(text);
@@ -221,7 +240,11 @@ class SaudiVisaEngine{
   const c=structuredClone(current);c.history||=[];c.history.push({role:'user',text:(hasAttachments?'[attachment received] ':'')+redactVisaText(String(text)).slice(0,1500)},{role:'assistant',text:redactVisaText(String(reply)).slice(0,2500)});c.history=c.history.slice(-16);c.revision++;this.save(id,c);return{reply,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage};
  }
  newCase(){return {id:randomUUID(),service:'saudi_visa',policyVersion:P.POLICY_VERSION,revision:0,stage:'inquiry',createdAt:this.now(),updatedAt:this.now(),applicantCount:null,applicants:[],askedQuestions:[],disclosuresShown:[],history:[],paymentStatus:'unverified',documents:[],submissionStatus:'not_submitted',greeted:false};}
- ask(c,key,text){const repeated=c.lastQuestion===key;c.lastQuestion=key;if(!c.askedQuestions.includes(key))c.askedQuestions.push(key);return repeated?'حتى نكمل من نفس النقطة: '+text:text;}
+ ask(c,key,text){
+  const repeated=c.lastQuestion===key;c.lastQuestion=key;if(!c.askedQuestions.includes(key))c.askedQuestions.push(key);
+  if(c.replyLanguage==='en')return englishVisaQuestion(key,{repeated})||text;
+  return repeated?'حتى نكمل من نفس النقطة: '+text:text;
+ }
  nextQuestion(c){
   const nat=c.applicants[0]?.nationality;
   if(!nat)return this.ask(c,'nationality','شو جنسية الشخص اللي بدنا نقدّم له؟');
@@ -263,11 +286,13 @@ class SaudiVisaEngine{
  }
  async handle(id,text,{messages=[]}={}){
   text=String(text||'').trim().slice(0,12000);const n=P.normalize(text);let c=structuredClone(this.getCase(id)||this.newCase()),decision=null;
+  const replyLanguage=visaReplyLanguage(text,c.replyLanguage),localConsultation=consultationIntent(text);
+  c.replyLanguage=replyLanguage;
   const explicitIdx=explicitApplicantIndex(n);
   const initialRevision=c.revision;
   if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(n)){this.delete(id);return{reply:'تم حذف ملف فيزا السعودية المحفوظ لدينا. إذا عندك معاملة مقدمة فعلياً أو التزام مالي، مراجعتها بتكون مع القسم المختص.',deleted:true,service:'saudi_visa'};}
   if(c.stage==='inquiry'&&!c.applicantCount&&!c.applicants.length&&/^(?:مرحبا|هلا|اهلا|السلام عليكم|hello|hi)[،,!؟?. 🌷]*$/i.test(n)){const welcome=returningGreeting(this.store,id,'saudi_visa',{now:this.now()});if(welcome)return this.conversationReply(id,c,text,welcome);}
-  if(affirmativeEnglishText(text)!==text&&!Object.keys(parseEnglishVisaFacts(text)).length&&!/[\u0621-\u064a]/.test(text))return this.conversationReply(id,c,text,'حتى أفهم قصدك صح، ممكن توضح النقطة اللي حابب تعدّلها؟');
+  if(!localConsultation&&affirmativeEnglishText(text)!==text&&!Object.keys(parseEnglishVisaFacts(text)).length&&!/[\u0621-\u064a]/.test(text))return this.conversationReply(id,c,text,replyLanguage==='en'?'Which detail would you like to change?':'حتى أفهم قصدك صح، ممكن توضح النقطة اللي حابب تعدّلها؟');
   if(conversationIntent(text)==='case_summary'&&!isComplaint(text)){const completion=this.nextQuestion(structuredClone(c));return this.conversationReply(id,c,text,caseSummaryCopy(c,completion));}
   if(explicitIdx!==null&&(explicitIdx<0||explicitIdx>=Math.max(c.applicantCount||0,c.applicants.length)))return this.conversationReply(id,c,text,'حتى نعدّل ملف الشخص الصحيح، حدد رقم متقدم واحد من الموجودين بملفك. ما غيّرنا أي بيانات.');
   // General validity guidance must not turn document mentions into applicant facts.
@@ -295,7 +320,7 @@ class SaudiVisaEngine{
   if(confirmNew){
    const jobs=Object.values(this.store.data.visaFulfilment?.jobs||{}).filter(job=>job.customer===id&&job.caseId===c.id),active=jobs.some(job=>!['saved_application','manually_completed','stale','cancelled'].includes(job.state));
    if(active||c.paymentStatus==='verified'&&!jobs.some(job=>['saved_application','manually_completed'].includes(job.state)))return this.conversationReply(id,c,text,'سجلت رغبتك بطلب جديد مستقل. طلبك الحالي ما زال قيد الإجراء؛ يلزم تنسيق فتح الملف الجديد مع الفريق حتى نحافظ على المعاملة والدفعة الحالية.');
-   const facts=c.pendingNewApplication.facts;delete c.pendingNewApplication;this.store.data.visaCaseArchives||={};this.store.data.visaCaseArchives[id]||=[];this.store.data.visaCaseArchives[id].push(structuredClone(c));c=this.newCase();c.greeted=true;mergeFacts(c,facts);
+   const facts=c.pendingNewApplication.facts;delete c.pendingNewApplication;this.store.data.visaCaseArchives||={};this.store.data.visaCaseArchives[id]||=[];this.store.data.visaCaseArchives[id].push(structuredClone(c));c=this.newCase();c.greeted=true;c.replyLanguage=replyLanguage;mergeFacts(c,facts);
   }else if(intentForConversation==='new_application'&&this.getCase(id)&&!c.pendingRelative){
    c.pendingNewApplication={requestedAt:this.now(),facts:extractLocal(text,this.newCase())};return this.conversationReply(id,c,text,'أكيد، فينا نبدأ طلب جديد مستقل مع الاحتفاظ بطلبك الحالي. تأكدلي: بدك نفتح طلب جديد؟');
   }else{
@@ -304,6 +329,8 @@ class SaudiVisaEngine{
   const beforeFacts=JSON.stringify({applicantCount:c.applicantCount,applicants:c.applicants,departureDate:c.departureDate,returnDate:c.returnDate,transport:c.transport,hasHost:c.hasHost,hasMinors:c.hasMinors}),beforeCase=structuredClone(c);
   const asserted=assertedVisaText(text),assertedMatchesTurn=asserted.replace(/[،,؛;.!؟?\s]+/gu,' ').trim()===n.replace(/[،,؛;.!؟?\s]+/gu,' ').trim(),hypothetical=/(?:^|\s)(?:و?لو(?!\s+سمحت)|و?اذا|افترض|لنفترض|فرضنا|مثلا|if|suppose|imagine)(?=\s)/u.test(n);
   const aiFields=structuredClone(hypothetical?{}:decision?.fields||decision?.facts||{}),localFields=adviceOnly?{}:extractLocal(text,c),awaiting=c.lastQuestion;
+  const paymentInformation=paymentMethodInquiry(text,decision);
+  if(paymentInformation){delete aiFields.paymentMethod;delete localFields.paymentMethod;}
   if(/كشف حساب|حساب بنكي للتقديم|bank\s+statement/.test(n))delete aiFields.paymentMethod;
   if(/انا و(?:اهلي|عيلتي|عايلتي|عائلتي|عيالي|اولادي|الاهل)(?=$|[\s،,.؟?!])/.test(n)&&!countFrom(n)){delete aiFields.applicantCount;delete aiFields.applicants;}
   // Country of issue and Palestinian identity describe one traveller, even if
@@ -312,7 +339,8 @@ class SaudiVisaEngine{
   if(Array.isArray(aiFields.applicants)&&aiFields.applicants.length){for(const key of ['nationality','documentType','documentIssuer','applicants'])delete localFields[key];}
   if(/ايام|اسبوع|شهر|ساعات|دقايق/.test(n)&&!/(?:نحن|نحنا|احنا|صرنا|عددنا|شخص|اشخاص|متقدم|انفار|نفر)/.test(n)){delete aiFields.applicantCount;delete localFields.applicantCount;}
   if(/انتهاء|ينتهي|تنتهي|صلاحيه|expir|validity|valid until/i.test(n)){delete aiFields.departureDate;delete aiFields.returnDate;}
-  if(awaiting?.startsWith('issuer_')&&explicitIdx===null)for(const f of [aiFields,localFields]){delete f.nationality;delete f.documentType;delete f.applicants;}
+  const awaitingIssuer=awaiting?.startsWith('issuer_')&&explicitIdx===null;
+  if(awaitingIssuer)for(const f of [aiFields,localFields]){delete f.nationality;delete f.documentType;delete f.documentIssuer;delete f.applicants;}
   const relativeMention=/(?:^|[^\p{L}])(?:[وبل])?(?:صديق(?:ي|تي|ه|ته|ها|تها)?|رفيق(?:ي|تي|ه|ته|ها|تها)?|صاحبي|زوجتي|مرتي|مراتي|جوزي|الحرمه|والدتي|والدي|امي|ابي|اختي|اخي|اخوي|ابني|بنتي)(?=$|[^\p{L}])/u.test(n),pending=c.pendingRelative,ns=P.nationalities(n);
   const ownCorrection=decision?.correction&&decision?.target==='self'&&!pending||/جنسيتي|انا (?:مو|مش|لست)|بالنسبه الي/.test(n)||/^انا\s/.test(n)&&ns.length===1&&!relativeMention;
   const operational=/حساب|ايبان|بنك|دفع|حولت|ايصال|الغاء|كنسل|ارسل(?:ت)? الاوراق|ابعتلك الاوراق/.test(n);
@@ -342,14 +370,17 @@ class SaudiVisaEngine{
   let independentRelative=false;
   if(c.pendingRelative&&!relativeInquiry&&/طلب مستقل|طلب جديد|منفصل|مستقل/.test(n)){
    const relative=c.pendingRelative.facts;this.store.data.visaCaseArchives||={};this.store.data.visaCaseArchives[id]||=[];this.store.data.visaCaseArchives[id].push({...beforeCase,pendingRelative:undefined});this.store.data.visaCaseArchives[id]=this.store.data.visaCaseArchives[id].slice(-10);
-   c=this.newCase();c.greeted=true;mergeFacts(c,relative);independentRelative=true;
+   c=this.newCase();c.greeted=true;c.replyLanguage=replyLanguage;mergeFacts(c,relative);independentRelative=true;
   }
   mergeFacts(c,aiFields);mergeFacts(c,localFields);
   // Short answers apply only to the field actually requested.
   if(!relativeInquiry&&!adviceOnly&&!hypothetical&&asserted&&explicitIdx===null){
    if(c.lastQuestion?.startsWith('nationality_')){const index=Number(c.lastQuestion.slice(12)),ns=P.nationalities(asserted);if(ns.length===1)c.applicants[index]={...c.applicants[index],nationality:ns[0]};}
    if(c.lastQuestion?.startsWith('documentType_')){const index=Number(c.lastQuestion.slice(13)),doc=/وثيق/.test(asserted)?'travel_document':/عادي|جواز|باسبور|باسبورت|passport/.test(asserted)?'passport':null;if(doc){c.applicants[index]={...c.applicants[index],documentType:doc};if(doc==='passport')delete c.applicants[index].documentIssuer;}}
-   if(c.lastQuestion?.startsWith('issuer_')){const i=Number(c.lastQuestion.slice(7));if(asserted.length<80)c.applicants[i]={...c.applicants[i],documentIssuer:P.canonicalIssuer(asserted)};}
+   if(awaitingIssuer){
+    const i=Number(awaiting.slice(7)),issuer=issuerAnswer(n);
+    if(issuer&&c.applicants[i]?.documentType==='travel_document')c.applicants[i]={...c.applicants[i],documentIssuer:issuer};
+   }
    if(c.lastQuestion==='documentType'&&/^(?:عادي|عاديه|نظامي|جواز عادي|باسبور عادي|باسبورت عادي)$/.test(n)){c.applicants[0]={...c.applicants[0],documentType:'passport'};delete c.applicants[0].documentIssuer;}
   }
   if(!relativeInquiry&&!adviceOnly&&!hypothetical&&/\b(?:child|children|kids?|infants?|baby|babies|minor)\b|طفل|اطفال|رضيع|قاصر|ولدين|ولادي الاثنين|عيالي|اولادي|عمره (?:سنه|سنتين|ثلاث|اربع|خمس|ست|سبع|ثمان|تسع|عشر)/.test(asserted))c.hasMinors=true;
@@ -365,7 +396,6 @@ class SaudiVisaEngine{
   const previousQuestion=c.lastQuestion,previousAsked=[...c.askedQuestions],completion=this.nextQuestion(c),nextQuestion=c.lastQuestion,nextAsked=[...c.askedQuestions];
   c.lastQuestion=previousQuestion;c.askedQuestions=previousAsked;
   const intentAliases={documents:'requirements',payment_after:'pay_after_issue',negotiation:'negotiate',bank:'bank_details',payment:'payment_options'};
-  const localConsultation=consultationIntent(text);
   const intent=localIntent||intentAliases[decision?.intent]||(decision?.intent&&decision.intent!=='other'?decision.intent:localConsultation||decision?.intent);
   const informationIntents=new Set((Array.isArray(decision?.informationIntents)?decision.informationIntents:[]).filter(i=>['price','documents','payment','refund','address','bank','courier','processing_time','visa_duration'].includes(i)).map(i=>intentAliases[i]||i));
   const asks=topic=>intent===topic||informationIntents.has(topic);
@@ -382,14 +412,17 @@ class SaudiVisaEngine{
   const refundShown=c.disclosuresShown.includes('refund');
   if(hasUmrah&&P.umrahQuestion(text))reply=P.umrahConsultation(c.applicants.find(p=>P.productFor(p).code==='umrah'),{objection:true});
   else if(/(?:بدي|كيف|اريد|حابب|حابه|بدنا|بدنا ن|بدي ا).{0,12}(?:ثبت|تثبيت)|^(?:ثبت|ثبتلي|تثبيت)$/.test(asserted))reply=SERVICE.applicationStart(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS);
-  else if(/(?:رابط|لينك|link).{0,15}(?:دفع|pay)|(?:بدي|ارسل|ابعت|اريد|عطيني|ممكن).{0,15}(?:رابط|لينك)|^(?:رابط|لينك)$/.test(asserted)){intervention('payment_link');reply=SERVICE.response('link')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote,{refundShown}):'');}
-  else if(/تابي|tabby/.test(asserted)&&!/طرق|خيارات|وسائل/.test(n)){intervention('tabby');reply=SERVICE.response('tabby')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote,{refundShown}):'');}
+  else if(!paymentInformation&&/(?:رابط|لينك|link).{0,15}(?:دفع|pay)|(?:بدي|ارسل|ابعت|اريد|عطيني|ممكن).{0,15}(?:رابط|لينك)|^(?:رابط|لينك)$/.test(asserted)){intervention('payment_link');reply=SERVICE.response('link')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote,{refundShown}):'');}
+  else if(!paymentInformation&&/تابي|tabby/.test(asserted)&&!/طرق|خيارات|وسائل/.test(n)){intervention('tabby');reply=SERVICE.response('tabby')+(c.quote&&!c.quote.requiresReview?'\n\n'+quoteText(c.quote,{refundShown}):'');}
   else if(!concern&&(intent==='negotiate'&&!hypothetical&&assertedMatchesTurn||/خصم|تخفيض|ارخص|اخر سعر/.test(asserted))){intervention('discount');reply=SERVICE.response('discount')+'\n'+P.REFUND_BENEFIT;}
   else if(isComplaint(text)||intent==='complaint'){
    complaint=true;c.stage='complaint_pending';reply='حقك علينا، ومنفهم انزعاجك 🌷 رح أرفع المحادثة لإدارة المكتب لمراجعة المعاملة والدفعات المرتبطة فيها بشكل عاجل، من دون ما تحتاج تعيد التفاصيل.';
-  }else if(relativeInquiry&&!operational)reply=relativeReply(c.pendingRelative,{question:text,group:/كمان بدن يقدمو|كمان بدهم يقدمو|هنن.*(?:يقدمو|يقدموا)/.test(n)});
+  }else if(relativeInquiry&&!operational&&concern!=='clarify_question')reply=relativeReply(c.pendingRelative,{question:text,group:/كمان بدن يقدمو|كمان بدهم يقدمو|هنن.*(?:يقدمو|يقدموا)/.test(n)});
   else if(pendingAmendment)reply='وصل طلب التعديل 🌷 لأن الدفعة مؤكدة أو المعاملة مقدمة، حفظنا التعديل للمراجعة مع القسم قبل اعتماده. بيانات المعاملة والدفعة الحالية بقيت محفوظة؛ ما تم تعديل تقديم أو احتساب دفعة جديدة تلقائياً.';
-  else if(concern&&!hasAttachments)reply=seniorConsultationReply(concern,c,{completion,includeNextStep:informationIntents.size===0});
+  else if(concern&&!hasAttachments){
+   const renderConcern=replyLanguage==='en'?englishVisaConsultationReply:seniorConsultationReply;
+   reply=renderConcern(concern,c,{completion,nextQuestion,refundShown,includeNextStep:informationIntents.size===0});
+  }
   else if(intent==='case_summary')reply=caseSummaryCopy(c,completion);
   else if(!first&&(/^(?:مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم(?: ورحمه الله(?: وبركاته)?)?|هاي|hello|hi|صباح الخير|مساء الخير)[،,!؟?. 🌷]*$/i.test(n)))reply='أهلاً فيك 🌷 أنا معك، ومنكمل على نفس طلب التأشيرة.';
   else if(/عنوان|وين مكتب|مكان المكتب|موقع المكتب|location|address/.test(n))reply=SERVICE.OFFICE;
@@ -427,7 +460,7 @@ class SaudiVisaEngine{
   }
   else if(asks('processing_time')||!asks('visa_duration')&&!/مده الاقامه|مده الفيزا|مده التاشيره|صلاحيه الفيزا|صلاحيه التاشيره/.test(n)&&/كم يوم|قديش وقت|مده|مدة|متي تطلع|ايمت تطلع|بسرعه|مستعجل|بكرا|اليوم/.test(n))reply='المدة المعتادة حسب إجراءاتنا 6–7 أيام عمل، والإنجاز مرتبط بالسفارة. السبت والأحد والعطل المعتمدة ما بتنحسب ضمن أيام المعالجة. ما فينا نضمن الموافقة أو الصدور قبل موعد محدد.'+(c.departureDate?'\n\n'+travelFitCopy(c.departureDate,this.now()):' إذا سفرك قريب، شو تاريخ السفر؟');
   else if(/زاجل|توصيل|استلام الجواز|ابعت مندوب/.test(n)||intent==='courier')reply='فينا ننسّق استلام أصل الجواز والهوية عن طريق زاجل برسوم 35 درهماً، أو بتسلمهم بالمكتب. قبل ترتيب الاستلام منأكد معك نطاق الخدمة وهل الإعادة مشمولة؛ ما حُجز مندوب بعد.';
-  else if(/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply=SERVICE.response('payment');
+  else if(paymentInformation||/كيف ادفع|طرق الدفع|طريقه الدفع|وسائل الدفع/.test(n)||intent==='payment_options')reply=SERVICE.response('payment');
   else if(/90|تسعين|مده الاقامه|مده الفيزا|مده التاشيره|صلاحيه الفيزا|صلاحيه التاشيره|كم شهر|كل دخول/.test(n)||asks('visa_duration'))reply='السياحية المتعددة في عرضنا صلاحيتها سنة، والإقامة تصل إلى 90 يوماً حسب شروط التأشيرة الصادرة. صلاحية السنة تختلف عن مدة الإقامة؛ ما منعتبر الـ90 يوماً تلقائياً لكل دخول. السفرة الواحدة والعمرة إلهم شروط مختلفة حسب التأشيرة الفعلية.';
   else if(documentStep==='will_send')reply='تمام، ابعتهن هون لما تجهز، ومنكمل على نفس طلبك.';
   else if(documentStep==='requirements'||documentStep==='apply'&&quoteUnchanged||/اوراق|مطلوب|مستندات|كيف اقدم|طريقه التقديم/.test(n)||intent==='requirements')reply=(hasUmrah?P.UMRAH_DOCS:P.TOURIST_DOCS)+(completion?'\n\n'+completion:'\nابعتهن هون، ومنرتب المستندات قبل الخطوة التالية.');
@@ -465,17 +498,17 @@ class SaudiVisaEngine{
   ].filter(([yes])=>yes);
   if(!hasAttachments&&!pendingAmendment&&!relativeInquiry&&!complaint&&(compoundInfo.length||informationIntents.has('price'))&&(informationIntents.size||consultationReply||afterFacts!==beforeFacts||compoundInfo.length>1||priceRequested)&&(concern||consultationReply||!intent||['processing_time','courier','payment_options','bank_details','address','visa_duration','requirements','price','refund','other'].includes(intent))){
    const includeQuote=c.quote&&(!concern&&(priceRequested||afterFacts!==beforeFacts)||informationIntents.has('price'));
-   const concernCopy=concern?(includeQuote?reply.replace(P.REFUND_BENEFIT,'').trim():reply):null;
+   const concernCopy=concern?(includeQuote?reply.replace(P.REFUND_BENEFIT,'').replace(REFUND_BENEFIT_EN,'').replace(REFUND_REMINDER_EN,'').trim():reply):null;
    const missingPriceQuestion=informationIntents.has('price')&&!c.quote&&!['hesitation','clarify_question'].includes(concern)?completion:null;
    reply=[concernCopy,...(consultationReply?adviceTopics.map(topic=>dailyVisaCopy(topic,hasUmrah)):[]),...compoundInfo.map(([,copy])=>copy).filter(copy=>(!concernCopy||!concernCopy.includes(copy))&&(!includeQuote||copy!==P.REFUND_BENEFIT)),includeQuote?quoteText(c.quote,{refundShown}):null,concern?missingPriceQuestion:completion].filter(Boolean).join('\n\n');
   }
   // Mark only disclosures present in the final reply, not branches overwritten above.
-  if(reply.includes(P.REFUND_BENEFIT)||reply.includes(REFUND_REMINDER)||reply.startsWith('من ميزات التقديم معنا: رسوم التأشيرة مستردة بالكامل')){
+  if(reply.includes(P.REFUND_BENEFIT)||reply.includes(REFUND_BENEFIT_EN)||reply.includes(REFUND_REMINDER_EN)||reply.includes(REFUND_REMINDER)||reply.startsWith('من ميزات التقديم معنا: رسوم التأشيرة مستردة بالكامل')){
    if(refundShown)reply=reply.replaceAll(P.REFUND_BENEFIT,REFUND_REMINDER);
    if(!refundShown)c.disclosuresShown.push('refund');
   }
   if(completion&&reply.includes(completion)){c.lastQuestion=nextQuestion;c.askedQuestions=nextAsked;}
-  if(first)reply=INTRO+'\n\n'+reply;
+  if(first)reply=(replyLanguage==='en'?VISA_INTRO_EN:INTRO)+'\n\n'+reply;
   c.history.push({role:'user',text:(hasAttachments?'[attachment received]'+(semanticText?' '+semanticText:''):redactVisaText(text)).slice(0,1500)},{role:'assistant',text:redactVisaText(reply).slice(0,2500)});c.history=c.history.slice(-16);
   this.save(id,c);if(c.stage==='quoted')rememberVisaJourney(this.store,id,c,{now:this.now()});return{reply,complaint,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage,quote:c.quote,resolved:reply.includes('*عرض تأشيرات السعودية')||consultationReply||compoundInfo.length>0&&!completion};
  }

@@ -11,6 +11,17 @@ function activeService(store,id){return store.data.serviceSessions?.[id]?.servic
 function incomingRevision(store,id){return store.data.serviceSessions?.[id]?.revision||0;}
 function noteIncoming(store,id){store.data.serviceSessions||={};const s=store.data.serviceSessions[id]||{};s.revision=(s.revision||0)+1;s.at=Date.now();store.data.serviceSessions[id]=s;store.save();return s.revision;}
 function setService(store,id,service){store.data.serviceSessions||={};const s=store.data.serviceSessions[id]||{revision:0};s.service=service;s.awaitingService=false;delete s.menuId;s.at=Date.now();store.data.serviceSessions[id]=s;store.save();}
+// When a visa service is explicit, a travel mode or excluded flight is context,
+// not a second service. Keep positive clauses so a later request still routes.
+function visaFlightRequestText(text){
+ return String(text||'').split(/[،,؛;.!?؟]|\s+(?:but|mais|ama|لیکن|लेकिन)\s+/iu).filter(part=>{
+  if(/\b(?:without|not|no|do not|don['’]?t)\s+(?:(?:need|want|require|book)\s+)?(?:(?:a|any|the)\s+)?(?:flights?|(?:flight\s+)?tickets?)\b|\b(?:flights?|tickets?)\s+(?:are\s+|is\s+)?not\s+(?:needed|required|wanted)\b/iu.test(part))return false;
+  if(/\b(?:pas\s+de|sans)\s+(?:vols?|billets?\s+d[’']avion)\b|(?:uçuş|uçak\s+bileti)\s+(?:istemiyorum|gerekmiyor)|(?:پرواز|ٹ[کك]ٹ).{0,12}نہ[يی]ں\s*(?:چاہ[يی]ے|چاہتا|چاہتی)/iu.test(part))return false;
+  // Questions about what a visa quote includes are not flight bookings.
+  if(/\b(?:does|do|is|are)\b.{0,65}\b(?:include|cover|included)\b.{0,20}\b(?:flights?|tickets?)\b|\b(?:are|is)\s+(?:the\s+)?(?:flights?|tickets?)\s+(?:already\s+)?(?:included|covered)\b|\b(?:visa|fee|price)\b.{0,35}\b(?:vs\.?|versus|compared\s+(?:with|to))\b.{0,30}\b(?:flights?|tickets?)\b/iu.test(part))return false;
+  return true;
+ }).map(part=>part.replace(/\bby\s+(?:air|plane|flight)\b|\b(?:travel(?:ling|ing)?|fly(?:ing)?|go(?:ing)?)\s+on\s+(?:a\s+|the\s+)?flight\b|پرواز\s+سے|उड़ान\s+से/giu,' ')).join(' ');
+}
 // Entry routing only: an explicit visa destination/service is not evidence of
 // nationality, eligibility or a request to alter an existing application.
 function multilingualVisaHints(text){
@@ -19,18 +30,27 @@ function multilingualVisaHints(text){
  const phrases=[
   // Urdu and Hindi: keep destination and visa adjacent, rather than joining
   // unrelated country and visa mentions anywhere in the message.
-  'سعودي(?:\\s+عرب)?(?:\\s+كا)?\\s+ويزا',
-  'عمر[ہه](?:\\s+كا)?\\s+ويزا',
+  'سعودي(?:\\s+عرب)?(?:\\s+ك[ايے])?\\s+ويز[اے]',
+  'عمر[ہه](?:\\s+ك[ايے])?\\s+ويز[اے]',
   '(?:सऊदी|सऊदि|सौदी)(?:\\s+अरब)?(?:\\s+का)?\\s+वीज़?ा',
   'उमरा(?:ह)?(?:\\s+का)?\\s+वीज़?ा',
-  // French, Russian and Turkish, including common inflections.
-  'visa\\s+(?:saoudien(?:ne)?|(?:pour\\s+)?(?:l[’\x27]\\s*)?arabie\\s+saoudite|(?:pour\\s+)?(?:l[’\x27]\\s*)?omra)',
+  '(?:saudi(?:\\s+arabia)?|ksa)\\s+(?:(?:tourist|visit|tourism)\\s+)?(?:visa|e-?visa)|(?:visa|e-?visa)\\s+(?:to|for)\\s+(?:saudi(?:\\s+arabia)?|ksa)',
+  // Destination stays adjacent to the service, allowing common adjectives.
+  'visa\\s+(?:touristique\\s+)?(?:saoudien(?:ne)?|(?:pour\\s+)?(?:l[’\x27]\\s*)?arabie\\s+saoudite|(?:pour\\s+)?(?:l[’\x27]\\s*)?omra)',
+  '(?:visa|visado)\\s+(?:tur[ií]stic[oa]\\s+)?(?:para\\s+)?arabia\\s+saudita',
+  'visum\\s+(?:f[uü]r\\s+)?saudi[-\\s]arabien',
+  'ويزا(?:ي)?\\s+عربستان\\s+سعودي',
+  'visa\\s+(?:3al|lal)\\s+sa3oudiy[ea]',
   '(?:саудовск(?:ая|ую)\\s+виз(?:а|у)|виз(?:а|у|ы)\\s+(?:в|для)\\s+саудовск(?:ую|ой)\\s+арави(?:ю|и)|виз(?:а|у|ы)\\s+(?:для|на)\\s+умр(?:у|ы))',
   '(?:suudi(?:\\s+arabistan)?|umre)\\s+vize(?:si|sine|sini|siyle)?'
  ];
- const visa=phrases.some(pattern=>new RegExp(boundary+'(?:'+pattern+')'+end,'u').test(t));
- const flight=visa&&new RegExp(boundary+'(?:billets?\\s+d[’\x27]avion|vols?|авиабилеты?|билеты?|перел[её]т|uçak\\s+bileti|uçuş|टिकट|उड़ान|ٹكٹ|پرواز)'+end,'u').test(t);
- return {visa,flight};
+ // Chinese does not require spaces between words. Match the complete adjacent
+ // destination+visa phrase, not Latin-style boundaries or a bare country name.
+ const chineseVisa=/(?:沙特(?:阿拉伯)?|沙烏地阿拉伯)(?:旅游|旅遊|电子|電子)?(?:签证|簽證)/u.test(t);
+ const visa=chineseVisa||phrases.some(pattern=>new RegExp(boundary+'(?:'+pattern+')'+end,'u').test(t));
+ const flightText=visa?visaFlightRequestText(t):text;
+ const flight=visa&&(new RegExp(boundary+'(?:billets?\\s+d[’\x27]avion|vols?|billetes?\\s+de\\s+avi[oó]n|flugtickets?|авиабилеты?|билеты?|перел[её]т|uçak\\s+bileti|uçuş|टिकट|उड़ान|ٹكٹ|پرواز|بليط\\s+هواپيما)'+end,'u').test(flightText)||chineseVisa&&/(?:机票|機票)/u.test(flightText));
+ return {visa,flight,flightText};
 }
 function routeService(store,id,text,{env=process.env,media=false,hasFlight=false,hasActiveRequest=false,serviceChoice=null}={}){
  if(!visaEnabled(env))return {service:'flight'};
@@ -54,8 +74,9 @@ function routeService(store,id,text,{env=process.env,media=false,hasFlight=false
  if(generic&&s?.service==='flight'&&require('./customer-profile').returningGreeting(store,id,'flight'))return{service:'flight'};
  if(generic&&!hasActiveRequest)return serviceMenu(store,id);
  const visa=multilingual.visa||/زيار[ةه]\s*(?:عائلي[ةه]|شخصي[ةه]|للسعودي[ةه]|سعودي[ةه])|(?:تقديم|اقدم|نقدم|(?:ال)?اوراق|(?:ال)?مطلوب[ةه]?)(?:\s+(?:ال)?مطلوب[ةه]?)?\s+(?:عل[ىي]\s*ال|ل(?:ل)?|ال)سعودي[ةه]|معامل[ةه]\s*(?:فيزا|تاشير|تأشير|السعودي[ةه])|منفذ البطحاء|فيزا|فيزه|تاشير|عمره|عمرة|نسك|اسماعيل|رعد|ismail|raad|saudi visa|umrah/i.test(t);
- const englishRoute=require('./bilingual-intake').parseEnglishFlightPatch(t);
- const flight=multilingual.flight||Boolean(englishRoute.origin&&englishRoute.destination)||/(?:من|مغادر).{0,30}(?:دبي|الشارق[هة]|ابوظبي|ابو ظبي|دمشق|الشام|حلب|سوريا).{0,15}(?:الي|الى|لل|لدمشق|للشام|لحلب|للشارق|لدبي)|ذهاب (?:بس|فقط)|ذهاب وعود|فلاي شام|flycham|airarabia/i.test(t)||/تذاكر|تيكتات|العربي[ةه]\s*للطيران|اجنح[ةه]\s*الشام|أجنحة\s*الشام|اللاذقي[ةه]|لاذقي[ةه]|طيران|طياره|تذكره|تيكت|رحلات|حجز.*رحله|flight|ticket|احمد/i.test(t);
+ const flightText=multilingual.flightText;
+ const englishRoute=require('./bilingual-intake').parseEnglishFlightPatch(flightText);
+ const flight=multilingual.flight||Boolean(englishRoute.origin&&englishRoute.destination)||/(?:من|مغادر).{0,30}(?:دبي|الشارق[هة]|ابوظبي|ابو ظبي|دمشق|الشام|حلب|سوريا).{0,15}(?:الي|الى|لل|لدمشق|للشام|لحلب|للشارق|لدبي)|ذهاب (?:بس|فقط)|ذهاب وعود|فلاي شام|flycham|airarabia/i.test(flightText)||/تذاكر|تيكتات|العربي[ةه]\s*للطيران|اجنح[ةه]\s*الشام|أجنحة\s*الشام|اللاذقي[ةه]|لاذقي[ةه]|طيران|طياره|تذكره|تيكت|رحلات|حجز.*رحله|flight|ticket|احمد/i.test(flightText);
  if(visa&&flight&&!s?.service)return serviceMenu(store,id,'فينا نساعدك بالتأشيرة والطيران. بأي خدمة بتحب نبدأ؟');
  if(visa&&!flight){setService(store,id,'saudi_visa');return{service:'saudi_visa'};}
  if(flight&&!visa){setService(store,id,'flight');return{service:'flight'};}

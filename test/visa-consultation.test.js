@@ -28,6 +28,33 @@ test('clarification explains the pending question and never restarts intake',asy
  assert.equal(e.getCase('a').lastQuestion,'documentType');
 });
 
+test('relative clarifications explain the active document and issuer question without changing the applicant',async()=>{
+ const e=make();await e.handle('a','سوري جواز عادي لحالي');const primary=structuredClone(e.getCase('a').applicants);
+ await e.handle('a','صديقي مصري');assert.equal(e.getCase('a').pendingRelative.awaiting,'documentType');
+ const document=await e.handle('a','شو قصدك؟');assert.match(document.reply,/نوع مستند السفر/);assert.doesNotMatch(document.reply,/أي نقطة بدك أوضحها/);
+ await e.handle('a','معه وثيقة سفر');assert.equal(e.getCase('a').pendingRelative.awaiting,'documentIssuer');
+ const issuer=await e.handle('a','مش فاهم سؤالك');assert.match(issuer.reply,/البلد اللي أصدر وثيقة السفر/);
+ assert.deepEqual(e.getCase('a').applicants,primary);assert.equal(e.getCase('a').pendingRelative.facts.nationality,'مصر');assert.equal(e.getCase('a').pendingRelative.facts.documentType,'travel_document');
+});
+
+test('English consultation keeps the pending field across short text and voice answers',async()=>{
+ const e=make({understand:async()=>decision('apply')});
+ const first=await e.handle('en','I need a Saudi visa');
+ assert.match(first.reply,/Welcome to REMAL GROUP.*Ismail/s);
+ assert.match(first.reply,/What nationality/);
+ e.understand=null;
+ const nationality=await e.handle('en','Syrian',{messages:[{text:'Syrian',voiceTranscript:true}]});
+ assert.match(nationality.reply,/ordinary passport or a travel document/);
+ const clarify=await e.handle('en','I don’t understand your question');
+ assert.match(clarify.reply,/printed on its cover/);
+ assert.doesNotMatch(clarify.reply,/\p{Script=Arabic}/u);
+ assert.equal(e.getCase('en').lastQuestion,'documentType');
+ const passport=await e.handle('en','ordinary passport');
+ assert.match(passport.reply,/How many people/);
+ assert.equal(e.getCase('en').applicants[0].nationality,'سوريا');
+ assert.equal(e.getCase('en').applicants[0].documentType,'passport');
+});
+
 test('price objections compare value without automatically promising a discount',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');
  const before=structuredClone(e.getCase('a'));
