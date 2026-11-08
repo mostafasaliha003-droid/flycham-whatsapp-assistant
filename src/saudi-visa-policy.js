@@ -48,8 +48,13 @@ const ISSUER_CITY_ALIASES=Object.freeze({
  'الأردن':['عمان','اربد','الزرقاء'],
  'العراق':['بغداد','البصره','اربيل']
 });
-function canonicalIssuer(value){
+function canonicalIssuer(value,{exact=false}={}){
  const n=normalize(value);if(!n)return null;
+ if(exact){
+  const country=canonicalNationality(n);
+  if(Object.hasOwn(COUNTRY_ALIASES,country))return country;
+  return Object.entries(ISSUER_CITY_ALIASES).find(([,cities])=>cities.includes(n))?.[0]||null;
+ }
  const ns=nationalities(n),matches=Object.entries(ISSUER_CITY_ALIASES).filter(([country,cities])=>ns.includes(country)||cities.some(city=>boundaryFind(n,city)&&(city!=='صور'||n==='صور'||/(?:من|في)\s+صور(?=$|[^\p{L}])/u.test(n)))).map(([country])=>country);
  // Do not guess between cities/countries, including Tripoli in Libya or Oman.
  if(matches.length===1&&!/سلطنه عمان/.test(n)&&!ns.some(country=>country!=='فلسطين'&&country!==matches[0]))return matches[0];
