@@ -55,7 +55,7 @@ class VisaConversationScope {
    const isolated=new SaudiVisaEngine({store:local,now:this.now,env:this.engine.env,privateConfig:this.engine.privateConfig,understand:this.engine.understand?async(...args)=>{const d=await this.engine.understand(...args);return d&&['status','existing_application'].includes(d.intent)?{...d,intent:'other'}:d;}:null});
    const out=await isolated.handle(id,text,{messages:[]});
    if(this.current(id)?.token!==token)return{handled:true,reply:null};
-   s=this.current(id);s.inquiry=local.data.visaCases[id];s.expiresAt=this.now()+TTL;this.store.save();const intervention=s.inquiry?.operatorIntervention;return{handled:true,reply:out.reply,...(intervention&&JSON.stringify(intervention)!==previousIntervention?{intervention:{...intervention,question:require('./saudi-visa-nlu').redactVisaText(text).slice(0,500)},scopeToken:token}:{})};
+   s=this.current(id);s.inquiry=local.data.visaCases[id];s.expiresAt=this.now()+TTL;this.store.save();const intervention=s.inquiry?.operatorIntervention;return{handled:true,reply:out.reply,...(out.needsUnderstandingReview?{needsUnderstandingReview:true}:{}),...(intervention&&JSON.stringify(intervention)!==previousIntervention?{intervention:{...intervention,question:require('./saudi-visa-nlu').redactVisaText(text).slice(0,500)},scopeToken:token}:{})};
   }
   if(s?.mode==='choice')return{handled:true,reply:PROMPT,scopeMenu:{token:s.token}};
   if(/استفسار جديد|سوال جديد|القائمه|خيارات/.test(P.normalize(text)))return this.menu(id,'');
