@@ -27,5 +27,13 @@ test('signed multi-service webhook: Saudi quotes, real Cline contract, complaint
   await call('/internal/assistant/conversations/971500000099/release',{});await call('/internal/assistant/conversations/971500000099/block',{confirm:true,reason:'synthetic test',scope:'assistant'});await send('971500000099','فيزا السعودية');assert.equal(posts.length,count);
   await call('/internal/assistant/conversations/971500000099/unblock',{confirm:true,reason:'synthetic test',scope:'assistant'});await send('971500000098','بدي فيزا السعودية مصري جواز عادي شخص واحد');assert.match(posts.at(-1).text.body,/واحدة/);detail=(await call('/internal/assistant/conversations/971500000098')).json;assert.equal(detail.visaCase.applicantCount,1);assert.equal(detail.complaint,null);
   assert.equal((await call('/internal/assistant/visa-media/11111111-1111-4111-8111-111111111111?customer=971500000098')).status,404);
- }finally{await new Promise(r=>server.close(r));global.fetch=original;fs.rmSync(dir,{recursive:true,force:true});}
+  process.env.VISA_TOURIST_AGE_PRICING='on';
+  const ageCustomer='971500000097';
+  await send(ageCustomer,'بدي فيزا السعودية انا سوري جواز عادي شخص واحد');
+  assert.match(posts.at(-1).text.body,/كم عمر/);assert.doesNotMatch(posts.at(-1).text.body,/\*المجموع:|إجمالي رسوم التأشيرات/);
+  await send(ageCustomer,'٥٤');assert.match(posts.at(-1).text.body,/640.*190.*830/s);
+  await send(ageCustomer,'إذا ترفضت بترجع الرسوم');
+  assert.match(posts.at(-1).text.body,/^نعم، رسوم التأشيرة مستردة بالكامل/);assert.doesNotMatch(posts.at(-1).text.body,/640|830|عرض تأشيرات/);
+  detail=(await call('/internal/assistant/conversations/'+ageCustomer)).json;assert.equal(detail.visaCase.quote.total,830);
+ }finally{delete process.env.VISA_TOURIST_AGE_PRICING;await new Promise(r=>server.close(r));global.fetch=original;fs.rmSync(dir,{recursive:true,force:true});}
 });
