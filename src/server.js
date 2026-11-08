@@ -4,6 +4,7 @@ const {withStaffExpectation}=require('./staff-availability');
 const {sendRating,readRating,ratingSummary}=require('./service-rating');
 const {transcribeVoice,voiceLead,voiceFallback,voiceEnabled}=require('./voice-transcription');
 const {VoiceTurnRecovery}=require('./voice-turn-recovery');
+const {localVisaInformationTopics}=require('./visa-information-topics');
 const voiceRecovery=new VoiceTurnRecovery();
 const {detectLanguageStyle}=require('./bilingual-intake');
 const {recordCxEvent,cxAnalyticsSummary}=require('./cx-analytics');
@@ -317,7 +318,8 @@ async function processCustomerMessages(sender,messages){
     if(/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي)$/.test(text.trim())){
       visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
     }
-    const scoped=await visaConversationScope.handle(sender,text,{messages});
+    const orderedInquiry=!assistant.store.data.pendingVisaMedia?.[sender]?.length&&localVisaInformationTopics(text,{hasAttachments:messages.some(message=>message.media)}).length>1;
+    const scoped=orderedInquiry?{handled:false}:await visaConversationScope.handle(sender,text,{messages});
     if(scoped.handled){
       if(!scoped.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
       if(scoped.intervention){visaCoordinationNotices.queue(sender,scoped.intervention.reason,'inquiry:'+scoped.scopeToken+':'+scoped.intervention.revision,{inquiry:true,question:scoped.intervention.question});visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));}
@@ -330,7 +332,7 @@ async function processCustomerMessages(sender,messages){
     if(holdNewMedia&&attachments.length){assistant.store.data.pendingNewVisaMedia||={};const queued=assistant.store.data.pendingNewVisaMedia[sender],previous=queued?.sourceCaseId===priorVisaCase.id?queued:null;assistant.store.data.pendingNewVisaMedia[sender]={sourceCaseId:priorVisaCase.id,createdAt:Date.now(),messages:[...(previous?.messages||[]),...attachments].slice(-20)};assistant.store.save();mediaReplies.push('وصلت مرفقات الطلب الجديد، ومنربطها فيه بعد تأكيد فتح ملفه المستقل.');}
     let receiptAcknowledged=false;for(const m of holdNewMedia?[]:attachments){const result=await receiveVisaMedia(sender,m);if(result.receipt)receiptAcknowledged=true;mediaReplies.push(result.reply);}
     const caseConversation=Boolean(conversationIntent(text))||Boolean(visa.getCase(sender)?.pendingNewApplication);
-    const compoundDocumentRequest=caseConversation||/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
+    const compoundDocumentRequest=caseConversation||orderedInquiry||/حسابك|حسابكم|ايبان|حساب بنكي|حساب البنكي|بنك|طرق الدفع|سعر|قديش|بكم/.test(text);
     const documentCase=visa.getCase(sender),documentCaseId=documentCase?.id,documentCaseRevision=documentCase?.revision;
     let documentReply=documentCase&&!compoundDocumentRequest&&!/(?:ثبت|تثبيت)/.test(require('./saudi-visa-policy').normalize(text))?await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id}):{handled:false};
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
@@ -341,7 +343,7 @@ async function processCustomerMessages(sender,messages){
     if(result.superseded||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     if(result.complaint){const record=complaints.create(sender,{caseId:result.caseId});quoteJobs.cancel(sender);await sendComplaintAcknowledgment(sender,{voiceTexts,language});recordOutcome(null);flushComplaint(record.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));return;}
     if(result.superseded||!result.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
-    if(!documentReply.handled&&!caseConversation&&!/(?:ثبت|تثبيت)/.test(require('./saudi-visa-policy').normalize(text))){documentReply=await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id});if(documentReply.handled){const c=visa.getCase(sender);if(c?.id!==result.caseId||c?.revision!==result.revision)return;const last=c.history?.at(-1);if(last?.role==='assistant'){last.text=redactVisaText(journalSafeText((compoundDocumentRequest?result.reply+'\n\n':'')+documentReply.reply));assistant.store.save();}}}
+    if(!documentReply.handled&&!caseConversation&&!orderedInquiry&&!/(?:ثبت|تثبيت)/.test(require('./saudi-visa-policy').normalize(text))){documentReply=await visaDocumentConversation.handle(sender,text,{hasAttachments:attachments.length>0,requestId:messages.at(-1)?.id});if(documentReply.handled){const c=visa.getCase(sender);if(c?.id!==result.caseId||c?.revision!==result.revision)return;const last=c.history?.at(-1);if(last?.role==='assistant'){last.text=redactVisaText(journalSafeText((compoundDocumentRequest?result.reply+'\n\n':'')+documentReply.reply));assistant.store.save();}}}
     if(inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
     const semanticText=text.replace(/\[(?:صورة|مستند|مرفق)[^\]]*\]/gu,'').replace(/[،\s]+/g,' ').trim();
     const parts=attachments.length?[...new Set(mediaReplies)]:[];

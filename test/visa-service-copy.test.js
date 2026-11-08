@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const P=require('../src/saudi-visa-policy');
 const {visaCaseSignature}=require('../src/visa-case-signature');
-const {visaProcessingCopy,visaDocumentChecklist,visaDocumentsSentCopy,visaPaymentChoiceCopy,visaPaymentReceiptCopy,visaFollowupCopy}=require('../src/visa-service-copy');
+const {classifyVisaTimingInquiry,visaProcessingCopy,visaDocumentChecklist,visaDocumentsSentCopy,visaPaymentChoiceCopy,visaPaymentReceiptCopy,visaFollowupCopy}=require('../src/visa-service-copy');
 const makeCase=()=>({id:'synthetic-case',applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport',age:40}],quote:{total:640},paymentStatus:'unverified',submissionStatus:'not_submitted',documents:[]});
 function verifiedCase(){
  const c=makeCase();c.paymentStatus='verified';c.staffVerification={payment:{amount:640,caseSignature:visaCaseSignature(c)}};return c;
@@ -17,6 +17,26 @@ test('processing explains the current business-day estimate without promising ap
  }
  const ar=visaProcessingCopy();for(const pattern of [/السبت/,/الأحد/,/العطل/,/ما فينا نضمن/])assert.match(ar,pattern);
  assert.ok(visaProcessingCopy({repeated:true}).length<ar.length);
+});
+
+test('timing recognition distinguishes processing and personal travel deadlines without resolving a date',()=>{
+ for(const text of ['قديش وقت؟','كم وقت بتاخد الفيزا؟','شقد بتاخد وقت','كم يوم بتحتاج الفيزا','كم يبغالها','كم تشتي وقت','بتاخد وقت قد إيه؟','إيمتى بتطلع؟','كم مدة المعالجة؟','How long does it take?','What is the processing time?','Combien de temps faut-il ?','Quel est le délai de traitement ?'])assert.equal(classifyVisaTimingInquiry(text),'processing_time',text);
+ for(const text of ['بتلحق الجمعة؟','ألحق أسافر الخميس؟','تطلع قبل سفري؟','بتطلع بكرا؟','طيب بتلحق؟','هل الفيزا بتصدر قبل موعد السفر؟','لو قدمت اليوم بتلحق الخميس؟','كم السعر وبتطلع بكرا؟','بتطلع قبل 10/11/2026؟','Will it be ready before my trip?','Can I travel on Friday?','Can the visa be ready by tomorrow?','Est-ce que le visa sera prêt avant vendredi ?','Pourrai-je partir jeudi ?'])assert.equal(classifyVisaTimingInquiry(text),'travel_deadline',text);
+ for(const text of ['سفري الخميس','أنا مسافر الجمعة','أكيد بتلحق الجمعة','المكتب قال بتطلع بكرا','قل للعميل بتلحق الجمعة','"بتلحق الجمعة؟"','قديش سعر الفيزا؟','بتطلع 640 درهم؟','بتطلع 830؟','كم مدة الإقامة؟','كم مدة الفيزا؟','الفيزا صلاحيتها سنة','دفعت من الخميس','طلعت الفيزا؟','وين صار طلبي؟','ما بدي استعجل','I will travel on Friday','Is the visa valid for one year?','Je pars vendredi',null,''])assert.equal(classifyVisaTimingInquiry(text),null,String(text));
+});
+
+test('deadline copy never guarantees travel and asks a single full date only when unknown',()=>{
+ for(const language of ['ar','en','fr'])for(const repeated of [false,true]){
+  const unknown=visaProcessingCopy({language,repeated,deadlineConcern:true}),known=visaProcessingCopy({language,repeated,deadlineConcern:true,travelDateKnown:true,askTravelDate:true});
+  assert.match(known,/6–7/);assert.equal((unknown.match(/[؟?]/g)||[]).length,1);assert.equal((known.match(/[؟?]/g)||[]).length,0);
+  assert.doesNotMatch(known,/2026|2027|24|48|تم التقديم|تم الحجز|flight is booked|visa is issued/);
+  if(language!=='ar')assert.doesNotMatch(unknown+known,/\p{Script=Arabic}/u);
+  assert.equal((visaProcessingCopy({language,travelDateKnown:true,askTravelDate:true}).match(/[؟?]/g)||[]).length,0);
+ }
+ assert.match(visaProcessingCopy({deadlineConcern:true}),/ما فينا نضمن.*قبل موعد السفر/);
+ assert.match(visaProcessingCopy({deadlineConcern:true}),/باليوم والشهر والسنة/);
+ assert.match(visaProcessingCopy({language:'en',deadlineConcern:true}),/cannot guarantee/);
+ assert.match(visaProcessingCopy({language:'fr',deadlineConcern:true}),/ne pouvons garantir/);
 });
 
 test('single-route document lists preserve approved requirements without implying receipt',()=>{

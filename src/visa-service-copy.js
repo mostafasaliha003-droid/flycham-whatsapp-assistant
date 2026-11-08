@@ -6,12 +6,50 @@ const {currentVisaEvidence}=require('./visa-case-signature');
 const lang=value=>['en','fr'].includes(value)?value:'ar';
 const pick=(language,ar,en,fr)=>({ar,en,fr})[lang(language)];
 
-function visaProcessingCopy({language='ar',repeated=false,askTravelDate=false}={}){
+// A timing question is conversational intent only. This recognizer neither
+// extracts/saves a date nor claims that the customer's deadline can be met.
+function classifyVisaTimingInquiry(text){
+ if(typeof text!=='string'||!text.trim()||text.length>4000)return null;
+ const raw=text.trim();if(/^["'«“].*["'»”]$/su.test(raw))return null;
+ const n=P.normalize(raw).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
+ const clauses=n.split(/[،,؛;.!?؟]+|\s+(?:and|et)\s+|\s+(?=و(?:بتلحق|بلحق|الحق|بنلحق|تلحق|بتطلع|تطلع|بتصدر|تصدر|بتجهز|تجهز|قديش|شقد|كم|متي|ايمت|امتي))/u).map(s=>s.trim()).filter(Boolean);
+ let processing=false;
+ for(let clause of clauses){
+  // Preserve an explicit conditional question as a question, never a date
+  // declaration. Only the caller can decide whether a date was asserted.
+  clause=clause.replace(/^(?:لو|اذا)\s+(?:قدمت|قدمنا|اقدم|قدمته|قدمنا الطلب)\s+(?:اليوم|هلق|الحين|بكرا|الان)\s+/u,'');
+  clause=clause.replace(/^و(?=بتلحق|بلحق|الحق|بنلحق|تلحق|بتطلع|تطلع|بتصدر|تصدر|بتجهز|تجهز|قديش|شقد|كم|متي|ايمت|امتي)/u,'');
+  clause=clause.replace(/^(?:(?:طيب|طب|يعني|بس|هل|ممكن|لو سمحت|بدي اعرف|عايز اعرف|ابغي اعرف|اريد اعرف)\s+){1,2}/u,'');
+  const time='(?:اليوم|بكرا|بكره|غدا|الجمعة|الجمعه|الخميس|السبت|الاحد|الاثنين|الاتنين|الثلاثاء|التلاتا|الاربعاء|الاربعا|سفري|السفر|رحلتي|الرحله|موعد(?: السفر| سفري)?|تاريخ|(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}[-/]\\d{1,2}(?:[-/]\\d{2,4})?)(?!\\d))';
+  const deadlineVerb='(?:بتلحق|بلحق|الحق|بنلحق|تلحق|يلحق|نلحق)';
+  const issuedVerb='(?:بتطلع|تطلع|بتصدر|تصدر|بتجهز|تجهز)';
+  const subject='(?:(?:الفيزا|التاشيره|الطلب)\\s+)?(?:رح\\s+)?';
+  const deadline=new RegExp('^'+subject+'(?:'+deadlineVerb+'(?:\\s+(?:اسافر|سافر|نسافر|السفر))?(?:\\s+(?:(?:قبل|بحلول|يوم|ليوم|لحد)\\s+)?'+time+'.*)?|'+issuedVerb+'\\s+(?:(?:قبل|بحلول|يوم|ليوم|لحد)\\s+)?'+time+'.*)$','u');
+  if(deadline.test(clause))return 'travel_deadline';
+  if(/^(?:if i (?:apply|submit) today\s+)?(?:will (?:it|the visa|my visa) (?:be (?:ready|issued)|arrive)|can i (?:travel|leave)|can (?:it|the visa) be ready)\s+(?:before|by|on|in time for)\s+.+$/u.test(clause)||
+   /^(?:est-ce que )?(?:le visa sera pret|je peux partir)\s+(?:avant|pour|d'ici|jeudi|vendredi|samedi|dimanche|lundi|mardi|mercredi|demain)\b.*$/u.test(clause)||
+   /^(?:sera-t-il pret|pourrai-je partir)\s+(?:avant|pour|d'ici|jeudi|vendredi|samedi|dimanche|lundi|mardi|mercredi|demain)\b.*$/u.test(clause))return 'travel_deadline';
+  const arabicProcessing=/^(?:(?:قديش|شقد|كم)\s+وقت(?:\s+(?:بتاخد|بتحتاج|تاخد|تحتاج|بتطول|تطول|يبغالها|تشتي))?(?:\s+(?:الفيزا|التاشيره|المعامله|الطلب))?|(?:كم|قديش|شقد|شحال)\s+(?:يوم\s+)?(?:بدها|بتاخد|تاخد|تحتاج|يبغالها|تاخذ|بتطول|بتحتاج|تستغرق|تشتي)(?:\s+(?:وقت|يوم|ايام))?(?:\s+(?:الفيزا|التاشيره|المعامله|الطلب))?|بتاخد وقت قد ايه|(?:متي|ايمت|ايمتي|امتي)\s+(?:بتطلع|تطلع|تصدر|بتصدر|تجهز|بتجهز|بتخلص|تخلص)(?:\s+(?:الفيزا|التاشيره|المعامله|الطلب))?|(?:كم|قديش)\s+(?:مده\s+)?(?:المعالجه|معالجه الطلب|الاجراءات|اجراءات الفيزا|استخراج الفيزا|اصدار التاشيره))$/u;
+  const englishProcessing=/^(?:how long (?:does|will) (?:it|the visa|my visa|visa processing|the application) take|how many (?:working )?days (?:does (?:it|the visa|visa processing) take|to process (?:the|my) visa)|when will (?:it|the visa|my visa) be (?:ready|issued)|what is the (?:usual )?processing time)$/u;
+  const frenchProcessing=/^(?:combien de temps (?:faut-il|prend le traitement|prend la demande)|quel est le delai (?:de traitement|pour le visa)|quand (?:le visa sera-t-il|sera le visa) pret)$/u;
+  if(arabicProcessing.test(clause)||englishProcessing.test(clause)||frenchProcessing.test(clause))processing=true;
+ }
+ return processing?'processing_time':null;
+}
+
+function visaProcessingCopy({language='ar',repeated=false,askTravelDate=false,deadlineConcern=false,travelDateKnown=false,includeFollowup=true}={}){
+ if(deadlineConcern){
+  const text=pick(language,
+   repeated?'عادةً 6–7 أيام عمل حسب السفارة، من دون السبت والأحد والعطل. ما فينا نضمن الموافقة أو إنها بتصدر قبل سفرك.':'بالنسبة لموعد سفرك: المدة المعتادة 6–7 أيام عمل حسب السفارة، من دون السبت والأحد والعطل المعتمدة. ما فينا نضمن الموافقة أو صدور التأشيرة قبل موعد السفر.',
+   'The usual processing time is 6–7 working days, excluding Saturdays, Sundays and public holidays. Approval and timing depend on the embassy; we cannot guarantee approval or that the visa will be issued before your trip.',
+   'Le délai habituel est de 6–7 jours ouvrés, hors samedis, dimanches et jours fériés. La décision et le délai dépendent de l’ambassade ; nous ne pouvons garantir l’accord ni la délivrance avant votre départ.');
+  return text+(includeFollowup&&!travelDateKnown?'\n'+pick(language,'شو تاريخ السفر الكامل، باليوم والشهر والسنة؟','What is your full travel date, including day, month and year?','Quelle est votre date complète de départ, avec le jour, le mois et l’année ?'):'');
+ }
  const text=pick(language,
   repeated?'عادةً 6–7 أيام عمل حسب السفارة، من دون السبت والأحد والعطل. ما فينا نضمن الموافقة أو موعد الصدور.':'المدة المعتادة 6–7 أيام عمل حسب السفارة. السبت والأحد والعطل المعتمدة ما بتنحسب، وما فينا نضمن الموافقة أو الصدور بتاريخ محدد.',
   'The usual processing time is 6–7 working days, excluding Saturdays, Sundays and public holidays. Approval and timing depend on the embassy; we cannot guarantee an issue date.',
   'Le délai habituel est de 6–7 jours ouvrés, hors samedis, dimanches et jours fériés. L’accord et le délai dépendent de l’ambassade ; aucune date de délivrance n’est garantie.');
- return text+(askTravelDate?'\n'+pick(language,'شو تاريخ السفر؟','What is your travel date?','Quelle est votre date de départ ?'):'');
+ return text+(includeFollowup&&askTravelDate&&!travelDateKnown?'\n'+pick(language,'شو تاريخ السفر؟','What is your travel date?','Quelle est votre date de départ ?'):'');
 }
 
 function routeChecklist(route,{language,repeated,includeNextStep}){
@@ -83,4 +121,4 @@ function visaFollowupCopy(c,{language='ar',repeated=false,hasOwnedApplication=fa
  return pick(language,repeated?'ابعت رقم الطلب، وتابع من نفس رقم واتساب اللي قدمت منه حتى نراجع الملف الصحيح.':'أكيد، بساعدك بمتابعة طلبك. ابعت رقم الطلب، وتابع من نفس رقم واتساب اللي قدمت منه حتى نربطه بملفك الصحيح.','Send your application reference and contact us from the same WhatsApp number used to apply, so we can find the right file.','Envoyez la référence de votre demande depuis le même numéro WhatsApp que celui utilisé pour déposer le dossier, afin de retrouver le bon dossier.');
 }
 
-module.exports={visaProcessingCopy,visaDocumentChecklist,visaDocumentsSentCopy,visaPaymentChoiceCopy,visaPaymentReceiptCopy,visaFollowupCopy};
+module.exports={classifyVisaTimingInquiry,visaProcessingCopy,visaDocumentChecklist,visaDocumentsSentCopy,visaPaymentChoiceCopy,visaPaymentReceiptCopy,visaFollowupCopy};
