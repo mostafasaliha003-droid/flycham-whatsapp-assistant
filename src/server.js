@@ -260,20 +260,45 @@ async function processCustomerMessages(sender,messages){
     messages=messages.filter(m=>m.media?.type!=='audio');if(!messages.length)return;
   }
   const recoveryContext=voiceRecoveryContext(sender);
+  const deferVoiceTurn=()=>{
+   if(inbox.isHumanOwned(sender)||!recoveryContext.eligible||recoveryContext.key!==voiceRecoveryContext(sender).key||isRecoveryReply)return false;
+   const ordinary=message=>message&&typeof message.text==='string'&&message.text.length<=4000&&!message.contextId&&!message.payload&&!Object.keys(message).some(key=>/Choice$|Action$|Answer$|Confirmation$/.test(key))&&
+    (message.media?message.media.type==='audio'&&message.text==='[مرفق صوتي يحتاج تفريغاً]':!urgentMessage(message));
+   return batcher.deferUnprocessed(sender,messages,{canMerge:(earlier,later)=>earlier.every(ordinary)&&later.every(ordinary)});
+  };
+  // A third message may already have arrived before this queued turn starts.
+  // Keep carrying the unprocessed turn forward; an independent successor
+  // supersedes it instead of allowing a partial request to take effect first.
+  if(messages.some(message=>message.voiceDeferredEarlier)&&batcher.hasFollowingUnprocessed(sender,messages)){deferVoiceTurn();return;}
   const audioMessages=messages.filter(m=>m.media?.type==='audio'&&(!m.text||m.text==='[مرفق صوتي يحتاج تفريغاً]'));
   const failures=[];
   for(const message of audioMessages){
     let audio,result;
-    try{audio=await visaMedia.fetchTransient(message.media);if(!currentTurn())return;result=await transcribeVoice({...audio,fetchImpl:(...args)=>fetch(...args)});}catch{result={ok:false,reason:'unavailable'};}finally{audio?.bytes?.fill(0);}
-    if(!currentTurn())return;
+    try{audio=await visaMedia.fetchTransient(message.media);if(!currentTurn()){deferVoiceTurn();return;}result=await transcribeVoice({...audio,fetchImpl:(...args)=>fetch(...args)});}catch{result={ok:false,reason:'unavailable'};}finally{audio?.bytes?.fill(0);}
+    if(result.ok){message.text=result.transcript;message.voiceTranscript=true;delete message.media;}
+    if(!currentTurn()){deferVoiceTurn();return;}
     if(!result.ok){
      console.log('VOICE_FAILED_'+result.reason);failures.push({id:message.id,reason:result.reason});
      if(!recoveryContext.eligible||audioMessages.length>8)break;
      continue;
     }
-    console.log('VOICE_TRANSCRIBED_'+result.provider);message.text=result.transcript;message.voiceTranscript=true;delete message.media;
+    console.log('VOICE_TRANSCRIBED_'+result.provider);
   }
   if(!currentTurn())return;
+  // A later, independently decoded control or service switch starts its own
+  // request. Never revive a carried prefix across that explicit boundary.
+  if(messages.some(message=>message.voiceDeferredEarlier)){
+   const service=assistant.store.data.serviceSessions?.[sender]?.service||null;
+   const boundary=messages.findLastIndex(message=>!message.media&&(
+    isIndependentVoiceReply([message])||urgentMessage(message)||require('./visa-conversation-intent').conversationIntent(message.text)==='new_application'||
+    detectCrossServiceSwitch(service,message.text,{flightState:assistant.state(sender),visaCase:visa.getCase(sender)}).switched));
+   if(boundary>=0){
+    messages=messages.slice(boundary);
+    const courtesy=message=>!message.media&&/^(?:شكرا|شكرا الك|يسلمو|تمام|اوكي|حاضر|thanks|thank you)[.!؟?]*$/i.test(require('./saudi-visa-policy').normalize(message.text));
+    if(isIndependentVoiceReply([messages[0]])&&messages.slice(1).every(courtesy))messages=[messages[0]];
+    const retained=new Set(messages.map(message=>message.id));for(let index=failures.length-1;index>=0;index--)if(!retained.has(failures[index].id))failures.splice(index,1);
+   }
+  }
   const independentReply=isRecoveryReply&&isIndependentVoiceReply(messages);
   if(independentReply)voiceRecovery.clear(sender);
   const recovered=voiceRecovery.resolve(sender,{messages,revision:turnRevision,contextKey:voiceRecoveryContext(sender).key});
@@ -319,7 +344,8 @@ async function processCustomerMessages(sender,messages){
       visaMedia.deleteCustomer(sender);visa.delete(sender);assistant.store.delete(sender);delete assistant.store.data.serviceSessions?.[sender];assistant.store.save();return;
     }
     const orderedInquiry=!assistant.store.data.pendingVisaMedia?.[sender]?.length&&localVisaInformationTopics(text,{hasAttachments:messages.some(message=>message.media)}).length>1;
-    const scoped=orderedInquiry?{handled:false}:await visaConversationScope.handle(sender,text,{messages});
+    const inSeparateInquiry=visaConversationScope.current(sender)?.mode==='inquiry';
+    const scoped=orderedInquiry&&!inSeparateInquiry?{handled:false}:await visaConversationScope.handle(sender,text,{messages});
     if(scoped.handled){
       if(!scoped.reply||inbox.isHumanOwned(sender)||turnRevision!==incomingRevision(assistant.store,sender))return;
       if(scoped.intervention){visaCoordinationNotices.queue(sender,scoped.intervention.reason,'inquiry:'+scoped.scopeToken+':'+scoped.intervention.revision,{inquiry:true,question:scoped.intervention.question});visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));}

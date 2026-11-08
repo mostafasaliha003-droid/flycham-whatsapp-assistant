@@ -7,6 +7,14 @@ const TTL=30*60000;
 const PROMPT='أهلاً فيك 🌷 كيف بتحب نساعدك؟\n\n• طلب أو استفسار جديد\n• متابعة طلب حالي — منطلب منك رقم الطلب';
 const social=t=>/^(?:شكرا.*|يسلمو.*|مشكور.*|تمام|اوكي|حاضر|ما بتقصر.*)$/.test(t);
 const greeting=t=>/^(?:سلام|مرحبا|هلا|اهلا(?: وسهلا)?|السلام عليكم.*|هاي|hello|hi|صباح الخير|مساء الخير)[،,!؟?. 🌷]*$/i.test(t);
+// Spoken menu labels select only the currently delivered menu. Keep the whole
+// utterance bounded so questions, application facts and actions are not lost.
+function spokenScopeChoice(text){
+ const n=P.normalize(text).replace(/[،,!؟?. 🌷]+$/u,'').trim(),prefix='(?:(?:بدي|بدنا|اريد|عايز|عاوز|ابي|ابغي|حابب|حابه) )?';
+ if(new RegExp('^'+prefix+'(?:استفسار جديد|طلب جديد|طلب او استفسار جديد|طلب / استفسار جديد)$','u').test(n))return'new';
+ if(new RegExp('^'+prefix+'(?:متابعه (?:طلب حالي|الطلب الحالي|طلبي)|اتابع (?:طلبي|الطلب الحالي))$','u').test(n))return'followup';
+ return null;
+}
 class VisaConversationScope {
  constructor({store,engine,now=Date.now}){Object.assign(this,{store,engine,now});store.data.visaConversationScopes||={};}
  current(id){const s=this.store.data.visaConversationScopes[id],c=this.engine.getCase(id);return s&&c&&s.caseId===c.id&&s.expiresAt>this.now()?s:null;}
@@ -16,10 +24,11 @@ class VisaConversationScope {
   const c=this.engine.getCase(id);if(!c)return{handled:false};
   const n=P.normalize(text),button=messages.find(m=>m.visaScopeChoice),jobs=this.engine.ownedApplications(id);
   let s=this.current(id);
-  if(button){const choice=button.visaScopeChoice;if(!s||s.mode!=='choice'||s.token!==choice.token||!s.messageId||button.contextId!==s.messageId||!['new','followup'].includes(choice.action))return this.menu(id,'');
+  const spoken=!button&&s?.mode==='choice'&&s.messageId&&!messages.some(m=>m.media||m.payload||m.contextId&&m.contextId!==s.messageId||Object.keys(m).some(key=>/Choice$|Action$|Answer$|Confirmation$/.test(key)))?spokenScopeChoice(text):null;
+  if(button||spoken){const choice=button?.visaScopeChoice||{action:spoken};if(button&&(!s||s.mode!=='choice'||s.token!==choice.token||!s.messageId||button.contextId!==s.messageId||!['new','followup'].includes(choice.action)))return this.menu(id,'');
    if(choice.action==='followup'){s.mode='followup';s.expiresAt=this.now()+TTL;delete s.pendingText;this.store.save();return{handled:true,reply:'أكيد 🌷 ابعت رقم الطلب الحالي حتى نتابع الملف الصحيح.'};}
    s.mode='inquiry';s.inquiry=this.engine.newCase();s.inquiry.greeted=true;this.store.save();
-   const following=messages.filter(m=>!m.visaScopeChoice).map(m=>m.text||'').filter(Boolean).join('، ');
+   const following=button?messages.filter(m=>!m.visaScopeChoice).map(m=>m.text||'').filter(Boolean).join('، '):'';
    text=following||s.pendingText||'';delete s.pendingText;
    if(!text||greeting(P.normalize(text)))return{handled:true,reply:'أكيد 🌷 شو الخدمة اللي حابب تستفسر عنها؟ وإذا سؤالك عن فيزا السعودية، شو جنسية المتقدم؟'};
   }

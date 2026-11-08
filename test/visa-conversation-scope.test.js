@@ -23,6 +23,46 @@ test('ambiguous Syrian travel wording cannot silently replace Palestinian docume
 
 test('new selection preserves the customer request arriving in the same batch',async()=>{const f=setup(),m=await f.scope.handle(f.id,'سلام');f.scope.bind(f.id,m.scopeMenu.token,'sent');const r=await f.scope.handle(f.id,'طلب / استفسار جديد، بدي قدم على فيزا السعودية',{messages:[{text:'طلب / استفسار جديد',visaScopeChoice:{token:m.scopeMenu.token,action:'new'},contextId:'sent'},{text:'بدي قدم على فيزا السعودية'}]});assert.match(r.reply,/نفتح طلب جديد/);assert.ok(f.c.pendingNewApplication);assert.equal(f.scope.current(f.id).mode,'inquiry');});
 
+test('spoken new-inquiry labels select the delivered menu and replay the original question in isolation',async()=>{
+ for(const text of ['استفسار جديد','طلب جديد','طلب أو استفسار جديد','بدي استفسار جديد','عايز استفسار جديد','أبي استفسار جديد']){
+  const f=setup(),signature=visaCaseSignature(f.c),m=await f.scope.handle(f.id,'مصري جواز عادي شخص واحد');f.scope.bind(f.id,m.scopeMenu.token,'sent-menu');
+  const r=await f.scope.handle(f.id,text,{messages:[{text,voiceTranscript:true}]});
+  assert.equal(f.scope.current(f.id).mode,'inquiry',text);assert.equal(f.scope.current(f.id).inquiry.applicants[0].nationality,'مصر',text);
+  assert.equal(f.scope.current(f.id).pendingText,undefined);assert.equal(r.scopeMenu,undefined);assert.doesNotMatch(r.reply,/828601588/);
+  assert.equal(visaCaseSignature(f.engine.getCase(f.id)),signature);assert.equal(f.c.paymentStatus,'verified');assert.equal(f.c.pendingNewApplication,undefined);
+ }
+});
+
+test('spoken followup labels ask for the reference while preserving reference ownership checks',async()=>{
+ for(const text of ['متابعة طلب حالي','بدي أتابع طلبي','عايز متابعة الطلب الحالي','أبي أتابع طلبي']){
+  const f=setup(),signature=visaCaseSignature(f.c),m=await f.scope.handle(f.id,'سلام');f.scope.bind(f.id,m.scopeMenu.token,'sent-menu');
+  const r=await f.scope.handle(f.id,text,{messages:[{text,voiceTranscript:true,contextId:'sent-menu'}]});
+  assert.equal(f.scope.current(f.id).mode,'followup',text);assert.match(r.reply,/ابعت رقم الطلب/);assert.doesNotMatch(r.reply,/828601588/);
+  assert.match((await f.scope.handle(f.id,'999999999')).reply,/نفس الرقم/);assert.match((await f.scope.handle(f.id,'رقم الطلب 828601588')).reply,/828601588/);
+  assert.equal(visaCaseSignature(f.engine.getCase(f.id)),signature);
+ }
+});
+
+test('spoken options require a delivered active menu and cannot select another conversation',async()=>{
+ for(const wrong of ['unbound','expiry','case','sender','context']){
+  const f=setup(),m=await f.scope.handle(f.id,'سلام');if(wrong!=='unbound')f.scope.bind(f.id,m.scopeMenu.token,'sent-menu');
+  if(wrong==='expiry')f.tick(31*60000);if(wrong==='case')f.c.id='replacement-case';
+  const id=wrong==='sender'?'971500000002':f.id,text='استفسار جديد';
+  await f.scope.handle(id,text,{messages:[{text,voiceTranscript:true,...(wrong==='context'?{contextId:'unrelated-message'}:{})}]});
+  assert.notEqual(f.scope.current(id)?.mode,'inquiry',wrong);assert.equal(f.c.pendingNewApplication,undefined);
+ }
+});
+
+test('spoken options do not consume mixed actions, numbers, attachments or case references',async()=>{
+ for(const text of ['استفسار جديد وحول المصاري','متابعة طلب حالي وكم السعر','نعم','1','2']){
+  const f=setup(),signature=visaCaseSignature(f.c),m=await f.scope.handle(f.id,'سلام');f.scope.bind(f.id,m.scopeMenu.token,'sent-menu');
+  const r=await f.scope.handle(f.id,text,{messages:[{text,voiceTranscript:true}]});assert.ok(r.scopeMenu,text);assert.equal(f.scope.current(f.id).mode,'choice');assert.equal(visaCaseSignature(f.c),signature);
+ }
+ const f=setup(),m=await f.scope.handle(f.id,'سلام');f.scope.bind(f.id,m.scopeMenu.token,'sent-menu');
+ assert.ok((await f.scope.handle(f.id,'استفسار جديد',{messages:[{text:'استفسار جديد',media:{type:'image',id:'synthetic-media'}}]})).scopeMenu);
+ const reference=await f.scope.handle(f.id,'رقم الطلب 828601588');assert.match(reference.reply,/828601588/);assert.equal(f.scope.current(f.id),null);
+});
+
 test('Package 7 summary bypasses saved-case menus but stays inside a separate inquiry',async()=>{
  const f=setup(),before=visaCaseSignature(f.c);const direct=await f.scope.handle(f.id,'لخصلي طلبي');assert.equal(direct.handled,false);assert.match((await f.engine.handle(f.id,'لخصلي طلبي')).reply,/ملخص طلب/);assert.equal(visaCaseSignature(f.engine.getCase(f.id)),before);
  await select(f,'new','مصري جواز عادي شخص واحد');const isolated=await f.scope.handle(f.id,'لخصلي طلبي');assert.equal(isolated.handled,true);assert.match(isolated.reply,/مصر/);assert.doesNotMatch(isolated.reply,/سوريا|828601588/);assert.equal(visaCaseSignature(f.engine.getCase(f.id)),before);
