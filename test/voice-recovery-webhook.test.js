@@ -3,11 +3,22 @@ const test=require('node:test'),assert=require('node:assert/strict'),http=requir
 const secret='synthetic-voice-recovery-secret',key='synthetic-voice-recovery-key',file=path.join(os.tmpdir(),'voice-recovery-webhook','state.enc');
 Object.assign(process.env,{ASSISTANT_STATE_PATH:file,ASSISTANT_STATE_KEY:key,ASSISTANT_DEBOUNCE_MS:'25',NODE_ENV:'test',WHATSAPP_APP_SECRET:secret,DRY_RUN:'false',WHATSAPP_ACCESS_TOKEN:'synthetic-token',WHATSAPP_PHONE_NUMBER_ID:'synthetic-phone-id',AIR_ARABIA_QUOTE_QUEUE_ENABLED:'false',FARE_CATALOG_ENABLED:'false',ASSISTANT_AI_PROVIDER:'none',CONSULTANT_ORCHESTRATOR_ENABLED:'false',SAUDI_VISA_ENABLED:'true',GEMINI_API_KEY:'synthetic-gemini-key',VOICE_TRANSCRIPTION:'on',VOICE_ACCEPTANCE_APPROVED:'true',VOICE_TRANSCRIPTION_PROVIDERS:'gemini'});
 const {AssistantState}=require('../src/assistant-state'),seed=new AssistantState({file,key});
-const customers={text:'15550008701',audio:'15550008702',unrelated:'15550008703',restarted:'15550008704'};
+const customers={text:'15550008701',audio:'15550008702',unrelated:'15550008703',restarted:'15550008704',inquiry:'15550008705'};
 for(const id of Object.values(customers))seed.set(id,{introduced:true,status:'collecting',history:[],offers:[]});
 seed.data.serviceSessions=Object.fromEntries(Object.values(customers).map(id=>[id,{service:'saudi_visa',at:Date.now(),revision:0}]));seed.save();
 const {ConversationJournal}=require('../src/conversation-journal');
 new ConversationJournal({store:seed}).recordOutbound(customers.restarted,{id:'recovery-before-restart',text:'أعد المقطع المحدد فقط.',kind:'voice_recovery_prompt'});
+const {SaudiVisaEngine}=require('../src/saudi-visa-engine');
+const policy=require('../src/saudi-visa-policy');
+const seedEngine=new SaudiVisaEngine({store:seed});
+const prior=Object.assign(seedEngine.newCase(),{applicantCount:1,applicants:[{nationality:'سوريا',documentType:'passport',age:52}],paymentStatus:'verified'});
+prior.quote=policy.calculateQuote(prior,{feesEnabled:true,agePricing:true});
+seedEngine.save(customers.inquiry,prior);
+seed.data.visaConversationScopes={[customers.inquiry]:{
+ token:crypto.randomUUID(),caseId:prior.id,mode:'choice',messageId:'synthetic-visa-scope-menu',
+ pendingText:'مصري جواز عادي لحالي وعمري 54 سنة',expiresAt:Date.now()+30*60000
+}};
+seed.save();
 const {createServer}=require('../src/server');
 
 test('signed batched voice recovery preserves complete turn order and never replays an abandoned turn',async t=>{
@@ -17,7 +28,9 @@ test('signed batched voice recovery preserves complete turn order and never repl
   ['101001',{bytes:encoded('ogg',{seconds:1}),transcript:'سوري جواز عادي لحالي، بدي ألغي'}],
   ['101002',{bytes:encoded('ogg',{seconds:1.1}),transcript:'مصري جواز عادي لحالي'}],
   ['101003',{bytes:encoded('ogg',{seconds:1.2}),transcript:'سوري جواز عادي'}],
-  ['101004',{bytes:encoded('ogg',{seconds:1.3}),transcript:'لحالي'}]
+  ['101004',{bytes:encoded('ogg',{seconds:1.3}),transcript:'لحالي'}],
+  ['101005',{bytes:encoded('ogg',{seconds:1.4}),transcript:'كم السعر وكم يوم بتاخد؟'}],
+  ['101006',{bytes:encoded('ogg',{seconds:1.5}),transcript:'عايز استفسار جديد'}]
  ]);
  const missing='909009',transcripts=new Map([...fixtures.values()].map(f=>[f.bytes.toString('base64'),f.transcript]));
  global.fetch=async(url,options={})=>{
@@ -113,6 +126,19 @@ test('signed batched voice recovery preserves complete turn order and never repl
    const before=customerOut(id).length;
    await send(id,[{text:'مصري',context:'recovery-before-restart'}]);assert.match(bodyOf(await waitTurn(id,before)),/الاستفسار الحالي/);
    assert.deepEqual(snapshot().data.visaCases[id],original);
+  });
+  await t.test('a compound voice question uses the selected inquiry instead of the prior paid case',async()=>{
+   const id=customers.inquiry,original=snapshot().data.visaCases[id];
+   process.env.VISA_TOURIST_AGE_PRICING='on';
+   try{
+    await send(id,[{audio:'101006'}]);
+    assert.match(bodyOf(await waitTurn(id,0)),/830/);
+    assert.equal(snapshot().data.visaConversationScopes[id].mode,'inquiry');
+    await send(id,[{audio:'101005'}]);
+    const reply=bodyOf(await waitTurn(id,1));
+    assert.match(reply,/830.*6–7 أيام عمل/s);
+    assert.deepEqual(snapshot().data.visaCases[id],original);
+   }finally{delete process.env.VISA_TOURIST_AGE_PRICING;}
   });
  }finally{await new Promise(resolve=>server.close(resolve));global.fetch=originalFetch;}
 });
