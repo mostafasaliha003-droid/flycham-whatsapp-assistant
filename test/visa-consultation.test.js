@@ -55,6 +55,20 @@ test('English consultation keeps the pending field across short text and voice a
  assert.equal(e.getCase('en').applicants[0].documentType,'passport');
 });
 
+test('French intake and clarification stay in French when semantic understanding is unavailable',async()=>{
+ const e=make();
+ const entry=await e.handle('fr','Je veux un visa touristique pour l’Arabie saoudite.');
+ assert.match(entry.reply,/Bienvenue chez REMAL GROUP/);
+ assert.match(entry.reply,/Quelle nationalité/);
+ const clarification=await e.handle('fr','Je ne comprends pas la question.');
+ assert.match(clarification.reply,/pays de résidence/);
+ assert.equal(e.getCase('fr').lastQuestion,'nationality');
+ assert.equal(e.getCase('fr').applicants.length,0);
+ const objection=await e.handle('fr','C’est trop cher.');
+ assert.match(objection.reply,/coût adapté et clair/);
+ assert.doesNotMatch(objection.reply,/\p{Script=Arabic}/u);
+});
+
 test('price objections compare value without automatically promising a discount',async()=>{
  const e=make();await e.handle('a','سوري جواز عادي لحالي');
  const before=structuredClone(e.getCase('a'));
