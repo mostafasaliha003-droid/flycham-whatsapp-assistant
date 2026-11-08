@@ -54,7 +54,7 @@ function reviewCopy(q,{language='ar',includeNextStep=true}={}){
  if(required.length&&includeNextStep)lines.push(agePrompt(required,l));
  return lines.join('\n');
 }
-function touristQuoteCopy(q,{language='ar',includeNextStep=true,refundShown=false}={}){
+function touristQuoteCopy(q,{language='ar',includeNextStep=true,refundShown=false,includeRefund=true}={}){
  if(!q||typeof q!=='object')return null;
  if(q.requiresReview){
   if(!['tourist_age_required','tourist_age_53_review'].includes(q.reason)||!Number.isFinite(q.baseTouristAmount)||!Number.isFinite(q.insuranceSurchargeAmount))return null;
@@ -74,8 +74,8 @@ function touristQuoteCopy(q,{language='ar',includeNextStep=true,refundShown=fals
  if(q.feePending)lines.push({ar:`المجموع قبل رسوم وسيلة الدفع: ${money(q.subtotal)} درهم. رسوم وسيلة الدفع بنأكدها قبل الدفع.`,en:`Total before payment-method fees: AED ${money(q.subtotal)}. We confirm those fees before payment.`,fr:`Total hors frais du moyen de paiement : ${money(q.subtotal)} AED. Ces frais sont confirmés avant le paiement.`}[l]);
  else if(q.rows.length>1||q.insuranceSubtotal>0||q.paymentFee>0)lines.push({ar:`*المجموع: ${money(q.total)} درهم.*`,en:`*Total: AED ${money(q.total)}.*`,fr:`*Total : ${money(q.total)} AED.*`}[l]);
  if(q.paymentMethod==='bank'&&!q.paymentFee)lines.push({ar:'التحويل البنكي دون عمولة إضافية من المكتب.',en:'Bank transfer has no additional office commission.',fr:'Le virement bancaire ne comporte pas de commission supplémentaire de notre agence.'}[l]);
- if(!refundShown)lines.push(visaRefundCopy({insuranceQuestion:q.insuranceSubtotal>0,language:l,direct:false}));
- else if(q.insuranceSubtotal>0)lines.push(INSURANCE_REFUND_COPY[l]);
+ if(includeRefund&&!refundShown)lines.push(visaRefundCopy({insuranceQuestion:q.insuranceSubtotal>0,language:l,direct:false}));
+ else if(includeRefund&&q.insuranceSubtotal>0)lines.push(INSURANCE_REFUND_COPY[l]);
  return lines.join('\n');
 }
 module.exports={touristQuoteCopy,touristPriceOverview,touristInsuranceCopy,visaRefundCopy,REFUND_COPY,INSURANCE_REFUND_COPY};

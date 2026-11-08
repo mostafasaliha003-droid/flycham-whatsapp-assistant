@@ -35,5 +35,12 @@ test('signed multi-service webhook: Saudi quotes, real Cline contract, complaint
   await send(ageCustomer,'إذا ترفضت بترجع الرسوم');
   assert.match(posts.at(-1).text.body,/^نعم، رسوم التأشيرة مستردة بالكامل/);assert.doesNotMatch(posts.at(-1).text.body,/640|830|عرض تأشيرات/);
   detail=(await call('/internal/assistant/conversations/'+ageCustomer)).json;assert.equal(detail.visaCase.quote.total,830);
+  await send(ageCustomer,'كم التكلفة، وشو الأوراق المطلوبة، وكم يوم بتاخد؟');
+  const orderedReply=posts.at(-1).text.body;
+  assert.match(orderedReply,/830.*نسخة جواز.*6–7 أيام عمل/s);assert.equal((orderedReply.match(/نسخة جواز/g)||[]).length,1);
+  await send(ageCustomer,'شو خيارات الدفع وكم السعر؟');
+  assert.match(posts.at(-1).text.body,/خيارات الدفع.*830/s);assert.equal(posts.at(-1).type,'text');assert.doesNotMatch(posts.at(-1).text.body,/IBAN|رقم الحساب/);
+  await send(ageCustomer,'بدي أقدم، كم السعر وقديش وقت؟');
+  assert.match(posts.at(-1).text.body,/830.*6–7 أيام عمل/s);assert.doesNotMatch(posts.at(-1).text.body,/تأكدلي|بعد التحويل/);
  }finally{delete process.env.VISA_TOURIST_AGE_PRICING;await new Promise(r=>server.close(r));global.fetch=original;fs.rmSync(dir,{recursive:true,force:true});}
 });

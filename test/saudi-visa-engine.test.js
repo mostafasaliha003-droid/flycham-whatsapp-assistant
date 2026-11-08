@@ -471,7 +471,7 @@ test('Package 6 business-day estimates skip weekends and never promise an issuan
  assert.equal(workingDaysBetween(Date.parse('2026-11-06T12:00Z'),Date.parse('2026-11-10T23:00Z')),2);
  assert.equal(workingDaysBetween(Date.parse('2026-11-06'),Date.parse('2026-11-08')),0);
  assert.equal(workingDaysBetween(now,now+14*86400000),10);for(const value of [NaN,Infinity,now-1])assert.equal(workingDaysBetween(now,value),0);
- assert.match(travelFitCopy('2026-11-06',now),/2 أيام عمل.*الوقت ضيق.*ما فينا نضمن/);
+ assert.match(travelFitCopy('2026-11-06',now),/يومين عمل.*الوقت ضيق.*ما فينا نضمن/);
  assert.match(travelFitCopy('2026-11-18',now),/10 أيام عمل.*العطل الرسمية.*ما بيضمن/);
  for(const date of ['2026-02-31','2026-11-03','bad'])assert.equal(travelFitCopy(date,now),'');
  const e=make({now:()=>now});const r=await e.handle('travel6','سوري جواز عادي لحالي سفري 06/11/2026');assert.match(r.reply,/640/);assert.match(r.reply,/الوقت ضيق/);
