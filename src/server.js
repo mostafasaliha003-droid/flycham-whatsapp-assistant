@@ -3,6 +3,8 @@ const {detectSentiment,withEmpathy}=require('./customer-sentiment');
 const {withStaffExpectation}=require('./staff-availability');
 const {sendRating,readRating,ratingSummary}=require('./service-rating');
 const {transcribeVoice,voiceLead,voiceFallback,voiceEnabled}=require('./voice-transcription');
+const {VoiceTurnRecovery}=require('./voice-turn-recovery');
+const voiceRecovery=new VoiceTurnRecovery();
 const {detectLanguageStyle}=require('./bilingual-intake');
 const {recordCxEvent,cxAnalyticsSummary}=require('./cx-analytics');
 const {detectCrossServiceSwitch,transitionBanner,withTransitionBanner,hasSavedFlightContext,hasSavedVisaContext}=require('./cross-service-bridge');
@@ -95,10 +97,10 @@ const raadProvider=new RaadTinyFishProfile({env:process.env,privateConfig:PRIVAT
 const complaints=new ComplaintHandoff({store:assistant.store,journal,recipient:COMPLAINT_RECIPIENT,sendNotification:data=>sendComplaintNotification(data.recipient,{...data,caseId:data.complaintId,useTemplate:data.requiresTemplate,url:operationsUrl(data.customer)})});
 function operationsUrl(customer){const base=process.env.RENDER_EXTERNAL_URL||'https://flycham-whatsapp-assistant.onrender.com';return new URL('/operations?customer='+encodeURIComponent(customer),base).href;}
 async function flushComplaint(id){const serviceWindowOpen=journal.summary(COMPLAINT_RECIPIENT)?.serviceWindowOpen===true;return complaints.flush(id,{serviceWindowOpen,templateConfigured:serviceWindowOpen?false:await complaintTemplateReady()});}
-const inbox=new InboxService({store:assistant.store,assistant,journal,complaints,changeBlock:(id,{blocked})=>changeWhatsAppBlock(id,{blocked}),getMedia:id=>visaMedia.list(id),send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>quoteJobs.cancel(id),getSearch:id=>searchStatus(id)});
+const inbox=new InboxService({store:assistant.store,assistant,journal,complaints,changeBlock:(id,{blocked})=>changeWhatsAppBlock(id,{blocked}),getMedia:id=>visaMedia.list(id),send:(id,text,guard)=>orderedDelivery(id,()=>{guard();return rawSendTextMessage(id,text);}),onClaim:id=>{voiceRecovery.clear(id);quoteJobs.cancel(id);},getSearch:id=>searchStatus(id)});
 function searchStatus(id){const state=assistant.state(id),c=quoteJobs.comparisons.get(state.activeComparisonId);if(!c)return {state:state.status,total:0,completed:0,verifiedOffers:state.offers.length,providers:[]};return {state:state.status,createdAt:c.createdAt,total:c.children.length,completed:c.children.filter(x=>x.status!=='pending').length,verifiedOffers:c.children.reduce((n,x)=>n+x.offers.length,0),providers:c.providers.map(provider=>{const rows=c.children.filter(x=>x.provider===provider);return {provider,name:provider==='flycham'?'فلاي شام':'العربية للطيران',total:rows.length,completed:rows.filter(x=>x.status!=='pending').length,verifiedOffers:rows.reduce((n,x)=>n+x.offers.length,0),activeDates:rows.filter(x=>quoteJobs.jobs.get(x.id)?.state==='claimed').map(x=>x.request.departureDate)};})};}
 const journalSafeText=text=>text.replace(/(https:\/\/[^\s#]+\/documents)#[A-Za-z0-9_-]{43}/g,'$1#[رابط خاص]');
-async function sendTextMessage(to,text,env=process.env){if(inbox.isHumanOwned(to))throw Error('AI_PAUSED_FOR_STAFF');const result=await rawSendTextMessage(to,text,env);const id=result?.messages?.[0]?.id;if(id&&journal.hasCustomer(to))journal.recordOutbound(to,{id,text:journalSafeText(text),actor:'assistant',timestamp:Date.now(),status:'accepted'});return result;}
+async function sendTextMessage(to,text,env=process.env,{kind=null}={}){if(inbox.isHumanOwned(to))throw Error('AI_PAUSED_FOR_STAFF');const result=await rawSendTextMessage(to,text,env);const id=result?.messages?.[0]?.id;if(id&&journal.hasCustomer(to))journal.recordOutbound(to,{id,text:journalSafeText(text),actor:'assistant',timestamp:Date.now(),status:'accepted',kind});return result;}
 const sendServiceMenu=createServiceMenuSender({store:assistant.store,inbox,send:rawSendServiceMenu,journal});
 async function sendRequestChoiceMessage(to,text,choiceId){
  if(inbox.isHumanOwned(to)||assistant.state(to).requestChoice?.id!==choiceId)throw Error('REQUEST_CHOICE_SUPERSEDED');
@@ -206,15 +208,33 @@ function messageChunks(text){
 
 function prepareCustomerMessages(sender,messages){if(messages.some(m=>m.media?.type==='audio')||assistant.store.data.serviceRatings?.pending?.[sender])return;if(visaEnabled()&&(activeService(assistant.store,sender)==='saudi_visa'||messages.some(m=>m.media)||/فيزا|تأشير|تاشير|عمرة|عمره|اسماعيل/.test(messages.map(m=>m.text).join(' '))))return;const state=assistant.state(sender);if(state.offerPages&&isMoreRequest(messages.map(m=>m.text).join('، ')))return;messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);const refs=[...new Set(messages.map(m=>m.contextId).filter(Boolean))];return assistant.prepare(sender,messages.map(m=>m.text).join('، '),{quotedMessageId:refs.length===1?refs[0]:null,turnMessages:messages.map(m=>({text:m.text,quotedOfferReference:state.offers.find(o=>o.messageId===m.contextId)?.reference||null}))});}
 function continueQueuedRequest(sender){setTimeout(()=>{batcher.serial(sender,[]).catch(()=>console.log('WHATSAPP_QUEUED_REQUEST_FAILED'));},0).unref();}
+function voiceRecoveryContext(sender){
+ const visaCase=visa.getCase(sender),service=assistant.store.data.serviceSessions?.[sender]?.service||null;
+ return {eligible:visaEnabled()&&(!service||service==='saudi_visa'),key:JSON.stringify([service,visaCase?.id||null,visaCase?.revision??null])};
+}
+function isIndependentVoiceReply(messages){
+ if(messages.length!==1||messages[0].media)return false;
+ const {text,serviceChoice,requestChoice}=messages[0];
+ return Boolean(serviceChoice||requestChoice||/^(?:احذف بياناتي|امسح بياناتي|حذف بياناتي|القائمه|الخدمات|حولني للموظف)[.!؟?]*$/.test(require('./saudi-visa-policy').normalize(text)));
+}
+function quotesVoiceRecovery(sender,contextId){
+ if(!contextId)return false;
+ return voiceRecovery.isReply(sender,contextId)||Boolean(journal.get(sender)?.messages.some(m=>m.id===contextId&&m.kind==='voice_recovery_prompt'));
+}
+async function sendVoiceRecovery(sender,recovery){
+ const sent=await sendTextMessage(sender,recovery.reply,process.env,{kind:recovery.token?'voice_recovery_prompt':null});
+ if(recovery.token&&sent?.messages?.[0]?.id)voiceRecovery.bind(sender,recovery.token,sent.messages[0].id);
+}
 async function processCustomerMessages(sender,messages){
   if(!messages.length&&activeService(assistant.store,sender)==='saudi_visa')return;
   if(!messages.length){const next=assistant.beginNextRequest(sender);if(!next)return;messages=[{text:next.text,timestamp:Math.floor(Date.now()/1000)}];}
   messages=messages.map((m,i)=>({...m,order:i})).sort((a,b)=>(Number(a.timestamp)||0)-(Number(b.timestamp)||0)||a.order-b.order);
   let text=messages.map(m=>m.text).join('، ');
-  if(inbox.isHumanOwned(sender)){if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await receiveVisaMedia(sender,m);return;}
+  if(inbox.isHumanOwned(sender)){voiceRecovery.clear(sender);if(activeService(assistant.store,sender)==='saudi_visa')for(const m of messages.filter(x=>x.media))await receiveVisaMedia(sender,m);return;}
   const turnRevision=incomingRevision(assistant.store,sender);
   const currentTurn=()=>!inbox.isHumanOwned(sender)&&turnRevision===incomingRevision(assistant.store,sender);
-  const plainText=messages.every(m=>!m.media&&!Object.keys(m).some(k=>/Choice$|Action$|Answer$|Confirmation$/.test(k))&&!m.payload);
+  const isRecoveryReply=messages.some(m=>quotesVoiceRecovery(sender,m.contextId));
+  const plainText=!isRecoveryReply&&messages.every(m=>!m.media&&!Object.keys(m).some(k=>/Choice$|Action$|Answer$|Confirmation$/.test(k))&&!m.payload);
   // Non-text interactions also dismiss an old rating, so their next numeric
   // answer cannot be stolen from an active application.
   const rated=readRating(assistant.store,sender,plainText?text:'[new interaction]');
@@ -228,22 +248,44 @@ async function processCustomerMessages(sender,messages){
     }
     if(currentTurn())await sendTextMessage(sender,rated.reply);return;
   }
-  const voiceTexts=[];
+  const speechEnabled=voiceEnabled(process.env);
+  if(!speechEnabled)voiceRecovery.clear(sender);
   // Roll out the checked CX features independently of speech acceptance. An
   // existing 'on' value alone must never enable the unapproved audio pipeline.
-  if(!voiceEnabled(process.env)&&messages.some(m=>m.media?.type==='audio')){
+  if(!speechEnabled&&messages.some(m=>m.media?.type==='audio')){
     const audioMessages=messages.filter(m=>m.media?.type==='audio'),replies=[];
     for(const message of audioMessages){const received=await visaMedia.receive(sender,message);if(!currentTurn())return;replies.push(received.ok?received.reply:'ما وصلني التسجيل الصوتي كامل 🌷 ممكن تعيد إرساله؟');}
     if(replies.some(Boolean))await sendTextMessage(sender,[...new Set(replies.filter(Boolean))].join('\n\n'));
     messages=messages.filter(m=>m.media?.type!=='audio');if(!messages.length)return;
   }
-  for(const message of messages.filter(m=>m.media?.type==='audio'&&(!m.text||m.text==='[مرفق صوتي يحتاج تفريغاً]'))){
+  const recoveryContext=voiceRecoveryContext(sender);
+  const audioMessages=messages.filter(m=>m.media?.type==='audio'&&(!m.text||m.text==='[مرفق صوتي يحتاج تفريغاً]'));
+  const failures=[];
+  for(const message of audioMessages){
     let audio,result;
     try{audio=await visaMedia.fetchTransient(message.media);if(!currentTurn())return;result=await transcribeVoice({...audio,fetchImpl:(...args)=>fetch(...args)});}catch{result={ok:false,reason:'unavailable'};}finally{audio?.bytes?.fill(0);}
     if(!currentTurn())return;
-    if(!result.ok){console.log('VOICE_FAILED_'+result.reason);await sendTextMessage(sender,voiceFallback(result.reason));recordCxEvent(assistant.store,{service:activeService(assistant.store,sender),category:'voice_fallback'});return;}
-    console.log('VOICE_TRANSCRIBED_'+result.provider);message.text=result.transcript;message.voiceTranscript=true;delete message.media;voiceTexts.push(result.transcript);
+    if(!result.ok){
+     console.log('VOICE_FAILED_'+result.reason);failures.push({id:message.id,reason:result.reason});
+     if(!recoveryContext.eligible||audioMessages.length>8)break;
+     continue;
+    }
+    console.log('VOICE_TRANSCRIBED_'+result.provider);message.text=result.transcript;message.voiceTranscript=true;delete message.media;
   }
+  if(!currentTurn())return;
+  const independentReply=isRecoveryReply&&isIndependentVoiceReply(messages);
+  if(independentReply)voiceRecovery.clear(sender);
+  const recovered=voiceRecovery.resolve(sender,{messages,revision:turnRevision,contextKey:voiceRecoveryContext(sender).key});
+  if(recovered.status==='waiting'){await sendVoiceRecovery(sender,recovered);return;}
+  if(isRecoveryReply&&!independentReply&&recovered.status!=='complete'){await sendTextMessage(sender,'خلّينا نكمل على آخر طلب إلك. ممكن تبعت الاستفسار الحالي برسالة واحدة؟');return;}
+  if(recovered.status==='complete')messages=recovered.messages;
+  else if(failures.length){
+   const draft=recoveryContext.eligible&&recoveryContext.key===voiceRecoveryContext(sender).key&&messages.length>1
+    ?voiceRecovery.hold(sender,{messages,failedIds:failures.map(f=>f.id),revision:turnRevision,contextKey:recoveryContext.key}):null;
+   await sendVoiceRecovery(sender,draft||{reply:voiceFallback(failures[0].reason)});
+   recordCxEvent(assistant.store,{service:activeService(assistant.store,sender),category:'voice_fallback'});return;
+  }
+  const voiceTexts=messages.filter(m=>m.voiceTranscript).map(m=>m.text);
   text=messages.map(m=>m.text).join('، ');
   const sentiment=detectSentiment(text);
   if(sentiment.priority==='urgent'){assistant.store.data.customerPriority||={};assistant.store.data.customerPriority[sender]={priority:'urgent',reason:sentiment.frustrated?'frustrated':'urgent',at:Date.now()};assistant.store.save();}
@@ -436,6 +478,13 @@ async function handleWebhookPost(request, response) {
     }
     if(message.text)message.text=journalSafeText(message.text);
     if(message.id&&message.text)journal.recordInbound(message.from,{id:message.id,text:message.text,timestamp:message.timestamp,name:message.name});
+    // A fragment replying to a recovery prompt belongs to that turn. Do not
+    // treat it separately as an answer to a payment or document workflow.
+    if(quotesVoiceRecovery(message.from,message.contextId)){
+      const pending=batcher.push(message.from,message);pending.catch(()=>console.error('WHATSAPP_REPLY_FAILED'));
+      if(process.env.ASSISTANT_DEBOUNCE_MS==='0')await pending;
+      continue;
+    }
     const operatorAnswer=visaFulfilment.handleOperatorMessage?.(message);
     if(operatorAnswer?.handled){if(operatorAnswer.reply&&(!operatorAnswer.ok||operatorAnswer.progress||/اعتمادها/.test(operatorAnswer.reply)))await rawSendTextMessage(message.from,operatorAnswer.reply).catch(()=>{});wakeVisa();continue;}
     visaReceiptNotices.observeMessage(message);
@@ -613,6 +662,7 @@ function createServer() {
     response.writeHead(404).end('Not found');
   });
   const sweep=setInterval(()=>{
+   voiceRecovery.prune();
    for(const [sender,state] of Object.entries(assistant.store.data.customers))if(state.queueReady&&['done','failed'].includes(state.status)&&state.pendingRequests?.length&&!batcher.busy(sender))continueQueuedRequest(sender);
    if(visaEnabled()){visaMedia.prune();visaUploads.prune();visaPreparedDelivery.prune();visaDocumentIntake.wake();visaDispatcher.tick().catch(()=>console.log('VISA_WORKFLOW_PAUSED'));visaOperatorNotices.flush().catch(()=>console.log('VISA_OPERATOR_NOTICE_PAUSED'));visaReceiptNotices.flush().catch(()=>console.log('VISA_RECEIPT_NOTICE_PAUSED'));visaCoordinationNotices.flush().catch(()=>console.log('VISA_COORDINATION_PAUSED'));visaDocumentNotifications.flush().catch(()=>console.log('DOCUMENT_FEEDBACK_PAUSED'));for(const c of complaints.records)if(c.notification.state==='pending')flushComplaint(c.id).catch(()=>console.log('VISA_COMPLAINT_NOTIFICATION_FAILED'));}
    for(const key of outbox.due())outbox.flush(key).catch(()=>console.log('OUTBOX_SWEEP_FAILED'));

@@ -49,14 +49,15 @@ class ConversationJournal{
   if(changed)this.save();
  }
  recordInbound(id,{id:messageId,text,timestamp,name}={}){return this.record(id,{id:messageId,text,timestamp,direction:'in',actor:'customer',status:'received',name});}
- recordOutbound(id,{id:messageId,text,timestamp,actor='assistant',status='accepted'}={}){
-  if(!['assistant','staff'].includes(actor))throw Error('INVALID_ACTOR');if(!['accepted','sent','delivered','read','failed'].includes(status))throw Error('INVALID_STATUS');return this.record(id,{id:messageId,text,timestamp,direction:'out',actor,status});
+ recordOutbound(id,{id:messageId,text,timestamp,actor='assistant',status='accepted',kind=null}={}){
+  if(!['assistant','staff'].includes(actor))throw Error('INVALID_ACTOR');if(!['accepted','sent','delivered','read','failed'].includes(status))throw Error('INVALID_STATUS');return this.record(id,{id:messageId,text,timestamp,direction:'out',actor,status,kind});
  }
  record(id,event){
   if(typeof event.id!=='string'||!event.id||event.id.length>500||typeof event.text!=='string'||!event.text.trim()||event.text.length>12000)throw Error('INVALID_JOURNAL_MESSAGE');
   const item=this.ensure(id);if(item.messages.some(m=>m.id===event.id&&m.direction===event.direction))return false;
   const at=eventTime(event.timestamp,this.now()),seq=this.data.nextSequence++;
   const message={id:event.id,seq,direction:event.direction,actor:event.actor,text:event.text,at,status:event.status};
+  if(event.direction==='out'&&event.actor==='assistant'&&event.kind==='voice_recovery_prompt')message.kind=event.kind;
   if(event.direction==='out'){const receiptKey=createHash('sha256').update(event.id).digest('hex'),receipt=this.data.pendingReceipts[receiptKey];if(receipt){message.status=receipt.status;message.statusAt=receipt.at;delete this.data.pendingReceipts[receiptKey];}}
   item.messages.push(message);item.updatedAt=this.now();
   if(event.direction==='in'){item.lastInboundAt=Math.max(item.lastInboundAt||0,at);if(typeof event.name==='string'&&event.name.trim())item.name=event.name.trim().slice(0,100);}
