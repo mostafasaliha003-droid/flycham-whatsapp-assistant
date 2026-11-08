@@ -394,7 +394,7 @@ test('multi-entry quote adds actual product validity without changing single-ent
 
 test('Package 6 family language counts explicit companions without absorbing an independent inquiry',async()=>{
  const {countFrom}=require('../src/saudi-visa-engine');
- for(const [text,count]of [['انا واهلي',3],['انا وامي وابوي',3],['انا ووالدي ووالدتي',3],['انا واخوي',2],['انا وابوي',2],['انا وزوجتي وطفلين',4],['عيلتي 5',5]])assert.equal(countFrom(text),count,text);
+ for(const [text,count]of [['انا واهلي',null],['انا وامي وابوي',3],['انا ووالدي ووالدتي',3],['انا واخوي',2],['انا وابوي',2],['انا وزوجتي وطفلين',4],['عيلتي 5',5]])assert.equal(countFrom(text),count,text);
  const e=make();await e.handle('family6','سوري باسبور عادي لحالي');await e.handle('family6','أنا وأخوي');assert.equal(e.getCase('family6').applicantCount,2);assert.equal(e.getCase('family6').applicants[1]?.nationality,undefined);
  const other=make();await other.handle('friend6','سوري باسبور عادي لحالي');await other.handle('friend6','صديقي مصري');assert.equal(other.getCase('friend6').applicantCount,1);assert.equal(other.getCase('friend6').pendingRelative.facts.nationality,'مصر');
 });
@@ -458,7 +458,7 @@ test('Package 6 payment acknowledgement cannot confirm a stale or forged verifie
 
 test('Package 7 dialect counts preserve family membership and separate friends',async()=>{
  const {countFrom,extractLocal}=require('../src/saudi-visa-engine');
- for(const [text,count]of [['أنا لوحدي',1],['بطولي',1],['بس انا',1],['أنا ومراتي',2],['أنا وجوزي',2],['أنا والحرمة',2],['نفرين',2],['احنا اتنين',2],['أنا وعيالي',3],['احنا 4 انفار',4],['أنا ومراتي وطفلين',4],['أنا وأمي وأبوي',3]])assert.equal(countFrom(text),count,text);
+ for(const [text,count]of [['أنا لوحدي',1],['بطولي',1],['بس انا',1],['أنا ومراتي',2],['أنا وجوزي',2],['أنا والحرمة',2],['نفرين',2],['احنا اتنين',2],['أنا وعيالي',null],['احنا 4 انفار',4],['أنا ومراتي وطفلين',4],['أنا وأمي وأبوي',3]])assert.equal(countFrom(text),count,text);
  for(const text of ['أنا وصديقي','أنا ورفيقي','صديقي مصري','جوازه صالح 6 أشهر'])assert.equal(countFrom(text),null,text);
  assert.equal(extractLocal('مسافر بالعربية',{}).transport,'car');assert.equal(extractLocal('مسافر بالعربية للطيران',{}).transport,'air');assert.equal(extractLocal('احنا 4 كلنا سوريين جواز عادي',{}).applicants.length,4);
  const e=make();await e.handle('dialect7','سوري جواز عادي لحالي');await e.handle('dialect7','أنا وصديقي');assert.equal(e.getCase('dialect7').applicantCount,1);assert.ok(e.getCase('dialect7').pendingRelative);
@@ -494,7 +494,7 @@ test('Package 7 dialect price questions retain quote and office wording is not a
 });
 
 test('Package 7 children dialect keeps pricing in review and summary cannot invent an adult total',async()=>{
- const e=make();await e.handle('children7','انا وعيالي كلنا سوريين جواز عادي');assert.equal(e.getCase('children7').hasMinors,true);assert.equal(e.getCase('children7').quote.requiresReview,true);const r=await e.handle('children7','لخصلي طلبي');assert.match(r.reply,/مراجعة تسعير الأطفال/);assert.doesNotMatch(r.reply,/إجمالي الرسوم المعتمدة|1920/);
+ const e=make();await e.handle('children7','نحنا 3 انا وعيالي كلنا سوريين جواز عادي');assert.equal(e.getCase('children7').hasMinors,true);assert.equal(e.getCase('children7').quote.requiresReview,true);const r=await e.handle('children7','لخصلي طلبي');assert.match(r.reply,/مراجعة تسعير الأطفال/);assert.doesNotMatch(r.reply,/إجمالي الرسوم المعتمدة|1920/);
 });
 
 async function family11(id='family11'){

@@ -1,5 +1,10 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http'),crypto=require('node:crypto'),path=require('node:path'),os=require('node:os');
+// Freeze before constructing the server: its journal captures Date.now once.
+// Otherwise a later fake inbound date appears to have an expired service window.
+const originalNow=Date.now;
+Date.now=()=>Date.UTC(2026,10,4,19); // 23:00 in Dubai.
+test.after(()=>{Date.now=originalNow;});
 const secret='synthetic-flight-media-secret',key='synthetic-flight-media-key',file=path.join(os.tmpdir(),'flight-media-state.enc');
 Object.assign(process.env,{ASSISTANT_STATE_PATH:file,ASSISTANT_STATE_KEY:key,ASSISTANT_DEBOUNCE_MS:'0',NODE_ENV:'test',WHATSAPP_APP_SECRET:secret,DRY_RUN:'false',WHATSAPP_ACCESS_TOKEN:'synthetic-token',WHATSAPP_PHONE_NUMBER_ID:'synthetic-phone-id',AIR_ARABIA_QUOTE_QUEUE_ENABLED:'false',FARE_CATALOG_ENABLED:'false',ASSISTANT_AI_PROVIDER:'none',CONSULTANT_ORCHESTRATOR_ENABLED:'false',SAUDI_VISA_ENABLED:'true'});
 const {AssistantState}=require('../src/assistant-state'),seed=new AssistantState({file,key});
@@ -24,9 +29,8 @@ test('Package 8 signed flight attachments acknowledge their own trip without vis
 });
 
 test('Packages 12–15 signed webhook voice routing, failure isolation, ratings, staff hours and empathy',async()=>{
- const original=global.fetch,originalNow=Date.now,out=[],staff='15550008999',calls=[];let transcript='من الشارقة إلى دمشق 15/11/2026 ذهاب فقط لحالي',failure=false;
+ const original=global.fetch,out=[],staff='15550008999',calls=[];let transcript='من الشارقة إلى دمشق 15/11/2026 ذهاب فقط لحالي',failure=false;
  Object.assign(process.env,{GEMINI_API_KEY:'synthetic-gemini-key',VOICE_TRANSCRIPTION:'on',VOICE_ACCEPTANCE_APPROVED:'true',VOICE_TRANSCRIPTION_PROVIDERS:'gemini',HUMAN_HANDOFF_RECIPIENT:staff,ASSISTANT_ADMIN_KEY:'synthetic-cx-admin-key-xxxxxxxxxxxx'});
- Date.now=()=>Date.UTC(2026,10,4,19); // 23:00 in Dubai.
  let audio=require('./helpers/voice-fixtures').encoded('ogg');
  global.fetch=async(url,opt)=>{
   calls.push(String(url));
@@ -59,5 +63,5 @@ test('Packages 12–15 signed webhook voice routing, failure isolation, ratings,
   const beforeCalls=calls.length;await send(cx.owned,'',{voice:true});assert.equal(calls.length,beforeCalls);
   const low=await send(cx.low,'1');assert.match(low,/بكرا من الساعة 10 الصبح/);assert.ok(out.some(x=>x.to===staff&&/تقييم منخفض 1\/5/.test(x.text?.body)));
   const button=await send(cx.button,'5',{button:true});assert.doesNotMatch(button||'',/شكراً كتير لتقييمك/);
- }finally{Date.now=originalNow;global.fetch=original;delete process.env.GEMINI_API_KEY;delete process.env.VOICE_TRANSCRIPTION;delete process.env.VOICE_ACCEPTANCE_APPROVED;delete process.env.HUMAN_HANDOFF_RECIPIENT;await new Promise(r=>server.close(r));}
+ }finally{global.fetch=original;delete process.env.GEMINI_API_KEY;delete process.env.VOICE_TRANSCRIPTION;delete process.env.VOICE_ACCEPTANCE_APPROVED;delete process.env.HUMAN_HANDOFF_RECIPIENT;await new Promise(r=>server.close(r));}
 });

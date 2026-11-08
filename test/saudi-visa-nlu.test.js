@@ -23,7 +23,7 @@ test('context is allowlisted and current document identifiers, receipts, credent
 test('raw MRZ/encoded documents omitted and only small redacted history retained',()=>{
  assert.equal(redactVisaText('P<SYR<<PRIVATE_NAME'),'[document omitted]');assert.equal(redactVisaText('data:image/png;base64,PRIVATE_DOCUMENT'),'[document omitted]');
  const c=safeVisaContext({history:Array.from({length:20},()=>({role:'user',text:'a'.repeat(1000)})),internalCommission:25,documents:['private']});
- assert.equal(c.history.length,8);assert.ok(c.history.every(x=>x.text.length<=450));assert.equal(c.internalCommission,undefined);assert.equal(c.documents,undefined);
+ assert.equal(c.history.length,16);assert.ok(c.history.every(x=>x.text.length<=450));assert.equal(c.internalCommission,undefined);assert.equal(c.documents,undefined);
  assert.equal(safeVisaContext({history:[{role:'user',text:'hi'}]},false).history,undefined);
 });
 test('strict extraction rejects invented money/status, IDs, invalid dates and unsafe questions',()=>{
