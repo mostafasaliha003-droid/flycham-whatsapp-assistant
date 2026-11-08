@@ -523,7 +523,7 @@ class SaudiVisaEngine{
   if(!independentRelative&&(lockedPrice||beforeCase.paymentStatus==='verified'||beforeCase.submissionStatus==='submitted')&&afterFacts!==beforeFacts){
    c.pendingAmendment={facts:JSON.parse(afterFacts),requestedAt:this.now()};for(const k of ['applicantCount','applicants','departureDate','returnDate','transport','hasHost','hasMinors']){if(Object.hasOwn(beforeCase,k))c[k]=beforeCase[k];else delete c[k];}c.stage='amendment_review';pendingAmendment=true;
   }
-  c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false,consultationReply=false;
+  c.revision++;const first=!c.greeted;c.greeted=true;let reply='',complaint=false,consultationReply=false,needsUnderstandingReview=false;
   const products=c.applicants.map(P.productFor),hasUmrah=products.some(p=>p.code==='umrah');
   if(lockedPrice){c.quote=beforeCase.quote;c.paymentMethod=beforeCase.paymentMethod;}
   else c.quote=P.calculateQuote(c,{feesEnabled:true,agePricing});
@@ -648,7 +648,7 @@ class SaudiVisaEngine{
   else if(products.some(p=>p.code==='suspended'))reply='حسب حالة التقديم الحالية لدى مكتبنا، التقديم لهذه الجنسية متوقف حالياً. ما رح نطلب منك دفع أو نعطيك وعد بموعد فتح قبل وجود تحديث معتمد.';
   else if(products.some(p=>p.code==='unverified')&&c.applicants[0]?.nationality){intervention('untrained_request');reply='حتى أعطيك مسار تقديم دقيق، رح أراجع هالجنسية أو الوثيقة مع المسؤول ونرجعلك. ما منطلب منك دفع قبل التحقق 🌷';}
   else if(statedTravelDate&&c.departureDate===statedTravelDate&&!priceRequested&&!hasAttachments&&!relativeInquiry)reply=travelFitCopy(statedTravelDate,this.now(),{language:replyLanguage});
-  else if((intent==='other'||!intent)&&!informationIntents.size&&!priceRequested&&!bareAgeAnswer&&semanticText&&!documentStep&&afterFacts===beforeFacts&&!frenchVisaEntry&&!/^(?:(?:فيزا|تاشيره)(?: السعوديه)?|سلام|مرحبا|هلا|اهلا|السلام عليكم)[؟?!. ]*$/.test(n)){intervention('untrained_request');reply=SERVICE.response('unknown');}
+  else if((intent==='other'||!intent)&&!informationIntents.size&&!priceRequested&&!bareAgeAnswer&&semanticText&&!documentStep&&afterFacts===beforeFacts&&!frenchVisaEntry&&!/^(?:(?:فيزا|تاشيره)(?: السعوديه)?|سلام|مرحبا|هلا|اهلا|السلام عليكم)[؟?!. ]*$/.test(n)){intervention('untrained_request');c.operatorIntervention.understandingFailed=true;needsUnderstandingReview=true;reply=SERVICE.response('unknown');}
   else if(completion){
    const price=priceRequested;
    const known=products[0];
@@ -697,7 +697,7 @@ class SaudiVisaEngine{
   if(completion&&reply.includes(completion)){c.lastQuestion=nextQuestion;c.askedQuestions=nextAsked;}
   if(first)reply=REPLY_INTROS[replyLanguage]+'\n\n'+reply;
   c.history.push({role:'user',text:(hasAttachments?'[attachment received]'+(semanticText?' '+semanticText:''):redactVisaText(text)).slice(0,1500)},{role:'assistant',text:redactVisaText(reply).slice(0,2500)});c.history=c.history.slice(-16);
-  this.save(id,c);if(c.stage==='quoted')rememberVisaJourney(this.store,id,c,{now:this.now()});return{reply,complaint,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage,quote:c.quote,resolved:reply.includes('*عرض تأشيرات السعودية')||consultationReply||compoundInfo.length>0&&!completion};
+  this.save(id,c);if(c.stage==='quoted')rememberVisaJourney(this.store,id,c,{now:this.now()});return{reply,complaint,caseId:c.id,revision:c.revision,service:'saudi_visa',stage:c.stage,quote:c.quote,resolved:reply.includes('*عرض تأشيرات السعودية')||consultationReply||compoundInfo.length>0&&!completion,...(needsUnderstandingReview?{needsUnderstandingReview:true}:{})};
  }
 }
 module.exports={SaudiVisaEngine,extractLocal,mergeFacts,countFrom,isComplaint,quoteText,caseSummaryCopy,workingDaysBetween,travelFitCopy};

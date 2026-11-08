@@ -42,5 +42,16 @@ test('signed multi-service webhook: Saudi quotes, real Cline contract, complaint
   assert.match(posts.at(-1).text.body,/خيارات الدفع.*830/s);assert.equal(posts.at(-1).type,'text');assert.doesNotMatch(posts.at(-1).text.body,/IBAN|رقم الحساب/);
   await send(ageCustomer,'بدي أقدم، كم السعر وقديش وقت؟');
   assert.match(posts.at(-1).text.body,/830.*6–7 أيام عمل/s);assert.doesNotMatch(posts.at(-1).text.body,/تأكدلي|بعد التحويل/);
+  const {OWNER:owner}=require('../src/remal-service-policy');
+  await send(owner,'مرحبا');
+  const beforeReview=posts.filter(post=>post.to===owner).length;
+  await send(ageCustomer,'شو نظام أولوية التأشيرة الاستثنائي؟');
+  await wait(()=>posts.filter(post=>post.to===owner).length>beforeReview);
+  const notice=posts.filter(post=>post.to===owner).at(-1).text.body;
+  assert.match(notice,/بحاجة لتدخلك.*رسالة عميل/);
+  assert.doesNotMatch(notice,/أولوية التأشيرة|الاستثنائي/);
+  assert.equal(new URL(notice.split('\n').at(-1)).searchParams.get('customer'),ageCustomer);
+  await send(ageCustomer,'شكراً');
+  assert.equal(posts.filter(post=>post.to===owner).length,beforeReview+1);
  }finally{delete process.env.VISA_TOURIST_AGE_PRICING;await new Promise(r=>server.close(r));global.fetch=original;fs.rmSync(dir,{recursive:true,force:true});}
 });
