@@ -70,6 +70,7 @@ function frenchVisaClarification(c={}){
  if(/^documentType(?:_\d+)?$/.test(key))return 'Je parle du type de document de voyage : il détermine le parcours de demande à vérifier. '+(frenchVisaQuestion(key)||frenchVisaQuestion('documentType'));
  if(key==='documentIssuer'||/^issuer_\d+$/.test(key))return 'Je parle du pays qui a délivré le document de voyage. Il peut être différent de la nationalité ou du pays de résidence. '+(frenchVisaQuestion(key)||frenchVisaQuestion('documentIssuer'));
  if(key==='applicantCount')return 'Je parle de toutes les personnes de ce groupe qui ont besoin d’une demande, y compris les enfants qui voyagent avec vous. Combien de personnes au total ?';
+ if(/^age_\d+$/.test(key))return 'Je parle de l’âge du voyageur en années révolues pour vérifier les frais d’assurance. Quel âge a-t-il ?';
  return 'Bien sûr, nous pouvons reprendre étape par étape. Quel point souhaitez-vous préciser : le type de visa, les documents, les frais ou le suivi de la demande ?';
 }
 
@@ -114,6 +115,7 @@ function englishVisaClarification(c={}){
  if(/^documentType(?:_\d+)?$/.test(key))return 'I mean the type of travel document itself: an ordinary passport or a travel document. This affects the application route. What document type is printed on its cover?';
  if(/^issuer_\d+$/.test(key))return 'I mean the country that issued the travel document, which may differ from the nationality or country of residence. '+(englishVisaQuestion(key)||'Which country is listed as the issuer?');
  if(key==='applicantCount')return 'I mean everyone who needs an application in this group, including any children traveling with you. How many people are there in total?';
+ if(/^age_\d+$/.test(key))return 'I mean the traveler’s age in completed years so we can check the insurance charge. How old is the traveler?';
  return 'Of course, we can go through it step by step. Which part would you like me to explain: the visa type, documents, fees or application follow-up?';
 }
 
